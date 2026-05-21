@@ -1,0 +1,50 @@
+# Dependencies
+frontend/node_modules/
+frontend/dist/
+backend/venv/
+backend/env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+backend/backend.log
+frontend/frontend.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Uploads (generated files)
+backend/uploads/
+
+# Tauri build
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+
+# Lock files (optional, keeping package-lock.json for reproducibility)
+# package-lock.json
+# pnpm-lock.yaml
+
+# Secrets / runtime config
+backend/engine/config.yaml

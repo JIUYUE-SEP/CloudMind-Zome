@@ -1,0 +1,288 @@
+"""Action (workflow) API: CRUD + run + logs."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import get_db, require_user
+from ..models import Action, ActionRun, Agent, User
+from ..services.workflow_engine import launch_workflow
+
+router = APIRouter(prefix="/actions", tags=["actions"])
+
+
+# ------------------------------------------------------------------
+# Schemas
+# ------------------------------------------------------------------
+class ActionNode(BaseModel):
+    id: str
+    type: str = "agent"  # start | agent | tool | condition | approval | end
+    x: float = 0
+    y: float = 0
+    agent_id: Optional[str] = None
+    instruction: str = ""
+    tool_name: Optional[str] = None
+    timeout_seconds: int = 300
+    requires_approval: bool = False
+    is_critical: bool = False
+
+
+class ActionEdge(BaseModel):
+    source: str
+    target: str
+    label: Optional[str] = None  # for condition branches: "yes" | "no"
+
+
+class ActionCreate(BaseModel):
+    name: str
+    description: str = ""
+    nodes: List[ActionNode] = Field(default_factory=list)
+    edges: List[ActionEdge] = Field(default_factory=list)
+
+
+class ActionUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    nodes: Optional[List[ActionNode]] = None
+    edges: Optional[List[ActionEdge]] = None
+    status: Optional[str] = None
+
+
+class Resp(BaseModel):
+    code: int = 0
+    data: dict
+
+
+# ------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------
+@router.get("", response_model=Resp)
+async def list_actions(
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Action).where(Action.user_id == user.id)
+    if status:
+        stmt = stmt.where(Action.status == status)
+    if search:
+        stmt = stmt.where(Action.name.ilike(f"%{search}%"))
+
+    result = await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))
+    items = []
+    for a in result.scalars().all():
+        # Count runs
+        runs = await db.execute(select(ActionRun).where(ActionRun.action_id == a.id))
+        run_count = len(runs.scalars().all())
+        items.append({
+            "id": a.id,
+            "name": a.name,
+            "description": a.description,
+            "status": a.status,
+            "node_count": len(a.nodes or []),
+            "run_count": run_count,
+            "created_at": a.created_at.isoformat() if a.created_at else "",
+            "updated_at": a.updated_at.isoformat() if a.updated_at else "",
+        })
+
+    return Resp(data={"items": items, "page": page, "page_size": page_size})
+
+
+@router.get("/{action_id}", response_model=Resp)
+async def get_action(
+    action_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    a = result.scalar_one_or_none()
+    if not a:
+        raise HTTPException(status_code=404)
+
+    # Resolve agent names for nodes
+    enriched_nodes = []
+    for n in (a.nodes or []):
+        agent_name = "Unknown"
+        r = await db.execute(select(Agent).where(Agent.id == n.get("agent_id")))
+        ag = r.scalar_one_or_none()
+        if ag:
+            agent_name = ag.name
+        enriched_nodes.append({**n, "agent_name": agent_name})
+
+    return Resp(data={
+        "id": a.id,
+        "name": a.name,
+        "description": a.description,
+        "nodes": enriched_nodes,
+        "edges": a.edges or [],
+        "status": a.status,
+        "created_at": a.created_at.isoformat() if a.created_at else "",
+        "updated_at": a.updated_at.isoformat() if a.updated_at else "",
+    })
+
+
+@router.post("", response_model=Resp)
+async def create_action(
+    body: ActionCreate,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    action = Action(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        name=body.name,
+        description=body.description,
+        nodes=[n.model_dump() for n in body.nodes],
+        edges=[e.model_dump() for e in body.edges],
+        status="draft",
+    )
+    db.add(action)
+    await db.commit()
+    await db.refresh(action)
+    return Resp(data={"id": action.id, "name": action.name})
+
+
+@router.put("/{action_id}", response_model=Resp)
+async def update_action(
+    action_id: str,
+    body: ActionUpdate,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    action = result.scalar_one_or_none()
+    if not action:
+        raise HTTPException(status_code=404)
+
+    if body.name is not None:
+        action.name = body.name
+    if body.description is not None:
+        action.description = body.description
+    if body.nodes is not None:
+        action.nodes = [n.model_dump() for n in body.nodes]
+    if body.edges is not None:
+        action.edges = [e.model_dump() for e in body.edges]
+    if body.status is not None:
+        action.status = body.status
+
+    await db.commit()
+    return Resp(data={"updated": True})
+
+
+@router.delete("/{action_id}", response_model=Resp)
+async def delete_action(
+    action_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    action = result.scalar_one_or_none()
+    if not action:
+        raise HTTPException(status_code=404)
+
+    # Check no running runs
+    runs = await db.execute(
+        select(ActionRun).where(ActionRun.action_id == action_id, ActionRun.status == "running").limit(1)
+    )
+    if runs.scalar_one_or_none():
+        raise HTTPException(status_code=422, detail="Cannot delete action with running execution")
+
+    await db.delete(action)
+    await db.commit()
+    return Resp(data={"deleted": True})
+
+
+# ------------------------------------------------------------------
+# Runs
+# ------------------------------------------------------------------
+@router.post("/{action_id}/run", response_model=Resp)
+async def run_action(
+    action_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    action = result.scalar_one_or_none()
+    if not action:
+        raise HTTPException(status_code=404)
+
+    run = ActionRun(
+        id=str(uuid.uuid4()),
+        action_id=action_id,
+        status="pending",
+        node_states=[],
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    # Update action last_run_id
+    action.last_run_id = run.id
+    action.status = "active"
+    await db.commit()
+
+    # Trigger async execution
+    await launch_workflow(run.id, user.id)
+
+    return Resp(data={"run_id": run.id, "status": "pending"})
+
+
+@router.get("/{action_id}/runs/{run_id}", response_model=Resp)
+async def get_run(
+    action_id: str,
+    run_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ActionRun).where(ActionRun.id == run_id, ActionRun.action_id == action_id)
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404)
+
+    # Verify ownership via action
+    action = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    if not action.scalar_one_or_none():
+        raise HTTPException(status_code=403)
+
+    return Resp(data={
+        "run_id": run.id,
+        "status": run.status,
+        "node_states": run.node_states,
+        "logs": run.logs[:100000] if run.logs else "",  # truncate
+        "started_at": run.started_at.isoformat() if run.started_at else "",
+        "ended_at": run.ended_at.isoformat() if run.ended_at else "",
+    })
+
+
+@router.post("/{action_id}/runs/{run_id}/stop", response_model=Resp)
+async def stop_run(
+    action_id: str,
+    run_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ActionRun).where(ActionRun.id == run_id, ActionRun.action_id == action_id)
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404)
+
+    if run.status == "running":
+        run.status = "stopped"
+        run.ended_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    return Resp(data={"status": run.status})
