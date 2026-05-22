@@ -157,19 +157,25 @@ class GroupChatRouter:
             logger.debug("Intent score for %s: %.2f", row.name, score)
 
         scores.sort(key=lambda x: x[1], reverse=True)
-        best_id, best_score = scores[0]
+        best_score = scores[0][1] if scores else 0
 
-        # Threshold: at least 1 shared keyword
-        if best_score >= 0.05:
+        # Strong semantic match -> multiple relevant agents reply together
+        if best_score >= 0.08:
+            threshold = max(0.03, best_score * 0.5)
+            picked = [
+                RouteTarget(agent_id=aid, reason="intent")
+                for aid, s in scores
+                if s >= threshold
+            ][:3]  # max 3 agents
             logger.info(
-                "Intent route chose %s (score %.2f) for session %s",
-                best_id, best_score, session.id,
+                "Intent route chose %d agents for session %s (best %.2f)",
+                len(picked), session.id, best_score,
             )
-            return [RouteTarget(agent_id=best_id, reason="intent")]
+            return picked
 
-        # No good semantic match -> fallback to random
-        logger.info("Intent route found no match, falling back to random")
-        count = min(random_reply_count, len(agent_ids))
+        # Weak / casual chat -> random 2 agents for lively conversation
+        logger.info("Intent route weak match, casual chat mode for session %s", session.id)
+        count = min(2, len(agent_ids))
         selected = random.sample(agent_ids, count)
         return [RouteTarget(agent_id=aid, reason="random")]
 
