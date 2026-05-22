@@ -178,6 +178,7 @@ class ReActAgent(AgentBase):
                 )
             except Exception as e:
                 logger.error("LLM call failed after all retries and fallbacks: %s", e)
+                yield AgentEvent(type="error", data=TextBlock(text=str(e)))
                 yield AgentEvent(type="done")
                 return
 
@@ -283,7 +284,7 @@ class ReActAgent(AgentBase):
                     yield AgentEvent(type="tool_result", data=tool_result)
                     result_msg = Message(
                         role="tool",
-                        content=tool_result,
+                        content=[tool_result],
                         meta=MessageMeta(
                             session_id=source_id,
                             round=len(self._messages) // 2,
@@ -330,7 +331,7 @@ class ReActAgent(AgentBase):
 
                     result_msg = Message(
                         role="tool",
-                        content=tool_result,
+                        content=[tool_result],
                         meta=MessageMeta(
                             session_id=source_id,
                             round=len(self._messages) // 2,
@@ -347,7 +348,7 @@ class ReActAgent(AgentBase):
 
                     result_msg = Message(
                         role="tool",
-                        content=tool_result,
+                        content=[tool_result],
                         meta=MessageMeta(
                             session_id=source_id,
                             round=len(self._messages) // 2,
@@ -556,12 +557,17 @@ class ReActAgent(AgentBase):
             raw = await self.session_store.load_agent_messages(
                 self.agent_id, limit=1000
             )
-            # Drop any system messages (old personality/scene leaks)
-            self._messages = [m for m in raw if m.role != "system"]
-            if len(self._messages) < len(raw):
+            # Drop system messages EXCEPT compressed topic summaries,
+            # which are needed for context continuity across sessions.
+            self._messages = [
+                m for m in raw
+                if m.role != "system" or getattr(m.meta, "compressed", False)
+            ]
+            dropped = len(raw) - len(self._messages)
+            if dropped:
                 logger.info(
                     "Filtered %d system messages from loaded history",
-                    len(raw) - len(self._messages),
+                    dropped,
                 )
             logger.info(
                 "Loaded %d messages for agent %s",

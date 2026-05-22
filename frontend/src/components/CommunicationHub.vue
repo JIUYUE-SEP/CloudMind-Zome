@@ -325,6 +325,8 @@ watch(() => selectedId.value, async () => {
 })
 
 async function selectAgent(a: any) {
+  const prevId = selectedId.value
+  const prevType = selectedType.value
   selectedAgentId.value = a.id
   selectedType.value = 'private'
   currentAgent.value = a
@@ -337,6 +339,12 @@ async function selectAgent(a: any) {
   })
   if (json.code === 0) {
     selectedId.value = json.data.session_id
+  } else {
+    // Rollback on failure
+    selectedAgentId.value = ''
+    selectedType.value = prevType
+    currentAgent.value = null
+    selectedId.value = prevId
   }
 }
 

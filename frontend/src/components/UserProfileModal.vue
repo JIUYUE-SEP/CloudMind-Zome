@@ -116,8 +116,10 @@ async function uploadAvatar(e: Event) {
   fd.append('file', file)
   const json = await api.upload('/upload?folder=avatars', fd)
   if (json.code === 0) {
-    form.value.avatar_url = json.data.url
-    await auth.updateProfile({ avatar_url: json.data.url })
+    const apiRes = await auth.updateProfile({ avatar_url: json.data.url })
+    if (apiRes.code === 0) {
+      form.value.avatar_url = json.data.url
+    }
   }
   ;(e.target as HTMLInputElement).value = ''
 }

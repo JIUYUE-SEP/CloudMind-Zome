@@ -102,9 +102,10 @@ const selectedAgent = computed(() =>
 const familiarity = computed(() => {
   // 基于创建时间模拟熟悉度（实际应从交互数据计算）
   if (!selectedAgent.value) return 0
-  const days = Math.floor(
-    (Date.now() - new Date(selectedAgent.value.created_at).getTime()) / 86400000
-  )
+  const created = selectedAgent.value.created_at
+    ? new Date(selectedAgent.value.created_at).getTime()
+    : Date.now()
+  const days = Math.floor((Date.now() - created) / 86400000)
   return Math.min(30 + days * 5, 100)
 })
 

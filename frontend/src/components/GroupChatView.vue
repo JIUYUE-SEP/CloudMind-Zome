@@ -158,6 +158,7 @@ const showInlineReply = ref(false)
 const intermindActive = ref(false)
 const showMention = ref(false)
 const mentionStart = ref(0)
+const mentionEnd = ref(0)
 
 const group = ref<any>(null)
 const members = ref<any[]>([])
@@ -235,9 +236,13 @@ function syncMessages() {
   if (last.sender_type === 'user' && last.is_me) {
     showInlineReply.value = false
   }
-  // Detect conductor Q&A inline reply trigger
+  // Detect conductor Q&A inline reply trigger (stricter heuristic)
   if (last.sender_type === 'agent' && last.sender_id === group.value?.conductor_agent_id) {
-    if (last.content.includes('？') || last.content.includes('?') || last.content.includes('确认')) {
+    const c = last.content
+    const asks =
+      /[\?？]\s*$/.test(c) ||               // ends with question mark
+      /请确认|请回答|请问|请说明|请简述/.test(c)  // explicit request patterns
+    if (asks) {
       showInlineReply.value = true
     }
   }
@@ -274,6 +279,7 @@ function onInput() {
     const between = before.slice(lastAt + 1)
     if (!between.includes(' ') && !between.includes('\n')) {
       mentionStart.value = lastAt
+      mentionEnd.value = cursor
       showMention.value = true
       return
     }
@@ -284,10 +290,9 @@ function onInput() {
 function selectMention(m: any) {
   const el = textareaRef.value
   if (!el) return
-  const cursor = el.selectionStart
   const text = draft.value
   const before = text.slice(0, mentionStart.value)
-  const after = text.slice(cursor)
+  const after = text.slice(mentionEnd.value)
   draft.value = before + '@' + m.name + ' ' + after
   showMention.value = false
   nextTick(() => {

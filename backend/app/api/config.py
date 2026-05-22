@@ -49,6 +49,14 @@ def _load_raw() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _deep_merge(target: dict, source: dict) -> None:
+    for k, v in source.items():
+        if isinstance(v, dict) and k in target and isinstance(target[k], dict):
+            _deep_merge(target[k], v)
+        else:
+            target[k] = v
+
+
 def _save_raw(data: dict[str, Any]) -> None:
     _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(_CFG_PATH, "w", encoding="utf-8") as f:
@@ -108,7 +116,10 @@ async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
             if section not in _MUTABLE_SECTIONS:
                 continue
             if value is not None:
-                updated[section] = value
+                if isinstance(value, dict) and isinstance(updated.get(section), dict):
+                    _deep_merge(updated[section], value)
+                else:
+                    updated[section] = value
 
         # Auto-sync provider.default from fallback_chain[0]
         prov = updated.get("provider")

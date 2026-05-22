@@ -325,8 +325,10 @@ onBeforeUnmount(() => {
 function onAgentStatus(e: any) {
   const p = e.detail
   if (!p?.agent_id) return
-  const a = agentsStore.list.find(x => x.id === p.agent_id)
-  if (a) a.status = p.status
+  const idx = agentsStore.list.findIndex(x => x.id === p.agent_id)
+  if (idx >= 0) {
+    agentsStore.list[idx] = { ...agentsStore.list[idx], status: p.status }
+  }
   if (selectedId.value === p.agent_id) {
     liveStatus.value = p.status
   }

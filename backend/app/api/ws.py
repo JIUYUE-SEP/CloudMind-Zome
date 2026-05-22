@@ -98,12 +98,9 @@ def _engine_state() -> dict:
 # Main WebSocket endpoint
 # ------------------------------------------------------------------
 @router.websocket("/api/v1/ws")
-async def websocket_endpoint(
-    ws: WebSocket,
-    token: str | None = Query(None),
-):
+async def websocket_endpoint(ws: WebSocket):
     async with AsyncSessionLocal() as db:
-        user = await _get_user_from_token(token, db)
+        user = await _get_user_from_token(None, db)
 
     # Guest users are always accepted thanks to _get_user_from_token fallback
 
@@ -261,7 +258,6 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
         if conductor_id and ("@队长" in content or "@conductor" in content.lower()):
             state = _engine_state()
             bridge = EngineBridge(
-                db=AsyncSessionLocal(),
                 session_store=state["session_store"],
                 context_manager=state["context_manager"],
                 app_config=state["config"],
@@ -304,7 +300,6 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
 
             state = _engine_state()
             bridge = EngineBridge(
-                db=AsyncSessionLocal(),
                 session_store=state["session_store"],
                 context_manager=state["context_manager"],
                 app_config=state["config"],
@@ -385,7 +380,6 @@ async def _stream_single_agent(
 ) -> tuple[str, str]:
     state = _engine_state()
     bridge = EngineBridge(
-        db=AsyncSessionLocal(),
         session_store=state["session_store"],
         context_manager=state["context_manager"],
         app_config=state["config"],

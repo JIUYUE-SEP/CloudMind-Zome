@@ -6,6 +6,7 @@ In-memory state per (session_id, conductor_agent_id).
 from __future__ import annotations
 
 import logging
+import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -201,7 +202,6 @@ class ConductorService:
         if not candidates:
             return
 
-        import random
         next_agent_id = random.choice(candidates)
 
         # Build intermind prompt

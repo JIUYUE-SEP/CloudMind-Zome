@@ -5,6 +5,7 @@ let ws: WebSocket | null = null
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let messageBuffer: string[] = []
+const MAX_BUFFER = 200
 let reconnectAttempts = 0
 const MAX_RECONNECT = 10
 
@@ -39,7 +40,7 @@ export function useWebSocket() {
   const chat = useChatStore()
 
   function connect() {
-    if (ws?.readyState === WebSocket.OPEN) return
+    if (ws && ws.readyState !== WebSocket.CLOSED) return
     const url = `ws://${location.host}/api/v1/ws`
     ws = new WebSocket(url)
 
@@ -75,7 +76,8 @@ export function useWebSocket() {
         break
       case 'chat.message': {
         const m = msg.payload?.message
-        if (m && msg.payload?.session_id) {
+        if (!m) break
+        if (msg.payload?.session_id) {
           m.session_id = msg.payload.session_id
         }
         chat.onMessagePush(m)
@@ -123,6 +125,9 @@ export function useWebSocket() {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(text)
     } else {
+      if (messageBuffer.length >= MAX_BUFFER) {
+        messageBuffer.shift()
+      }
       messageBuffer.push(text)
       if (!ws || ws.readyState === WebSocket.CLOSED) connect()
     }

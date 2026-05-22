@@ -115,12 +115,13 @@ function startWidget(url: string) {
     return false
   }
 
-  // 轮询直到 canvas 出现
+  // 轮询直到 canvas 出现（最多 10 秒）
   let attempts = 0
   const timer = setInterval(() => {
     attempts++
-    if (tryMove() || attempts > 30) {
+    if (tryMove() || attempts > 100) {
       clearInterval(timer)
+      if (!widgetRoot) loadError.value = true
     }
   }, 100)
 }

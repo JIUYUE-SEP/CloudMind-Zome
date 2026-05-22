@@ -14,8 +14,6 @@ import logging
 from typing import Any, AsyncIterator
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from engine.provider.transport import ChatCompletionsTransport
 from engine.provider.thinking.deepseek import DeepSeekThinkingProfile
 from engine.provider.thinking.glm import GLMThinkingProfile
@@ -64,12 +62,10 @@ class EngineBridge:
 
     def __init__(
         self,
-        db: AsyncSession,
         session_store: SessionStore,
         context_manager: ContextManager,
         app_config: AppConfig | None = None,
     ):
-        self.db = db
         self.session_store = session_store
         self.context_manager = context_manager
         if app_config is None:
@@ -99,12 +95,11 @@ class EngineBridge:
         chunk_queue: asyncio.Queue[dict] = asyncio.Queue()
 
         async def on_chunk(text: str) -> None:
-            # Drop oldest if queue grows too large (WS consumer is slow)
-            if chunk_queue.qsize() > 200:
-                try:
-                    chunk_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+            # If WS consumer is very slow, skip new chunks rather than
+            # dropping oldest (which would make the stream unreadable).
+            if chunk_queue.qsize() > 1000:
+                logger.warning("Chunk queue overflow for agent %s, skipping chunk", agent_id)
+                return
             await chunk_queue.put({"type": "content", "data": {"text": text}})
 
         async def on_done(text: str, ok: bool) -> None:
@@ -177,10 +172,12 @@ class EngineBridge:
     # Helpers
     # ------------------------------------------------------------------
     async def _get_agent(self, agent_id: str) -> Agent | None:
-        result = await self.db.execute(
-            select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-        )
-        return result.scalar_one_or_none()
+        from ..database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+            )
+            return result.scalar_one_or_none()
 
     async def _build_transport(self, agent_row: Agent) -> ChatCompletionsTransport | None:
         """Kept for compatibility; Worker builds its own transport."""

@@ -85,8 +85,11 @@ const msgArea = ref<HTMLDivElement>()
 const isTyping = ref(false)
 const agentStatus = ref<'idle' | 'busy' | 'introspecting'>('idle')
 
-const session = ref<any>(null)
 const messages = ref<any[]>([])
+
+const session = computed(() =>
+  chat.sessions.find(s => s.session_id === props.sessionId)
+)
 
 const isPrivate = computed(() => session.value?.type === 'private')
 const statusLabel = computed(() => {
@@ -99,7 +102,6 @@ async function initSession() {
   chat.currentSessionId = props.sessionId
   await chat.loadMessages(props.sessionId)
   if (!chat.sessions.length) await chat.fetchSessions()
-  session.value = chat.sessions.find(s => s.session_id === props.sessionId)
   syncMessages()
 }
 

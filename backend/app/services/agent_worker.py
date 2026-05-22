@@ -86,11 +86,8 @@ class AgentWorker:
                 return
 
             # Create the single ReActAgent instance
-            import pathlib
-            _cfg_path = pathlib.Path(__file__).resolve().parent.parent.parent / "engine" / "config.yaml"
-            app_config = load_config(_cfg_path)
-
             from ..main import _app_state as _state
+            app_config = _state["config"]
             self._context_manager = _state["context_manager"]
             self._react_agent = ReActAgent(
                 name=self.agent_row.name,
@@ -171,9 +168,9 @@ class AgentWorker:
                 source_name=job.source_name,
                 sender_name=job.sender_name,
             ):
-                # Check stop signal (private chat only)
-                if job.source == "private" and job.stop_event.is_set():
-                    logger.info("Job %s stopped by user", job.job_id)
+                # Check stop signal (global stop or private chat stop)
+                if not self._running or (job.source == "private" and job.stop_event.is_set()):
+                    logger.info("Job %s stopped", job.job_id)
                     await job.on_chunk("\n[已暂停]")
                     success = False
                     break
@@ -342,9 +339,8 @@ class AgentWorker:
                     api_key = prov_row.api_key_encrypted  # fallback: treat as plaintext
         else:
             # Fallback to engine config
-            import pathlib
-            _cfg_path = pathlib.Path(__file__).resolve().parent.parent.parent / "engine" / "config.yaml"
-            cfg = load_config(_cfg_path)
+            from ..main import _app_state as _state
+            cfg = _state["config"]
             engine_cfg = getattr(cfg.provider, provider_type, None)
             if engine_cfg:
                 base_url = engine_cfg.base_url or base_url

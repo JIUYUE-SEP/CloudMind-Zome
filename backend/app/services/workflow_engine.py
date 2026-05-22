@@ -131,7 +131,6 @@ class WorkflowEngine:
         # Run agent (blocking via AgentWorker queue)
         state = self._engine_state()
         bridge = EngineBridge(
-            db=AsyncSessionLocal(),
             session_store=state["session_store"],
             context_manager=state["context_manager"],
             app_config=state["config"],
@@ -308,7 +307,14 @@ class WorkflowEngine:
 # ------------------------------------------------------------------
 # Public launcher
 # ------------------------------------------------------------------
+async def _run_workflow_safely(engine: WorkflowEngine) -> None:
+    try:
+        await engine.execute()
+    except Exception:
+        logger.exception("Workflow %s failed", engine.run_id)
+
+
 async def launch_workflow(run_id: str, user_id: str) -> None:
     """Fire-and-forget workflow execution."""
     engine = WorkflowEngine(run_id=run_id, user_id=user_id)
-    asyncio.create_task(engine.execute())
+    asyncio.create_task(_run_workflow_safely(engine))

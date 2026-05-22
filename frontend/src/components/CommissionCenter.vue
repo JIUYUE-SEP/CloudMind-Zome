@@ -93,7 +93,7 @@ async function submit() {
     trigger_type: form.value.trigger_type,
     trigger_config: form.value.trigger_type === 'cron' ? { expression: form.value.cron } : {},
     action_type: 'preset_chat',
-    action_config: { preset_id: form.value.prompt },
+    action_config: { instruction: form.value.prompt },
   }
   await api.post('/commissions', body)
   showCreate.value = false

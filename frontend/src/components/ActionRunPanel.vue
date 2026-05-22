@@ -99,7 +99,9 @@ async function pollRun() {
     nodeStates.value = json.data.node_states || []
     logs.value = json.data.logs || ''
     if (nodeStates.value.length) {
-      currentNode.value = nodeStates.value.filter((n: any) => n.status === 'completed').length
+      const runningIdx = nodeStates.value.findIndex((n: any) => n.status === 'running')
+      const completed = nodeStates.value.filter((n: any) => n.status === 'completed').length
+      currentNode.value = runningIdx >= 0 ? runningIdx + 1 : completed
       totalNodes.value = nodeStates.value.length
     }
     if (['completed', 'failed', 'stopped'].includes(runStatus.value)) {

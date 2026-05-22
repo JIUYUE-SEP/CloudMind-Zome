@@ -74,7 +74,6 @@ class GroupChatRouter:
             return []
 
         # Simple random selection
-        import random
         count = min(random_reply_count, len(agent_ids))
         selected = random.sample(agent_ids, count)
         for aid in selected:
