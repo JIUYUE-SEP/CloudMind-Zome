@@ -9,7 +9,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,13 @@ from ..models import Agent, ChatSession, ChatSessionMember
 logger = logging.getLogger(__name__)
 
 _MENTION_RE = re.compile(r"@(\S+)")
+
+# Simple stop-words for keyword matching
+_STOP_WORDS: Set[str] = {
+    "我", "你", "他", "她", "的", "是", "在", "有", "和", "就", "都", "而",
+    "及", "与", "或", "对", "把", "被", "让", "给", "为", "the", "a", "an",
+    "is", "are", "in", "on", "to", "of", "and", "or", "it", "this", "that",
+}
 
 
 class GroupChatRouter:
@@ -64,16 +71,21 @@ class GroupChatRouter:
 
         # 2. No mentions -> follow routing_mode
         if routing_mode == "mention":
-            # Only respond if explicitly @'d; otherwise no one responds
             return []
 
-        # 3. Intent mode or fallback: pick random agents
-        # All agent members are eligible (Worker handles FIFO)
+        # 3. Intent mode: semantic match then fallback
         agent_ids = await self._get_agent_members(session.id, sender_id)
         if not agent_ids:
             return []
 
-        # Simple random selection
+        if routing_mode == "intent":
+            intent_targets = await self._intent_route(
+                session, sender_id, content, agent_ids, random_reply_count
+            )
+            if intent_targets:
+                return intent_targets
+
+        # Fallback: random selection
         count = min(random_reply_count, len(agent_ids))
         selected = random.sample(agent_ids, count)
         for aid in selected:
@@ -104,6 +116,78 @@ class GroupChatRouter:
             if row.name == text or row.codename == text:
                 return row.id
         return None
+
+    async def _intent_route(
+        self,
+        session: ChatSession,
+        sender_id: str,
+        content: str,
+        agent_ids: List[str],
+        random_reply_count: int,
+    ) -> List["RouteTarget"]:
+        """Match user message to agent personality / capabilities via keyword overlap.
+
+        Pure local text matching — no embedding or LLM dependency.
+        """
+        result = await self.db.execute(
+            select(Agent.id, Agent.name, Agent.personality_prompt, Agent.capabilities)
+            .where(Agent.id.in_(agent_ids))
+        )
+        rows = result.all()
+        if not rows:
+            return []
+
+        user_words = set(self._tokenize(content))
+        if not user_words:
+            return []
+
+        scores: List[tuple[str, float]] = []
+        for row in rows:
+            agent_text = " ".join(
+                filter(None, [
+                    row.name,
+                    row.personality_prompt,
+                    " ".join(row.capabilities or []),
+                ])
+            )
+            agent_words = set(self._tokenize(agent_text))
+            overlap = len(user_words & agent_words)
+            score = overlap / max(len(user_words), 1)
+            scores.append((row.id, score))
+            logger.debug("Intent score for %s: %.2f", row.name, score)
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        best_id, best_score = scores[0]
+
+        # Threshold: at least 1 shared keyword
+        if best_score >= 0.05:
+            logger.info(
+                "Intent route chose %s (score %.2f) for session %s",
+                best_id, best_score, session.id,
+            )
+            return [RouteTarget(agent_id=best_id, reason="intent")]
+
+        # No good semantic match -> fallback to random
+        logger.info("Intent route found no match, falling back to random")
+        count = min(random_reply_count, len(agent_ids))
+        selected = random.sample(agent_ids, count)
+        return [RouteTarget(agent_id=aid, reason="random")]
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        """Extract Chinese chars and English words, drop stop-words."""
+        words: List[str] = []
+        # Chinese characters
+        words.extend(re.findall(r"[\u4e00-\u9fff]{2,}", text))
+        # English words
+        for w in re.findall(r"[a-zA-Z]+", text.lower()):
+            if w not in _STOP_WORDS and len(w) > 2:
+                words.append(w)
+        # Single Chinese chars that are not stop-words
+        for ch in re.findall(r"[\u4e00-\u9fff]", text):
+            if ch not in _STOP_WORDS:
+                words.append(ch)
+        return words
 
     async def _get_agent_members(
         self, session_id: str, exclude_sender: str

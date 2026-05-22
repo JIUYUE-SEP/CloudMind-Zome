@@ -91,6 +91,14 @@
           <div class="group-settings" v-if="isOwner">
             <h4>群设置</h4>
             <label class="setting-row">
+              <span>路由模式</span>
+              <select v-model="settings.routing_mode" @change="saveSettings">
+                <option value="intent">语义路由</option>
+                <option value="mention">仅@回复</option>
+                <option value="random">随机回复</option>
+              </select>
+            </label>
+            <label class="setting-row">
               <span>心智互聊</span>
               <input type="checkbox" v-model="settings.intermind_enabled" @change="saveSettings" />
             </label>
@@ -162,7 +170,7 @@ const mentionEnd = ref(0)
 
 const group = ref<any>(null)
 const members = ref<any[]>([])
-const settings = ref({ intermind_enabled: false, random_reply_count: 1 })
+const settings = ref({ intermind_enabled: false, random_reply_count: 1, routing_mode: 'intent' })
 const messages = ref<any[]>([])
 const agentStatuses = ref<Record<string, string>>({})
 
@@ -509,6 +517,14 @@ function formatTime(ts: string) {
 .setting-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 0; font-size: 13px; color: #8899AA;
+}
+.setting-row select {
+  padding: 4px 8px;
+  background: #141B24;
+  border: 1px solid #1E2731;
+  border-radius: 4px;
+  color: #D8E1EC;
+  font-size: 12px;
 }
 
 .input-area {

@@ -74,7 +74,7 @@ async def create_group(
         settings={
             "intermind_enabled": False,
             "random_reply_count": 1,
-            "routing_mode": "mention",
+            "routing_mode": "intent",
             "intermind_rounds": 4,
         },
     )
