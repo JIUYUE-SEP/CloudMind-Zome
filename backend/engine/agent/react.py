@@ -59,6 +59,7 @@ class ReActAgent(AgentBase):
         personality_prompt: str = "",
         embedder: Embedder | None = None,
         memory_store: AgentMemoryStore | None = None,
+        accessible_group_ids: set[str] | None = None,
     ):
         super().__init__(name=name, session_id="", config=config)
 
@@ -69,6 +70,7 @@ class ReActAgent(AgentBase):
         self.session_store = session_store
         self.embedder = embedder
         self.memory_store = memory_store
+        self._accessible_group_ids = accessible_group_ids or set()
 
         # Error recovery
         self._fallback = FallbackChain(
@@ -557,16 +559,21 @@ class ReActAgent(AgentBase):
             raw = await self.session_store.load_agent_messages(
                 self.agent_id, limit=1000
             )
-            # Drop system messages EXCEPT compressed topic summaries,
-            # which are needed for context continuity across sessions.
+            # Filter rules:
+            # 1. Drop system messages EXCEPT compressed topic summaries
+            # 2. Drop group messages from groups this agent does NOT belong to
             self._messages = [
                 m for m in raw
-                if m.role != "system" or getattr(m.meta, "compressed", False)
+                if (m.role != "system" or getattr(m.meta, "compressed", False))
+                and (
+                    m.meta.source != "group"
+                    or m.meta.session_id in self._accessible_group_ids
+                )
             ]
             dropped = len(raw) - len(self._messages)
             if dropped:
                 logger.info(
-                    "Filtered %d system messages from loaded history",
+                    "Filtered %d unauthorized messages from loaded history",
                     dropped,
                 )
             logger.info(
