@@ -96,7 +96,7 @@ class EngineBridge:
             yield {"type": "error", "message": f"Agent {agent_id} not found"}
             return
 
-        chunk_queue: asyncio.Queue[dict] = asyncio.Queue()
+        chunk_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=100)
 
         async def on_chunk(text: str) -> None:
             await chunk_queue.put({"type": "content", "data": {"text": text}})

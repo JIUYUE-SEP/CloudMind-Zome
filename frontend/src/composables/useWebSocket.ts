@@ -1,4 +1,3 @@
-import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { ref } from 'vue'
 
@@ -37,13 +36,11 @@ export function pushLog(entry: Omit<LogEntry, 'id' | 'time'>) {
 }
 
 export function useWebSocket() {
-  const auth = useAuthStore()
   const chat = useChatStore()
 
   function connect() {
     if (ws?.readyState === WebSocket.OPEN) return
-    const token = auth.token
-    const url = `ws://${location.host}/api/v1/ws?token=${token || ''}`
+    const url = `ws://${location.host}/api/v1/ws`
     ws = new WebSocket(url)
 
     ws.onopen = () => {

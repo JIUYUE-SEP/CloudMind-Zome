@@ -83,15 +83,18 @@ class GroupChatRouter:
         return targets
 
     async def _resolve_mention(self, session_id: str, text: str) -> Optional[str]:
+        # Single JOIN query to avoid N+1
+        from sqlalchemy.orm import joinedload
         result = await self.db.execute(
-            select(ChatSessionMember).where(
+            select(ChatSessionMember)
+            .where(
                 ChatSessionMember.session_id == session_id,
                 ChatSessionMember.member_type == "agent",
             )
+            .options(joinedload(ChatSessionMember.agent))
         )
         for m in result.scalars().all():
-            agent = await self.db.execute(select(Agent).where(Agent.id == m.member_id))
-            a = agent.scalar_one_or_none()
+            a = m.agent
             if a and (a.name == text or a.codename == text):
                 return a.id
         return None

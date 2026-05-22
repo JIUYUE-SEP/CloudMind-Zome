@@ -48,3 +48,4 @@ frontend/src-tauri/gen/
 
 # Secrets / runtime config
 backend/engine/config.yaml
+nul

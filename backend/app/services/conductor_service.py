@@ -83,6 +83,8 @@ class ConductorService:
         # Record user input in history (before any early returns)
         if state is not None and state.stage != "done":
             state.history.append({"role": "user", "content": content})
+            if len(state.history) > 20:
+                state.history = state.history[-10:]
 
         # Check if user wants to cancel
         if content.strip() in ("取消", "算了", "跳过", "cancel"):

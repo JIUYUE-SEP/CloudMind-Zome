@@ -79,12 +79,14 @@
     <main class="comm-main">
       <ChatView
         v-if="selectedType === 'private' && selectedId"
+        :key="selectedId"
         :session-id="selectedId"
         inline
         @close="clearSelection"
       />
       <GroupChatView
         v-else-if="selectedType === 'group' && selectedId"
+        :key="selectedId"
         :group-id="selectedId"
         inline
         @close="clearSelection"

@@ -181,7 +181,10 @@ class AgentWorker:
                 if event.type == "content":
                     text = event.data.text if hasattr(event.data, "text") else str(event.data)
                     full_content += text
-                    await job.on_chunk(text)
+                    try:
+                        await job.on_chunk(text)
+                    except Exception:
+                        logger.warning("on_chunk failed for job %s (client likely disconnected)", job.job_id)
 
                 elif event.type == "thinking":
                     # Optionally stream thinking content (disabled for UX)
@@ -207,12 +210,15 @@ class AgentWorker:
             # Restore idle status
             await self._set_db_status("idle")
             # Notify caller
-            await job.on_done(full_content, success)
+            try:
+                await job.on_done(full_content, success)
+            except Exception:
+                logger.warning("on_done failed for job %s (client likely disconnected)", job.job_id)
             if job.future and not job.future.done():
                 if success:
                     job.future.set_result(full_content)
                 else:
-                    job.future.set_result(full_content)  # still return partial content
+                    job.future.set_exception(RuntimeError(f"Job failed: {full_content}"))
 
     async def _maybe_introspect(self) -> None:
         """If idle for >5 min and memory has grown, compress / reflect."""
@@ -248,29 +254,19 @@ class AgentWorker:
     # Helpers
     # ------------------------------------------------------------------
     def _build_scene_info(self, job: AgentJob) -> str:
-        """Build scene description for system prompt injection."""
+        """Build scene description for system prompt injection.
+        Keep it concise and avoid meta-discussion triggers."""
         lines = [f"当前场景：{job.source_name}"]
         if job.source == "group":
-            lines.append(f"提及你的成员：{job.sender_name}")
-            lines.append("上下文：这是群聊中的直接提问。")
+            lines.append(f"对话者：{job.sender_name}")
         elif job.source == "workflow":
-            lines.append("上下文：这是工作流编排任务，请专注执行指令。")
+            lines.append("任务类型：工作流执行")
             if job.source_id.startswith("wf:"):
                 parts = job.source_id.split(":")
                 if len(parts) >= 3:
-                    lines.append(f"工作流运行：{parts[1]}")
-                    lines.append(f"当前节点：{parts[2]}")
+                    lines.append(f"节点：{parts[2]}")
         elif job.source == "private":
-            lines.append("上下文：这是私聊对话。")
-
-        # Proactive communication capability injection
-        lines.append("")
-        lines.append("【主动通讯能力】")
-        lines.append("你可以主动与其他 Agent 交互，工具列表中已包含以下通讯工具：")
-        lines.append("1. send_private_message(target_agent_id, content) — 给另一个 Agent 发私信并等待回复。仅在需要协作、确认或委托时使用，不要滥用。")
-        if job.source == "workflow":
-            lines.append("2. report_workflow_progress(run_id, node_id, status, summary) — 报告工作流节点进度。source=workflow 时可用。")
-        lines.append("注意：私信调用会阻塞等待对方回复（最多120秒），请确保确有必要再使用。")
+            lines.append("对话者：用户")
         return "\n".join(lines)
 
     async def _set_db_status(self, status: str) -> None:

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..database import AsyncSessionLocal
-from ..dependencies import decode_token
+from ..dependencies import require_user
 from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember, User
 from ..services.engine_bridge import EngineBridge
 from ..services.group_chat_router import GroupChatRouter
@@ -61,18 +61,7 @@ def _check_stop_signal(signal_key: str) -> bool:
 # Helpers
 # ------------------------------------------------------------------
 async def _get_user_from_token(token: str | None, db: AsyncSession) -> User:
-    """Return authenticated user or auto-create guest (matches require_user bypass)."""
-    user_id = None
-    if token:
-        user_id = decode_token(token)
-
-    if user_id:
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        if user:
-            return user
-
-    # Guest fallback
+    """Return guest user (login-free mode)."""
     result = await db.execute(select(User).where(User.codename == "guest"))
     guest = result.scalar_one_or_none()
     if guest:
@@ -305,7 +294,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 source_name=source_name,
                 sender_name=user.nickname,
             )))
-        agent_replies = await asyncio.gather(*tasks)
+        agent_replies = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Intermind: if enabled, trigger other agents to respond to the first reply
         if settings.get("intermind_enabled", False):
@@ -321,7 +310,11 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 app_config=state["config"],
             )
             cond_svc = ConductorService(db=AsyncSessionLocal(), bridge=bridge)
-            for agent_id, reply_text in agent_replies:
+            for item in agent_replies:
+                if isinstance(item, Exception):
+                    logger.error("Agent reply failed: %s", item)
+                    continue
+                agent_id, reply_text = item
                 if reply_text:
                     async for frame in cond_svc.maybe_trigger_intermind(session, agent_id, reply_text):
                         await ws.send_json(frame)
@@ -495,16 +488,6 @@ async def _stream_single_agent(
                 await ws.send_json(chunk_frame)
                 if broadcast_to:
                     await manager.broadcast_to_session_members(broadcast_to, chunk_frame)
-
-        # Stop typing
-        stop_typing = _build_ws_frame("chat.typing", {
-            "session_id": session_id,
-            "user_id": agent_id,
-            "is_typing": False,
-        })
-        await ws.send_json(stop_typing)
-        if broadcast_to:
-            await manager.broadcast_to_session_members(broadcast_to, stop_typing)
 
         # Persist
         if full_content:

@@ -142,7 +142,9 @@ function syncMessages() {
   const list = chat.messagesMap[props.sessionId] || []
   messages.value = list
   nextTick(() => {
-    msgArea.value?.scrollTo({ top: msgArea.value.scrollHeight, behavior: 'smooth' })
+    if (msgArea.value) {
+      msgArea.value.scrollTop = msgArea.value.scrollHeight
+    }
   })
 }
 
