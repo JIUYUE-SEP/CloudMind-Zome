@@ -91,6 +91,8 @@ class MessageMeta:
     tokens_used: int = 0  # Estimated token count for this message
     source: str = ""  # "private" | "group" | "workflow"
     source_name: str = ""  # Human-readable scene name
+    sender_id: str = ""  # Who sent this message (user_id / agent_id)
+    sender_name: str = ""  # Display name of the sender
 
 
 # ---------------------------------------------------------------------------

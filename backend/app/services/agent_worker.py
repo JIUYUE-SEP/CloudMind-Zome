@@ -89,10 +89,6 @@ class AgentWorker:
             from ..main import _app_state as _state
             app_config = _state["config"]
             self._context_manager = _state["context_manager"]
-
-            # Query accessible groups for permission-scoped history loading
-            accessible_group_ids = await self._load_accessible_groups()
-
             self._react_agent = ReActAgent(
                 name=self.agent_row.name,
                 model=transport,
@@ -104,7 +100,6 @@ class AgentWorker:
                 personality_prompt=self.agent_row.personality_prompt or "",
                 embedder=_state.get("embedder"),
                 memory_store=_state.get("memory_store"),
-                accessible_group_ids=accessible_group_ids,
             )
 
             logger.info("AgentWorker started for %s (%s)", self.agent_row.name, self.agent_id)
@@ -255,18 +250,6 @@ class AgentWorker:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    async def _load_accessible_groups(self) -> set[str]:
-        """Return set of group session_ids this agent is a member of."""
-        from ..models import ChatSessionMember
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(ChatSessionMember.session_id).where(
-                    ChatSessionMember.member_id == self.agent_id,
-                    ChatSessionMember.member_type == "agent",
-                )
-            )
-            return {row[0] for row in result.all()}
-
     def _build_scene_info(self, job: AgentJob) -> str:
         """Build scene description for system prompt injection.
         Keep it concise and avoid meta-discussion triggers."""

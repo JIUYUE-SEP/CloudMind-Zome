@@ -828,6 +828,8 @@ class SessionStore:
                 compressed=bool(compressed),
                 source=source or "private",
                 source_name=source_name or "",
+                sender_id=sender_id or "",
+                sender_name=sender_name or "",
             )
 
             content_blocks: list[ContentBlock] = []

@@ -59,7 +59,6 @@ class ReActAgent(AgentBase):
         personality_prompt: str = "",
         embedder: Embedder | None = None,
         memory_store: AgentMemoryStore | None = None,
-        accessible_group_ids: set[str] | None = None,
     ):
         super().__init__(name=name, session_id="", config=config)
 
@@ -70,7 +69,6 @@ class ReActAgent(AgentBase):
         self.session_store = session_store
         self.embedder = embedder
         self.memory_store = memory_store
-        self._accessible_group_ids = accessible_group_ids or set()
 
         # Error recovery
         self._fallback = FallbackChain(
@@ -416,8 +414,18 @@ class ReActAgent(AgentBase):
                 )
             )
 
-        # Conversation history — use raw content without source tags.
-        result.extend(self._messages)
+        # Conversation history with source tags for scene awareness.
+        # Each historical message is prefixed with [time | scene | sender]
+        # so the agent knows where/when/who it came from.
+        for msg in self._messages:
+            tagged = self._tag_message(msg)
+            result.append(
+                Message(
+                    role=msg.role,
+                    content=tagged,
+                    meta=msg.meta,
+                )
+            )
         return result
 
     async def _call_llm_with_recovery(
@@ -534,6 +542,27 @@ class ReActAgent(AgentBase):
         """Get tool schemas for the LLM request."""
         return self.toolkit.get_schemas()
 
+    def _tag_message(self, msg: Message) -> str:
+        """Prefix a message with [time | scene | sender] tag."""
+        import datetime as dt_mod
+
+        ts = msg.meta.timestamp
+        if isinstance(ts, (int, float)):
+            time_str = dt_mod.datetime.fromtimestamp(
+                ts, tz=dt_mod.timezone.utc
+            ).strftime("%m-%d %H:%M")
+        else:
+            time_str = ""
+
+        scene = msg.meta.source_name or msg.meta.source or "未知"
+        sender = msg.meta.sender_name or msg.meta.sender_id or "未知"
+
+        # For assistant's own past messages, just show the content as-is
+        # (tags are for reading context, not for the agent to echo)
+        tag = f"[{time_str} | {scene} | {sender}]"
+        text = msg.get_text()
+        return f"{tag}\n{text}"
+
     def _truncate_result(self, result: Any, max_chars: int, tool_name: str) -> str:
         """Truncate tool result if necessary."""
         content = str(result)
@@ -559,22 +588,15 @@ class ReActAgent(AgentBase):
             raw = await self.session_store.load_agent_messages(
                 self.agent_id, limit=1000
             )
-            # Filter rules:
-            # 1. Drop system messages EXCEPT compressed topic summaries
-            # 2. Drop group messages from groups this agent does NOT belong to
+            # Drop system messages EXCEPT compressed topic summaries
             self._messages = [
                 m for m in raw
-                if (m.role != "system" or getattr(m.meta, "compressed", False))
-                and (
-                    m.meta.source != "group"
-                    or m.meta.session_id in self._accessible_group_ids
-                )
+                if m.role != "system" or getattr(m.meta, "compressed", False)
             ]
-            dropped = len(raw) - len(self._messages)
-            if dropped:
+            if len(self._messages) < len(raw):
                 logger.info(
-                    "Filtered %d unauthorized messages from loaded history",
-                    dropped,
+                    "Filtered %d system messages from loaded history",
+                    len(raw) - len(self._messages),
                 )
             logger.info(
                 "Loaded %d messages for agent %s",
