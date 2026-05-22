@@ -1,13 +1,7 @@
 const API_BASE = '/api/v1'
 
-function getToken(): string | null {
-  return localStorage.getItem('cm_token')
-}
-
 function getHeaders(contentType = true): Record<string, string> {
   const headers: Record<string, string> = {}
-  const t = getToken()
-  if (t) headers.Authorization = `Bearer ${t}`
   if (contentType) headers['Content-Type'] = 'application/json'
   return headers
 }
