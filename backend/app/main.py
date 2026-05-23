@@ -58,6 +58,19 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Tools directory not found: %s", tools_dir)
 
+    # Inject communication callbacks so engine tools can dispatch
+    # without importing platform code.
+    from engine.tools.comms.dispatchers import register_comms_callbacks
+    from app.services.agent_communication import (
+        dispatch_private_message,
+        dispatch_workflow_progress,
+    )
+    register_comms_callbacks(
+        send_private_message=dispatch_private_message,
+        report_workflow_progress=dispatch_workflow_progress,
+    )
+    logger.info("Communication callbacks injected into engine")
+
     # Session store (connects to unified cloudmind.db)
     store = SessionStore()
     await store.connect()

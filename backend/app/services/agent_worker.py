@@ -330,7 +330,7 @@ class AgentWorker:
             pass
 
     async def _build_transport(self) -> ChatCompletionsTransport | None:
-        """Build transport from agent config."""
+        """Resolve provider credentials and build transport via engine factory."""
         if not self.agent_row:
             return None
 
@@ -338,70 +338,44 @@ class AgentWorker:
         provider_type = (model_cfg.get("provider") or "deepseek").lower()
         model_name = model_cfg.get("model") or "deepseek-v4-pro"
 
-        # Import here to avoid circular deps
-        from engine.provider.thinking.deepseek import DeepSeekThinkingProfile
-        from engine.provider.thinking.glm import GLMThinkingProfile
-        from engine.provider.thinking.kimicode import KimiCodeThinkingProfile
-        from engine.provider.thinking.mimo import MiMoThinkingProfile
+        async def _resolve(provider_type: str) -> dict | None:
+            from ..models import ComputeProvider
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.provider_type == provider_type,
+                        ComputeProvider.status == "active",
+                    ).limit(1)
+                )
+                prov = result.scalars().first()
 
-        _PROFILE_MAP = {
-            "deepseek": DeepSeekThinkingProfile,
-            "mimo": MiMoThinkingProfile,
-            "kimicode": KimiCodeThinkingProfile,
-            "glm": GLMThinkingProfile,
-            "openai": DeepSeekThinkingProfile,
-        }
+            base_url = ""
+            api_key = ""
 
-        _DEFAULT_BASE_URLS = {
-            "deepseek": "https://api.deepseek.com/v1",
-            "mimo": "https://api.miaomi.cn/v1",
-            "kimicode": "https://api.kimi.ai/v1",
-            "glm": "https://api.glm.ai/v1",
-        }
-
-        # Look up compute provider
-        from ..models import ComputeProvider
-
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(ComputeProvider).where(
-                    ComputeProvider.provider_type == provider_type,
-                    ComputeProvider.status == "active",
-                ).limit(1)
-            )
-            prov_row = result.scalars().first()
-
-        base_url = _DEFAULT_BASE_URLS.get(provider_type, "")
-        api_key = ""
-
-        if prov_row:
-            base_url = (prov_row.config or {}).get("base_url") or base_url
-            if prov_row.api_key_encrypted:
-                import base64
-                try:
-                    api_key = base64.b64decode(prov_row.api_key_encrypted.encode()).decode()
-                except Exception:
-                    api_key = prov_row.api_key_encrypted  # fallback: treat as plaintext
-        else:
+            if prov:
+                base_url = (prov.config or {}).get("base_url", "")
+                if prov.api_key_encrypted:
+                    import base64
+                    try:
+                        api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
+                    except Exception:
+                        api_key = prov.api_key_encrypted
             # Fallback to engine config
-            from ..main import _app_state as _state
-            cfg = _state["config"]
-            engine_cfg = getattr(cfg.provider, provider_type, None)
-            if engine_cfg:
-                base_url = engine_cfg.base_url or base_url
-                api_key = engine_cfg.api_key or ""
+            if not api_key:
+                from ..main import _app_state
+                cfg = _app_state.get("config")
+                if cfg:
+                    ec = getattr(cfg.provider, provider_type, None)
+                    if ec:
+                        base_url = ec.base_url or base_url
+                        api_key = ec.api_key or api_key
 
-        if not api_key:
-            logger.error("No API key for provider %s", provider_type)
-            return None
+            if not api_key:
+                return None
+            return {"base_url": base_url, "api_key": api_key}
 
-        profile_cls = _PROFILE_MAP.get(provider_type, DeepSeekThinkingProfile)
-        return ChatCompletionsTransport(
-            base_url=base_url,
-            api_key=api_key,
-            model=model_name,
-            thinking_profile=profile_cls(),
-        )
+        from engine.provider.factory import build_transport
+        return await build_transport(provider_type, model_name, _resolve)
 
 
 # ------------------------------------------------------------------

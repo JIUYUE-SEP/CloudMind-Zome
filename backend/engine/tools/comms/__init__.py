@@ -11,6 +11,7 @@ import logging
 
 from ...tool.registry import tool_registry
 from .context import get_current_agent_id
+from .dispatchers import get_send_private_message, get_report_workflow_progress
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,12 @@ async def send_private_message(target_agent_id: str, content: str) -> str:
     if sender_id == target_agent_id:
         return "Error: cannot send message to yourself."
 
-    try:
-        from app.services.agent_communication import dispatch_private_message
+    dispatch = get_send_private_message()
+    if dispatch is None:
+        return "Error: communication dispatcher not registered (platform layer not initialized)."
 
-        reply = await dispatch_private_message(sender_id, target_agent_id, content)
+    try:
+        reply = await dispatch(sender_id, target_agent_id, content)
         return reply
     except asyncio.TimeoutError:
         return f"Error: Agent {target_agent_id} did not reply in time."
@@ -62,10 +65,12 @@ async def report_workflow_progress(run_id: str, node_id: str, status: str, summa
     if not sender_id:
         return "Error: sender context not available."
 
-    try:
-        from app.services.agent_communication import dispatch_workflow_progress
+    report = get_report_workflow_progress()
+    if report is None:
+        return "Error: progress dispatcher not registered (platform layer not initialized)."
 
-        await dispatch_workflow_progress(run_id, node_id, status, summary, sender_id)
+    try:
+        await report(run_id, node_id, status, summary, sender_id)
         return f"Progress reported: node {node_id} is {status}."
     except Exception as e:
         logger.exception("report_workflow_progress failed")
