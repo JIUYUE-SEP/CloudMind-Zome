@@ -169,11 +169,35 @@ class ChatCompletionsTransport:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _fix_tool_call_ids(self, messages: list[Message]) -> None:
+        """Assign UUIDs to empty tool_use ids and sync matching tool_result ids.
+
+        Walks messages in order: when a ToolUseBlock has empty id, generate a
+        UUID; when the following ToolResultBlock has empty id, inherit it.
+        This keeps tool_use / tool_result pairs consistent across the history.
+        """
+        last_tool_use_id = ""
+        for msg in messages:
+            if not isinstance(msg.content, list):
+                continue
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    if not block.id:
+                        block.id = f"call_{uuid.uuid4().hex[:12]}"
+                    last_tool_use_id = block.id
+                elif isinstance(block, ToolResultBlock):
+                    if not block.id and last_tool_use_id:
+                        block.id = last_tool_use_id
+
     def _format_messages(self, messages: list[Message]) -> list[dict]:
         """Convert Message objects to OpenAI-format dicts.
 
         Design reference: §6.3.3 - Transport 负责将 Message 转为 OpenAI dict.
         """
+        # Fix empty tool_call ids before formatting so tool_use/tool_result
+        # pairs remain consistent for the API.
+        self._fix_tool_call_ids(messages)
+
         api_messages = []
         for msg in messages:
             # Build the content portion
