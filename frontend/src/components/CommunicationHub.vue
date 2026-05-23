@@ -170,18 +170,7 @@
             </div>
           </div>
 
-          <div class="rp-section-title">话题记录 ({{ agentMemory.topics.length }})</div>
-          <div class="rp-topic-list">
-            <div v-if="!agentMemory.topics.length" class="rp-empty">暂无话题记录</div>
-            <div v-for="topic in agentMemory.topics" :key="topic.id" class="rp-topic-item">
-              <div class="rp-topic-header">
-                <span class="rp-topic-name">{{ topic.name }}</span>
-                <span class="rp-topic-importance" :class="topic.importance">{{ topic.importance }}</span>
-              </div>
-              <div class="rp-topic-summary">{{ topic.summary }}</div>
-              <div class="rp-topic-meta">round {{ topic.start_round }} ~ {{ topic.end_round }}</div>
-            </div>
-          </div>
+          <!-- Topic record removed -->
         </div>
       </template>
 
@@ -197,13 +186,7 @@
             <span v-if="m.is_conductor" class="rp-member-badge">队长</span>
           </div>
         </div>
-        <div class="rp-section-title">主题记录</div>
-        <div class="rp-topic-list">
-          <div v-if="!groupTopics.length" class="rp-empty">暂无主题记录</div>
-          <div v-for="(topic, i) in groupTopics" :key="i" class="rp-topic">
-            {{ topic }}
-          </div>
-        </div>
+        <!-- Topic record removed -->
       </template>
 
       <!-- Empty -->
