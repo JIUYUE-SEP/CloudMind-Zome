@@ -54,6 +54,7 @@ class AgentCreate(BaseModel):
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
+    codename: Optional[str] = None
     personality_prompt: Optional[str] = None
     language_style: Optional[str] = None
     opening_line: Optional[str] = None

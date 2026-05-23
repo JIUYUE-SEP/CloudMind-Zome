@@ -111,7 +111,7 @@
               <input v-model="form.name" placeholder="心智名称" />
 
               <label>代号</label>
-              <input v-model="form.codename" disabled placeholder="自动分配" />
+              <input v-model="form.codename" placeholder="自动分配" />
 
               <label>代表色</label>
               <div class="color-row">
