@@ -201,20 +201,26 @@ class ChatCompletionsTransport:
 
                 if tool_use_blocks:
                     # Assistant message with tool calls
+                    # Ensure every tool_call has a non-empty id (some providers return "")
+                    _seen_tool_ids: set[str] = set()
+                    _tool_calls = []
+                    for tc in tool_use_blocks:
+                        tc_id = tc.id or str(uuid.uuid4())
+                        if tc_id in _seen_tool_ids:
+                            tc_id = str(uuid.uuid4())
+                        _seen_tool_ids.add(tc_id)
+                        _tool_calls.append({
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.input),
+                            },
+                        })
                     api_msg = {
                         "role": "assistant",
                         "content": parts[0]["text"] if parts else None,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": json.dumps(tc.input),
-                                },
-                            }
-                            for tc in tool_use_blocks
-                        ],
+                        "tool_calls": _tool_calls,
                     }
                     # Include reasoning_content if present
                     thinking_parts = [
@@ -226,10 +232,11 @@ class ChatCompletionsTransport:
                         )
 
                 elif tool_result_blocks:
-                    # Tool result message
-                    # One message per tool result (OpenAI format requires separate messages)
-                    # But we handle this as a single tool message with multiple results
+                    # Tool result message — skip any with empty tool_call_id
                     for tr in tool_result_blocks:
+                        if not tr.id:
+                            logger.warning("Skipping tool result with empty tool_call_id")
+                            continue
                         api_messages.append(
                             {
                                 "role": "tool",

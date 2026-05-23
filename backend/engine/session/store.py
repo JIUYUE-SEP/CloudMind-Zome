@@ -418,8 +418,8 @@ class SessionStore:
                             id=tc["id"], name=tc["name"], input=tc.get("input", {})
                         )
                     )
-            elif tool_call_id is not None:
-                # Tool result message
+            elif tool_call_id:
+                # Tool result message (skip empty string id)
                 content_blocks.append(
                     ToolResultBlock(
                         id=tool_call_id,
@@ -559,7 +559,7 @@ class SessionStore:
                     content_blocks.append(
                         ToolUseBlock(id=tc["id"], name=tc["name"], input=tc.get("input", {}))
                     )
-            elif tool_call_id is not None:
+            elif tool_call_id:
                 content_blocks.append(
                     ToolResultBlock(id=tool_call_id, content=content or "", truncated=False)
                 )
@@ -841,7 +841,7 @@ class SessionStore:
                     content_blocks.append(
                         ToolUseBlock(id=tc["id"], name=tc["name"], input=tc.get("input", {}))
                     )
-            elif tool_call_id is not None:
+            elif tool_call_id:
                 content_blocks.append(
                     ToolResultBlock(id=tool_call_id, content=content or "", truncated=False)
                 )
