@@ -81,22 +81,40 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                 return f"Error: image generation failed (HTTP {resp.status_code} | {endpoint})"
 
             data = resp.json()
-            images = data.get("data", [])
+            # OpenAI format: {"data": [{"b64_json": "...", "url": "..."}]}
+            # SiliconFlow format: {"images": [{"url": "..."}]}
+            images = data.get("data") or data.get("images", [])
             if not images:
                 return "Error: no image returned by API"
 
-            b64 = images[0].get("b64_json", "")
-            if not b64:
-                url = images[0].get("url", "")
-                if url:
-                    return f"[image:{url}]"
-                return "Error: empty image data"
+            img_data = images[0]
+            b64 = img_data.get("b64_json", "")
+            url = img_data.get("url", "")
 
             # Save to uploads
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             filename = f"{uuid.uuid4().hex}.png"
             dest = UPLOAD_DIR / filename
-            dest.write_bytes(base64.b64decode(b64))
+
+            if b64:
+                dest.write_bytes(base64.b64decode(b64))
+                logger.info("Image saved from base64: %s", dest)
+            elif url:
+                # Download from URL (external or data URL)
+                if url.startswith("data:"):
+                    # data:image/png;base64,...
+                    header, b64_data = url.split(",", 1)
+                    dest.write_bytes(base64.b64decode(b64_data))
+                    logger.info("Image saved from data URL: %s", dest)
+                else:
+                    # Download from external URL
+                    img_resp = await client.get(url, timeout=60)
+                    if img_resp.status_code != 200:
+                        return f"Error: failed to download image from {url} (HTTP {img_resp.status_code})"
+                    dest.write_bytes(img_resp.content)
+                    logger.info("Image downloaded from %s -> %s", url, dest)
+            else:
+                return "Error: empty image data"
 
             share_url = f"/uploads/generated/{filename}"
             return f"[image:{share_url}]"
