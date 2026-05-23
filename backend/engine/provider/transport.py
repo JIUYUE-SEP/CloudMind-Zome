@@ -207,7 +207,25 @@ class ChatCompletionsTransport:
             api_msg = self.thinking_profile.normalize_content(api_msg)
             api_messages.append(api_msg)
 
-        return api_messages
+        # Defensive: drop orphaned tool messages whose tool_call_id
+        # does not match any preceding assistant tool_call.
+        # This guards against historical data corruption.
+        valid_ids = set()
+        clean: list[dict] = []
+        for m in api_messages:
+            if m.get("role") == "assistant" and "tool_calls" in m:
+                for tc in m["tool_calls"]:
+                    valid_ids.add(tc.get("id", ""))
+                clean.append(m)
+            elif m.get("role") == "tool":
+                tid = m.get("tool_call_id", "")
+                if tid and tid in valid_ids:
+                    clean.append(m)
+                else:
+                    logger.warning("Dropping orphaned tool message: tool_call_id=%r", tid)
+            else:
+                clean.append(m)
+        return clean
 
     def _build_request_kwargs(
         self,
