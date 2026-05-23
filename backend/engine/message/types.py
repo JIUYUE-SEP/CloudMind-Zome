@@ -144,6 +144,35 @@ class Message:
 
 
 # ---------------------------------------------------------------------------
+# Message sanitization
+# ---------------------------------------------------------------------------
+
+def sanitize_tool_call_ids(messages: list[Message]) -> None:
+    """Assign UUIDs to empty tool_use ids and sync matching tool_result ids.
+
+    Walks messages in order: when a ToolUseBlock has empty id, generate a
+    UUID; when a subsequent ToolResultBlock has empty id, pop from queue.
+    This keeps tool_use / tool_result pairs consistent across the history.
+
+    Modifies messages in-place.
+    """
+    import uuid as _uuid
+
+    pending_ids: list[str] = []
+    for msg in messages:
+        if not isinstance(msg.content, list):
+            continue
+        for block in msg.content:
+            if isinstance(block, ToolUseBlock):
+                if not block.id:
+                    block.id = f"call_{_uuid.uuid4().hex[:12]}"
+                pending_ids.append(block.id)
+            elif isinstance(block, ToolResultBlock):
+                if not block.id and pending_ids:
+                    block.id = pending_ids.pop(0)
+
+
+# ---------------------------------------------------------------------------
 # Agent events (stream output)
 # ---------------------------------------------------------------------------
 

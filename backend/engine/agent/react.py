@@ -20,6 +20,7 @@ from ..message.types import (
     ToolUseBlock,
     ToolResultBlock,
     MessageMeta,
+    sanitize_tool_call_ids,
 )
 from .base import AgentBase
 from .stop import SmartStop
@@ -747,6 +748,8 @@ class ReActAgent(AgentBase):
                 len(self._messages),
                 self.agent_id,
             )
+            # Fix any broken tool_call_id pairings from old/corrupted data
+            sanitize_tool_call_ids(self._messages)
         except Exception as e:
             logger.warning("Failed to load history for agent %s: %s", self.agent_id, e)
 
