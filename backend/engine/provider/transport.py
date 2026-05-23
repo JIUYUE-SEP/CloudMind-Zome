@@ -272,7 +272,29 @@ class ChatCompletionsTransport:
             api_msg = self.thinking_profile.normalize_content(api_msg)
             api_messages.append(api_msg)
 
-        return api_messages
+        # Final validation: remove tool messages whose tool_call_id
+        # doesn't match any preceding assistant tool_call.
+        # This is the definitive guard against data corruption.
+        seen_ids: set[str] = set()
+        clean: list[dict] = []
+        for m in api_messages:
+            if m.get("role") == "assistant" and "tool_calls" in m:
+                for tc in m["tool_calls"]:
+                    seen_ids.add(tc.get("id", ""))
+                clean.append(m)
+            elif m.get("role") == "tool":
+                tid = m.get("tool_call_id", "")
+                if tid in seen_ids:
+                    clean.append(m)
+                else:
+                    logger.warning(
+                        "Dropping tool message: tool_call_id=%r not in %s",
+                        tid, seen_ids or "{empty}",
+                    )
+            else:
+                clean.append(m)
+
+        return clean
 
     def _build_request_kwargs(
         self,
