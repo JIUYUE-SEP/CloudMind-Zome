@@ -218,7 +218,10 @@ class AgentWorker:
                 elif event.type == "thinking":
                     thinking_text = event.data.thinking if hasattr(event.data, "thinking") else str(event.data)
                     try:
-                        await _stream_text(f"\x01THINKING\x01{thinking_text}", job.on_chunk, delay_ms=8)
+                        # Send as a single frame — NEVER use _stream_text for
+                        # prefixed control frames because chunking will split
+                        # the prefix and cause it to leak as plain text.
+                        await job.on_chunk(f"\x01THINKING\x01{thinking_text}")
                     except Exception:
                         pass
 
