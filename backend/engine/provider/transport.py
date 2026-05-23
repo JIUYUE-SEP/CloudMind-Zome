@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from typing import Any, AsyncIterator
 
 import httpx
@@ -24,7 +23,6 @@ from ..message.types import (
     ToolResultBlock,
     ToolUseBlock,
     Message,
-    sanitize_tool_call_ids,
 )
 from .thinking.base import ThinkingProfile, LLMResponse
 
@@ -34,9 +32,13 @@ logger = logging.getLogger(__name__)
 class ChatCompletionsTransport:
     """OpenAI-compatible Chat Completions Transport.
 
-    Handles message formatting, API calls, and response normalization
-    for all OpenAI-compatible providers. Provider-specific behavior
-    is delegated to the ThinkingProfile.
+    Responsibilities:
+      1. Format Message objects into OpenAI API dicts.
+      2. Call the API (with basic retry).
+      3. Normalize responses into LLMResponse.
+
+    It does NOT modify Message objects, fix ids, or validate data.
+    Those are upstream concerns (see ToolUseBlock.__post_init__).
     """
 
     def __init__(
@@ -72,19 +74,9 @@ class ChatCompletionsTransport:
         tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Send messages and get a complete response.
-
-        Args:
-            messages: List of Message objects.
-            tools: OpenAI-format tool schemas (optional).
-            **kwargs: Additional kwargs passed to the API call.
-
-        Returns:
-            LLMResponse with normalized content.
-        """
+        """Send messages and get a complete response."""
         api_messages = self._format_messages(messages)
         api_kwargs = self._build_request_kwargs(api_messages, tools, kwargs)
-
         response = await self._call_with_retry(api_kwargs)
         return self._normalize_response(response)
 
@@ -94,52 +86,30 @@ class ChatCompletionsTransport:
         tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ContentBlock]:
-        """Send messages and stream response chunks.
-
-        Yields ContentBlock instances as they arrive:
-        - ThinkingBlock for reasoning content
-        - TextBlock for content
-        - ToolUseBlock for tool calls (once at end of stream)
-
-        Args:
-            messages: List of Message objects.
-            tools: OpenAI-format tool schemas (optional).
-            **kwargs: Additional kwargs passed to the API call.
-
-        Yields:
-            ContentBlock instances.
-        """
+        """Send messages and stream response chunks."""
         api_messages = self._format_messages(messages)
         api_kwargs = self._build_request_kwargs(api_messages, tools, kwargs)
         api_kwargs["stream"] = True
 
-        # Collect tool calls from stream
         tool_calls_accum: dict[int, dict[str, Any]] = {}
-
         response = await self._client.chat.completions.create(**api_kwargs)
 
         async for chunk in response:
             if not chunk.choices:
                 continue
-
             choice = chunk.choices[0]
             delta = choice.delta
 
-            # Yield thinking content
             if hasattr(delta, "reasoning_content") and delta.reasoning_content:
                 yield ThinkingBlock(thinking=delta.reasoning_content)
-
-            # Yield text content
             if delta.content:
                 yield TextBlock(text=delta.content)
-
-            # Accumulate tool calls
             if delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index if tc.index is not None else 0
                     if idx not in tool_calls_accum:
                         tool_calls_accum[idx] = {
-                            "id": tc.id or str(uuid.uuid4()),
+                            "id": tc.id or "",
                             "name": tc.function.name if tc.function else "",
                             "arguments": "",
                         }
@@ -151,7 +121,6 @@ class ChatCompletionsTransport:
                         if tc.function.arguments:
                             tool_calls_accum[idx]["arguments"] += tc.function.arguments
 
-        # Yield accumulated tool calls
         for idx in sorted(tool_calls_accum.keys()):
             tc_data = tool_calls_accum[idx]
             arguments = tc_data["arguments"]
@@ -159,7 +128,6 @@ class ChatCompletionsTransport:
                 parsed_args = json.loads(arguments) if arguments else {}
             except json.JSONDecodeError:
                 parsed_args = {"_raw_arguments": arguments}
-
             yield ToolUseBlock(
                 id=tc_data["id"],
                 name=tc_data["name"],
@@ -173,128 +141,73 @@ class ChatCompletionsTransport:
     def _format_messages(self, messages: list[Message]) -> list[dict]:
         """Convert Message objects to OpenAI-format dicts.
 
-        Design reference: §6.3.3 - Transport 负责将 Message 转为 OpenAI dict.
+        Transport is a pure formatter: it trusts that ToolUseBlock.id and
+        ToolResultBlock.id are already consistent (enforced upstream).
         """
-        # Ensure tool_use / tool_result ids are consistent before serialization.
-        sanitize_tool_call_ids(messages)
-
-        api_messages = []
+        api_messages: list[dict] = []
         for msg in messages:
-            # Build the content portion
-            if isinstance(msg.content, str):
-                api_msg = {"role": msg.role, "content": msg.content}
-            elif isinstance(msg.content, list):
-                # Filter out content blocks for the API
-                parts = []
-                tool_result_blocks = []
-                tool_use_blocks = []
+            parts: list[dict] = []
+            tool_result_blocks: list[ToolResultBlock] = []
+            tool_use_blocks: list[ToolUseBlock] = []
 
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        parts.append({"type": "text", "text": block.text})
-                    elif isinstance(block, ImageBlock):
-                        parts.append({"type": "image_url", "image_url": block.source})
-                    elif isinstance(block, ThinkingBlock):
-                        # Thinking is handled by the provider's thinking profile,
-                        # not sent as regular content. It's echoed separately.
-                        pass
-                    elif isinstance(block, ToolUseBlock):
-                        tool_use_blocks.append(block)
-                    elif isinstance(block, ToolResultBlock):
-                        tool_result_blocks.append(block)
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    parts.append({"type": "text", "text": block.text})
+                elif isinstance(block, ImageBlock):
+                    parts.append({"type": "image_url", "image_url": block.source})
+                elif isinstance(block, ToolUseBlock):
+                    tool_use_blocks.append(block)
+                elif isinstance(block, ToolResultBlock):
+                    tool_result_blocks.append(block)
+                # ThinkingBlock is skipped — handled by thinking_profile
 
-                if tool_use_blocks:
-                    # Assistant message with tool calls
-                    api_msg = {
-                        "role": "assistant",
-                        "content": parts[0]["text"] if parts else None,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": json.dumps(tc.input),
-                                },
-                            }
-                            for tc in tool_use_blocks
-                        ],
-                    }
-                    # Include reasoning_content if present
-                    thinking_parts = [
-                        b for b in msg.content if isinstance(b, ThinkingBlock)
-                    ]
-                    if thinking_parts:
-                        api_msg["reasoning_content"] = "\n".join(
-                            t.thinking for t in thinking_parts
-                        )
-
-                elif tool_result_blocks:
-                    # Tool result message — skip any with empty tool_call_id
-                    for tr in tool_result_blocks:
-                        if not tr.id:
-                            logger.warning("Skipping tool result with empty tool_call_id")
-                            continue
-                        api_messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tr.id,
-                                "content": tr.content,
-                            }
-                        )
-                    continue  # Skip the normal message append below
-
-                elif parts:
-                    api_msg = {"role": msg.role, "content": parts}
-                else:
-                    api_msg = {"role": msg.role, "content": ""}
-
-            else:
-                continue
-
-            # Handle reasoning_content echo for providers that require it
-            if self.thinking_profile.needs_reasoning_echo(
-                has_tool_calls=isinstance(msg.content, list)
-                and any(isinstance(b, ToolUseBlock) for b in msg.content)
-                if isinstance(msg.content, list)
-                else False
-            ):
-                thinking_blocks = [
-                    b for b in (msg.content if isinstance(msg.content, list) else [])
-                    if isinstance(b, ThinkingBlock)
-                ]
-                if thinking_blocks:
+            if tool_use_blocks:
+                api_msg = {
+                    "role": "assistant",
+                    "content": parts[0]["text"] if parts else None,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.input),
+                            },
+                        }
+                        for tc in tool_use_blocks
+                    ],
+                }
+                if any(isinstance(b, ThinkingBlock) for b in msg.content):
                     api_msg["reasoning_content"] = "\n".join(
-                        t.thinking for t in thinking_blocks
+                        b.thinking for b in msg.content if isinstance(b, ThinkingBlock)
                     )
 
-            # Normalize empty content
+            elif tool_result_blocks:
+                for tr in tool_result_blocks:
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tr.id,
+                        "content": tr.content,
+                    })
+                continue
+
+            elif parts:
+                api_msg = {"role": msg.role, "content": parts}
+            else:
+                api_msg = {"role": msg.role, "content": ""}
+
+            # reasoning_content echo for providers that need it
+            if self.thinking_profile.needs_reasoning_echo(has_tool_calls=bool(tool_use_blocks)):
+                thinking_parts = [
+                    b.thinking for b in msg.content if isinstance(b, ThinkingBlock)
+                ]
+                if thinking_parts:
+                    api_msg["reasoning_content"] = "\n".join(thinking_parts)
+
             api_msg = self.thinking_profile.normalize_content(api_msg)
             api_messages.append(api_msg)
 
-        # Final validation: remove tool messages whose tool_call_id
-        # doesn't match any preceding assistant tool_call.
-        # This is the definitive guard against data corruption.
-        seen_ids: set[str] = set()
-        clean: list[dict] = []
-        for m in api_messages:
-            if m.get("role") == "assistant" and "tool_calls" in m:
-                for tc in m["tool_calls"]:
-                    seen_ids.add(tc.get("id", ""))
-                clean.append(m)
-            elif m.get("role") == "tool":
-                tid = m.get("tool_call_id", "")
-                if tid in seen_ids:
-                    clean.append(m)
-                else:
-                    logger.warning(
-                        "Dropping tool message: tool_call_id=%r not in %s",
-                        tid, seen_ids or "{empty}",
-                    )
-            else:
-                clean.append(m)
-
-        return clean
+        return api_messages
 
     def _build_request_kwargs(
         self,
@@ -302,28 +215,14 @@ class ChatCompletionsTransport:
         tools: list[dict] | None,
         extra_kwargs: dict,
     ) -> dict:
-        """Build the full kwargs dict for the API call, including thinking params."""
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": api_messages,
-        }
+        kwargs: dict[str, Any] = {"model": self.model, "messages": api_messages}
         if tools:
             kwargs["tools"] = tools
-
-        # Inject thinking profile parameters
         kwargs = self.thinking_profile.build_thinking_kwargs(kwargs)
-
-        # Merge any extra kwargs
         kwargs.update(extra_kwargs)
-
         return kwargs
 
     async def _call_with_retry(self, api_kwargs: dict) -> Any:
-        """Call the API with basic error handling.
-
-        Design reference: §6.9 - Full retry/fallback logic is in the error module.
-        This method handles the basic call; the Agent core handles retries.
-        """
         try:
             return await self._client.chat.completions.create(**api_kwargs)
         except RateLimitError as e:
@@ -337,20 +236,12 @@ class ChatCompletionsTransport:
             raise
 
     def _normalize_response(self, response: Any) -> LLMResponse:
-        """Normalize a provider response into LLMResponse.
-
-        Uses the ThinkingProfile to extract provider-specific fields.
-        """
         choice = response.choices[0]
         message = choice.message
 
-        # Extract content
         content = message.content or None
-
-        # Extract reasoning_content via thinking profile
         reasoning_content = self.thinking_profile.extract(response)
 
-        # Extract tool calls
         tool_calls = []
         if message.tool_calls:
             for tc in message.tool_calls:
@@ -358,18 +249,12 @@ class ChatCompletionsTransport:
                     args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                 except json.JSONDecodeError:
                     args = {"_raw_arguments": tc.function.arguments or ""}
-                # Some providers return empty tool_call.id — generate one to keep
-                # the API happy (tool_call_id must be non-empty and match)
-                tool_call_id = tc.id or str(uuid.uuid4())
-                tool_calls.append(
-                    {
-                        "id": tool_call_id,
-                        "name": tc.function.name,
-                        "arguments": args,
-                    }
-                )
+                tool_calls.append({
+                    "id": tc.id or "",
+                    "name": tc.function.name,
+                    "arguments": args,
+                })
 
-        # Extract usage
         usage = {}
         if response.usage:
             usage = {

@@ -20,7 +20,6 @@ from ..message.types import (
     ToolUseBlock,
     ToolResultBlock,
     MessageMeta,
-    sanitize_tool_call_ids,
 )
 from .base import AgentBase
 from .stop import SmartStop
@@ -155,9 +154,7 @@ class ReActAgent(AgentBase):
         # Add user message to history
         if content_type == "image":
             image_source = await self._resolve_image_source(user_message)
-            user_content: str | list[ContentBlock] = [
-                ImageBlock(source=image_source)
-            ]
+            user_content = [ImageBlock(source=image_source)]
         else:
             user_content = user_message
         user_msg = Message(
@@ -456,12 +453,12 @@ class ReActAgent(AgentBase):
                 ))
             prev_source_id = cur_source_id
 
-            if msg.role == "tool" and isinstance(msg.content, list):
+            if msg.role == "tool":
                 # Tool results: keep raw ToolResultBlock structure so transport
                 # can format with tool_call_id for the API. No source tag —
                 # tool results always follow their assistant's tool_call.
                 result.append(msg)
-            elif msg.role == "assistant" and isinstance(msg.content, list) and any(
+            elif msg.role == "assistant" and any(
                 isinstance(b, ToolUseBlock) for b in msg.content
             ):
                 # Preserve ToolUseBlock structure, but add tag to text parts
@@ -477,7 +474,7 @@ class ReActAgent(AgentBase):
                 result.append(Message(role=msg.role, content=new_blocks, meta=msg.meta))
             else:
                 # Preserve ImageBlock for vision models
-                if isinstance(msg.content, list) and any(isinstance(b, ImageBlock) for b in msg.content):
+                if any(isinstance(b, ImageBlock) for b in msg.content):
                     tagged_prefix = self._tag_prefix(msg)
                     new_blocks = []
                     for b in msg.content:
@@ -655,8 +652,6 @@ class ReActAgent(AgentBase):
 
     def _extract_text_only(self, msg: Message) -> str:
         """Get text content only, excluding ThinkingBlock (reasoning)."""
-        if isinstance(msg.content, str):
-            return msg.content
         parts = []
         for b in msg.content:
             if isinstance(b, TextBlock):
@@ -748,8 +743,6 @@ class ReActAgent(AgentBase):
                 len(self._messages),
                 self.agent_id,
             )
-            # Fix any broken tool_call_id pairings from old/corrupted data
-            sanitize_tool_call_ids(self._messages)
         except Exception as e:
             logger.warning("Failed to load history for agent %s: %s", self.agent_id, e)
 

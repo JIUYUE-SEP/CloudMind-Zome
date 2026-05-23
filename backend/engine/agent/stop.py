@@ -166,8 +166,9 @@ class SmartStop:
                         if isinstance(block, ToolResultBlock) and block.content and len(block.content.strip()) > 10 and "Error:" not in block.content:
                             has_progress = True
                             break
-                elif isinstance(msg.content, str):
-                    if len(msg.content.strip()) > 10 and "Error:" not in msg.content:
+                else:
+                    text = msg.get_text()
+                    if len(text.strip()) > 10 and "Error:" not in text:
                         has_progress = True
 
             if not has_progress:

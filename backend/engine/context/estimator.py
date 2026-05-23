@@ -37,11 +37,8 @@ class TokenEstimator:
             # System overhead per message
             total += 4
 
-            if isinstance(msg.content, str):
-                total += len(msg.content) // self.CHAR_PER_TOKEN
-            elif isinstance(msg.content, list):
-                for block in msg.content:
-                    total += self._estimate_block(block)
+            for block in msg.content:
+                total += self._estimate_block(block)
 
         return total
 

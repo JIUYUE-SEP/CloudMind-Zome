@@ -40,17 +40,28 @@ class ThinkingBlock(ContentBlock):
 
 @dataclass
 class ToolUseBlock(ContentBlock):
-    """A tool call from the LLM."""
+    """A tool call from the LLM.
+
+    The ``id`` is auto-generated on instantiation if not provided,
+    ensuring every tool call has a non-empty identifier.
+    """
 
     type: Literal["tool_use"] = "tool_use"
-    id: str = ""
+    id: str = field(default="")
     name: str = ""
     input: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = f"call_{shortuuid.uuid()[:12]}"
 
 
 @dataclass
 class ToolResultBlock(ContentBlock):
-    """Result from a tool execution."""
+    """Result from a tool execution.
+
+    ``id`` MUST match the corresponding ``ToolUseBlock.id``.
+    """
 
     type: Literal["tool_result"] = "tool_result"
     id: str = ""  # Corresponds to ToolUseBlock.id
@@ -62,7 +73,7 @@ class ToolResultBlock(ContentBlock):
 
 @dataclass
 class ImageBlock(ContentBlock):
-    """Image content."""
+    """Image content for multimodal models."""
 
     type: Literal["image"] = "image"
     source: dict[str, Any] = field(default_factory=dict)  # URLSource or Base64Source
@@ -104,34 +115,40 @@ class MessageMeta:
 class Message:
     """Unified message model.
 
-    Design reference: §6.3.2 - ContentBlock + 元数据, decoupled from API format.
-    The Provider Transport is responsible for converting Message -> OpenAI dict.
+    ``content`` may be passed as a plain ``str`` for convenience, but it is
+    immediately normalised into ``[TextBlock(text=...)]`` so downstream code
+    can always treat ``content`` as a sequence of blocks.
     """
 
     role: Literal["user", "assistant", "system"]
-    content: str | Sequence[ContentBlock] = ""
+    content: str | Sequence[ContentBlock] = field(default_factory=list)
     meta: MessageMeta = field(default_factory=MessageMeta)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.content, str):
+            self.content = [TextBlock(text=self.content)]
+        else:
+            # Ensure we have a mutable list, not a tuple
+            self.content = list(self.content)
 
     # ------------------------------------------------------------------
     # Convenience helpers
     # ------------------------------------------------------------------
 
+    def text_blocks(self) -> list[TextBlock]:
+        """Return all TextBlock instances."""
+        return [b for b in self.content if isinstance(b, TextBlock)]
+
     def has_tool_calls(self) -> bool:
         """Check if this message contains any ToolUseBlock."""
-        if isinstance(self.content, str):
-            return False
         return any(isinstance(b, ToolUseBlock) for b in self.content)
 
     def get_tool_calls(self) -> list[ToolUseBlock]:
         """Extract all ToolUseBlock from content."""
-        if isinstance(self.content, str):
-            return []
         return [b for b in self.content if isinstance(b, ToolUseBlock)]
 
     def get_text(self) -> str:
         """Get all text content as a single string."""
-        if isinstance(self.content, str):
-            return self.content
         parts = []
         for b in self.content:
             if isinstance(b, TextBlock):
@@ -142,34 +159,9 @@ class Message:
                 parts.append(b.content)
         return "\n".join(parts)
 
-
-# ---------------------------------------------------------------------------
-# Message sanitization
-# ---------------------------------------------------------------------------
-
-def sanitize_tool_call_ids(messages: list[Message]) -> None:
-    """Assign UUIDs to empty tool_use ids and sync matching tool_result ids.
-
-    Walks messages in order: when a ToolUseBlock has empty id, generate a
-    UUID; when a subsequent ToolResultBlock has empty id, pop from queue.
-    This keeps tool_use / tool_result pairs consistent across the history.
-
-    Modifies messages in-place.
-    """
-    import uuid as _uuid
-
-    pending_ids: list[str] = []
-    for msg in messages:
-        if not isinstance(msg.content, list):
-            continue
-        for block in msg.content:
-            if isinstance(block, ToolUseBlock):
-                if not block.id:
-                    block.id = f"call_{_uuid.uuid4().hex[:12]}"
-                pending_ids.append(block.id)
-            elif isinstance(block, ToolResultBlock):
-                if not block.id and pending_ids:
-                    block.id = pending_ids.pop(0)
+    def append(self, block: ContentBlock) -> None:
+        """Append a content block in-place."""
+        self.content.append(block)
 
 
 # ---------------------------------------------------------------------------
