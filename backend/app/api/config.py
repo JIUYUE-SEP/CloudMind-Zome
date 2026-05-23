@@ -92,6 +92,7 @@ class UpdateConfigReq(BaseModel):
     context: dict | None = None
     tools: dict | None = None
     tavily: dict | None = None
+    image_gen: dict | None = None
 
 
 # ------------------------------------------------------------------
