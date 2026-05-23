@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..dependencies import get_db, require_user
 from ..models import Action, ActionRun, Agent, User
 from ..services.workflow_engine import launch_workflow
+from ..services.group_task_engine import GroupTaskEngine
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -53,6 +54,11 @@ class ActionUpdate(BaseModel):
     nodes: Optional[List[ActionNode]] = None
     edges: Optional[List[ActionEdge]] = None
     status: Optional[str] = None
+
+
+class SaveFromTaskBody(BaseModel):
+    session_id: str
+    name: Optional[str] = "群聊任务蓝图"
 
 
 class Resp(BaseModel):
@@ -281,8 +287,41 @@ async def stop_run(
         raise HTTPException(status_code=404)
 
     if run.status == "running":
-        run.status = "stopped"
-        run.ended_at = datetime.now(timezone.utc)
+        # Signal the in-memory workflow engine to stop
+        from ..services import workflow_engine as wf_mod
+        wf_mod._stop_signals[run_id] = True
+
+        run.status = "stopping"
         await db.commit()
 
     return Resp(data={"status": run.status})
+
+
+# ------------------------------------------------------------------
+# Save from group chat task
+# ------------------------------------------------------------------
+@router.post("/from-task", response_model=Resp)
+async def save_from_task(
+    body: SaveFromTaskBody,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the last group-task blueprint to ActionCenter."""
+    engine = GroupTaskEngine.get_active_engine(body.session_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No active or recent task for this session")
+
+    blueprint = engine.to_blueprint()
+    action = Action(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        name=body.name or blueprint["name"],
+        description=blueprint["description"],
+        nodes=blueprint["nodes"],
+        edges=blueprint["edges"],
+        status="draft",
+    )
+    db.add(action)
+    await db.commit()
+    await db.refresh(action)
+    return Resp(data={"id": action.id, "name": action.name})

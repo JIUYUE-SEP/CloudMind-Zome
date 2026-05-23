@@ -128,6 +128,28 @@
         </label>
       </div>
 
+      <!-- 图片生成 -->
+      <div v-if="activeTab === 'image'" class="ss-section">
+        <div class="ss-hint">
+          配置图片生成 API（DALL-E 兼容），Agent 可使用 generate_image 工具生图。
+        </div>
+        <label class="ss-field">
+          <span>API 地址</span>
+          <input v-model="form.image_gen.api_url" placeholder="https://api.openai.com" />
+        </label>
+        <label class="ss-field">
+          <span>模型</span>
+          <input v-model="form.image_gen.model" placeholder="dall-e-3" />
+        </label>
+        <label class="ss-field">
+          <span>API Key</span>
+          <input v-model="form.image_gen.api_key" :type="showKey.image_gen ? 'text' : 'password'" placeholder="未设置" />
+          <button class="ss-toggle-key" @click="showKey.image_gen = !showKey.image_gen">
+            {{ showKey.image_gen ? '隐藏' : '显示' }}
+          </button>
+        </label>
+      </div>
+
       <!-- 辅助模型 -->
       <div v-if="activeTab === 'assistant'" class="ss-section">
         <div class="ss-hint">
@@ -224,6 +246,7 @@ const tabs = [
   { key: 'tools', label: '工具' },
   { key: 'memory', label: '记忆' },
   { key: 'llm', label: '对话模型' },
+  { key: 'image', label: '图片生成' },
   { key: 'assistant', label: '辅助模型' },
   { key: 'embedding', label: 'Embedding' },
   { key: 'skill', label: '技能' },
@@ -239,6 +262,7 @@ const showKey = reactive<Record<string, boolean>>({
   kimicode: false,
   glm: false,
   tavily: false,
+  image_gen: false,
   assistant: false,
   embedding: false,
 })
@@ -261,6 +285,7 @@ const form = reactive<any>({
   assistant_model: { base_url: '', model: '', api_key: '' },
   embedding_model: { base_url: '', model: '', api_key: '' },
   tavily: { api_key: '' },
+  image_gen: { api_url: '', model: '', api_key: '' },
 })
 
 /** Deep-merge source into target for nested objects. */
@@ -298,6 +323,7 @@ async function loadConfig() {
     if (d.assistant_model) mergeConfig(form.assistant_model, d.assistant_model)
     if (d.embedding_model) mergeConfig(form.embedding_model, d.embedding_model)
     if (d.tavily) mergeConfig(form.tavily, d.tavily)
+    if (d.image_gen) mergeConfig(form.image_gen, d.image_gen)
   } else {
     console.error('[Settings] loadConfig failed:', json.message)
   }
@@ -361,6 +387,7 @@ async function save() {
   payload.assistant_model = { ...form.assistant_model }
   payload.embedding_model = { ...form.embedding_model }
   payload.tavily = { ...form.tavily }
+  payload.image_gen = { ...form.image_gen }
 
   console.log('[Settings] save payload:', JSON.stringify(payload, null, 2))
   const json = await api.put('/config', payload)

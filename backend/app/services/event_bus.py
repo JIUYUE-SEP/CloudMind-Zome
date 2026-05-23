@@ -24,6 +24,19 @@ class ConnectionManager:
 
     async def connect(self, user_id: str, ws: WebSocket):
         await ws.accept()
+        # Kick existing connections for same user (single-device login)
+        existing = self._connections.get(user_id)
+        if existing:
+            dead = set()
+            for old_ws in existing:
+                try:
+                    await old_ws.close(code=1001, reason="New login")
+                except Exception:
+                    dead.add(old_ws)
+            for old_ws in dead:
+                existing.discard(old_ws)
+            if not existing:
+                self._connections.pop(user_id, None)
         self._connections.setdefault(user_id, set()).add(ws)
         logger.info("WS connected for user %s (total conns: %d)", user_id, len(self._connections[user_id]))
 
@@ -65,6 +78,10 @@ class ConnectionManager:
                     dead.add((user_id, ws))
         for user_id, ws in dead:
             self._connections.get(user_id, set()).discard(ws)
+
+    def get_online_users(self) -> set[str]:
+        """Return set of currently connected user IDs."""
+        return set(self._connections.keys())
 
 
 # Global singleton

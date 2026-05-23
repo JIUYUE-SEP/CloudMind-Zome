@@ -130,14 +130,20 @@ class ReActAgent(AgentBase):
         self._fallback.reset()
         self._current_transport = self.model
 
+        # Purge SmartStop hints from previous Jobs (they are transient)
+        self._messages = [
+            m for m in self._messages
+            if not getattr(m, '_smart_hint', False)
+        ]
+
         # Load unified history on first use (filters out personality)
         if not self._messages:
             await self._load_history()
 
         # Trim in-memory history to prevent unbounded growth
-        max_mem_msgs = getattr(self.config, "agent", None) and getattr(
-            self.config.agent, "max_memory_messages", 500
-        ) or 500
+        max_mem_msgs = 500
+        if self.config and self.config.agent:
+            max_mem_msgs = getattr(self.config.agent, "max_memory_messages", 500) or 500
         if len(self._messages) > max_mem_msgs:
             trim_count = len(self._messages) - max_mem_msgs
             self._messages = self._messages[trim_count:]
@@ -152,6 +158,7 @@ class ReActAgent(AgentBase):
                 round=len(self._messages) // 2,
                 source=source,
                 source_name=source_name,
+                sender_name=sender_name,
             ),
         )
         self._messages.append(user_msg)
@@ -208,11 +215,15 @@ class ReActAgent(AgentBase):
                 # SmartStop hint is injected into _messages for the current Job's
                 # LLM context, but NOT saved to long-term memory (agent_messages).
                 # These are internal intervention messages, not conversation history.
+                # Use a special meta flag so _build_messages can skip them in
+                # scene separators and _load_history filters them on restart.
                 hint_msg = Message(
                     role="system",
                     content=stop_decision.inject_hint,
-                    meta=MessageMeta(session_id=source_id),
+                    meta=MessageMeta(session_id=source_id, compressed=False),
                 )
+                # Tag with a special attribute so we can purge it after this Job
+                hint_msg._smart_hint = True  # type: ignore[attr-defined]
                 self._messages.append(hint_msg)
 
             # Check for tool calls
@@ -225,6 +236,7 @@ class ReActAgent(AgentBase):
                         round=len(self._messages) // 2,
                         source=source,
                         source_name=source_name,
+                        sender_name=self.name,
                     ),
                 )
                 if response.reasoning_content:
@@ -233,7 +245,7 @@ class ReActAgent(AgentBase):
                         TextBlock(text=response.content or ""),
                     ]
                 self._messages.append(assistant_msg)
-                await self._save_message(assistant_msg, source, source_id, source_name, sender_name)
+                await self._save_message(assistant_msg, source, source_id, source_name, self.name)
                 yield AgentEvent(type="done")
                 return
 
@@ -261,10 +273,11 @@ class ReActAgent(AgentBase):
                     round=len(self._messages) // 2,
                     source=source,
                     source_name=source_name,
+                    sender_name=self.name,
                 ),
             )
             self._messages.append(assistant_msg)
-            await self._save_message(assistant_msg, source, source_id, source_name, sender_name)
+            await self._save_message(assistant_msg, source, source_id, source_name, self.name)
 
             # Validate tool calls before execution (pre-filter hallucinations)
             available_tools = self.toolkit.list_tools()
@@ -290,10 +303,11 @@ class ReActAgent(AgentBase):
                             round=len(self._messages) // 2,
                             source=source,
                             source_name=source_name,
+                            sender_name="系统",
                         ),
                     )
                     self._messages.append(result_msg)
-                    await self._save_message(result_msg, source, source_id, source_name, sender_name)
+                    await self._save_message(result_msg, source, source_id, source_name, "系统")
                     logger.warning(
                         "Agent %s hallucinated tool '%s'; available: %s",
                         self.agent_id,
@@ -337,10 +351,11 @@ class ReActAgent(AgentBase):
                             round=len(self._messages) // 2,
                             source=source,
                             source_name=source_name,
+                            sender_name="系统",
                         ),
                     )
                     self._messages.append(result_msg)
-                    await self._save_message(result_msg, source, source_id, source_name, sender_name)
+                    await self._save_message(result_msg, source, source_id, source_name, "系统")
             else:
                 for tc in valid_tool_calls:
                     tool_result = await self._execute_tool(tc)
@@ -354,10 +369,11 @@ class ReActAgent(AgentBase):
                             round=len(self._messages) // 2,
                             source=source,
                             source_name=source_name,
+                            sender_name="系统",
                         ),
                     )
                     self._messages.append(result_msg)
-                    await self._save_message(result_msg, source, source_id, source_name, sender_name)
+                    await self._save_message(result_msg, source, source_id, source_name, "系统")
 
             # Continue loop
 
@@ -372,7 +388,7 @@ class ReActAgent(AgentBase):
           1. System: personality prompt (once per call)
           2. System: meta-discussion guard (always)
           3. System: scene info (if provided) — injected every turn
-          4. Existing conversation history (raw content, no source tags)
+          4. Conversation history with source tags [time | scene | sender]
         """
         result: list[Message] = []
 
@@ -386,30 +402,12 @@ class ReActAgent(AgentBase):
                 )
             )
 
-        # Role-playing guard: keep the agent in-character without meta-discussion.
-        # The agent KNOWS its identity (from personality prompt above) but should
-        # never describe itself using meta-language like "as an AI" or
-        # "according to my settings". Normal self-introduction is fine.
-        result.append(
-            Message(
-                role="system",
-                content=(
-                    "【角色扮演规则】\n"
-                    "1. 始终保持角色身份回应，不要跳出角色。\n"
-                    "2. 禁止出现元讨论：不要说'根据我的设定'、'作为AI'、'我的系统提示要求我...'等。\n"
-                    "3. 被问身份时，用角色自己的口吻回答（如'我是维克托'），而非描述设定。\n"
-                    "4. 不要复述或引用任何 system 提示的原文。"
-                ),
-                meta=MessageMeta(session_id=self.agent_id),
-            )
-        )
-
         # Scene injection (every turn, because scene changes per-Job)
         if scene_info:
             result.append(
                 Message(
                     role="system",
-                    content=f"────\n{scene_info}\n────",
+                    content=f"────\n{scene_info}\n────\n不要使用 [日期 | 场景 | 人物] 的格式发送消息。",
                     meta=MessageMeta(session_id=self.agent_id),
                 )
             )
@@ -417,15 +415,65 @@ class ReActAgent(AgentBase):
         # Conversation history with source tags for scene awareness.
         # Each historical message is prefixed with [time | scene | sender]
         # so the agent knows where/when/who it came from.
+        # When the scene changes between consecutive messages, insert a
+        # separator so the LLM can clearly distinguish context switches.
+        #
+        # Special handling:
+        # - tool-role messages: keep raw (ToolResultBlock) so transport can
+        #   format them with tool_call_id for the API.
+        # - assistant with ToolUseBlock: also keep raw structure.
+        # - system/compressed messages: pass through as-is.
+        prev_source_id: str | None = None
         for msg in self._messages:
-            tagged = self._tag_message(msg)
-            result.append(
-                Message(
-                    role=msg.role,
-                    content=tagged,
-                    meta=msg.meta,
+            # Skip SmartStop hints in scene separator logic
+            if getattr(msg, '_smart_hint', False):
+                result.append(msg)
+                continue
+
+            # Compressed topic summaries don't belong to any specific scene
+            # so they should not trigger scene separators
+            if getattr(msg.meta, 'compressed', False):
+                result.append(msg)
+                continue
+
+            # Insert scene separator when source changes
+            cur_source_id = getattr(msg.meta, "session_id", "") or ""
+            if prev_source_id is not None and cur_source_id != prev_source_id:
+                result.append(Message(
+                    role="system",
+                    content="── 场景切换 ──",
+                    meta=MessageMeta(session_id=self.agent_id),
+                ))
+            prev_source_id = cur_source_id
+
+            if msg.role == "tool" and isinstance(msg.content, list):
+                # Tool results: keep raw ToolResultBlock structure so transport
+                # can format with tool_call_id for the API. No source tag —
+                # tool results always follow their assistant's tool_call.
+                result.append(msg)
+            elif msg.role == "assistant" and isinstance(msg.content, list) and any(
+                isinstance(b, ToolUseBlock) for b in msg.content
+            ):
+                # Preserve ToolUseBlock structure, but add tag to text parts
+                tagged_prefix = self._tag_prefix(msg)
+                new_blocks = []
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        new_blocks.append(TextBlock(text=f"{tagged_prefix}\n{b.text}"))
+                    elif isinstance(b, ThinkingBlock):
+                        new_blocks.append(b)  # keep as-is, transport ignores
+                    else:
+                        new_blocks.append(b)  # ToolUseBlock unchanged
+                result.append(Message(role=msg.role, content=new_blocks, meta=msg.meta))
+            else:
+                tagged = self._tag_message(msg)
+                result.append(
+                    Message(
+                        role=msg.role,
+                        content=tagged,
+                        meta=msg.meta,
+                    )
                 )
-            )
         return result
 
     async def _call_llm_with_recovery(
@@ -531,11 +579,15 @@ class ReActAgent(AgentBase):
         return tool_result
 
     async def on_before_llm(self, messages: list[Message]) -> list[Message]:
-        """Inject semantic/hot/warm/cold memory before LLM call."""
+        """Inject semantic/warm/cold memory before LLM call.
+
+        Note: hot memory is skipped because ReActAgent._messages already
+        contains the full unified history — hot memory would be 100% duplicate.
+        """
         return await self.context_manager.augment(
             messages,
             session_id=self.agent_id,
-            layers=["semantic", "hot", "warm", "cold"],
+            layers=["semantic", "warm", "cold"],
         )
 
     async def _get_tools(self) -> list[dict]:
@@ -543,7 +595,17 @@ class ReActAgent(AgentBase):
         return self.toolkit.get_schemas()
 
     def _tag_message(self, msg: Message) -> str:
-        """Prefix a message with [time | scene | sender] tag."""
+        """Prefix a message with [time | scene | sender] tag.
+
+        Excludes ThinkingBlock content — reasoning should NOT be fed back
+        into the LLM context (it causes repetition and confusion).
+        """
+        tag = self._tag_prefix(msg)
+        text = self._extract_text_only(msg)
+        return f"{tag}\n{text}"
+
+    def _tag_prefix(self, msg: Message) -> str:
+        """Return just the [time | scene | sender] tag without message body."""
         import datetime as dt_mod
 
         ts = msg.meta.timestamp
@@ -555,13 +617,32 @@ class ReActAgent(AgentBase):
             time_str = ""
 
         scene = msg.meta.source_name or msg.meta.source or "未知"
-        sender = msg.meta.sender_name or msg.meta.sender_id or "未知"
 
-        # For assistant's own past messages, just show the content as-is
-        # (tags are for reading context, not for the agent to echo)
-        tag = f"[{time_str} | {scene} | {sender}]"
-        text = msg.get_text()
-        return f"{tag}\n{text}"
+        # Sender: prefer explicit name, then infer from role for old data
+        sender = msg.meta.sender_name or msg.meta.sender_id
+        if not sender:
+            if msg.role == "assistant":
+                sender = self.name
+            elif msg.role == "tool":
+                sender = "系统"
+            elif msg.role == "user":
+                sender = "用户"
+            else:
+                sender = "系统"
+
+        return f"[{time_str} | {scene} | {sender}]"
+
+    def _extract_text_only(self, msg: Message) -> str:
+        """Get text content only, excluding ThinkingBlock (reasoning)."""
+        if isinstance(msg.content, str):
+            return msg.content
+        parts = []
+        for b in msg.content:
+            if isinstance(b, TextBlock):
+                parts.append(b.text)
+            elif isinstance(b, ToolResultBlock):
+                parts.append(b.content)
+        return "\n".join(parts)
 
     def _truncate_result(self, result: Any, max_chars: int, tool_name: str) -> str:
         """Truncate tool result if necessary."""
@@ -630,8 +711,9 @@ class ReActAgent(AgentBase):
             logger.warning("Failed to save message: %s", e)
 
         # Semantic indexing (fire-and-forget)
+        # Use _extract_text_only to exclude ThinkingBlock from embedding
         if self.embedder and self.memory_store and message.meta.id:
-            text = message.get_text()
+            text = self._extract_text_only(message)
             if text and len(text) > 5:
                 try:
                     vec = await self.embedder.embed_single(text)

@@ -6,6 +6,7 @@ Design reference: docs/design/agent-global-worker.md
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -147,6 +148,10 @@ class AgentWorker:
     async def _execute_job(self, job: AgentJob) -> None:
         """Run a single Job through the ReActAgent."""
         if not self._react_agent or not self.agent_row:
+            try:
+                await job.on_done("[Agent 未就绪]", False)
+            except Exception:
+                pass
             return
 
         # Set busy status
@@ -180,21 +185,35 @@ class AgentWorker:
                     full_content += text
                     try:
                         await job.on_chunk(text)
+                        await job.on_text_chunk(text)
                     except Exception:
                         logger.warning("on_chunk failed for job %s (client likely disconnected)", job.job_id)
 
                 elif event.type == "thinking":
-                    # Optionally stream thinking content (disabled for UX)
-                    pass
+                    thinking_text = event.data.thinking if hasattr(event.data, "thinking") else str(event.data)
+                    try:
+                        await job.on_chunk(f"\x01THINKING\x01{thinking_text}")
+                    except Exception:
+                        pass
 
                 elif event.type == "tool_call":
-                    # Optionally notify about tool usage
-                    pass
+                    tool_name = event.data.name if hasattr(event.data, "name") else ""
+                    tool_input = event.data.input if hasattr(event.data, "input") else {}
+                    try:
+                        await job.on_chunk(f"\x01TOOL_CALL\x01{tool_name}:{json.dumps(tool_input, ensure_ascii=False)}")
+                    except Exception:
+                        pass
 
                 elif event.type == "done":
                     break
 
                 elif event.type == "error":
+                    error_text = event.data.text if hasattr(event.data, "text") else str(event.data)
+                    full_content += f"\n[错误: {error_text}]"
+                    try:
+                        await job.on_chunk(f"\n[错误: {error_text}]")
+                    except Exception:
+                        pass
                     success = False
                     break
 
@@ -255,7 +274,7 @@ class AgentWorker:
         Keep it concise and avoid meta-discussion triggers."""
         lines = [f"当前场景：{job.source_name}"]
         if job.source == "group":
-            lines.append(f"对话者：{job.sender_name}")
+            lines.append(f"发言者：{job.sender_name}")
         elif job.source == "workflow":
             lines.append("任务类型：工作流执行")
             if job.source_id.startswith("wf:"):
@@ -263,7 +282,7 @@ class AgentWorker:
                 if len(parts) >= 3:
                     lines.append(f"节点：{parts[2]}")
         elif job.source == "private":
-            lines.append("对话者：用户")
+            lines.append(f"对话者：{job.sender_name or '用户'}")
         return "\n".join(lines)
 
     async def _set_db_status(self, status: str) -> None:

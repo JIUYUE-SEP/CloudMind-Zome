@@ -134,7 +134,7 @@ class ToolRegistry:
             return False
 
         for py_file in sorted(tools_path.rglob("*.py")):
-            if py_file.name.startswith("_"):
+            if py_file.name.startswith("_") and py_file.name != "__init__.py":
                 continue
 
             # Compute relative module path: e.g. web/search -> engine.tools.web.search

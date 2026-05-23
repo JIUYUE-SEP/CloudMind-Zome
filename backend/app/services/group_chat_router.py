@@ -46,7 +46,7 @@ class GroupChatRouter:
         """
         targets: List[RouteTarget] = []
         settings = session.settings or {}
-        routing_mode = settings.get("routing_mode", "mention")
+        routing_mode = settings.get("routing_mode", "intent")
         random_reply_count = settings.get("random_reply_count", 1)
 
         # 1. Parse @mentions
@@ -54,10 +54,15 @@ class GroupChatRouter:
         mentioned_ids: set[str] = set()
 
         for m in mentions:
-            # m could be agent name or codename or "队长"
+            # m could be agent name or codename or "队长" or "所有人"
             if m == "队长":
                 if session.conductor_agent_id:
                     mentioned_ids.add(session.conductor_agent_id)
+            elif m in ("所有人", "all", "全体成员"):
+                # @所有人 -> all agent members
+                all_agents = await self._get_agent_members(session.id, sender_id)
+                for aid in all_agents:
+                    mentioned_ids.add(aid)
             else:
                 # Try match by name or codename among members
                 agent_id = await self._resolve_mention(session.id, m)
@@ -95,10 +100,11 @@ class GroupChatRouter:
 
     async def _resolve_mention(self, session_id: str, text: str) -> Optional[str]:
         # Single JOIN query to avoid N+1
+        # Match: name, codename, or any alias (case-insensitive for English)
         from sqlalchemy import join
         from ..models import Agent
         stmt = (
-            select(Agent.id, Agent.name, Agent.codename)
+            select(Agent.id, Agent.name, Agent.codename, Agent.aliases)
             .select_from(
                 join(
                     ChatSessionMember,
@@ -112,9 +118,14 @@ class GroupChatRouter:
             )
         )
         result = await self.db.execute(stmt)
+        query_lower = text.lower()
         for row in result.all():
             if row.name == text or row.codename == text:
                 return row.id
+            aliases = row.aliases or []
+            for alias in aliases:
+                if alias.lower() == query_lower:
+                    return row.id
         return None
 
     async def _intent_route(

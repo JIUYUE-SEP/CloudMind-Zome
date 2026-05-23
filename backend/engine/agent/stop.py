@@ -161,10 +161,11 @@ class SmartStop:
 
             # Tool result has meaningful content?
             if msg.role == "tool":
-                if isinstance(msg.content, ToolResultBlock):
-                    if msg.content.content and len(msg.content.content.strip()) > 10:
-                        if "Error:" not in msg.content.content:
+                if isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, ToolResultBlock) and block.content and len(block.content.strip()) > 10 and "Error:" not in block.content:
                             has_progress = True
+                            break
                 elif isinstance(msg.content, str):
                     if len(msg.content.strip()) > 10 and "Error:" not in msg.content:
                         has_progress = True

@@ -182,13 +182,17 @@ class ContextManager:
     async def _get_hot_memory(
         self, session_id: str, exclude_ids: set[str] | None = None
     ) -> list[Message]:
-        """Get hot memory: recent messages from SQLite, excluding already-present ids."""
+        """Get hot memory: recent messages from SQLite, excluding already-present ids.
+
+        Uses agent_messages table (session_id = agent_id) since ReActAgent
+        saves to agent_messages, not llm_messages.
+        """
         if not self.session_store or not session_id:
             return []
 
         try:
-            msgs = await self.session_store.load_recent_messages(
-                session_id, self.config.hot_memory_limit
+            msgs = await self.session_store.load_agent_messages(
+                session_id, limit=self.config.hot_memory_limit
             )
             if exclude_ids:
                 msgs = [m for m in msgs if m.meta.id not in exclude_ids]
@@ -291,6 +295,9 @@ If none are relevant, return "none".
         to_compress = messages[: -(keep_recent * 2)]
         to_keep = messages[-(keep_recent * 2):]
 
+        # Collect IDs of messages being compressed (for DB cleanup)
+        compressed_ids = [m.meta.id for m in to_compress if m.meta.id]
+
         summary = ""
         if self.model and len(to_compress) > 0:
             conversation_text = "\n".join(
@@ -323,14 +330,27 @@ Provide a 2-3 sentence summary of what was accomplished and what the user's goal
                     name=f"round_{to_compress[0].meta.round}_{to_compress[-1].meta.round}",
                     summary=summary,
                     importance="medium",
-                    original_message_ids=[
-                        m.meta.id for m in to_compress if m.meta.id
-                    ],
+                    original_message_ids=compressed_ids,
                     start_round=to_compress[0].meta.round if to_compress else 0,
                     end_round=to_compress[-1].meta.round if to_compress else 0,
                 )
             except Exception as e:
                 logger.warning("Failed to persist topic summary: %s", e)
+
+        # Delete compressed messages from agent_messages to prevent
+        # duplicate loading (original + summary) on next _load_history.
+        if compressed_ids and self.session_store and session_id:
+            try:
+                deleted = await self.session_store.delete_agent_messages_by_uuids(
+                    session_id, compressed_ids
+                )
+                if deleted > 0:
+                    logger.info(
+                        "Deleted %d compressed messages from DB for %s",
+                        deleted, session_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to delete compressed messages from DB: %s", e)
 
         result = list(to_keep)
         if summary:
@@ -348,12 +368,29 @@ Provide a 2-3 sentence summary of what was accomplished and what the user's goal
             )
             result = [notice] + result
 
+        # Persist the summary notice to agent_messages so it survives restart
+        if self.session_store and session_id:
+            try:
+                await self.session_store.save_agent_message(
+                    notice,
+                    agent_id=session_id,
+                    source="system",
+                    source_id=session_id,
+                    source_name="记忆压缩",
+                    sender_name="系统",
+                )
+            except Exception as e:
+                logger.warning("Failed to persist compression notice to DB: %s", e)
+
         return result
 
     async def _aggressive_compress(
         self, messages: list[Message], session_id: str
     ) -> list[Message]:
         """Aggressive compression: keep only last 1 round + global summary."""
+        # Collect IDs of messages being dropped
+        dropped_ids = [m.meta.id for m in messages[:-2] if m.meta.id]
+
         result = messages[-2:] if len(messages) >= 2 else messages
 
         notice = Message(
@@ -361,6 +398,35 @@ Provide a 2-3 sentence summary of what was accomplished and what the user's goal
             content="[Aggressive context compression. Full conversation has been summarized. Token budget critical.]",
             meta=MessageMeta(session_id=session_id, compressed=True),
         )
+
+        # Delete dropped messages from DB
+        if dropped_ids and self.session_store and session_id:
+            try:
+                deleted = await self.session_store.delete_agent_messages_by_uuids(
+                    session_id, dropped_ids
+                )
+                if deleted > 0:
+                    logger.info(
+                        "Aggressive compress: deleted %d messages from DB for %s",
+                        deleted, session_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to delete aggressively compressed messages: %s", e)
+
+        # Persist the compression notice to agent_messages so it survives restart
+        if self.session_store and session_id:
+            try:
+                await self.session_store.save_agent_message(
+                    notice,
+                    agent_id=session_id,
+                    source="system",
+                    source_id=session_id,
+                    source_name="记忆压缩",
+                    sender_name="系统",
+                )
+            except Exception as e:
+                logger.warning("Failed to persist aggressive compression notice: %s", e)
+
         return [notice] + result
 
 

@@ -86,6 +86,12 @@ export function useWebSocket() {
       case 'chat.typing':
         window.dispatchEvent(new CustomEvent('ws:chat.typing', { detail: msg.payload }))
         break
+      case 'chat.thinking':
+        window.dispatchEvent(new CustomEvent('ws:chat.thinking', { detail: msg.payload }))
+        break
+      case 'chat.tool_call':
+        window.dispatchEvent(new CustomEvent('ws:chat.tool_call', { detail: msg.payload }))
+        break
       case 'action.progress': {
         const p = msg.payload || {}
         const overall = p.overall_progress != null ? `${Math.round(p.overall_progress * 100)}%` : ''
@@ -113,6 +119,11 @@ export function useWebSocket() {
         pushLog({ type: 'info', source: '群聊', message: '心智间对话结束' })
         window.dispatchEvent(new CustomEvent('ws:intermind.end', { detail: msg.payload }))
         break
+      case 'chat.ack': {
+        const p = msg.payload || {}
+        window.dispatchEvent(new CustomEvent('ws:chat.ack', { detail: p }))
+        break
+      }
       case 'pong':
         break
       default:
@@ -133,8 +144,21 @@ export function useWebSocket() {
     }
   }
 
-  function sendChat(sessionId: string, content: string) {
-    send({ type: 'chat.send', payload: { session_id: sessionId, content } })
+  function sendChat(sessionId: string, content: string, opts?: { content_type?: string; reply_to?: string; client_msg_id?: string }) {
+    send({
+      type: 'chat.send',
+      payload: {
+        session_id: sessionId,
+        content,
+        content_type: opts?.content_type || 'text',
+        reply_to: opts?.reply_to || null,
+        client_msg_id: opts?.client_msg_id || `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      }
+    })
+  }
+
+  function sendTyping(sessionId: string, isTyping: boolean) {
+    send({ type: 'chat.typing', payload: { session_id: sessionId, is_typing: isTyping } })
   }
 
   function sendAgentStop(sessionId: string, agentId: string) {
@@ -164,5 +188,5 @@ export function useWebSocket() {
     pushLog({ type: 'warn', source: 'WS', message: '主动断开连接' })
   }
 
-  return { connect, disconnect, send, sendChat, sendAgentStop }
+  return { connect, disconnect, send, sendChat, sendTyping, sendAgentStop }
 }

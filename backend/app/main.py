@@ -25,8 +25,9 @@ from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
 
 from .database import engine, Base
-from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config
+from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, intimacy
 from .services.commission_scheduler import get_scheduler
+from .services.proactive_wake_scheduler import get_wake_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,17 @@ async def lifespan(app: FastAPI):
     scheduler = get_scheduler()
     await scheduler.start()
 
+    # Start proactive wake scheduler (Agent主动性: 私聊唤醒)
+    wake_scheduler = get_wake_scheduler()
+    await wake_scheduler.start()
+
     yield
 
     # Shutdown
     scheduler = get_scheduler()
     await scheduler.stop()
+    wake_scheduler = get_wake_scheduler()
+    await wake_scheduler.stop()
     await store.close()
     await engine.dispose()
     logger.info("Shutdown complete")
@@ -155,6 +162,7 @@ app.include_router(approvals.router, prefix="/api/v1")
 app.include_router(compute.router, prefix="/api/v1")
 app.include_router(commissions.router, prefix="/api/v1")
 app.include_router(config.router, prefix="/api/v1")
+app.include_router(intimacy.router, prefix="/api/v1")
 app.include_router(ws.router)
 
 

@@ -46,6 +46,8 @@ class AgentCreate(BaseModel):
     language_style: str = "neutral"
     opening_line: str = ""
     capabilities: List[str] = Field(default_factory=list)
+    aliases: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
     represent_color: str = "#00E5C9"
     llm_config: dict = Field(default_factory=dict)
 
@@ -56,6 +58,8 @@ class AgentUpdate(BaseModel):
     language_style: Optional[str] = None
     opening_line: Optional[str] = None
     capabilities: Optional[List[str]] = None
+    aliases: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
     represent_color: Optional[str] = None
     llm_config: Optional[dict] = None
 
@@ -69,6 +73,7 @@ class AgentListItem(BaseModel):
     live2d_model_url: Optional[str]
     model_url: Optional[str]
     personality_summary: str = ""
+    tags: List[str] = []
     represent_color: str
     created_at: str
 
@@ -136,6 +141,7 @@ async def list_agents(
             "live2d_model_url": a.live2d_model_url,
             "model_url": a.model_url,
             "personality_summary": a.personality_prompt[:80] + "..." if len(a.personality_prompt) > 80 else a.personality_prompt,
+            "tags": a.tags or [],
             "represent_color": a.represent_color,
             "created_at": a.created_at.isoformat() if a.created_at else "",
         })
@@ -165,6 +171,8 @@ async def get_agent(
         "opening_line": a.opening_line,
         "memory_count": 0,
         "capabilities": a.capabilities or [],
+        "aliases": a.aliases or [],
+        "tags": a.tags or [],
         "llm_config": a.model_config or {},
         "portrait_url": a.portrait_url,
         "model_url": a.model_url,
@@ -194,6 +202,8 @@ async def create_agent(
         language_style=body.language_style,
         opening_line=body.opening_line,
         capabilities=body.capabilities,
+        aliases=body.aliases,
+        tags=body.tags,
         represent_color=body.represent_color,
         model_config=body.llm_config,
     )

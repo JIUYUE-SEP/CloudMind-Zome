@@ -100,6 +100,22 @@ class EngineBridge:
             if chunk_queue.qsize() > 1000:
                 logger.warning("Chunk queue overflow for agent %s, skipping chunk", agent_id)
                 return
+            # Parse special prefixes injected by AgentWorker for thinking/tool_call
+            if text.startswith("\x01THINKING\x01"):
+                thinking_text = text[len("\x01THINKING\x01"):]
+                await chunk_queue.put({"type": "thinking", "data": {"thinking": thinking_text}})
+                return
+            if text.startswith("\x01TOOL_CALL\x01"):
+                rest = text[len("\x01TOOL_CALL\x01"):]
+                if ":" in rest:
+                    tool_name, tool_input_json = rest.split(":", 1)
+                    try:
+                        import json
+                        tool_input = json.loads(tool_input_json)
+                    except Exception:
+                        tool_input = {}
+                    await chunk_queue.put({"type": "tool_call", "data": {"name": tool_name, "input": tool_input}})
+                return
             await chunk_queue.put({"type": "content", "data": {"text": text}})
 
         async def on_done(text: str, ok: bool) -> None:
@@ -144,10 +160,10 @@ class EngineBridge:
         if agent_row is None:
             raise RuntimeError(f"Agent {agent_id} not found")
 
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         chunks: list[str] = []
 
-        async def on_chunk(text: str) -> None:
+        async def on_text_chunk(text: str) -> None:
             chunks.append(text)
 
         async def on_done(text: str, ok: bool) -> None:
@@ -160,7 +176,7 @@ class EngineBridge:
             source_name=source_name,
             sender_name="工作流引擎",
             content=instruction,
-            on_chunk=on_chunk,
+            on_text_chunk=on_text_chunk,
             on_done=on_done,
             future=future,
         )
@@ -181,17 +197,19 @@ class EngineBridge:
 
     async def _build_transport(self, agent_row: Agent) -> ChatCompletionsTransport | None:
         """Kept for compatibility; Worker builds its own transport."""
+        from ..database import AsyncSessionLocal
         model_cfg: dict = agent_row.model_config or {}
         provider_type = (model_cfg.get("provider") or "deepseek").lower()
         model_name = model_cfg.get("model") or "deepseek-v4-pro"
 
-        result = await self.db.execute(
-            select(ComputeProvider).where(
-                ComputeProvider.provider_type == provider_type,
-                ComputeProvider.status == "active",
-            ).limit(1)
-        )
-        prov_row: ComputeProvider | None = result.scalars().first()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(ComputeProvider).where(
+                    ComputeProvider.provider_type == provider_type,
+                    ComputeProvider.status == "active",
+                ).limit(1)
+            )
+            prov_row: ComputeProvider | None = result.scalars().first()
 
         base_url = _DEFAULT_BASE_URLS.get(provider_type, "")
         api_key = ""

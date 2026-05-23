@@ -29,20 +29,31 @@
 
         <!-- Private: all Agents -->
         <template v-if="tab === 'private'">
-          <div
-            v-for="a in agentList"
-            :key="a.id"
-            class="comm-item"
-            :class="{ active: selectedAgentId === a.id && selectedType === 'private' }"
-            @click="selectAgent(a)"
-          >
+          <!-- Grouped by tags -->
+          <template v-for="group in groupedAgents" :key="group.tag">
+            <div v-if="group.tag" class="agent-group-label">{{ group.tag }}</div>
+            <div
+              v-for="a in group.agents"
+              :key="a.id"
+              class="comm-item"
+              :class="{ active: selectedAgentId === a.id && selectedType === 'private', pinned: isPinned(privateSessionMap[a.id]) }"
+              @click="selectAgent(a)"
+            >
             <img v-if="a.portrait_url" :src="a.portrait_url" class="comm-avatar" />
             <div v-else class="comm-avatar placeholder">{{ a.name?.[0] || '?' }}</div>
             <div class="comm-info">
               <div class="comm-name">{{ a.name }}</div>
               <div class="comm-preview">{{ a.personality_summary || '点击开始对话' }}</div>
             </div>
+            <div v-if="unreadCount(privateSessionMap[a.id]) > 0" class="comm-badge">{{ unreadCount(privateSessionMap[a.id]) }}</div>
+            <button
+              class="pin-btn"
+              :class="{ active: isPinned(privateSessionMap[a.id]) }"
+              @click.stop="togglePin(privateSessionMap[a.id])"
+              title="置顶"
+            >&#9733;</button>
           </div>
+          </template>
           <div v-if="!agentList.length" class="comm-empty">暂无心智</div>
         </template>
 
@@ -52,7 +63,7 @@
             v-for="s in groupSessions"
             :key="s.session_id"
             class="comm-item"
-            :class="{ active: selectedId === s.session_id && selectedType === 'group' }"
+            :class="{ active: selectedId === s.session_id && selectedType === 'group', pinned: isPinned(s.session_id) }"
             @click="selectGroup(s)"
           >
             <img v-if="s.target_avatar" :src="s.target_avatar" class="comm-avatar" />
@@ -68,7 +79,13 @@
             >
               ⋮
             </button>
-            <div v-if="s.unread_count > 0" class="comm-badge">{{ s.unread_count }}</div>
+            <div v-if="unreadCount(s.session_id) > 0" class="comm-badge">{{ unreadCount(s.session_id) }}</div>
+            <button
+              class="pin-btn"
+              :class="{ active: isPinned(s.session_id) }"
+              @click.stop="togglePin(s.session_id)"
+              title="置顶"
+            >&#9733;</button>
           </div>
           <div v-if="!groupSessions.length" class="comm-empty">暂无群聊</div>
         </template>
@@ -313,6 +330,54 @@ const viewerTabs = [
 const agentList = computed(() => agents.list)
 const groupSessions = computed(() => chat.sessions.filter(s => s.type === 'group'))
 
+// Group agents by first tag (or "未分组")
+const groupedAgents = computed(() => {
+  const map: Record<string, any[]> = {}
+  const noTag: any[] = []
+  for (const a of agentList.value) {
+    const tags = a.tags || []
+    if (tags.length) {
+      const t = tags[0]
+      if (!map[t]) map[t] = []
+      map[t].push(a)
+    } else {
+      noTag.push(a)
+    }
+  }
+  const result = Object.entries(map).map(([tag, agents]) => ({ tag, agents }))
+  if (noTag.length) result.push({ tag: '', agents: noTag })
+  return result
+})
+
+function isPinned(sessionId: string) {
+  const s = chat.sessions.find(x => x.session_id === sessionId)
+  return s?.is_pinned || false
+}
+
+async function togglePin(sessionId: string) {
+  if (!sessionId) return
+  const current = chat.sessions.find(s => s.session_id === sessionId)?.is_pinned
+  const json = await api.put(`/chats/sessions/${sessionId}/pin`, { pinned: !current })
+  if (json.code === 0) {
+    await chat.fetchSessions()
+  }
+}
+
+// agent_id -> private session_id
+const privateSessionMap = computed(() => {
+  const map: Record<string, string> = {}
+  chat.sessions.forEach(s => {
+    if (s.type === 'private' && s.target_id) {
+      map[s.target_id] = s.session_id
+    }
+  })
+  return map
+})
+
+function unreadCount(sessionId: string) {
+  return chat.unreadMap[sessionId] || 0
+}
+
 onMounted(() => {
   agents.fetchList()
   chat.fetchSessions()
@@ -339,6 +404,7 @@ async function selectAgent(a: any) {
   })
   if (json.code === 0) {
     selectedId.value = json.data.session_id
+    chat.markRead(selectedId.value)
   } else {
     // Rollback on failure
     selectedAgentId.value = ''
@@ -361,6 +427,7 @@ async function fetchAgentMemory(agentId: string) {
 async function selectGroup(s: any) {
   selectedId.value = s.session_id
   selectedType.value = 'group'
+  chat.markRead(s.session_id)
   await fetchGroupInfo(s.session_id)
 }
 
@@ -575,6 +642,17 @@ function statusLabel(status: string) {
 .comm-empty {
   color: #5A6A7A; text-align: center; padding: 30px 0; font-size: 12px;
 }
+.agent-group-label {
+  font-size: 10px; color: #5A6A7A; padding: 8px 4px 4px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.pin-btn {
+  width: 22px; height: 22px; border-radius: 4px;
+  background: transparent; border: none;
+  color: #5A6A7A; font-size: 12px; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.pin-btn.active { color: #FFB800; }
+.comm-item.pinned { border-left: 2px solid #FFB800; }
 
 /* Main chat area */
 .comm-main {

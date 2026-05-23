@@ -855,6 +855,25 @@ class SessionStore:
 
         return messages
 
+    async def delete_agent_messages_by_uuids(
+        self, agent_id: str, uuids: list[str]
+    ) -> int:
+        """Delete messages from agent_messages by their message_uuid values.
+
+        Used after compression to remove the original messages that have been
+        replaced by a summary. Returns the number of deleted rows.
+        """
+        if not uuids:
+            return 0
+        db = await self.connect()
+        placeholders = ",".join("?" for _ in uuids)
+        cursor = await db.execute(
+            f"DELETE FROM agent_messages WHERE agent_id = ? AND message_uuid IN ({placeholders})",
+            [agent_id, *uuids],
+        )
+        await db.commit()
+        return cursor.rowcount
+
     async def load_cold_memories(self, limit: int = 20) -> list[dict]:
         """Load cross-session high-importance topics as cold memory."""
         db = await self.connect()

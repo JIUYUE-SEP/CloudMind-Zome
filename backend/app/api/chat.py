@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -121,18 +121,22 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = (
-        select(ChatSession)
+        select(ChatSession, ChatSessionMember)
         .join(ChatSessionMember, ChatSessionMember.session_id == ChatSession.id)
-        .where(ChatSessionMember.member_id == user.id, ChatSessionMember.member_type == "user")
+        .where(
+            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_type == "user",
+            ChatSession.status != "dissolved",
+        )
     )
     if type:
         stmt = stmt.where(ChatSession.type == type)
 
-    stmt = stmt.order_by(ChatSession.last_message_at.desc().nullslast())
+    stmt = stmt.order_by(ChatSessionMember.is_pinned.desc(), ChatSession.last_message_at.desc().nullslast())
     stmt = stmt.options(selectinload(ChatSession.members), selectinload(ChatSession.messages))
     result = await db.execute(stmt)
     items = []
-    for sess in result.scalars().all():
+    for sess, member in result.all():
         # Find the "other" member for private chats
         other_name = ""
         other_avatar = ""
@@ -174,6 +178,7 @@ async def list_sessions(
             "target_avatar": other_avatar or group_avatar,
             "last_message": last_msg,
             "unread_count": unread,
+            "is_pinned": member.is_pinned,
         })
 
     return Resp(data={"items": items})
@@ -183,6 +188,7 @@ async def list_sessions(
 async def get_messages(
     session_id: str,
     before_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
@@ -202,6 +208,8 @@ async def get_messages(
         .where(ChatMessage.session_id == session_id, ChatMessage.is_deleted == False)
         .order_by(ChatMessage.created_at.desc())
     )
+    if search:
+        stmt = stmt.where(ChatMessage.content.ilike(f"%{search}%"))
     if before_id:
         # Find timestamp of before_id
         bm = await db.execute(select(ChatMessage).where(ChatMessage.id == before_id))
@@ -220,6 +228,22 @@ async def get_messages(
         agent_res = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids)))
         agent_names = {aid: name for aid, name in agent_res.all()}
 
+    # Batch resolve reply_to messages
+    reply_ids = {m.reply_to for m in rows if m.reply_to}
+    reply_map: dict[str, dict] = {}
+    if reply_ids:
+        reply_res = await db.execute(
+            select(ChatMessage).where(ChatMessage.id.in_(reply_ids))
+        )
+        for rmsg in reply_res.scalars().all():
+            reply_map[rmsg.id] = {
+                "id": rmsg.id,
+                "sender_id": rmsg.sender_id,
+                "sender_type": rmsg.sender_type,
+                "content": rmsg.content[:120] + "..." if len(rmsg.content) > 120 else rmsg.content,
+                "content_type": rmsg.content_type,
+            }
+
     def _sender_name(msg: ChatMessage) -> str:
         if msg.sender_type == "agent":
             return agent_names.get(msg.sender_id, "Agent")
@@ -233,6 +257,7 @@ async def get_messages(
             "sender_name": _sender_name(m),
             "content": m.content,
             "content_type": m.content_type,
+            "reply_to": reply_map.get(m.reply_to) if m.reply_to else None,
             "timestamp": m.created_at.isoformat() if m.created_at else "",
             "is_me": m.sender_id == user.id and m.sender_type == "user",
             "batch_id": m.batch_id,
@@ -285,3 +310,49 @@ async def send_message_http(
             "timestamp": msg.created_at.isoformat() if msg.created_at else "",
         }
     )
+
+
+class PinReq(BaseModel):
+    pinned: bool = True
+
+@router.put("/sessions/{session_id}/pin", response_model=Resp)
+async def pin_session(
+    session_id: str,
+    body: PinReq,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChatSessionMember).where(
+            ChatSessionMember.session_id == session_id,
+            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_type == "user",
+        )
+    )
+    member = result.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=403, detail="Not a member")
+    member.is_pinned = body.pinned
+    await db.commit()
+    return Resp(data={"pinned": body.pinned})
+
+
+@router.put("/sessions/{session_id}/read", response_model=Resp)
+async def mark_read(
+    session_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChatSessionMember).where(
+            ChatSessionMember.session_id == session_id,
+            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_type == "user",
+        )
+    )
+    member = result.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=403, detail="Not a member")
+    member.last_read_at = datetime.now(timezone.utc)
+    await db.commit()
+    return Resp(data={"read": True})

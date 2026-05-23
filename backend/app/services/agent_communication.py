@@ -49,11 +49,11 @@ async def dispatch_private_message(
         from_agent = result_from.scalar_one_or_none()
         from_name = from_agent.name if from_agent else "Unknown"
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     future: asyncio.Future[str] = loop.create_future()
     chunks: list[str] = []
 
-    async def on_chunk(text: str) -> None:
+    async def on_text_chunk(text: str) -> None:
         chunks.append(text)
 
     async def on_done(text: str, ok: bool) -> None:
@@ -67,7 +67,7 @@ async def dispatch_private_message(
         sender_name=from_name,
         sender_id=from_agent_id,
         content=content,
-        on_chunk=on_chunk,
+        on_text_chunk=on_text_chunk,
         on_done=on_done,
         future=future,
     )

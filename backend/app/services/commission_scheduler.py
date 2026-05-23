@@ -105,7 +105,7 @@ class CommissionScheduler:
         agent_id = comm.agent_id
         user_id = comm.user_id
 
-        async def on_chunk(text: str) -> None:
+        async def on_text_chunk(text: str) -> None:
             nonlocal full_content
             full_content += text
 
@@ -159,7 +159,7 @@ class CommissionScheduler:
             source_name=f"委托: {comm_name}",
             sender_name="委托系统",
             content=instruction,
-            on_chunk=on_chunk,
+            on_text_chunk=on_text_chunk,
             on_done=on_done,
         )
         await dispatch_job(agent_id, job)

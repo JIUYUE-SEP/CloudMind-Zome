@@ -34,9 +34,13 @@ class AgentJob:
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     # Callbacks -------------------------------------------------------------
-    # on_chunk(text)   -> called for every content chunk (streaming)
-    # on_done(text, ok) -> called once when Job finishes (or fails)
+    # on_chunk(text)      -> called for every chunk (text/thinking/tool_call, may include prefixes)
+    # on_text_chunk(text) -> called ONLY for text content, no prefixes
+    # on_done(text, ok)    -> called once when Job finishes (or fails)
     on_chunk: Callable[[str], Awaitable[None]] = field(
+        default_factory=lambda: (lambda _t: asyncio.sleep(0))
+    )
+    on_text_chunk: Callable[[str], Awaitable[None]] = field(
         default_factory=lambda: (lambda _t: asyncio.sleep(0))
     )
     on_done: Callable[[str, bool], Awaitable[None]] = field(

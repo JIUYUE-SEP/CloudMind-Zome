@@ -64,6 +64,20 @@
             <span class="trait-value">{{ familiarity }}%</span>
           </div>
 
+          <div class="intimacy-panel">
+            <div class="int-header">亲密度</div>
+            <div class="int-score">
+              <span class="int-num">{{ intimacy.score }}</span>
+              <span class="int-level">{{ intimacy.level_label }}</span>
+            </div>
+            <div class="int-bar-bg">
+              <div class="int-bar-fill" :style="{ width: (intimacy.score / 10) + '%' }" />
+            </div>
+            <div v-if="intimacy.unlocks.length" class="int-unlocks">
+              <div v-for="u in intimacy.unlocks" :key="u" class="int-unlock-tag">{{ u }}</div>
+            </div>
+          </div>
+
           <div class="keywords">
             <span
               v-for="k in keywords"
@@ -86,9 +100,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
 import { useAuthStore } from '@/stores/auth'
+import { api } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
 
 const agentsStore = useAgentsStore()
@@ -100,13 +115,26 @@ const selectedAgent = computed(() =>
 )
 
 const familiarity = computed(() => {
-  // 基于创建时间模拟熟悉度（实际应从交互数据计算）
   if (!selectedAgent.value) return 0
   const created = selectedAgent.value.created_at
     ? new Date(selectedAgent.value.created_at).getTime()
     : Date.now()
   const days = Math.floor((Date.now() - created) / 86400000)
   return Math.min(30 + days * 5, 100)
+})
+
+const intimacy = ref({ score: 0, level: 'stranger', level_label: '陌生人', unlocks: [] as string[] })
+
+async function loadIntimacy() {
+  if (!selectedAgent.value) return
+  const json = await api.get(`/intimacy/${selectedAgent.value.id}`)
+  if (json.code === 0) {
+    intimacy.value = json.data
+  }
+}
+
+watch(() => selectedId.value, () => {
+  loadIntimacy()
 })
 
 const perceptionText = computed(() => {
@@ -317,6 +345,59 @@ function selectAgent(id: string) {
   width: 36px;
   text-align: right;
 }
+.intimacy-panel {
+  margin-top: 20px;
+  padding: 16px;
+  background: rgba(20, 27, 36, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+}
+.int-header {
+  font-size: 13px;
+  color: #8899AA;
+  margin-bottom: 8px;
+}
+.int-score {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.int-num {
+  font-size: 24px;
+  font-weight: 600;
+  color: #00E5C9;
+}
+.int-level {
+  font-size: 13px;
+  color: #D8E1EC;
+}
+.int-bar-bg {
+  height: 6px;
+  background: #1E2731;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.int-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00E5C9, #00BFA0);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.int-unlocks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.int-unlock-tag {
+  padding: 3px 10px;
+  background: rgba(0, 229, 201, 0.1);
+  color: #00E5C9;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
 .keywords {
   display: flex;
   flex-wrap: wrap;

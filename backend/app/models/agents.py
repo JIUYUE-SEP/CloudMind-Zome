@@ -36,6 +36,8 @@ class Agent(Base):
     opening_line: Mapped[str] = mapped_column(String(512), default="")
     memory_notes: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     capabilities: Mapped[Optional[list]] = mapped_column(JSON, default=list)
+    aliases: Mapped[Optional[list]] = mapped_column(JSON, default=list)  # ["vivi", "维维"]
+    tags: Mapped[Optional[list]] = mapped_column(JSON, default=list)  # ["工作", "编程"]
     model_config: Mapped[Optional[dict]] = mapped_column(
         JSON, default=dict
     )  # {provider, model, temperature, max_tokens}

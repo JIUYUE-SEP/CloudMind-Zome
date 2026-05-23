@@ -138,6 +138,8 @@ class Message:
                 parts.append(b.text)
             elif isinstance(b, ThinkingBlock):
                 parts.append(b.thinking)
+            elif isinstance(b, ToolResultBlock):
+                parts.append(b.content)
         return "\n".join(parts)
 
 

@@ -35,6 +35,7 @@ class ChatSession(Base):
     )
     announcement: Mapped[str] = mapped_column(Text, default="")
     settings: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active / dissolved
     last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -68,6 +69,7 @@ class ChatMessage(Base):
     reply_to: Mapped[Optional[str]] = mapped_column(
         ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
     )
+    client_msg_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     batch_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
@@ -78,6 +80,7 @@ class ChatMessage(Base):
         Index("idx_chat_messages_session_id", "session_id"),
         Index("idx_chat_messages_created_at", "session_id", "created_at"),
         Index("idx_chat_messages_batch", "batch_id"),
+        Index("idx_chat_messages_client", "client_msg_id"),
     )
 
 
@@ -91,6 +94,9 @@ class ChatSessionMember(Base):
     member_id: Mapped[str] = mapped_column(String(36), nullable=False)
     member_type: Mapped[str] = mapped_column(String(16), nullable=False)  # user / agent
     role: Mapped[str] = mapped_column(String(16), default="member")
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_disconnect_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
 
     session: Mapped["ChatSession"] = relationship(back_populates="members")
@@ -98,4 +104,5 @@ class ChatSessionMember(Base):
     __table_args__ = (
         UniqueConstraint("session_id", "member_id"),
         Index("idx_chat_members_session", "session_id"),
+        Index("idx_chat_members_pinned", "member_id", "is_pinned"),
     )

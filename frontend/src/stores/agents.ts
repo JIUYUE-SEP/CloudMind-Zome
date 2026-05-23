@@ -12,6 +12,7 @@ export interface AgentItem {
   model_url?: string
   personality_summary: string
   represent_color: string
+  tags?: string[]
   created_at: string
 }
 

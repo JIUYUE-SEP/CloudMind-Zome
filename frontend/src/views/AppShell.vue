@@ -13,6 +13,7 @@
         @click="handleNav($event, item)"
       >
         <span class="nav-label">{{ item.label }}</span>
+        <span v-if="item.label === '通讯中枢' && chat.totalUnread > 0" class="nav-badge" />
       </RouterLink>
     </nav>
 
@@ -35,10 +36,12 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useChatStore } from '@/stores/chat'
 import UserProfileModal from '@/components/UserProfileModal.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
+const chat = useChatStore()
 const showProfileModal = ref(false)
 
 const navItems = [
@@ -68,6 +71,12 @@ function goCompute() { router.push('/compute') }
 .nav-item:hover { background: rgba(0,229,201,0.08); }
 .nav-icon { font-size: 18px; }
 .nav-label { font-size: 13px; }
+.nav-badge {
+  width: 6px; height: 6px;
+  background: #EF4444;
+  border-radius: 50%;
+  margin-left: 4px;
+}
 .bottom-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: rgba(11,15,23,0.25); backdrop-filter: blur(12px); border-top: 1px solid rgba(255,255,255,0.06); z-index: 100; }
 .bar-left { display: flex; align-items: center; gap: 12px; }
 .bar-btn { background: transparent; border: none; color: #8899AA; font-size: 13px; cursor: pointer; padding: 6px 12px; }

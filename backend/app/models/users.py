@@ -35,6 +35,7 @@ class User(Base):
         ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
     )
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utc_now, onupdate=_utc_now

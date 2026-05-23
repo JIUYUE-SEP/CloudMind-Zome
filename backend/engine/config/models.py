@@ -145,3 +145,4 @@ class AppConfig(BaseModel):
     context: ContextConfig = Field(default_factory=ContextConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     tavily: dict = Field(default_factory=dict)  # Tavily Search API config: {api_key: str}
+    image_gen: dict = Field(default_factory=dict)  # Image generation: {api_url, model, api_key}

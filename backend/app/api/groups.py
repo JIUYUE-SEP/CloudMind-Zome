@@ -39,6 +39,10 @@ class SetConductorReq(BaseModel):
     agent_id: Optional[str] = None  # null = revoke
 
 
+class InviteMembersReq(BaseModel):
+    member_ids: List[str]  # agent_ids to invite
+
+
 class Resp(BaseModel):
     code: int = 0
     data: dict
@@ -233,6 +237,67 @@ async def set_conductor(
     })
 
 
+@router.post("/{group_id}/members", response_model=Resp)
+async def invite_members(
+    group_id: str,
+    body: InviteMembersReq,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == group_id, ChatSession.type == "group")
+    )
+    sess = result.scalar_one_or_none()
+    if not sess:
+        raise HTTPException(status_code=404)
+    if sess.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only owner can invite members")
+    if sess.status == "dissolved":
+        raise HTTPException(status_code=400, detail="Group is dissolved")
+
+    # Validate agents exist
+    agent_res = await db.execute(
+        select(Agent).where(
+            Agent.id.in_(body.member_ids),
+            Agent.deleted_at.is_(None),
+        )
+    )
+    valid_agents = {a.id: a for a in agent_res.scalars().all()}
+    invalid = [mid for mid in body.member_ids if mid not in valid_agents]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid agent ids: {invalid}")
+
+    # Check which are already members
+    existing_res = await db.execute(
+        select(ChatSessionMember.member_id).where(
+            ChatSessionMember.session_id == group_id,
+            ChatSessionMember.member_id.in_(body.member_ids),
+        )
+    )
+    existing_ids = {r[0] for r in existing_res.all()}
+
+    added = []
+    for agent_id in body.member_ids:
+        if agent_id not in existing_ids:
+            db.add(ChatSessionMember(
+                session_id=group_id,
+                member_id=agent_id,
+                member_type="agent",
+                role="member",
+            ))
+            added.append({
+                "id": agent_id,
+                "name": valid_agents[agent_id].name,
+            })
+
+    await db.commit()
+
+    return Resp(data={
+        "added": added,
+        "already_members": list(existing_ids),
+    })
+
+
 @router.delete("/{group_id}/members/{member_id}", response_model=Resp)
 async def remove_member(
     group_id: str,
@@ -268,6 +333,29 @@ async def remove_member(
         await db.commit()
 
     return Resp(data={"removed": True})
+
+
+@router.delete("/{group_id}", response_model=Resp)
+async def dissolve_group(
+    group_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == group_id, ChatSession.type == "group")
+    )
+    sess = result.scalar_one_or_none()
+    if not sess:
+        raise HTTPException(status_code=404)
+    if sess.owner_id != user.id:
+        raise HTTPException(status_code=403)
+    if sess.status == "dissolved":
+        raise HTTPException(status_code=400, detail="Group already dissolved")
+
+    sess.status = "dissolved"
+    sess.name = f"{sess.name} (已解散)"
+    await db.commit()
+    return Resp(data={"dissolved": True})
 
 
 # ------------------------------------------------------------------

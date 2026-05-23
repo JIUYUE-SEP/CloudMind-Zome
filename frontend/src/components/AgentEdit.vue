@@ -148,6 +148,41 @@
                   placeholder="+ 添加能力"
                 />
               </div>
+
+              <label style="margin-top: 16px">代称 / 昵称</label>
+              <div class="tag-list">
+                <span
+                  v-for="(t, i) in form.aliases"
+                  :key="i"
+                  class="tag"
+                >
+                  {{ t }}
+                  <button @click="removeAlias(i)">×</button>
+                </span>
+                <input
+                  v-model="aliasInput"
+                  @keydown.enter.prevent="addAlias"
+                  placeholder="+ 添加代称（如 vivi）"
+                />
+              </div>
+
+              <label style="margin-top: 16px">分组标签</label>
+              <div class="tag-list">
+                <span
+                  v-for="(t, i) in form.tags"
+                  :key="i"
+                  class="tag"
+                  style="background: rgba(255,184,0,0.1); color: #FFB800;"
+                >
+                  {{ t }}
+                  <button @click="removeTag(i)" style="color: #FFB800">×</button>
+                </span>
+                <input
+                  v-model="tagInput"
+                  @keydown.enter.prevent="addTag"
+                  placeholder="+ 添加分组标签"
+                />
+              </div>
             </div>
 
             <!-- 算力配置 -->
@@ -263,6 +298,8 @@ const computeStore = useComputeStore()
 const selectedId = ref<string | null>(null)
 const isCreate = ref(false)
 const capInput = ref('')
+const aliasInput = ref('')
+const tagInput = ref('')
 const activeTab = ref<string | null>(null)
 const portraitInput = ref<HTMLInputElement>()
 const modelInput = ref<HTMLInputElement>()
@@ -282,6 +319,8 @@ const form = ref<any>({
   personality_prompt: '',
   represent_color: '#00E5C9',
   capabilities: [],
+  aliases: [],
+  tags: [],
   llm_config: { provider: 'deepseek', model: 'deepseek-v4-pro' },
   portrait_url: '',
   model_url: '',
@@ -345,6 +384,8 @@ function createNew() {
     personality_prompt: '',
     represent_color: '#00E5C9',
     capabilities: [],
+    aliases: [],
+    tags: [],
     llm_config: {
       provider: computeStore.providers[0]?.provider_type || 'deepseek',
       model: 'deepseek-v4-pro',
@@ -386,6 +427,8 @@ async function selectAgent(id: string) {
     personality_prompt: data.personality_prompt || '',
     represent_color: data.represent_color || '#00E5C9',
     capabilities: Array.isArray(data.capabilities) ? [...data.capabilities] : [],
+    aliases: Array.isArray(data.aliases) ? [...data.aliases] : [],
+    tags: Array.isArray(data.tags) ? [...data.tags] : [],
     llm_config: data.llm_config
       ? { ...data.llm_config }
       : { provider: 'deepseek', model: 'deepseek-v4-pro' },
@@ -406,6 +449,22 @@ function addCap() {
 }
 function removeCap(i: number) {
   form.value.capabilities.splice(i, 1)
+}
+function addAlias() {
+  const t = aliasInput.value.trim()
+  if (t && !form.value.aliases.includes(t)) form.value.aliases.push(t)
+  aliasInput.value = ''
+}
+function removeAlias(i: number) {
+  form.value.aliases.splice(i, 1)
+}
+function addTag() {
+  const t = tagInput.value.trim()
+  if (t && !form.value.tags.includes(t)) form.value.tags.push(t)
+  tagInput.value = ''
+}
+function removeTag(i: number) {
+  form.value.tags.splice(i, 1)
 }
 
 async function save() {
