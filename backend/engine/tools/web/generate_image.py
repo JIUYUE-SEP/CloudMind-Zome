@@ -49,10 +49,19 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
 
     import httpx
 
+    # Build endpoint: handle both "https://host" and "https://host/v1"
+    base = api_url.rstrip('/')
+    if base.endswith('/v1'):
+        endpoint = f"{base}/images/generations"
+    else:
+        endpoint = f"{base}/v1/images/generations"
+
+    logger.info("generate_image calling %s with model %s", endpoint, model)
+
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                f"{api_url.rstrip('/')}/v1/images/generations",
+                endpoint,
                 json={
                     "model": model or "dall-e-3",
                     "prompt": prompt,
@@ -68,8 +77,8 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
 
             if resp.status_code != 200:
                 err = resp.text[:300]
-                logger.error("Image generation API error: %s", err)
-                return f"Error: image generation failed (HTTP {resp.status_code})"
+                logger.error("Image generation API error %s: %s", resp.status_code, err)
+                return f"Error: image generation failed (HTTP {resp.status_code} | {endpoint})"
 
             data = resp.json()
             images = data.get("data", [])
