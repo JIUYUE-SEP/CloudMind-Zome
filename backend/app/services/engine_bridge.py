@@ -85,6 +85,7 @@ class EngineBridge:
         source: str = "private",
         source_name: str = "",
         sender_name: str = "",
+        content_type: str = "text",
     ) -> AsyncIterator[dict[str, Any]]:
         """Dispatch a Job to the Agent Worker and yield streaming chunks."""
         agent_row = await self._get_agent(agent_id)
@@ -127,6 +128,7 @@ class EngineBridge:
             source_name=source_name or ("私聊" if source == "private" else "群聊"),
             sender_name=sender_name,
             content=user_message,
+            content_type=content_type,
             on_chunk=on_chunk,
             on_done=on_done,
         )

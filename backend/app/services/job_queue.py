@@ -26,6 +26,7 @@ class AgentJob:
     sender_id: str = ""       # user_id / agent_id / "workflow_system"
     sender_name: str = ""     # "调度员" / "Beta" / "工作流引擎"
     content: str = ""         # message content / workflow instruction
+    content_type: str = "text"  # "text" | "image" | "file"
 
     # Optional: user can set a display name override for this job
     sender_display: str = ""

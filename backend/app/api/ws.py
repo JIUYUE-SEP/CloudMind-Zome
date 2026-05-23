@@ -290,6 +290,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                     source_name=f"与{user.nickname}的私聊",
                     sender_name=user.nickname,
                     user_id=user.id,
+                    content_type=content_type,
                 )
             return
 
@@ -363,6 +364,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 source_name=source_name,
                 sender_name=user.nickname,
                 user_id=user.id,
+                content_type=content_type,
             )))
         agent_replies = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -452,6 +454,7 @@ async def _stream_single_agent(
     source_name: str,
     sender_name: str,
     user_id: str = "",
+    content_type: str = "text",
 ) -> tuple[str, str]:
     state = _engine_state()
     bridge = EngineBridge(
@@ -494,6 +497,7 @@ async def _stream_single_agent(
             source=source,
             source_name=source_name,
             sender_name=sender_name,
+            content_type=content_type,
         ):
             # Check private stop signal
             if source == "private" and _check_stop_signal(signal_key):

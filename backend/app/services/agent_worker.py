@@ -172,6 +172,7 @@ class AgentWorker:
                 source_id=job.source_id,
                 source_name=job.source_name,
                 sender_name=job.sender_name,
+                content_type=job.content_type,
             ):
                 # Check stop signal (global stop or private chat stop)
                 if not self._running or (job.source == "private" and job.stop_event.is_set()):

@@ -13,6 +13,7 @@ from typing import AsyncIterator
 from ..message.types import (
     AgentEvent,
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ThinkingBlock,
@@ -112,6 +113,7 @@ class ReActAgent(AgentBase):
         source_id: str = "",
         source_name: str = "",
         sender_name: str = "",
+        content_type: str = "text",
     ) -> AsyncIterator[AgentEvent]:
         """Stream-based conversation entry point.
 
@@ -150,9 +152,16 @@ class ReActAgent(AgentBase):
             logger.info("Trimmed %d old messages from memory", trim_count)
 
         # Add user message to history
+        if content_type == "image":
+            image_source = await self._resolve_image_source(user_message)
+            user_content: str | list[ContentBlock] = [
+                ImageBlock(source=image_source)
+            ]
+        else:
+            user_content = user_message
         user_msg = Message(
             role="user",
-            content=user_message,
+            content=user_content,
             meta=MessageMeta(
                 session_id=source_id,
                 round=len(self._messages) // 2,
@@ -466,14 +475,25 @@ class ReActAgent(AgentBase):
                         new_blocks.append(b)  # ToolUseBlock unchanged
                 result.append(Message(role=msg.role, content=new_blocks, meta=msg.meta))
             else:
-                tagged = self._tag_message(msg)
-                result.append(
-                    Message(
-                        role=msg.role,
-                        content=tagged,
-                        meta=msg.meta,
+                # Preserve ImageBlock for vision models
+                if isinstance(msg.content, list) and any(isinstance(b, ImageBlock) for b in msg.content):
+                    tagged_prefix = self._tag_prefix(msg)
+                    new_blocks = []
+                    for b in msg.content:
+                        if isinstance(b, ImageBlock):
+                            new_blocks.append(b)
+                        elif isinstance(b, TextBlock):
+                            new_blocks.append(TextBlock(text=f"{tagged_prefix}\n{b.text}"))
+                    result.append(Message(role=msg.role, content=new_blocks, meta=msg.meta))
+                else:
+                    tagged = self._tag_message(msg)
+                    result.append(
+                        Message(
+                            role=msg.role,
+                            content=tagged,
+                            meta=msg.meta,
+                        )
                     )
-                )
         return result
 
     async def _call_llm_with_recovery(
@@ -643,6 +663,49 @@ class ReActAgent(AgentBase):
             elif isinstance(b, ToolResultBlock):
                 parts.append(b.content)
         return "\n".join(parts)
+
+    async def _resolve_image_source(self, url: str) -> dict[str, Any]:
+        """Convert image URL to format suitable for LLM vision API.
+
+        If URL is a local path, read the file and encode as base64 data URL.
+        Otherwise pass through as-is (for externally accessible URLs).
+        """
+        import base64
+        from pathlib import Path
+
+        # If already a data URL or absolute HTTP URL, pass through
+        if url.startswith("data:") or url.startswith("http://") or url.startswith("https://"):
+            return {"url": url}
+
+        # Resolve local file path
+        # URL format: /uploads/{folder}/{filename}
+        if url.startswith("/uploads/"):
+            relative_path = url[len("/uploads/"):]
+            upload_dir = Path.home() / ".cloudmind-zome" / "uploads"
+            file_path = upload_dir / relative_path
+        else:
+            # Try as absolute path
+            file_path = Path(url)
+
+        if file_path.exists():
+            data = file_path.read_bytes()
+            b64 = base64.b64encode(data).decode("utf-8")
+            # Detect MIME type from extension
+            ext = file_path.suffix.lower()
+            mime_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+                ".svg": "image/svg+xml",
+            }
+            mime = mime_map.get(ext, "image/png")
+            return {"url": f"data:{mime};base64,{b64}"}
+
+        # Fallback: pass original URL and hope the provider can access it
+        return {"url": url}
 
     def _truncate_result(self, result: Any, max_chars: int, tool_name: str) -> str:
         """Truncate tool result if necessary."""
