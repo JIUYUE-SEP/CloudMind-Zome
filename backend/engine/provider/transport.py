@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any, AsyncIterator
 
 import httpx
@@ -137,7 +138,7 @@ class ChatCompletionsTransport:
                     idx = tc.index if tc.index is not None else 0
                     if idx not in tool_calls_accum:
                         tool_calls_accum[idx] = {
-                            "id": tc.id or "",
+                            "id": tc.id or str(uuid.uuid4()),
                             "name": tc.function.name if tc.function else "",
                             "arguments": "",
                         }
@@ -330,9 +331,12 @@ class ChatCompletionsTransport:
                     args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                 except json.JSONDecodeError:
                     args = {"_raw_arguments": tc.function.arguments or ""}
+                # Some providers return empty tool_call.id — generate one to keep
+                # the API happy (tool_call_id must be non-empty and match)
+                tool_call_id = tc.id or str(uuid.uuid4())
                 tool_calls.append(
                     {
-                        "id": tc.id,
+                        "id": tool_call_id,
                         "name": tc.function.name,
                         "arguments": args,
                     }
