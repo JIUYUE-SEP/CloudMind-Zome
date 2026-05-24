@@ -56,7 +56,7 @@
                 <pre class="tool-input">{{ JSON.stringify(t.input, null, 2) }}</pre>
               </div>
             </div>
-            <div class="text" :class="{ 'typing-cursor': msg.is_generating && !msg.content }">
+            <div v-else-if="msg.content_type === 'text'" class="text" :class="{ 'typing-cursor': msg.is_generating && !msg.content }">
               <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
                 <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
                 <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>

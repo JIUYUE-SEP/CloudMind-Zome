@@ -36,7 +36,7 @@ def _get_image_config() -> dict:
 
 
 @tool_registry.register(toolset="web", max_result_chars=500, safe_to_parallel=False, timeout=120)
-async def generate_image(prompt: str, size: str = "1024x1024") -> str:
+async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = "") -> str:
     """Generate an image from a text prompt.
 
     Uses the configured image generation API (DALL-E compatible).
@@ -47,6 +47,8 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
         prompt: A detailed description of the image to generate.
         size: Image size. Options: "1024x1024", "1792x1024", "1024x1792".
               Default is "1024x1024".
+        ref_image: Optional reference image URL or local path for image-to-image generation.
+                   Supported by DashScope wan2.7-image-pro. Pass a URL or local file path.
     """
     cfg = _get_image_config()
     api_url = (cfg.get("api_url") or "").strip()
@@ -82,17 +84,40 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
         async with httpx.AsyncClient(timeout=120) as client:
             if provider in ("dashscope", "qwen_image"):
                 # DashScope Wan-Image / Qwen-Image format (messages-based)
-                # size: supports "1K", "2K", "4K" or "1024*1024", "2048*2048" etc.
-                dashscope_size = size.replace("x", "*") if "x" in size else size
+                # wan2.7-image-pro size: "1K", "2K", "4K" (NOT "1024*1024")
+                # Convert "1024x1024" -> "1K", "2048x2048" -> "2K"
+                if size == "1024x1024" or size == "1024*1024":
+                    dashscope_size = "1K"
+                elif size == "2048x2048" or size == "2048*2048":
+                    dashscope_size = "2K"
+                elif size == "4096x4096" or size == "4096*4096":
+                    dashscope_size = "4K"
+                elif size in ("1K", "2K", "4K"):
+                    dashscope_size = size
+                else:
+                    dashscope_size = "1K"
+                # Build content items with optional reference image
+                content_items = []
+                if ref_image:
+                    ref_path = Path(ref_image)
+                    if ref_path.exists():
+                        ref_b64 = base64.b64encode(ref_path.read_bytes()).decode("utf-8")
+                        suffix = ref_path.suffix.lower().lstrip(".")
+                        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(suffix, "image/png")
+                        content_items.append({"image": f"data:{mime};base64,{ref_b64}"})
+                        logger.info("Ref image included: %s (%d bytes)", ref_path, ref_path.stat().st_size)
+                    else:
+                        content_items.append({"image": ref_image})
+                        logger.info("Ref image URL: %s", ref_image)
+                content_items.append({"text": prompt})
+
                 request_body = {
                     "model": model,
                     "input": {
                         "messages": [
                             {
                                 "role": "user",
-                                "content": [
-                                    {"text": prompt}
-                                ]
+                                "content": content_items
                             }
                         ]
                     },
