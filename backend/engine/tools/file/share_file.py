@@ -34,11 +34,13 @@ def share_file(path: str) -> str:
 
     Args:
         path: Path to the file you want to share.
+              Can be a local path, or a URL like /uploads/generated/xxx.png
+              (will be resolved to the local uploads directory).
     """
-    src = Path(path).expanduser()
+    src = _resolve_path(path)
 
     if not src.exists():
-        return f"Error: file not found: {src}"
+        return f"Error: file not found: {path} (resolved to {src})"
 
     if src.is_dir():
         return f"Error: {src.name} is a directory, not a file"
@@ -65,3 +67,26 @@ def share_file(path: str) -> str:
     except OSError as exc:
         logger.exception("share_file failed for %s", src)
         return f"Error: {exc}"
+
+
+def _resolve_path(path: str) -> Path:
+    """Resolve a path to a local file.
+
+    Handles:
+    - Absolute local paths (C:\... or /home/...)
+    - /uploads/... URLs -> ~/.cloudmind-zome/uploads/...
+    - ~/... home-relative paths
+    """
+    p = path.strip()
+
+    # URL-style /uploads/... -> local uploads dir
+    if p.startswith("/uploads/"):
+        local = Path.home() / ".cloudmind-zome" / p.lstrip("/")
+        return local
+
+    # Bare home-relative
+    if p.startswith("~/"):
+        return Path.home() / p[2:]
+
+    # Normal local path
+    return Path(p).expanduser()
