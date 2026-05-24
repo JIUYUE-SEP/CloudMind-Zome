@@ -9,7 +9,7 @@ from ...tool.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
-DOCS_DIR = Path(__file__).parent.parent / "docs"
+DOCS_DIR = Path(__file__).parent.parent.parent / "docs"
 
 # One-line summaries for each doc
 _DOC_SUMMARIES = {
