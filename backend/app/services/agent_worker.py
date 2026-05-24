@@ -117,23 +117,40 @@ class AgentWorker:
             return
 
         while self._running:
+            job: AgentJob | None = None
             try:
-                job: AgentJob = await asyncio.wait_for(self.queue.get(), timeout=60.0)
+                job = await asyncio.wait_for(self.queue.get(), timeout=60.0)
             except asyncio.TimeoutError:
                 await self._maybe_introspect()
                 continue
+            except asyncio.CancelledError:
+                break
 
             self._last_activity = datetime.now(timezone.utc)
             self._current_job = job
             try:
                 await self._execute_job(job)
+            except asyncio.CancelledError:
+                break
             except Exception:
                 logger.exception("Job execution failed for Agent %s", self.agent_id)
-                if job.future and not job.future.done():
+                if job and job.future and not job.future.done():
                     job.future.set_exception(RuntimeError("Job failed"))
             finally:
                 self._current_job = None
-                self.queue.task_done()
+                if job:
+                    self.queue.task_done()
+                # B: Safety net — restore idle if _execute_job's finally was interrupted
+                try:
+                    await asyncio.shield(self._set_db_status("idle"))
+                except Exception:
+                    pass
+
+        # Graceful shutdown: final cleanup
+        try:
+            await asyncio.shield(self._set_db_status("idle"))
+        except Exception:
+            pass
 
     def stop(self) -> None:
         """Signal shutdown."""
@@ -225,8 +242,11 @@ class AgentWorker:
             success = False
 
         finally:
-            # Restore idle status
-            await self._set_db_status("idle")
+            # A: Shield status restore from CancelledError during shutdown
+            try:
+                await asyncio.shield(self._set_db_status("idle"))
+            except Exception:
+                pass
             # Notify caller
             try:
                 await job.on_done(full_content, success)
@@ -293,6 +313,9 @@ class AgentWorker:
                 update(Agent).where(Agent.id == self.agent_id).values(status=status)
             )
             await db.commit()
+        # Sync in-memory state so safety-net checks are accurate
+        if self.agent_row:
+            self.agent_row.status = status
         # Broadcast to all connected clients
         try:
             await event_manager.broadcast({
