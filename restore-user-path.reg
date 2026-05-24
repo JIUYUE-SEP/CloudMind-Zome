@@ -1,4 +1,0 @@
-Windows Registry Editor Version 5.00
-
-[HKEY_CURRENT_USER\Environment]
-"Path"="C:\\Users\\b1953\\AppData\\Local\\Programs\\Python\\Python314;C:\\Users\\b1953\\AppData\\Local\\Programs\\Python\\Python314\\Scripts;C:\\Users\\b1953\\AppData\\Local\\Programs\\Python\\Launcher;C:\\Users\\b1953\\AppData\\Local\\Microsoft\\WindowsApps;F:\\IDE\\Microsoft VS Code\\bin;C:\\Users\\b1953\\AppData\\Roaming\\npm;C:\\Users\\b1953\\.bun\\bin;C:\\Users\\b1953\\go\\bin;C:\\Users\\b1953\\.local\\bin;F:\\Node\\node_global"
