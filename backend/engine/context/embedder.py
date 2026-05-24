@@ -38,10 +38,19 @@ class Embedder:
         if not texts:
             return []
 
+        # Build endpoint: handle "https://host", "https://host/v1", or full path
+        base = self.cfg.base_url.rstrip('/')
+        if base.endswith('/embeddings'):
+            endpoint = base
+        elif base.endswith('/v1'):
+            endpoint = f"{base}/embeddings"
+        else:
+            endpoint = f"{base}/v1/embeddings"
+
         client = self._get_client()
         try:
             resp = await client.post(
-                f"{self.cfg.base_url.rstrip('/')}/embeddings",
+                endpoint,
                 headers={
                     "Authorization": f"Bearer {self.cfg.api_key}",
                     "Content-Type": "application/json",
