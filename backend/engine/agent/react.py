@@ -235,9 +235,22 @@ class ReActAgent(AgentBase):
 
             # Check for tool calls
             if not response.tool_calls:
+                content_text = response.content or ""
+
+                # Fallback: if LLM produced no text but the last tool_result
+                # contains [image:URL] or [file:URL], auto-inject it so the
+                # user actually sees the shared media.
+                if not content_text:
+                    for msg in reversed(self._messages):
+                        if msg.role == "tool":
+                            url = self._extract_shared_url(msg)
+                            if url:
+                                content_text = url
+                                break
+
                 assistant_msg = Message(
                     role="assistant",
-                    content=response.content or "",
+                    content=content_text,
                     meta=MessageMeta(
                         session_id=source_id,
                         round=len(self._messages) // 2,
@@ -249,7 +262,7 @@ class ReActAgent(AgentBase):
                 if response.reasoning_content:
                     assistant_msg.content = [
                         ThinkingBlock(thinking=response.reasoning_content),
-                        TextBlock(text=response.content or ""),
+                        TextBlock(text=content_text),
                     ]
                 self._messages.append(assistant_msg)
                 await self._save_message(assistant_msg, source, source_id, source_name, self.name)
@@ -659,6 +672,16 @@ class ReActAgent(AgentBase):
             elif isinstance(b, ToolResultBlock):
                 parts.append(b.content)
         return "\n".join(parts)
+
+    def _extract_shared_url(self, msg: Message) -> str | None:
+        """If a tool result contains [image:URL] or [file:URL], return it."""
+        import re
+        for b in msg.content:
+            if isinstance(b, ToolResultBlock):
+                m = re.search(r'\[(image|file):(/[^\]]+)\]', b.content)
+                if m:
+                    return f"[{m.group(1)}:{m.group(2)}]"
+        return None
 
     async def _resolve_image_source(self, url: str) -> dict[str, Any]:
         """Convert image URL to format suitable for LLM vision API.
