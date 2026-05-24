@@ -163,19 +163,8 @@ class AgentWorker:
         full_content = ""
         success = True
 
-        async def _text_chunk_cb(text: str) -> None:
-            """Real-time text chunk forwarded from transport stream()."""
-            nonlocal full_content
-            full_content += text
-            try:
-                await job.on_chunk(text)
-                if job.on_text_chunk:
-                    await job.on_text_chunk(text)
-            except Exception:
-                pass
-
         try:
-            # Stream through ReActAgent with real-time text callback
+            # Stream through ReActAgent — all blocks arrive in API order
             async for event in self._react_agent.stream(
                 user_message=job.content,
                 scene_info=scene_info,
@@ -184,7 +173,6 @@ class AgentWorker:
                 source_name=job.source_name,
                 sender_name=job.sender_name,
                 content_type=job.content_type,
-                on_text_chunk=_text_chunk_cb,
             ):
                 # Check stop signal (global stop or private chat stop)
                 if not self._running or (job.source == "private" and job.stop_event.is_set()):
@@ -194,15 +182,18 @@ class AgentWorker:
                     break
 
                 if event.type == "content":
-                    # Already forwarded via on_text_chunk callback
-                    pass
+                    text = event.data.text if hasattr(event.data, "text") else str(event.data)
+                    full_content += text
+                    try:
+                        await job.on_chunk(text)
+                        if job.on_text_chunk:
+                            await job.on_text_chunk(text)
+                    except Exception:
+                        pass
 
                 elif event.type == "thinking":
                     thinking_text = event.data.thinking if hasattr(event.data, "thinking") else str(event.data)
                     try:
-                        # Send as a single frame — NEVER use _stream_text for
-                        # prefixed control frames because chunking will split
-                        # the prefix and cause it to leak as plain text.
                         await job.on_chunk(f"\x01THINKING\x01{thinking_text}")
                     except Exception:
                         pass

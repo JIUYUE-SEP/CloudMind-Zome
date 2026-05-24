@@ -8,7 +8,6 @@ Differences are handled by ThinkingProfile.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 from typing import Any, AsyncIterator
@@ -73,49 +72,13 @@ class ChatCompletionsTransport:
         self,
         messages: list[Message],
         tools: list[dict] | None = None,
-        on_text_chunk: Any | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Send messages and get a complete response.
-
-        If on_text_chunk is provided, uses streaming mode under the hood
-        and forwards each text token to the callback in real time.
-        """
-        if on_text_chunk is None:
-            api_messages = self._format_messages(messages)
-            api_kwargs = self._build_request_kwargs(api_messages, tools, kwargs)
-            response = await self._call_with_retry(api_kwargs)
-            return self._normalize_response(response)
-
-        # Streaming path: reuse stream() and collect into LLMResponse
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_calls: list[dict] = []
-
-        async for block in self.stream(messages, tools, **kwargs):
-            if isinstance(block, TextBlock):
-                content_parts.append(block.text)
-                if inspect.iscoroutinefunction(on_text_chunk):
-                    await on_text_chunk(block.text)
-                else:
-                    on_text_chunk(block.text)
-            elif isinstance(block, ThinkingBlock):
-                reasoning_parts.append(block.thinking)
-            elif isinstance(block, ToolUseBlock):
-                tool_calls.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "arguments": block.input,
-                })
-
-        return LLMResponse(
-            content="".join(content_parts) or None,
-            reasoning_content="".join(reasoning_parts) or None,
-            tool_calls=tool_calls,
-            finish_reason="",
-            usage={},
-            raw=None,
-        )
+        """Send messages and get a complete (non-streaming) response."""
+        api_messages = self._format_messages(messages)
+        api_kwargs = self._build_request_kwargs(api_messages, tools, kwargs)
+        response = await self._call_with_retry(api_kwargs)
+        return self._normalize_response(response)
 
     async def stream(
         self,

@@ -25,6 +25,7 @@ from .base import AgentBase
 from .message_builder import MessageBuilder
 from .stop import SmartStop
 from ..provider.transport import ChatCompletionsTransport
+from ..provider.thinking.base import LLMResponse
 from ..tool.registry import ToolRegistry
 from ..context.manager import ContextManager
 from ..context.embedder import Embedder
@@ -121,7 +122,6 @@ class ReActAgent(AgentBase):
         source_name: str = "",
         sender_name: str = "",
         content_type: str = "text",
-        on_text_chunk: Any | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream-based conversation entry point.
 
@@ -193,31 +193,47 @@ class ReActAgent(AgentBase):
             messages = self._msg_builder.build(self._messages, scene_info)
             messages = await self.on_before_llm(messages)
 
-            # Step 3: Call LLM with retry + fallback
+            # Step 3: Call LLM via true streaming (retry/fallback inline)
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_calls: list[dict] = []
+
             try:
-                response = await self._call_llm_with_recovery(
-                    messages=messages, tools=await self._get_tools(),
-                    on_text_chunk=on_text_chunk,
-                )
+                async for block in self._call_llm_stream_with_recovery(
+                    messages=messages, tools=await self._get_tools()
+                ):
+                    if isinstance(block, ThinkingBlock):
+                        reasoning_parts.append(block.thinking)
+                        yield AgentEvent(type="thinking", data=block)
+                    elif isinstance(block, TextBlock):
+                        content_parts.append(block.text)
+                        yield AgentEvent(type="content", data=block)
+                    elif isinstance(block, ToolUseBlock):
+                        tool_calls.append({
+                            "id": block.id,
+                            "name": block.name,
+                            "arguments": block.input,
+                        })
+                        yield AgentEvent(type="tool_call", data=block)
             except Exception as e:
-                logger.error("LLM call failed after all retries and fallbacks: %s", e)
+                logger.error("LLM stream failed after all retries and fallbacks: %s", e)
                 yield AgentEvent(type="error", data=TextBlock(text=str(e)))
                 yield AgentEvent(type="done")
                 return
 
-            # Step 4: Process response
-            if response.reasoning_content:
-                yield AgentEvent(
-                    type="thinking",
-                    data=ThinkingBlock(thinking=response.reasoning_content),
-                )
+            # Assemble response from collected parts
+            response = LLMResponse(
+                content="".join(content_parts) or None,
+                reasoning_content="".join(reasoning_parts) or None,
+                tool_calls=tool_calls,
+                finish_reason="",
+                usage={},
+            )
 
-            if response.content:
-                yield AgentEvent(type="content", data=TextBlock(text=response.content))
-
-            # Track tokens
-            if response.usage:
-                self.smart_stop.add_tokens(response.usage.get("total_tokens", 0))
+            # Track tokens (streaming path has no usage; estimate)
+            text_len = len((response.content or "").encode("utf-8"))
+            thinking_len = len((response.reasoning_content or "").encode("utf-8"))
+            self.smart_stop.add_tokens(max(1, (text_len + thinking_len) // 3))
 
             stop_decision = self.smart_stop.check(self._messages)
 
@@ -228,27 +244,17 @@ class ReActAgent(AgentBase):
                 return
 
             if stop_decision.inject_hint:
-                # SmartStop hint is injected into _messages for the current Job's
-                # LLM context, but NOT saved to long-term memory (agent_messages).
-                # These are internal intervention messages, not conversation history.
-                # Use a special meta flag so _build_messages can skip them in
-                # scene separators and _load_history filters them on restart.
                 hint_msg = Message(
                     role="system",
                     content=stop_decision.inject_hint,
                     meta=MessageMeta(session_id=source_id, compressed=False),
                 )
-                # Tag with a special attribute so we can purge it after this Job
                 hint_msg._smart_hint = True  # type: ignore[attr-defined]
                 self._messages.append(hint_msg)
 
             # Check for tool calls
             if not response.tool_calls:
                 content_text = response.content or ""
-
-                # Fallback: if LLM produced no text but the last tool_result
-                # contains [image:URL] or [file:URL], auto-inject it so the
-                # user actually sees the shared media.
                 if not content_text:
                     for msg in reversed(self._messages):
                         if msg.role == "tool":
@@ -410,38 +416,36 @@ class ReActAgent(AgentBase):
     # Internal
     # ------------------------------------------------------------------
 
-    async def _call_llm_with_recovery(
+    async def _call_llm_stream_with_recovery(
         self,
         messages: list[Message],
         tools: list[dict],
-        on_text_chunk: Any | None = None,
-    ) -> Any:
-        """Call LLM with retry and provider fallback.
+    ) -> AsyncIterator[ContentBlock]:
+        """Stream LLM response with retry and provider fallback.
 
-        Design reference: §6.9 错误恢复
+        Yields ContentBlock as they arrive from the API.
+        On retry/fallback, re-opens the stream from the new provider.
         """
         attempt = 0
         last_error: Exception | None = None
 
         while True:
             try:
-                return await self._current_transport.chat(
-                    messages=messages, tools=tools,
-                    on_text_chunk=on_text_chunk,
-                )
+                async for block in self._current_transport.stream(messages, tools):
+                    yield block
+                return
             except Exception as e:
                 last_error = e
                 current_provider = self._fallback.current_provider
                 classified = classify_error(e, provider=current_provider)
 
-                # Retry if retryable
                 if classified.retryable:
                     delay = get_retry_delay(
                         classified.reason.value, attempt, self._retry_config
                     )
                     if delay >= 0:
                         logger.warning(
-                            "LLM call failed on %s (attempt %d, %s), "
+                            "LLM stream failed on %s (attempt %d, %s), "
                             "retrying in %.1fs: %s",
                             current_provider,
                             attempt,
@@ -453,14 +457,10 @@ class ReActAgent(AgentBase):
                         attempt += 1
                         continue
 
-                # No more retries, try fallback
                 if self._fallback.should_fallback(classified):
                     old_provider = current_provider
                     next_provider = self._fallback.fallback()
-                    if (
-                        next_provider
-                        and next_provider in self._transports
-                    ):
+                    if next_provider and next_provider in self._transports:
                         logger.warning(
                             "Falling back from %s to %s (%s)",
                             old_provider,
@@ -468,10 +468,9 @@ class ReActAgent(AgentBase):
                             classified.reason.value,
                         )
                         self._current_transport = self._transports[next_provider]
-                        attempt = 0  # Reset retry counter for new provider
+                        attempt = 0
                         continue
 
-                # Exhausted all options
                 raise last_error
 
     async def _execute_tool(self, tool_call: dict) -> ToolResultBlock:
