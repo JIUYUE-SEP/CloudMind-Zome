@@ -31,6 +31,28 @@ from .ws_protocol import (
 
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------------
+# Session-level task management for private chat (root fix for blocking)
+# ------------------------------------------------------------------
+# session_id -> asyncio.Task running _private_agent_worker
+_private_agent_tasks: dict[str, asyncio.Task] = {}
+
+# session_id -> Lock for serializing message persistence
+_session_persist_locks: dict[str, asyncio.Lock] = {}
+
+# WebSocket instance id -> Lock for safe send_json
+_ws_send_locks: dict[int, asyncio.Lock] = {}
+
+
+async def _safe_send(ws: WebSocket, frame: dict) -> None:
+    """Thread-safe WebSocket send to prevent frame interleaving."""
+    lock = _ws_send_locks.setdefault(id(ws), asyncio.Lock())
+    async with lock:
+        try:
+            await ws.send_json(frame)
+        except Exception:
+            pass  # WS may have disconnected
+
 
 # ------------------------------------------------------------------
 # chat.send handler
@@ -130,7 +152,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
         }))
 
         # ------------------------------------------------------------------
-        # Private chat flow
+        # Private chat flow (non-blocking: agent runs in background task)
         # ------------------------------------------------------------------
         if session_type == "private":
             target_id = None
@@ -138,31 +160,19 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
             for m in member_rows:
                 if m.member_id != user.id and m.member_type == "agent":
                     target_id = m.member_id
-                    # lookup agent name
                     a = await db.execute(select(Agent).where(Agent.id == m.member_id))
                     agent = a.scalar_one_or_none()
                     if agent:
                         target_name = agent.name
                     break
             if target_id:
-                # Intimacy: user sends msg in private chat
                 await add_score(target_id, user.id, "private_user_msg")
-                # Auto-interrupt running private chat Job
-                job = get_current_job(target_id)
-                if job and job.source == "private":
-                    signal_key = f"{session_id}:{target_id}"
-                    _set_stop_signal(signal_key)
-                    job.stop_event.set()
-                    logger.info("Auto-interrupt private Job for agent %s", target_id)
-                await _stream_single_agent(
+                await _cancel_and_start_private_agent(
                     session_id=session_id,
                     agent_id=target_id,
                     agent_name=target_name,
                     user_message=content,
                     ws=ws,
-                    broadcast_to=None,
-                    source="private",
-                    source_name=f"与{user.nickname}的私聊",
                     sender_name=user.nickname,
                     user_id=user.id,
                     content_type=content_type,
@@ -270,6 +280,84 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
             end_frame = {"type": "intermind.end", "payload": {"session_id": session_id}}
             await ws.send_json(end_frame)
             await manager.broadcast_to_session_members(other_members, end_frame)
+
+
+# ------------------------------------------------------------------
+# Private chat agent task management (root fix: non-blocking WS loop)
+# ------------------------------------------------------------------
+async def _cancel_and_start_private_agent(
+    session_id: str,
+    agent_id: str,
+    agent_name: str,
+    user_message: str,
+    ws: WebSocket,
+    sender_name: str,
+    user_id: str,
+    content_type: str,
+) -> None:
+    """Cancel any running private agent task for this session and start a new one."""
+    # 1. Cancel old background task
+    old_task = _private_agent_tasks.get(session_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+        try:
+            await old_task
+        except asyncio.CancelledError:
+            pass
+
+    # 2. Set stop signal for Worker-level job (double insurance)
+    signal_key = f"{session_id}:{agent_id}"
+    _set_stop_signal(signal_key)
+    job = get_current_job(agent_id)
+    if job and job.source == "private":
+        job.stop_event.set()
+        logger.info("Auto-interrupt private Job for agent %s", agent_id)
+
+    # 3. Start new background task
+    task = asyncio.create_task(_private_agent_worker(
+        session_id=session_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        user_message=user_message,
+        ws=ws,
+        sender_name=sender_name,
+        user_id=user_id,
+        content_type=content_type,
+    ))
+    _private_agent_tasks[session_id] = task
+
+
+async def _private_agent_worker(
+    session_id: str,
+    agent_id: str,
+    agent_name: str,
+    user_message: str,
+    ws: WebSocket,
+    sender_name: str,
+    user_id: str,
+    content_type: str,
+) -> None:
+    """Background task for private chat agent reply. Handles cancellation gracefully."""
+    try:
+        await _stream_single_agent(
+            session_id=session_id,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            user_message=user_message,
+            ws=ws,
+            broadcast_to=None,
+            source="private",
+            source_name=f"与{sender_name}的私聊",
+            sender_name=sender_name,
+            user_id=user_id,
+            content_type=content_type,
+        )
+    except asyncio.CancelledError:
+        # Normal cancellation when user sends a new message
+        pass
+    finally:
+        # Clean up task registry
+        _private_agent_tasks.pop(session_id, None)
 
 
 # ------------------------------------------------------------------

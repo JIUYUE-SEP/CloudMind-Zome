@@ -6,6 +6,7 @@ Protocol helpers moved to ws_protocol.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -94,7 +95,7 @@ async def websocket_endpoint(ws: WebSocket):
                 continue
 
             if msg_type == "chat.send":
-                await _handle_chat_send(user, payload, ws)
+                asyncio.create_task(_handle_chat_send(user, payload, ws))
                 continue
 
     except WebSocketDisconnect:
