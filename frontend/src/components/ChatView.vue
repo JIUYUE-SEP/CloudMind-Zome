@@ -50,7 +50,7 @@
             <div v-if="msg.tool_calls?.length" class="tool-bar">
               <span v-for="t in msg.tool_calls" :key="t.name" class="tool-tag">▶ {{ t.name }}</span>
             </div>
-            <div v-if="msg.content" class="text">
+            <div v-if="msg.content" class="text" :class="{ 'typing-cursor': msg.is_generating }">
               <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
                 <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
                 <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>
@@ -285,6 +285,7 @@ function onThinking(e: any) {
       sender_id: p.agent_id, sender_name: p.agent_name,
       sender_type: 'agent', content_type: 'text', content: '',
       reasoning: p.thinking, tool_calls: [],
+      is_generating: true,
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
@@ -311,6 +312,7 @@ function onToolCall(e: any) {
       sender_id: p.agent_id, sender_name: p.agent_name,
       sender_type: 'agent', content_type: 'text', content: '',
       reasoning: '', tool_calls: [{ name: p.tool_name, input: p.tool_input }],
+      is_generating: true,
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
@@ -334,6 +336,11 @@ function syncMessages() {
     if (existing) {
       existing.content += msg.content || ''
       existing.timestamp = msg.timestamp
+      existing.is_generating = true
+      if (existing._genTimeout) clearTimeout(existing._genTimeout)
+      existing._genTimeout = setTimeout(() => {
+        existing.is_generating = false
+      }, 3000)
     } else {
       messages.value.push({
         id: `batch_${msg.batch_id}`,
@@ -344,6 +351,7 @@ function syncMessages() {
         content: msg.content || '',
         reasoning: '',
         tool_calls: [],
+        is_generating: true,
         batch_id: msg.batch_id,
         timestamp: msg.timestamp,
         is_me: msg.is_me,
@@ -463,6 +471,9 @@ function formatTime(ts: string) {
 .reasoning-body { padding: 8px 10px; background: #141B24; border: 1px solid #1E2731; border-radius: 6px; font-size: 11px; color: #8899AA; white-space: pre-wrap; word-break: break-word; font-family: monospace; line-height: 1.5; margin-bottom: 8px; }
 .tool-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .tool-tag { padding: 2px 8px; background: rgba(0,229,201,0.06); border: 1px solid rgba(0,229,201,0.15); border-radius: 4px; font-size: 11px; color: #00E5C9; }
+
+.typing-cursor::after { content: '▌'; animation: blink 1s step-end infinite; color: #00E5C9; margin-left: 2px; }
+@keyframes blink { 50% { opacity: 0; } }
 
 .typing-indicator { display: flex; gap: 4px; align-self: flex-start; padding: 12px 14px; background: #1E2731; border-radius: 12px; }
 .typing-indicator span { width: 6px; height: 6px; background: #5A6A7A; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }
