@@ -51,21 +51,14 @@
                   <span v-else>{{ seg.value }}</span>
                 </template>
               </div>
-              <div v-else-if="msg.content_type === 'thinking'" class="gray-block">
-                <div class="gray-header" @click="toggleExpand(idx)">
-                  <span>◉ thinking</span>
-                  <span>{{ expanded[idx] ? '收起' : '展开' }}</span>
-                </div>
-                <div v-if="expanded[idx]" class="gray-body">{{ msg.content }}</div>
+              <div v-if="msg.reasoning" class="reasoning-bar" @click="toggleExpand(msg.id)">
+                <span>{{ expanded[msg.id] ? '▼' : '▶' }} 已思考 {{ msg.reasoning.length }} 字</span>
               </div>
-              <div v-else-if="msg.content_type === 'tool_call'" class="gray-block">
-                <div class="gray-header" @click="toggleExpand(idx)">
-                  <span>◐ {{ msg.tool_name }}</span>
-                  <span>{{ expanded[idx] ? '收起' : '展开' }}</span>
-                </div>
-                <div v-if="expanded[idx]" class="gray-body">{{ msg.tool_input }}</div>
+              <div v-if="expanded[msg.id] && msg.reasoning" class="reasoning-body">{{ msg.reasoning }}</div>
+              <div v-if="msg.tool_calls?.length" class="tool-bar">
+                <span v-for="t in msg.tool_calls" :key="t.name" class="tool-tag">▶ {{ t.name }}</span>
               </div>
-              <div v-else class="text">
+              <div v-if="msg.content" class="text">
                 <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
                   <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
                   <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>
@@ -249,7 +242,7 @@ const members = ref<any[]>([])
 const settings = ref({ intermind_enabled: false, random_reply_count: 1, routing_mode: 'intent' })
 const messages = ref<any[]>([])
 const agentStatuses = ref<Record<string, string>>({})
-const expanded = ref<Record<number, boolean>>({})
+const expanded = ref<Record<string, boolean>>({})
 const showSearch = ref(false)
 const searchQuery = ref('')
 const previewUrl = ref('')
@@ -305,8 +298,8 @@ const availableAgents = computed(() => {
   return (agentsStore.list || []).filter((a: any) => !memberIds.has(a.id))
 })
 
-function toggleExpand(idx: number) {
-  expanded.value[idx] = !expanded.value[idx]
+function toggleExpand(id: string) {
+  expanded.value[id] = !expanded.value[id]
 }
 
 const mentionableMembers = computed(() => {
@@ -410,61 +403,85 @@ function onIntermindEnd(e: any) {
 function onThinking(e: any) {
   const p = e.detail
   if (p?.session_id !== props.groupId) return
-  const last = messages.value[messages.value.length - 1]
-  if (last && last.content_type === 'thinking' && last.batch_id === p.batch_id) {
-    messages.value[messages.value.length - 1] = { ...last, content: last.content + p.thinking }
+  const existing = messages.value.find(
+    (m: any) => m.batch_id === p.batch_id && m.sender_id === p.agent_id
+  )
+  if (existing) {
+    existing.reasoning = (existing.reasoning || '') + p.thinking
   } else {
     messages.value.push({
-      id: `think_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      sender_id: p.agent_id, sender_name: p.agent_name, content: p.thinking,
-      sender_type: 'agent', content_type: 'thinking', batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
+      id: `batch_${p.batch_id}`,
+      sender_id: p.agent_id, sender_name: p.agent_name,
+      sender_type: 'agent', content_type: 'text', content: '',
+      reasoning: p.thinking, tool_calls: [],
+      batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => onNewContent())
+  onNewContent()
 }
 
 function onToolCall(e: any) {
   const p = e.detail
   if (p?.session_id !== props.groupId) return
-  const last = messages.value[messages.value.length - 1]
-  if (last && last.content_type === 'tool_call' && last.batch_id === p.batch_id && last.tool_name === p.tool_name) {
-    messages.value[messages.value.length - 1] = { ...last, content: last.content + '\n' + JSON.stringify(p.tool_input, null, 2) }
+  const existing = messages.value.find(
+    (m: any) => m.batch_id === p.batch_id && m.sender_id === p.agent_id
+  )
+  if (existing) {
+    const tc = existing.tool_calls?.find((t: any) => t.name === p.tool_name)
+    if (tc) {
+      tc.input = p.tool_input
+    } else {
+      existing.tool_calls = existing.tool_calls || []
+      existing.tool_calls.push({ name: p.tool_name, input: p.tool_input })
+    }
   } else {
     messages.value.push({
-      id: `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `batch_${p.batch_id}`,
       sender_id: p.agent_id, sender_name: p.agent_name,
-      sender_type: 'agent', content: JSON.stringify(p.tool_input, null, 2), tool_name: p.tool_name,
-      tool_input: JSON.stringify(p.tool_input, null, 2), content_type: 'tool_call',
+      sender_type: 'agent', content_type: 'text', content: '',
+      reasoning: '', tool_calls: [{ name: p.tool_name, input: p.tool_input }],
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => onNewContent())
+  onNewContent()
 }
 
 watch(() => chat.messagesMap[props.groupId], () => syncMessages(), { deep: true })
 
 function syncMessages() {
   const list = chat.messagesMap[props.groupId] || []
-  const transient = messages.value.filter(
-    (m: any) => (m.content_type === 'thinking' || m.content_type === 'tool_call') && !list.some((x: any) => x.id === m.id)
-  )
-  if (transient.length > 20) transient.splice(0, transient.length - 20)
-  const merged: any[] = []
-  const placed = new Set<string>()
   for (const msg of list) {
-    if (msg.batch_id) {
-      for (const t of transient) {
-        if (t.batch_id === msg.batch_id && !placed.has(t.id)) { merged.push(t); placed.add(t.id) }
+    if (!msg.batch_id) {
+      if (!messages.value.some((m: any) => m.id === msg.id)) {
+        messages.value.push(msg)
       }
+      continue
     }
-    merged.push(msg)
+    const existing = messages.value.find(
+      (m: any) => m.batch_id === msg.batch_id && m.sender_id === msg.sender_id
+    )
+    if (existing) {
+      existing.content += msg.content || ''
+      existing.timestamp = msg.timestamp
+    } else {
+      messages.value.push({
+        id: `batch_${msg.batch_id}`,
+        sender_id: msg.sender_id,
+        sender_name: msg.sender_name,
+        sender_type: msg.sender_type,
+        content_type: 'text',
+        content: msg.content || '',
+        reasoning: '',
+        tool_calls: [],
+        batch_id: msg.batch_id,
+        timestamp: msg.timestamp,
+        is_me: msg.is_me,
+        reply_to: msg.reply_to,
+      })
+    }
   }
-  for (const t of transient) { if (!placed.has(t.id)) merged.push(t) }
-  messages.value = merged
-
-  const last = list[list.length - 1]
-  if (!last) return
-  nextTick(() => onNewContent())
+  messages.value.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+  onNewContent()
 }
 
 async function fetchGroup() {
@@ -684,6 +701,12 @@ function formatTime(ts: string) {
 .gray-block { background: #141B24; border: 1px solid #1E2731; border-radius: 6px; padding: 8px 10px; font-size: 12px; color: #5A6A7A; margin: 4px 0; max-width: 100%; }
 .gray-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
 .gray-body { margin-top: 6px; padding-top: 6px; border-top: 1px solid #1E2731; color: #8899AA; white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 11px; line-height: 1.5; }
+
+.reasoning-bar { padding: 3px 8px; background: rgba(0,0,0,0.15); border-radius: 4px; font-size: 11px; color: #5A6A7A; cursor: pointer; margin-bottom: 6px; display: inline-block; }
+.reasoning-bar:hover { background: rgba(0,0,0,0.25); }
+.reasoning-body { padding: 8px 10px; background: #141B24; border: 1px solid #1E2731; border-radius: 6px; font-size: 11px; color: #8899AA; white-space: pre-wrap; word-break: break-word; font-family: monospace; line-height: 1.5; margin-bottom: 8px; }
+.tool-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.tool-tag { padding: 2px 8px; background: rgba(0,229,201,0.06); border: 1px solid rgba(0,229,201,0.15); border-radius: 4px; font-size: 11px; color: #00E5C9; }
 
 .intermind-divider { align-self: center; font-size: 12px; color: #5A6A7A; display: flex; align-items: center; gap: 10px; padding: 8px 0; }
 .break-btn { padding: 2px 8px; font-size: 11px; border: 1px solid #FF6B35; color: #FF6B35; background: transparent; border-radius: 4px; cursor: pointer; }

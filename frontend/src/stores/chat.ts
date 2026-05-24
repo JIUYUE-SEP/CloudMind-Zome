@@ -25,6 +25,7 @@ interface Message {
   timestamp: string
   is_me: boolean
   batch_id?: string
+  reply_to?: any
 }
 
 export const useChatStore = defineStore('chat', () => {
