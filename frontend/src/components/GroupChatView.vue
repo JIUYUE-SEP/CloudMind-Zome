@@ -55,10 +55,16 @@
                 <span>{{ expanded[msg.id] ? '▼' : '▶' }} 已思考 {{ msg.reasoning.length }} 字</span>
               </div>
               <div v-if="expanded[msg.id] && msg.reasoning" class="reasoning-body">{{ msg.reasoning }}</div>
-              <div v-if="msg.tool_calls?.length" class="tool-bar">
+              <div v-if="msg.tool_calls?.length" class="tool-bar" @click="toggleExpand(`${msg.id}_tools`)">
                 <span v-for="t in msg.tool_calls" :key="t.name" class="tool-tag">▶ {{ t.name }}</span>
               </div>
-              <div v-if="msg.content" class="text" :class="{ 'typing-cursor': msg.is_generating }">
+              <div v-if="expanded[`${msg.id}_tools`]" class="tool-detail">
+                <div v-for="t in msg.tool_calls" :key="t.name" class="tool-item">
+                  <div class="tool-name">{{ t.name }}</div>
+                  <pre class="tool-input">{{ JSON.stringify(t.input, null, 2) }}</pre>
+                </div>
+              </div>
+              <div class="text" :class="{ 'typing-cursor': msg.is_generating && !msg.content }">
                 <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
                   <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
                   <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>
@@ -256,18 +262,16 @@ const showNewMessageTip = ref(false)
 
 function onUserScroll() {
   if (isProgrammaticScroll.value) return
-  autoScroll.value = false
-  showNewMessageTip.value = true
-}
-
-function checkAutoScrollRecovery() {
   const el = msgArea.value
   if (!el) return
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight
   if (distance < 50 && !autoScroll.value) {
     autoScroll.value = true
     showNewMessageTip.value = false
+    return
   }
+  autoScroll.value = false
+  showNewMessageTip.value = true
 }
 
 function scrollToBottom() {
@@ -453,38 +457,23 @@ watch(() => chat.messagesMap[props.groupId], () => syncMessages(), { deep: true 
 function syncMessages() {
   const list = chat.messagesMap[props.groupId] || []
   for (const msg of list) {
-    if (!msg.batch_id) {
-      if (!messages.value.some((m: any) => m.id === msg.id)) {
-        messages.value.push(msg)
-      }
-      continue
-    }
-    const existing = messages.value.find(
-      (m: any) => m.batch_id === msg.batch_id && m.sender_id === msg.sender_id
-    )
+    const localId = msg.batch_id ? `batch_${msg.batch_id}` : msg.id
+    const existing = messages.value.find((m: any) => m.id === localId)
     if (existing) {
-      existing.content += msg.content || ''
+      existing.content = msg.content || ''
       existing.timestamp = msg.timestamp
-      existing.is_generating = true
-      if (existing._genTimeout) clearTimeout(existing._genTimeout)
-      existing._genTimeout = setTimeout(() => {
-        existing.is_generating = false
-      }, 3000)
+      existing.is_generating = msg.is_generating ?? false
+      if (existing.is_generating) {
+        if (existing._genTimeout) clearTimeout(existing._genTimeout)
+        existing._genTimeout = setTimeout(() => { existing.is_generating = false }, 3000)
+      }
     } else {
       messages.value.push({
-        id: `batch_${msg.batch_id}`,
-        sender_id: msg.sender_id,
-        sender_name: msg.sender_name,
-        sender_type: msg.sender_type,
-        content_type: 'text',
-        content: msg.content || '',
+        ...msg,
+        id: localId,
         reasoning: '',
         tool_calls: [],
-        is_generating: true,
-        batch_id: msg.batch_id,
-        timestamp: msg.timestamp,
-        is_me: msg.is_me,
-        reply_to: msg.reply_to,
+        is_generating: msg.is_generating ?? false,
       })
     }
   }
@@ -686,7 +675,8 @@ function formatTime(ts: string) {
 .msg-row.them { justify-content: flex-start; }
 .msg-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; margin-top: 4px; }
 
-.bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
+.bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; animation: bubbleIn 0.18s ease-out; }
+@keyframes bubbleIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .msg-row.them .bubble { background: #1E2731; color: #D8E1EC; border-top-left-radius: 4px; }
 .msg-row.me .bubble { background: #E8EDF2; color: #0B0F17; border-top-right-radius: 4px; }
 .sender { font-size: 11px; color: #8899AA; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
@@ -714,6 +704,11 @@ function formatTime(ts: string) {
 .reasoning-bar:hover { background: rgba(0,0,0,0.25); }
 .reasoning-body { padding: 8px 10px; background: #141B24; border: 1px solid #1E2731; border-radius: 6px; font-size: 11px; color: #8899AA; white-space: pre-wrap; word-break: break-word; font-family: monospace; line-height: 1.5; margin-bottom: 8px; }
 .tool-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.tool-detail { padding: 8px 10px; background: #141B24; border: 1px solid #1E2731; border-radius: 6px; margin-bottom: 8px; }
+.tool-item { margin-bottom: 6px; }
+.tool-item:last-child { margin-bottom: 0; }
+.tool-name { font-size: 11px; color: #00E5C9; margin-bottom: 4px; }
+.tool-input { font-size: 11px; color: #8899AA; white-space: pre-wrap; word-break: break-word; font-family: monospace; margin: 0; }
 .tool-tag { padding: 2px 8px; background: rgba(0,229,201,0.06); border: 1px solid rgba(0,229,201,0.15); border-radius: 4px; font-size: 11px; color: #00E5C9; }
 
 .typing-cursor::after { content: '▌'; animation: blink 1s step-end infinite; color: #00E5C9; margin-left: 2px; }

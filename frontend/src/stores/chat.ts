@@ -26,6 +26,7 @@ interface Message {
   is_me: boolean
   batch_id?: string
   reply_to?: any
+  is_generating?: boolean
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -70,10 +71,11 @@ export const useChatStore = defineStore('chat', () => {
     if (idx >= 0 && msg.batch_id) {
       // Append to existing batch
       const updated = [...list]
-      updated[idx] = { ...updated[idx], content: updated[idx].content + msg.content }
+      updated[idx] = { ...updated[idx], content: updated[idx].content + msg.content, is_generating: true }
       messagesMap.value[msg.session_id] = updated
     } else {
-      messagesMap.value[msg.session_id] = [...list, msg]
+      const isAgentStream = msg.sender_type === 'agent' && !!msg.batch_id
+      messagesMap.value[msg.session_id] = [...list, { ...msg, is_generating: isAgentStream }]
       // Increment unread only for NEW messages (not batch chunks)
       if (msg.session_id !== currentSessionId.value && !msg.is_me) {
         unreadMap.value[msg.session_id] = (unreadMap.value[msg.session_id] || 0) + 1
