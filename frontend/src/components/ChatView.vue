@@ -258,10 +258,9 @@ async function doSearch() {
 function onThinking(e: any) {
   const p = e.detail
   if (p?.session_id !== props.sessionId) return
-  const existing = messages.value.find((m: any) => m.content_type === 'thinking' && m.batch_id === p.batch_id)
-  if (existing) {
-    const idx = messages.value.indexOf(existing)
-    messages.value.splice(idx, 1, { ...existing, content: existing.content + p.thinking })
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.content_type === 'thinking' && last.batch_id === p.batch_id) {
+    messages.value[messages.value.length - 1] = { ...last, content: last.content + p.thinking }
   } else {
     messages.value.push({
       id: `think_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
