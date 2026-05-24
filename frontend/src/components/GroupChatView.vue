@@ -395,10 +395,9 @@ function onThinking(e: any) {
 function onToolCall(e: any) {
   const p = e.detail
   if (p?.session_id !== props.groupId) return
-  const existing = messages.value.find((m: any) => m.content_type === 'tool_call' && m.batch_id === p.batch_id && m.tool_name === p.tool_name)
-  if (existing) {
-    const idx = messages.value.indexOf(existing)
-    messages.value.splice(idx, 1, { ...existing, content: existing.content + '\n' + JSON.stringify(p.tool_input, null, 2) })
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.content_type === 'tool_call' && last.batch_id === p.batch_id && last.tool_name === p.tool_name) {
+    messages.value[messages.value.length - 1] = { ...last, content: last.content + '\n' + JSON.stringify(p.tool_input, null, 2) }
   } else {
     messages.value.push({
       id: `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
