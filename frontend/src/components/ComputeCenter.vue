@@ -83,7 +83,7 @@
         <input v-model="editForm.base_url" />
 
         <label class="field-label">API Key（留空则不修改）</label>
-        <input v-model="editForm.api_key" placeholder="******" type="password" />
+        <input v-model="editForm.api_key" placeholder="输入新 API Key（留空则不修改）" type="password" />
 
         <div class="edit-section">
           <div class="edit-section-title">模型列表</div>
