@@ -50,9 +50,11 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
 
     import httpx
 
-    # Build endpoint: handle both "https://host" and "https://host/v1"
+    # Build endpoint: handle "https://host", "https://host/v1", or full path
     base = api_url.rstrip('/')
-    if base.endswith('/v1'):
+    if base.endswith('/images/generations'):
+        endpoint = base
+    elif base.endswith('/v1'):
         endpoint = f"{base}/images/generations"
     else:
         endpoint = f"{base}/v1/images/generations"
