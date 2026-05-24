@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -79,16 +80,31 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             if provider == "dashscope":
-                # DashScope Qwen-Image format
-                dashscope_size = size.replace("x", "*")
+                # DashScope Qwen-Image format (messages-based)
+                # Map standard sizes to DashScope-compatible sizes
+                size_map = {
+                    "1024x1024": "2048*2048",
+                    "1792x1024": "2688*1536",
+                    "1024x1792": "1536*2688",
+                }
+                dashscope_size = size_map.get(size, "2048*2048")
                 request_body = {
                     "model": model,
                     "input": {
-                        "prompt": prompt,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"text": prompt}
+                                ]
+                            }
+                        ]
                     },
                     "parameters": {
                         "size": dashscope_size,
                         "n": 1,
+                        "prompt_extend": True,
+                        "watermark": False,
                     },
                 }
             else:
@@ -110,10 +126,18 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                 },
             )
 
+            # Write debug info to file
+            debug_file = Path("image_gen_debug.log")
+            with open(debug_file, "w", encoding="utf-8") as df:
+                df.write(f"ENDPOINT: {endpoint}\n")
+                df.write(f"REQUEST: {json.dumps(request_body, ensure_ascii=False, indent=2)}\n")
+                df.write(f"STATUS: {resp.status_code}\n")
+                df.write(f"RESPONSE: {resp.text[:2000]}\n")
+
             if resp.status_code != 200:
                 err = resp.text[:300]
                 logger.error("Image generation API error %s: %s", resp.status_code, err)
-                return f"Error: image generation failed (HTTP {resp.status_code} | {endpoint})"
+                return f"Error: image gen failed (HTTP {resp.status_code}). Check image_gen_debug.log for details."
 
             data = resp.json()
             b64 = ""
