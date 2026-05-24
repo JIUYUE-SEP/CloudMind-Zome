@@ -262,7 +262,7 @@ function onThinking(e: any) {
       sender_type: 'agent', content_type: 'thinking', batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => scrollToBottomIfNeeded())
+  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
 }
 
 function onToolCall(e: any) {
@@ -281,7 +281,7 @@ function onToolCall(e: any) {
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => scrollToBottomIfNeeded())
+  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
 }
 
 watch(() => chat.messagesMap[props.sessionId], () => syncMessages(), { deep: true })
