@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads" / "generated"
 
 
+def _detect_provider_type(api_url: str) -> str:
+    url_lower = api_url.lower()
+    if "dashscope" in url_lower or "aliyun" in url_lower:
+        return "dashscope"
+    return "openai"
+
+
 def _get_image_config() -> dict:
     """Read image_gen config from the engine config."""
     try:
@@ -50,28 +57,53 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
 
     import httpx
 
-    # Build endpoint: handle "https://host", "https://host/v1", or full path
+    provider = _detect_provider_type(api_url)
+
+    # Build endpoint
     base = api_url.rstrip('/')
     if base.endswith('/images/generations'):
         endpoint = base
     elif base.endswith('/v1'):
-        endpoint = f"{base}/images/generations"
+        if provider == "dashscope":
+            endpoint = f"{base}/images/generations"
+        else:
+            endpoint = f"{base}/images/generations"
     else:
-        endpoint = f"{base}/v1/images/generations"
+        if provider == "dashscope":
+            endpoint = base  # DashScope native endpoint, use as-is
+        else:
+            endpoint = f"{base}/v1/images/generations"
 
-    logger.info("generate_image calling %s with model %s", endpoint, model)
+    logger.info("generate_image calling %s (provider=%s, model=%s)", endpoint, provider, model)
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                endpoint,
-                json={
+            if provider == "dashscope":
+                # DashScope Qwen-Image format
+                dashscope_size = size.replace("x", "*")
+                request_body = {
+                    "model": model,
+                    "input": {
+                        "prompt": prompt,
+                    },
+                    "parameters": {
+                        "size": dashscope_size,
+                        "n": 1,
+                    },
+                }
+            else:
+                # OpenAI format
+                request_body = {
                     "model": model or "dall-e-3",
                     "prompt": prompt,
                     "n": 1,
                     "size": size,
                     "response_format": "b64_json",
-                },
+                }
+
+            resp = await client.post(
+                endpoint,
+                json=request_body,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -84,15 +116,35 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                 return f"Error: image generation failed (HTTP {resp.status_code} | {endpoint})"
 
             data = resp.json()
-            # OpenAI format: {"data": [{"b64_json": "...", "url": "..."}]}
-            # SiliconFlow format: {"images": [{"url": "..."}]}
-            images = data.get("data") or data.get("images", [])
-            if not images:
-                return "Error: no image returned by API"
+            b64 = ""
+            url = ""
 
-            img_data = images[0]
-            b64 = img_data.get("b64_json", "")
-            url = img_data.get("url", "")
+            if provider == "dashscope":
+                # DashScope format 1: output.choices[].message.content[].image
+                output = data.get("output", {})
+                choices = output.get("choices", [])
+                if choices:
+                    content = choices[0].get("message", {}).get("content", [])
+                    for item in content:
+                        if isinstance(item, dict) and item.get("image"):
+                            b64 = item["image"]
+                            break
+                # DashScope format 2: output.results[].url
+                if not b64 and not url:
+                    results = output.get("results", [])
+                    if results:
+                        url = results[0].get("url", "")
+            else:
+                # OpenAI format: {"data": [{"b64_json": "...", "url": "..."}]}
+                # SiliconFlow format: {"images": [{"url": "..."}]}
+                images = data.get("data") or data.get("images", [])
+                if images:
+                    img_data = images[0]
+                    b64 = img_data.get("b64_json", "")
+                    url = img_data.get("url", "")
+
+            if not b64 and not url:
+                return "Error: no image returned by API"
 
             # Save to uploads
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
