@@ -31,32 +31,6 @@ from engine.config.models import AppConfig
 
 logger = logging.getLogger(__name__)
 
-async def _stream_text(
-    text: str,
-    on_chunk: Any,
-    on_text_chunk: Any | None = None,
-    chunk_size: int = 3,
-    delay_ms: float = 12,
-) -> None:
-    """Split text into small chunks and stream them out with tiny delays.
-
-    Simulates streaming for non-streaming LLM backends.
-    """
-    if not text:
-        return
-    for i in range(0, len(text), chunk_size):
-        chunk = text[i:i + chunk_size]
-        await on_chunk(chunk)
-        if on_text_chunk:
-            # Strip THINKING prefix for clean text-only callback
-            clean = chunk
-            if clean.startswith("\x01THINKING\x01"):
-                clean = clean[len("\x01THINKING\x01"):]
-            if clean:
-                await on_text_chunk(clean)
-        if delay_ms > 0:
-            await asyncio.sleep(delay_ms / 1000)
-
 # ------------------------------------------------------------------
 # Global Worker registry
 # ------------------------------------------------------------------
@@ -189,8 +163,19 @@ class AgentWorker:
         full_content = ""
         success = True
 
+        async def _text_chunk_cb(text: str) -> None:
+            """Real-time text chunk forwarded from transport stream()."""
+            nonlocal full_content
+            full_content += text
+            try:
+                await job.on_chunk(text)
+                if job.on_text_chunk:
+                    await job.on_text_chunk(text)
+            except Exception:
+                pass
+
         try:
-            # Stream through ReActAgent
+            # Stream through ReActAgent with real-time text callback
             async for event in self._react_agent.stream(
                 user_message=job.content,
                 scene_info=scene_info,
@@ -199,6 +184,7 @@ class AgentWorker:
                 source_name=job.source_name,
                 sender_name=job.sender_name,
                 content_type=job.content_type,
+                on_text_chunk=_text_chunk_cb,
             ):
                 # Check stop signal (global stop or private chat stop)
                 if not self._running or (job.source == "private" and job.stop_event.is_set()):
@@ -208,12 +194,8 @@ class AgentWorker:
                     break
 
                 if event.type == "content":
-                    text = event.data.text if hasattr(event.data, "text") else str(event.data)
-                    full_content += text
-                    try:
-                        await _stream_text(text, job.on_chunk, job.on_text_chunk, chunk_size=3, delay_ms=12)
-                    except Exception:
-                        logger.warning("on_chunk failed for job %s (client likely disconnected)", job.job_id)
+                    # Already forwarded via on_text_chunk callback
+                    pass
 
                 elif event.type == "thinking":
                     thinking_text = event.data.thinking if hasattr(event.data, "thinking") else str(event.data)

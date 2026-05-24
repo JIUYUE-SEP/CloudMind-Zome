@@ -22,6 +22,7 @@ from ..message.types import (
     MessageMeta,
 )
 from .base import AgentBase
+from .message_builder import MessageBuilder
 from .stop import SmartStop
 from ..provider.transport import ChatCompletionsTransport
 from ..tool.registry import ToolRegistry
@@ -105,6 +106,12 @@ class ReActAgent(AgentBase):
             except Exception as e:
                 logger.warning("Failed to load identity prompt: %s", e)
 
+        self._msg_builder = MessageBuilder(
+            personality_prompt=self._personality_prompt,
+            agent_id=self.agent_id,
+            agent_name=self.name,
+        )
+
     async def stream(
         self,
         user_message: str,
@@ -114,6 +121,7 @@ class ReActAgent(AgentBase):
         source_name: str = "",
         sender_name: str = "",
         content_type: str = "text",
+        on_text_chunk: Any | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream-based conversation entry point.
 
@@ -182,13 +190,14 @@ class ReActAgent(AgentBase):
             self.smart_stop.increment_turn()
 
             # Step 1: Build messages with personality + scene + history
-            messages = self._build_messages(scene_info)
+            messages = self._msg_builder.build(self._messages, scene_info)
             messages = await self.on_before_llm(messages)
 
             # Step 3: Call LLM with retry + fallback
             try:
                 response = await self._call_llm_with_recovery(
-                    messages=messages, tools=await self._get_tools()
+                    messages=messages, tools=await self._get_tools(),
+                    on_text_chunk=on_text_chunk,
                 )
             except Exception as e:
                 logger.error("LLM call failed after all retries and fallbacks: %s", e)
@@ -243,7 +252,7 @@ class ReActAgent(AgentBase):
                 if not content_text:
                     for msg in reversed(self._messages):
                         if msg.role == "tool":
-                            url = self._extract_shared_url(msg)
+                            url = MessageBuilder.extract_shared_url(msg)
                             if url:
                                 content_text = url
                                 break
@@ -401,116 +410,11 @@ class ReActAgent(AgentBase):
     # Internal
     # ------------------------------------------------------------------
 
-    def _build_messages(self, scene_info: str) -> list[Message]:
-        """Build the message list for LLM call.
-
-        Format:
-          1. System: personality prompt (once per call)
-          2. System: meta-discussion guard (always)
-          3. System: scene info (if provided) — injected every turn
-          4. Conversation history with source tags [time | scene | sender]
-        """
-        result: list[Message] = []
-
-        # Personality prompt (not in _messages, injected dynamically)
-        if self._personality_prompt:
-            result.append(
-                Message(
-                    role="system",
-                    content=self._personality_prompt,
-                    meta=MessageMeta(session_id=self.agent_id),
-                )
-            )
-
-        # Scene injection (every turn, because scene changes per-Job)
-        if scene_info:
-            result.append(
-                Message(
-                    role="system",
-                    content=f"────\n{scene_info}\n────\n不要使用 [日期 | 场景 | 人物] 的格式发送消息。",
-                    meta=MessageMeta(session_id=self.agent_id),
-                )
-            )
-
-        # Conversation history with source tags for scene awareness.
-        # Each historical message is prefixed with [time | scene | sender]
-        # so the agent knows where/when/who it came from.
-        # When the scene changes between consecutive messages, insert a
-        # separator so the LLM can clearly distinguish context switches.
-        #
-        # Special handling:
-        # - tool-role messages: keep raw (ToolResultBlock) so transport can
-        #   format them with tool_call_id for the API.
-        # - assistant with ToolUseBlock: also keep raw structure.
-        # - system/compressed messages: pass through as-is.
-        prev_source_id: str | None = None
-        for msg in self._messages:
-            # Skip SmartStop hints in scene separator logic
-            if getattr(msg, '_smart_hint', False):
-                result.append(msg)
-                continue
-
-            # Compressed topic summaries don't belong to any specific scene
-            # so they should not trigger scene separators
-            if getattr(msg.meta, 'compressed', False):
-                result.append(msg)
-                continue
-
-            # Insert scene separator when source changes
-            cur_source_id = getattr(msg.meta, "session_id", "") or ""
-            if prev_source_id is not None and cur_source_id != prev_source_id:
-                result.append(Message(
-                    role="system",
-                    content="── 场景切换 ──",
-                    meta=MessageMeta(session_id=self.agent_id),
-                ))
-            prev_source_id = cur_source_id
-
-            if msg.role == "tool":
-                # Tool results: keep raw ToolResultBlock structure so transport
-                # can format with tool_call_id for the API. No source tag —
-                # tool results always follow their assistant's tool_call.
-                result.append(msg)
-            elif msg.role == "assistant" and any(
-                isinstance(b, ToolUseBlock) for b in msg.content
-            ):
-                # Preserve ToolUseBlock structure, but add tag to text parts
-                tagged_prefix = self._tag_prefix(msg)
-                new_blocks = []
-                for b in msg.content:
-                    if isinstance(b, TextBlock):
-                        new_blocks.append(TextBlock(text=f"{tagged_prefix}\n{b.text}"))
-                    elif isinstance(b, ThinkingBlock):
-                        new_blocks.append(b)  # keep as-is, transport ignores
-                    else:
-                        new_blocks.append(b)  # ToolUseBlock unchanged
-                result.append(Message(role=msg.role, content=new_blocks, meta=msg.meta))
-            else:
-                # Preserve ImageBlock for vision models
-                if any(isinstance(b, ImageBlock) for b in msg.content):
-                    tagged_prefix = self._tag_prefix(msg)
-                    new_blocks = []
-                    for b in msg.content:
-                        if isinstance(b, ImageBlock):
-                            new_blocks.append(b)
-                        elif isinstance(b, TextBlock):
-                            new_blocks.append(TextBlock(text=f"{tagged_prefix}\n{b.text}"))
-                    result.append(Message(role=msg.role, content=new_blocks, meta=msg.meta))
-                else:
-                    tagged = self._tag_message(msg)
-                    result.append(
-                        Message(
-                            role=msg.role,
-                            content=tagged,
-                            meta=msg.meta,
-                        )
-                    )
-        return result
-
     async def _call_llm_with_recovery(
         self,
         messages: list[Message],
         tools: list[dict],
+        on_text_chunk: Any | None = None,
     ) -> Any:
         """Call LLM with retry and provider fallback.
 
@@ -522,7 +426,8 @@ class ReActAgent(AgentBase):
         while True:
             try:
                 return await self._current_transport.chat(
-                    messages=messages, tools=tools
+                    messages=messages, tools=tools,
+                    on_text_chunk=on_text_chunk,
                 )
             except Exception as e:
                 last_error = e
@@ -624,64 +529,6 @@ class ReActAgent(AgentBase):
     async def _get_tools(self) -> list[dict]:
         """Get tool schemas for the LLM request."""
         return self.toolkit.get_schemas()
-
-    def _tag_message(self, msg: Message) -> str:
-        """Prefix a message with [time | scene | sender] tag.
-
-        Excludes ThinkingBlock content — reasoning should NOT be fed back
-        into the LLM context (it causes repetition and confusion).
-        """
-        tag = self._tag_prefix(msg)
-        text = self._extract_text_only(msg)
-        return f"{tag}\n{text}"
-
-    def _tag_prefix(self, msg: Message) -> str:
-        """Return just the [time | scene | sender] tag without message body."""
-        import datetime as dt_mod
-
-        ts = msg.meta.timestamp
-        if isinstance(ts, (int, float)):
-            time_str = dt_mod.datetime.fromtimestamp(
-                ts, tz=dt_mod.timezone.utc
-            ).strftime("%m-%d %H:%M")
-        else:
-            time_str = ""
-
-        scene = msg.meta.source_name or msg.meta.source or "未知"
-
-        # Sender: prefer explicit name, then infer from role for old data
-        sender = msg.meta.sender_name or msg.meta.sender_id
-        if not sender:
-            if msg.role == "assistant":
-                sender = self.name
-            elif msg.role == "tool":
-                sender = "系统"
-            elif msg.role == "user":
-                sender = "用户"
-            else:
-                sender = "系统"
-
-        return f"[{time_str} | {scene} | {sender}]"
-
-    def _extract_text_only(self, msg: Message) -> str:
-        """Get text content only, excluding ThinkingBlock (reasoning)."""
-        parts = []
-        for b in msg.content:
-            if isinstance(b, TextBlock):
-                parts.append(b.text)
-            elif isinstance(b, ToolResultBlock):
-                parts.append(b.content)
-        return "\n".join(parts)
-
-    def _extract_shared_url(self, msg: Message) -> str | None:
-        """If a tool result contains [image:URL] or [file:URL], return it."""
-        import re
-        for b in msg.content:
-            if isinstance(b, ToolResultBlock):
-                m = re.search(r'\[(image|file):(/[^\]]+)\]', b.content)
-                if m:
-                    return f"[{m.group(1)}:{m.group(2)}]"
-        return None
 
     async def _resolve_image_source(self, url: str) -> dict[str, Any]:
         """Convert image URL to format suitable for LLM vision API.
@@ -795,7 +642,7 @@ class ReActAgent(AgentBase):
         # Semantic indexing (fire-and-forget)
         # Use _extract_text_only to exclude ThinkingBlock from embedding
         if self.embedder and self.memory_store and message.meta.id:
-            text = self._extract_text_only(message)
+            text = MessageBuilder.extract_text_only(message)
             if text and len(text) > 5:
                 try:
                     vec = await self.embedder.embed_single(text)

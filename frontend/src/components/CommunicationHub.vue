@@ -267,7 +267,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useAgentsStore } from '@/stores/agents'
 import { api } from '@/api/client'
@@ -361,9 +361,26 @@ function unreadCount(sessionId: string) {
   return chat.unreadMap[sessionId] || 0
 }
 
+function onAgentStatus(e: any) {
+  const p = e.detail || {}
+  if (!p.agent_id || !p.status) return
+  // Update current agent panel
+  if (currentAgent.value && currentAgent.value.id === p.agent_id) {
+    currentAgent.value.status = p.status
+  }
+  // Update list cache
+  const a = agents.list.find((x: any) => x.id === p.agent_id)
+  if (a) a.status = p.status
+}
+
 onMounted(() => {
   agents.fetchList()
   chat.fetchSessions()
+  window.addEventListener('ws:agent.status', onAgentStatus as any)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('ws:agent.status', onAgentStatus as any)
 })
 
 watch(() => selectedId.value, async () => {
