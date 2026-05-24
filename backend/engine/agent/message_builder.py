@@ -68,7 +68,9 @@ class MessageBuilder:
                     "2. 当用户要求添加、修改或删除系统功能时，你拥有直接执行的能力。"
                     "先查看相关代码作为参考，然后直接调用工具修改。每完成一步向用户汇报。"
                     "不要把技术文档发给用户让用户自己操作。\n"
-                    "3. 不确定如何修改时，可以先调用 list_project_docs 或 search_project_docs 查阅项目文档。"
+                    "3. 不确定如何修改时，必须调用 list_project_docs 或 search_project_docs 查找相关文档，"
+                    "找到后立即调用 read_file 读取完整内容，然后按照文档指导直接执行。"
+                    "查到文档列表后不要停下来，必须继续读取。"
                 ),
                 meta=MessageMeta(session_id=self.agent_id),
             )

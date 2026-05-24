@@ -31,7 +31,9 @@ def list_project_docs() -> str:
 
     Documents are stored in backend/engine/docs/.
     Returns a numbered list of document names with one-line descriptions.
-    Use read_file with path "backend/engine/docs/{filename}" to read the full content.
+    After getting the list, you MUST immediately call read_file with path
+    "backend/engine/docs/{filename}" to read the most relevant document.
+    Do not stop after listing; always read the full content of the relevant doc.
     """
     files = _list_doc_files()
     if not files:
@@ -51,8 +53,9 @@ def search_project_docs(query: str) -> str:
 
     Documents are stored in backend/engine/docs/.
     Returns matching document names + the surrounding context lines.
-    Use this to quickly find relevant docs, then read_file with path
-    "backend/engine/docs/{filename}" to read the full content.
+    After searching, you MUST immediately call read_file with path
+    "backend/engine/docs/{filename}" to read the most relevant document.
+    Do not stop after searching; always read the full content of the relevant doc.
 
     Args:
         query: Keyword or phrase to search for (case-insensitive).
