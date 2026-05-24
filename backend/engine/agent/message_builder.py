@@ -57,6 +57,23 @@ class MessageBuilder:
                 )
             )
 
+        # Layer 2: Behavioral guidelines (injected every turn)
+        result.append(
+            Message(
+                role="system",
+                content=(
+                    "【行为指南】\n"
+                    "1. 对话历史中的 [时间 | 场景 | 人物] 标签是系统提供的上下文提示，"
+                    "帮助你理解会话背景。你回复时不需要使用这个格式，直接输出自然、流畅的内容即可。\n"
+                    "2. 当用户要求添加、修改或删除系统功能时，你拥有直接执行的能力。"
+                    "先查看相关代码作为参考，然后直接调用工具修改。每完成一步向用户汇报。"
+                    "不要把技术文档发给用户让用户自己操作。\n"
+                    "3. 不确定如何修改时，可以先调用 list_project_docs 或 search_project_docs 查阅项目文档。"
+                ),
+                meta=MessageMeta(session_id=self.agent_id),
+            )
+        )
+
         if scene_info:
             result.append(
                 Message(
