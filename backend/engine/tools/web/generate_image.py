@@ -29,10 +29,11 @@ def _get_image_config() -> dict:
 
 @tool_registry.register(toolset="web", max_result_chars=500, safe_to_parallel=False, timeout=120)
 async def generate_image(prompt: str, size: str = "1024x1024") -> str:
-    """Generate an image from a text prompt and share it to the chat.
+    """Generate an image from a text prompt.
 
     Uses the configured image generation API (DALL-E compatible).
-    The generated image will be displayed directly in the chat.
+    Returns a local shareable URL in the format [image:/uploads/generated/xxx.png].
+    To display the image in chat, pass this path directly to the share_file tool.
 
     Args:
         prompt: A detailed description of the image to generate.

@@ -34,8 +34,11 @@ def share_file(path: str) -> str:
 
     Args:
         path: Path to the file you want to share.
-              Can be a local path, or a URL like /uploads/generated/xxx.png
-              (will be resolved to the local uploads directory).
+              Can be:
+              - A local file path (C:\\... or /home/...)
+              - A /uploads/ URL like /uploads/generated/xxx.png
+                (automatically resolved to the local uploads directory)
+              - A ~/... home-relative path
     """
     src = _resolve_path(path)
 
@@ -73,7 +76,7 @@ def _resolve_path(path: str) -> Path:
     """Resolve a path to a local file.
 
     Handles:
-    - Absolute local paths (C:\... or /home/...)
+    - Absolute local paths (C:\\... or /home/...)
     - /uploads/... URLs -> ~/.cloudmind-zome/uploads/...
     - ~/... home-relative paths
     """
