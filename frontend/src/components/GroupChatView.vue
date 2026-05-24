@@ -205,6 +205,9 @@
       <button class="send-btn" @click="send">发送</button>
     </div>
 
+    <div v-if="showNewMessageTip" class="new-message-toast" @click="scrollToBottomAndResume">
+      <span>↓ 新消息</span>
+    </div>
     <div v-if="previewUrl" class="img-preview-overlay" @click.self="previewUrl = ''">
       <img :src="previewUrl" />
     </div>
@@ -254,18 +257,46 @@ const pendingImage = ref<string | null>(null)
 const replyTarget = ref<any>(null)
 const typingTimer = ref<any>(null)
 const showInvite = ref(false)
-const isAtBottom = ref(true)
+const autoScroll = ref(true)
+const isProgrammaticScroll = ref(false)
+const showNewMessageTip = ref(false)
 
-function checkIsAtBottom() {
-  const el = msgArea.value
-  if (!el) return
-  isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+function onUserScroll() {
+  if (isProgrammaticScroll.value) return
+  autoScroll.value = false
+  showNewMessageTip.value = true
 }
 
-function scrollToBottomIfNeeded() {
-  if (isAtBottom.value && msgArea.value) {
-    msgArea.value.scrollTop = msgArea.value.scrollHeight
+function checkAutoScrollRecovery() {
+  const el = msgArea.value
+  if (!el) return
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (distance < 50 && !autoScroll.value) {
+    autoScroll.value = true
+    showNewMessageTip.value = false
   }
+}
+
+function scrollToBottom() {
+  const el = msgArea.value
+  if (!el) return
+  isProgrammaticScroll.value = true
+  el.scrollTop = el.scrollHeight
+  nextTick(() => { isProgrammaticScroll.value = false })
+}
+
+function onNewContent() {
+  if (autoScroll.value) {
+    scrollToBottom()
+  } else {
+    showNewMessageTip.value = true
+  }
+}
+
+function scrollToBottomAndResume() {
+  autoScroll.value = true
+  showNewMessageTip.value = false
+  scrollToBottom()
 }
 
 const isOwner = computed(() => group.value?.owner_id === auth.user?.user_id)
@@ -313,7 +344,7 @@ onMounted(async () => {
   window.addEventListener('ws:chat.thinking', onThinking as any)
   window.addEventListener('ws:chat.tool_call', onToolCall as any)
   window.addEventListener('ws:chat.ack', onAck as any)
-  msgArea.value?.addEventListener('scroll', checkIsAtBottom)
+  msgArea.value?.addEventListener('scroll', onUserScroll)
 })
 
 watch(() => props.groupId, async (newId, oldId) => {
@@ -331,7 +362,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('ws:chat.thinking', onThinking as any)
   window.removeEventListener('ws:chat.tool_call', onToolCall as any)
   window.removeEventListener('ws:chat.ack', onAck as any)
-  msgArea.value?.removeEventListener('scroll', checkIsAtBottom)
+  msgArea.value?.removeEventListener('scroll', onUserScroll)
 })
 
 function onTyping(e: any) {
@@ -389,7 +420,7 @@ function onThinking(e: any) {
       sender_type: 'agent', content_type: 'thinking', batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => onNewContent())
 }
 
 function onToolCall(e: any) {
@@ -407,7 +438,7 @@ function onToolCall(e: any) {
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => onNewContent())
 }
 
 watch(() => chat.messagesMap[props.groupId], () => syncMessages(), { deep: true })
@@ -433,7 +464,7 @@ function syncMessages() {
 
   const last = list[list.length - 1]
   if (!last) return
-  nextTick(() => scrollToBottomIfNeeded())
+  nextTick(() => onNewContent())
 }
 
 async function fetchGroup() {
@@ -730,6 +761,8 @@ function formatTime(ts: string) {
 .slide-enter-active, .slide-leave-active { transition: transform 0.25s ease; }
 .slide-enter-from, .slide-leave-to { transform: translateX(100%); }
 
+.new-message-toast { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); padding: 6px 14px; background: rgba(0,229,201,0.15); border: 1px solid rgba(0,229,201,0.3); border-radius: 20px; color: #00E5C9; font-size: 12px; cursor: pointer; z-index: 50; transition: opacity 0.2s; }
+.new-message-toast:hover { background: rgba(0,229,201,0.25); }
 .img-preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 1000; display: flex; align-items: center; justify-content: center; }
 .img-preview-overlay img { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
 </style>
