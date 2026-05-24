@@ -81,9 +81,9 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             if provider in ("dashscope", "qwen_image"):
-                # DashScope Qwen-Image / z-image-turbo format (messages-based)
-                # Convert "1024x1024" -> "1024*1024" etc.
-                dashscope_size = size.replace("x", "*")
+                # DashScope Wan-Image / Qwen-Image format (messages-based)
+                # size: supports "1K", "2K", "4K" or "1024*1024", "2048*2048" etc.
+                dashscope_size = size.replace("x", "*") if "x" in size else size
                 request_body = {
                     "model": model,
                     "input": {
@@ -98,7 +98,9 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                     },
                     "parameters": {
                         "size": dashscope_size,
-                        "prompt_extend": True,
+                        "n": 1,
+                        "watermark": False,
+                        "thinking_mode": True,
                     },
                 }
             else:
@@ -134,46 +136,62 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                 return f"Error: image gen failed (HTTP {resp.status_code}). Check image_gen_debug.log for details."
 
             data = resp.json()
-            b64 = ""
-            url = ""
+
+            # Check for API-level error
+            if data.get("code"):
+                err_msg = data.get("message", "Unknown error")
+                logger.error("Image generation API error: %s - %s", data["code"], err_msg)
+                return f"Error: {data['code']} - {err_msg}"
+
+            image_urls: list[str] = []
 
             if provider in ("dashscope", "qwen_image"):
-                # DashScope format 1: output.choices[].message.content[].image
+                # DashScope format: output.choices[].message.content[].image (URL)
                 output = data.get("output", {})
                 choices = output.get("choices", [])
                 if choices:
                     content = choices[0].get("message", {}).get("content", [])
                     for item in content:
-                        if isinstance(item, dict) and item.get("image"):
-                            b64 = item["image"]
-                            break
-                # DashScope format 2: output.results[].url
-                if not b64 and not url:
+                        if isinstance(item, dict) and item.get("type") == "image" and item.get("image"):
+                            image_urls.append(item["image"])
+                # Fallback: old format output.results[].url
+                if not image_urls:
                     results = output.get("results", [])
-                    if results:
-                        url = results[0].get("url", "")
+                    for r in results:
+                        if r.get("url"):
+                            image_urls.append(r["url"])
             else:
                 # OpenAI format: {"data": [{"b64_json": "...", "url": "..."}]}
                 # SiliconFlow format: {"images": [{"url": "..."}]}
                 images = data.get("data") or data.get("images", [])
-                if images:
-                    img_data = images[0]
+                for img_data in images:
                     b64 = img_data.get("b64_json", "")
                     url = img_data.get("url", "")
+                    if b64:
+                        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                        filename = f"{uuid.uuid4().hex}.png"
+                        dest = UPLOAD_DIR / filename
+                        dest.write_bytes(base64.b64decode(b64))
+                        image_urls.append(f"/uploads/generated/{filename}")
+                    elif url:
+                        image_urls.append(url)
 
-            if not b64 and not url:
+            if not image_urls:
                 return "Error: no image returned by API"
 
-            # Save to uploads
+            # Download and save all DashScope URLs (they expire in 24h)
+            saved_urls: list[str] = []
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-            filename = f"{uuid.uuid4().hex}.png"
-            dest = UPLOAD_DIR / filename
 
-            if b64:
-                dest.write_bytes(base64.b64decode(b64))
-                logger.info("Image saved from base64: %s", dest)
-            elif url:
-                # Download from URL (external or data URL)
+            for url in image_urls:
+                if url.startswith("/uploads/generated/"):
+                    # Already saved (OpenAI b64 path)
+                    saved_urls.append(url)
+                    continue
+
+                filename = f"{uuid.uuid4().hex}.png"
+                dest = UPLOAD_DIR / filename
+
                 if url.startswith("data:"):
                     # data:image/png;base64,...
                     header, b64_data = url.split(",", 1)
@@ -183,14 +201,18 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                     # Download from external URL
                     img_resp = await client.get(url, timeout=60)
                     if img_resp.status_code != 200:
-                        return f"Error: failed to download image from {url} (HTTP {img_resp.status_code})"
+                        logger.error("Failed to download image from %s (HTTP %s)", url, img_resp.status_code)
+                        continue
                     dest.write_bytes(img_resp.content)
                     logger.info("Image downloaded from %s -> %s", url, dest)
-            else:
-                return "Error: empty image data"
 
-            share_url = f"/uploads/generated/{filename}"
-            return f"[image:{share_url}]"
+                saved_urls.append(f"/uploads/generated/{filename}")
+
+            if not saved_urls:
+                return "Error: failed to download any images"
+
+            # Return all image references
+            return "\n".join(f"[image:{u}]" for u in saved_urls)
 
     except Exception as exc:
         logger.exception("generate_image failed")
