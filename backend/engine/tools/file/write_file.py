@@ -40,10 +40,15 @@ def _is_safe_path(path: Path) -> tuple[bool, str]:
 
 @tool_registry.register(toolset="file", max_result_chars=2000, safe_to_parallel=False)
 def write_file(path: str, content: str) -> str:
-    """Create or overwrite a file with the given content.
+    """Create a new file or overwrite an existing file with the given content.
 
     The parent directories will be created automatically if they don't exist.
     Maximum file size: 5 MB.
+
+    IMPORTANT: If the file already exists, this tool will return a warning.
+    In that case, you MUST read the file first with read_file, then use
+    edit_file to make targeted changes. Only overwrite the entire file when
+    the user explicitly asks you to do so.
 
     Args:
         path: Absolute or relative path of the file to write.
