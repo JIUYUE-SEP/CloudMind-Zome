@@ -139,6 +139,19 @@ const previewUrl = ref('')
 const pendingImage = ref<string | null>(null)
 const replyTarget = ref<any>(null)
 const typingTimer = ref<any>(null)
+const isAtBottom = ref(true)
+
+function checkIsAtBottom() {
+  const el = msgArea.value
+  if (!el) return
+  isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+function scrollToBottomIfNeeded() {
+  if (isAtBottom.value && msgArea.value) {
+    msgArea.value.scrollTop = msgArea.value.scrollHeight
+  }
+}
 
 const session = computed(() =>
   chat.sessions.find(s => s.session_id === props.sessionId)
@@ -183,6 +196,7 @@ onMounted(async () => {
   window.addEventListener('ws:chat.thinking', onThinking as any)
   window.addEventListener('ws:chat.tool_call', onToolCall as any)
   window.addEventListener('ws:chat.ack', onAck as any)
+  msgArea.value?.addEventListener('scroll', checkIsAtBottom)
 })
 
 watch(() => props.sessionId, async (newId, oldId) => {
@@ -198,6 +212,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('ws:chat.thinking', onThinking as any)
   window.removeEventListener('ws:chat.tool_call', onToolCall as any)
   window.removeEventListener('ws:chat.ack', onAck as any)
+  msgArea.value?.removeEventListener('scroll', checkIsAtBottom)
 })
 
 function onTyping(e: any) {
@@ -247,7 +262,7 @@ function onThinking(e: any) {
       sender_type: 'agent', content_type: 'thinking', batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => scrollToBottomIfNeeded())
 }
 
 function onToolCall(e: any) {
@@ -266,7 +281,7 @@ function onToolCall(e: any) {
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => scrollToBottomIfNeeded())
 }
 
 watch(() => chat.messagesMap[props.sessionId], () => syncMessages(), { deep: true })
@@ -289,7 +304,7 @@ function syncMessages() {
   }
   for (const t of transient) { if (!placed.has(t.id)) merged.push(t) }
   messages.value = merged
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => scrollToBottomIfNeeded())
 }
 
 function send() {

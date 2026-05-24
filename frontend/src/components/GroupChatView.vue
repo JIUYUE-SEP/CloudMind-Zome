@@ -247,6 +247,19 @@ const pendingImage = ref<string | null>(null)
 const replyTarget = ref<any>(null)
 const typingTimer = ref<any>(null)
 const showInvite = ref(false)
+const isAtBottom = ref(true)
+
+function checkIsAtBottom() {
+  const el = msgArea.value
+  if (!el) return
+  isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+function scrollToBottomIfNeeded() {
+  if (isAtBottom.value && msgArea.value) {
+    msgArea.value.scrollTop = msgArea.value.scrollHeight
+  }
+}
 
 const isOwner = computed(() => group.value?.owner_id === auth.user?.user_id)
 const availableAgents = computed(() => {
@@ -293,6 +306,7 @@ onMounted(async () => {
   window.addEventListener('ws:chat.thinking', onThinking as any)
   window.addEventListener('ws:chat.tool_call', onToolCall as any)
   window.addEventListener('ws:chat.ack', onAck as any)
+  msgArea.value?.addEventListener('scroll', checkIsAtBottom)
 })
 
 watch(() => props.groupId, async (newId, oldId) => {
@@ -310,6 +324,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('ws:chat.thinking', onThinking as any)
   window.removeEventListener('ws:chat.tool_call', onToolCall as any)
   window.removeEventListener('ws:chat.ack', onAck as any)
+  msgArea.value?.removeEventListener('scroll', checkIsAtBottom)
 })
 
 function onTyping(e: any) {
@@ -368,7 +383,7 @@ function onThinking(e: any) {
       sender_type: 'agent', content_type: 'thinking', batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => scrollToBottomIfNeeded())
 }
 
 function onToolCall(e: any) {
@@ -387,7 +402,7 @@ function onToolCall(e: any) {
       batch_id: p.batch_id, timestamp: p.timestamp, is_me: false,
     })
   }
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => scrollToBottomIfNeeded())
 }
 
 watch(() => chat.messagesMap[props.groupId], () => syncMessages(), { deep: true })
@@ -413,7 +428,7 @@ function syncMessages() {
 
   const last = list[list.length - 1]
   if (!last) return
-  nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
+  nextTick(() => scrollToBottomIfNeeded())
 }
 
 async function fetchGroup() {
