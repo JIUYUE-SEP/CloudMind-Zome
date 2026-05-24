@@ -44,6 +44,13 @@
               <div v-if="msg.content_type === 'image'" class="img-msg">
                 <img :src="msg.content" @click="previewUrl = msg.content" />
               </div>
+              <div v-else-if="msg.content_type === 'mixed'" class="text">
+                <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
+                  <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
+                  <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>
+                  <span v-else>{{ seg.value }}</span>
+                </template>
+              </div>
               <div v-else-if="msg.content_type === 'thinking'" class="gray-block">
                 <div class="gray-header" @click="toggleExpand(idx)">
                   <span>◉ thinking</span>
@@ -529,12 +536,16 @@ async function send() {
 
   const opts: any = {}
   if (replyTarget.value) opts.reply_to = replyTarget.value.id
-  if (pendingImage.value) {
+  if (pendingImage.value && text) {
+    ws.sendChat(props.groupId, `[image:${pendingImage.value}]\n${text}`, { content_type: 'mixed', ...opts })
+    pendingImage.value = null
+    draft.value = ''
+    replyTarget.value = null
+  } else if (pendingImage.value) {
     ws.sendChat(props.groupId, pendingImage.value, { content_type: 'image', ...opts })
     pendingImage.value = null
     replyTarget.value = null
-  }
-  if (text) {
+  } else if (text) {
     ws.sendChat(props.groupId, text, opts)
     draft.value = ''
     replyTarget.value = null

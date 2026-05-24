@@ -163,6 +163,8 @@ class ReActAgent(AgentBase):
         if content_type == "image":
             image_source = await self._resolve_image_source(user_message)
             user_content = [ImageBlock(source=image_source)]
+        elif content_type == "mixed":
+            user_content = await self._parse_mixed_content(user_message)
         else:
             user_content = user_message
         user_msg = Message(
@@ -528,6 +530,30 @@ class ReActAgent(AgentBase):
     async def _get_tools(self) -> list[dict]:
         """Get tool schemas for the LLM request."""
         return self.toolkit.get_schemas()
+
+    async def _parse_mixed_content(self, text: str) -> list[ContentBlock]:
+        """Parse mixed content like '[image:/uploads/...]\\nHello' into blocks."""
+        import re
+        blocks: list[ContentBlock] = []
+        pattern = re.compile(r'\[image:([^\]]+)\]')
+        last_end = 0
+        for m in pattern.finditer(text):
+            if m.start() > last_end:
+                segment = text[last_end:m.start()].strip()
+                if segment:
+                    blocks.append(TextBlock(text=segment))
+            img_url = m.group(1).strip()
+            if img_url:
+                image_source = await self._resolve_image_source(img_url)
+                blocks.append(ImageBlock(source=image_source))
+            last_end = m.end()
+        if last_end < len(text):
+            segment = text[last_end:].strip()
+            if segment:
+                blocks.append(TextBlock(text=segment))
+        if not blocks:
+            blocks.append(TextBlock(text=text))
+        return blocks
 
     async def _resolve_image_source(self, url: str) -> dict[str, Any]:
         """Convert image URL to format suitable for LLM vision API.
