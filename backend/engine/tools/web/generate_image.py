@@ -64,11 +64,12 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
     base = api_url.rstrip('/')
     if base.endswith('/images/generations'):
         endpoint = base
+    elif base.endswith('/services/aigc/multimodal-generation/generation'):
+        # Qwen-Image-2 / z-image-turbo native endpoint, use as-is
+        endpoint = base
+        provider = "qwen_image"
     elif base.endswith('/v1'):
-        if provider == "dashscope":
-            endpoint = f"{base}/images/generations"
-        else:
-            endpoint = f"{base}/images/generations"
+        endpoint = f"{base}/images/generations"
     else:
         if provider == "dashscope":
             endpoint = base  # DashScope native endpoint, use as-is
@@ -79,15 +80,10 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            if provider == "dashscope":
-                # DashScope Qwen-Image format (messages-based)
-                # Map standard sizes to DashScope-compatible sizes
-                size_map = {
-                    "1024x1024": "2048*2048",
-                    "1792x1024": "2688*1536",
-                    "1024x1792": "1536*2688",
-                }
-                dashscope_size = size_map.get(size, "2048*2048")
+            if provider in ("dashscope", "qwen_image"):
+                # DashScope Qwen-Image / z-image-turbo format (messages-based)
+                # Convert "1024x1024" -> "1024*1024" etc.
+                dashscope_size = size.replace("x", "*")
                 request_body = {
                     "model": model,
                     "input": {
@@ -102,9 +98,7 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
                     },
                     "parameters": {
                         "size": dashscope_size,
-                        "n": 1,
                         "prompt_extend": True,
-                        "watermark": False,
                     },
                 }
             else:
@@ -143,7 +137,7 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
             b64 = ""
             url = ""
 
-            if provider == "dashscope":
+            if provider in ("dashscope", "qwen_image"):
                 # DashScope format 1: output.choices[].message.content[].image
                 output = data.get("output", {})
                 choices = output.get("choices", [])
