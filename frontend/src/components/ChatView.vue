@@ -100,14 +100,6 @@
         @keydown.enter.prevent="send"
         @input="onUserTyping"
       />
-      <button
-        v-if="isPrivate && agentStatus === 'busy'"
-        class="pause-btn"
-        @click="pauseAgent"
-        title="暂停心智"
-      >
-        <span class="pause-icon"></span>
-      </button>
       <button class="send-btn" @click="send">发送</button>
     </div>
 
@@ -333,11 +325,6 @@ function send() {
   }
 }
 
-function pauseAgent() {
-  if (!session.value?.target_id) return
-  ws.sendAgentStop(props.sessionId, session.value.target_id)
-}
-
 function close() {
   chat.currentSessionId = null
   if (props.inline) { emit('close') } else { router.back() }
@@ -439,8 +426,6 @@ function formatTime(ts: string) {
 .input-area textarea:focus { outline: none; border-color: #00E5C9; }
 .attach-btn { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #8899AA; font-size: 18px; cursor: pointer; }
 .attach-btn:hover { border-color: rgba(0,229,201,0.3); color: #00E5C9; }
-.pause-btn { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; cursor: pointer; }
-.pause-icon { width: 12px; height: 14px; border-left: 3px solid #F59E0B; border-right: 3px solid #F59E0B; }
 .send-btn { padding: 10px 18px; background: #00E5C9; color: #0B0F17; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
 
 .img-preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 1000; display: flex; align-items: center; justify-content: center; }

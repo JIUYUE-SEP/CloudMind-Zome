@@ -147,6 +147,13 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
             if target_id:
                 # Intimacy: user sends msg in private chat
                 await add_score(target_id, user.id, "private_user_msg")
+                # Auto-interrupt running private chat Job
+                job = get_current_job(target_id)
+                if job and job.source == "private":
+                    signal_key = f"{session_id}:{target_id}"
+                    _set_stop_signal(signal_key)
+                    job.stop_event.set()
+                    logger.info("Auto-interrupt private Job for agent %s", target_id)
                 await _stream_single_agent(
                     session_id=session_id,
                     agent_id=target_id,
