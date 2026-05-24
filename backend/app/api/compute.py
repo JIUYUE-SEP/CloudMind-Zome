@@ -21,20 +21,16 @@ router = APIRouter(prefix="/compute", tags=["compute"])
 # Schemas
 # ------------------------------------------------------------------
 class ProviderCreate(BaseModel):
-    provider_type: str = "openai"  # unified format, auto-detect from base_url
     display_name: str
     api_key: str
-    config: dict = {}
-    quota_total: int = 0
-    expires_at: Optional[str] = None
+    base_url: str = ""
 
 
 class ProviderUpdate(BaseModel):
     display_name: Optional[str] = None
     api_key: Optional[str] = None
-    config: Optional[dict] = None
-    quota_total: Optional[int] = None
-    expires_at: Optional[str] = None
+    base_url: Optional[str] = None
+    models: Optional[list[str]] = None
     status: Optional[str] = None
 
 
@@ -70,11 +66,13 @@ async def list_providers(
     )
     items = []
     for p in result.scalars().all():
+        cfg = p.config or {}
         items.append({
             "id": p.id,
             "provider_type": p.provider_type,
             "display_name": p.display_name,
-            "config": p.config,
+            "base_url": cfg.get("base_url", ""),
+            "models": cfg.get("models", []),
             "quota_total": p.quota_total,
             "quota_used": p.quota_used,
             "quota_remaining": p.quota_remaining,
@@ -91,28 +89,13 @@ async def create_provider(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Detect provider type from base_url if not provided
-    detected_type = body.provider_type
-    if detected_type == "openai" and body.config.get("base_url"):
-        url = body.config.get("base_url", "").lower()
-        if "deepseek" in url:
-            detected_type = "deepseek"
-        elif "mimo" in url or "miaomi" in url:
-            detected_type = "mimo"
-        elif "kimi" in url:
-            detected_type = "kimicode"
-        elif "glm" in url:
-            detected_type = "glm"
-    
     prov = ComputeProvider(
         id=str(uuid.uuid4()),
         user_id=user.id,
-        provider_type=detected_type,
+        provider_type="openai",
         display_name=body.display_name,
         api_key_encrypted=_encrypt_key(body.api_key),
-        config=body.config,
-        quota_total=body.quota_total,
-        expires_at=datetime.fromisoformat(body.expires_at) if body.expires_at and body.expires_at.strip() else None,
+        config={"base_url": body.base_url, "models": []},
         status="active",
     )
     db.add(prov)
@@ -184,12 +167,13 @@ async def update_provider(
         prov.display_name = body.display_name
     if body.api_key is not None:
         prov.api_key_encrypted = _encrypt_key(body.api_key)
-    if body.config is not None:
-        prov.config = body.config
-    if body.quota_total is not None:
-        prov.quota_total = body.quota_total
-    if body.expires_at is not None:
-        prov.expires_at = datetime.fromisoformat(body.expires_at) if body.expires_at.strip() else None
+    if body.base_url is not None or body.models is not None:
+        cfg = dict(prov.config or {})
+        if body.base_url is not None:
+            cfg["base_url"] = body.base_url
+        if body.models is not None:
+            cfg["models"] = body.models
+        prov.config = cfg
     if body.status is not None:
         prov.status = body.status
 

@@ -6,6 +6,8 @@ export interface Provider {
   id: string
   provider_type: string
   display_name: string
+  base_url: string
+  models: string[]
   config: any
   quota_total: number
   quota_used: number
@@ -32,6 +34,12 @@ export const useComputeStore = defineStore('compute', () => {
     return json
   }
 
+  async function updateProvider(id: string, body: any) {
+    const json = await api.put(`/compute/providers/${id}`, body)
+    await fetchProviders()
+    return json
+  }
+
   async function testConnection(id: string) {
     return api.post(`/compute/providers/${id}/test`)
   }
@@ -46,5 +54,5 @@ export const useComputeStore = defineStore('compute', () => {
     if (json.code === 0) usage.value = json.data
   }
 
-  return { providers, usage, isLoading, fetchProviders, addProvider, testConnection, deleteProvider, fetchUsage }
+  return { providers, usage, isLoading, fetchProviders, addProvider, updateProvider, testConnection, deleteProvider, fetchUsage }
 })

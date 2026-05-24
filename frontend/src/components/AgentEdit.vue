@@ -188,21 +188,31 @@
             <!-- 算力配置 -->
             <div v-if="activeTab === 'compute'" class="panel-section">
               <label>算力平台</label>
-              <select v-model="form.llm_config.provider">
+              <select v-model="form.llm_config.provider_id" @change="onProviderChange">
+                <option value="">请选择平台</option>
                 <option
                   v-for="p in computeStore.providers"
                   :key="p.id"
-                  :value="p.provider_type"
+                  :value="p.id"
                 >
                   {{ p.display_name }}
                 </option>
               </select>
 
               <label>模型</label>
-              <input
-                v-model="form.llm_config.model"
-                placeholder="如 deepseek-v4-pro"
-              />
+              <select v-model="form.llm_config.model" :disabled="!currentProviderModels.length">
+                <option value="">请选择模型</option>
+                <option
+                  v-for="m in currentProviderModels"
+                  :key="m"
+                  :value="m"
+                >
+                  {{ m }}
+                </option>
+              </select>
+              <div v-if="!currentProviderModels.length && form.llm_config.provider_id" class="hint-text">
+                该平台未配置模型，请到算力中枢添加
+              </div>
             </div>
 
             <!-- 外观立绘 -->
@@ -321,10 +331,17 @@ const form = ref<any>({
   capabilities: [],
   aliases: [],
   tags: [],
-  llm_config: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+  llm_config: { provider_id: '', model: '' },
   portrait_url: '',
   model_url: '',
   live2d_model_url: '',
+})
+
+const currentProviderModels = computed(() => {
+  const pid = form.value.llm_config.provider_id
+  if (!pid) return []
+  const p = computeStore.providers.find(x => x.id === pid)
+  return p?.models || []
 })
 
 const tabs = [
@@ -378,6 +395,7 @@ function createNew() {
   selectedId.value = null
   activeTab.value = 'profile'
   displayMode.value = 'portrait'
+  const firstProv = computeStore.providers[0]
   form.value = {
     name: '',
     codename: '',
@@ -387,13 +405,19 @@ function createNew() {
     aliases: [],
     tags: [],
     llm_config: {
-      provider: computeStore.providers[0]?.provider_type || 'deepseek',
-      model: 'deepseek-v4-pro',
+      provider_id: firstProv?.id || '',
+      model: firstProv?.models?.[0] || '',
     },
     portrait_url: '',
     model_url: '',
     live2d_model_url: '',
   }
+}
+
+function onProviderChange() {
+  const pid = form.value.llm_config.provider_id
+  const p = computeStore.providers.find(x => x.id === pid)
+  form.value.llm_config.model = p?.models?.[0] || ''
 }
 
 function statusLabel(status: string) {
@@ -421,6 +445,15 @@ async function selectAgent(id: string) {
   if (!data) return
   liveStatus.value = data.status || 'idle'
 
+  // Migrate old provider string to provider_id
+  let llmCfg = data.llm_config || {}
+  if (!llmCfg.provider_id && llmCfg.provider) {
+    // Try to match old provider_type to a platform id
+    const matched = computeStore.providers.find(p => p.provider_type === llmCfg.provider)
+    if (matched) {
+      llmCfg = { provider_id: matched.id, model: llmCfg.model || matched.models?.[0] || '' }
+    }
+  }
   form.value = {
     name: data.name || '',
     codename: data.codename || '',
@@ -429,9 +462,9 @@ async function selectAgent(id: string) {
     capabilities: Array.isArray(data.capabilities) ? [...data.capabilities] : [],
     aliases: Array.isArray(data.aliases) ? [...data.aliases] : [],
     tags: Array.isArray(data.tags) ? [...data.tags] : [],
-    llm_config: data.llm_config
-      ? { ...data.llm_config }
-      : { provider: 'deepseek', model: 'deepseek-v4-pro' },
+    llm_config: llmCfg.provider_id
+      ? { provider_id: llmCfg.provider_id, model: llmCfg.model || '' }
+      : { provider_id: computeStore.providers[0]?.id || '', model: computeStore.providers[0]?.models?.[0] || '' },
     portrait_url: data.portrait_url || '',
     model_url: data.model_url || '',
     live2d_model_url: data.live2d_model_url || '',
@@ -903,6 +936,7 @@ async function uploadLive2d(e: Event) {
   outline: none;
   border-color: rgba(0, 229, 201, 0.4);
 }
+.hint-text { font-size: 11px; color: #5A6A7A; margin-top: 4px; }
 .panel-section input[type='color'] {
   width: 48px;
   height: 36px;

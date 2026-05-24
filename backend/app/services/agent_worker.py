@@ -311,19 +311,30 @@ class AgentWorker:
             return None
 
         model_cfg: dict = self.agent_row.model_config or {}
+        provider_id = model_cfg.get("provider_id")
         provider_type = (model_cfg.get("provider") or "deepseek").lower()
         model_name = model_cfg.get("model") or "deepseek-v4-pro"
 
-        async def _resolve(provider_type: str) -> dict | None:
+        async def _resolve(ptype: str) -> dict | None:
             from ..models import ComputeProvider
             async with AsyncSessionLocal() as db:
-                result = await db.execute(
-                    select(ComputeProvider).where(
-                        ComputeProvider.provider_type == provider_type,
-                        ComputeProvider.status == "active",
-                    ).limit(1)
-                )
-                prov = result.scalars().first()
+                # Prefer provider_id for exact match
+                if provider_id:
+                    result = await db.execute(
+                        select(ComputeProvider).where(
+                            ComputeProvider.id == provider_id,
+                            ComputeProvider.status == "active",
+                        ).limit(1)
+                    )
+                    prov = result.scalars().first()
+                else:
+                    result = await db.execute(
+                        select(ComputeProvider).where(
+                            ComputeProvider.provider_type == ptype,
+                            ComputeProvider.status == "active",
+                        ).limit(1)
+                    )
+                    prov = result.scalars().first()
 
             base_url = ""
             api_key = ""
@@ -341,7 +352,7 @@ class AgentWorker:
                 from ..main import _app_state
                 cfg = _app_state.get("config")
                 if cfg:
-                    ec = getattr(cfg.provider, provider_type, None)
+                    ec = getattr(cfg.provider, ptype, None)
                     if ec:
                         base_url = ec.base_url or base_url
                         api_key = ec.api_key or api_key

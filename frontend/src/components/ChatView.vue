@@ -80,6 +80,10 @@
         <span>引用: {{ replyTarget.sender_name }}</span>
         <button @click="replyTarget = null">x</button>
       </div>
+      <div v-if="pendingImage" class="pending-image-bar">
+        <img :src="pendingImage" class="pending-thumb" />
+        <button class="pending-cancel" @click="pendingImage = null">x</button>
+      </div>
       <input ref="fileInput" type="file" accept="image/*" style="display:none" @change="onFileSelect" />
       <button class="attach-btn" @click="fileInput?.click()">+</button>
       <textarea
@@ -132,6 +136,7 @@ const expanded = ref<Record<number, boolean>>({})
 const showSearch = ref(false)
 const searchQuery = ref('')
 const previewUrl = ref('')
+const pendingImage = ref<string | null>(null)
 const replyTarget = ref<any>(null)
 const typingTimer = ref<any>(null)
 
@@ -218,7 +223,7 @@ async function onFileSelect(e: Event) {
   fd.append('file', file)
   const json = await api.upload('/upload?folder=chat', fd)
   if (json.code === 0) {
-    ws.sendChat(props.sessionId, json.data.url, { content_type: 'image' })
+    pendingImage.value = json.data.url
   }
   ;(e.target as HTMLInputElement).value = ''
 }
@@ -289,12 +294,19 @@ function syncMessages() {
 
 function send() {
   const text = draft.value.trim()
-  if (!text) return
+  if (!text && !pendingImage.value) return
   const opts: any = {}
   if (replyTarget.value) { opts.reply_to = replyTarget.value.id }
-  ws.sendChat(props.sessionId, text, opts)
-  draft.value = ''
-  replyTarget.value = null
+  if (pendingImage.value) {
+    ws.sendChat(props.sessionId, pendingImage.value, { content_type: 'image', ...opts })
+    pendingImage.value = null
+    replyTarget.value = null
+  }
+  if (text) {
+    ws.sendChat(props.sessionId, text, opts)
+    draft.value = ''
+    replyTarget.value = null
+  }
 }
 
 function pauseAgent() {
@@ -390,9 +402,15 @@ function formatTime(ts: string) {
 .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
 @keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); } 40% { transform: scale(1); } }
 
-.input-area { display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px 16px; border-top: 1px solid rgba(255,255,255,0.06); background: #0B0F17; position: relative; flex-direction: column; }
+.input-area { display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px 16px; border-top: 1px solid rgba(255,255,255,0.06); background: #0B0F17; position: relative; flex-direction: row; }
+.input-area .reply-bar,
+.input-area .pending-image-bar { width: 100%; position: absolute; bottom: 100%; left: 0; padding: 6px 16px; box-sizing: border-box; }
 .reply-bar { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; background: rgba(0,229,201,0.06); border: 1px solid rgba(0,229,201,0.15); border-radius: 6px; font-size: 12px; color: #00E5C9; margin-bottom: 6px; }
+.pending-image-bar { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(0,229,201,0.04); border: 1px solid rgba(0,229,201,0.15); border-radius: 6px; margin-bottom: 6px; }
+.pending-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); }
+.pending-cancel { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; color: #8899AA; font-size: 14px; cursor: pointer; }
 .reply-bar button { background: transparent; border: none; color: #8899AA; cursor: pointer; }
+.pending-cancel:hover { color: #F59E0B; }
 .input-area textarea { flex: 1; min-height: 40px; max-height: 120px; background: #141B24; border: 1px solid #1E2731; border-radius: 8px; color: #D8E1EC; padding: 10px 12px; font-size: 14px; resize: none; width: 100%; box-sizing: border-box; }
 .input-area textarea:focus { outline: none; border-color: #00E5C9; }
 .attach-btn { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #8899AA; font-size: 18px; cursor: pointer; }
