@@ -22,15 +22,13 @@ from ..message.types import (
 
 
 class MessageBuilder:
-    """Builds LLM message lists with personality, scene, and source tags."""
+    """Builds LLM message lists with mind files, scene, and source tags."""
 
     def __init__(
         self,
-        personality_prompt: str | None,
         agent_id: str,
         agent_name: str,
     ):
-        self.personality_prompt = personality_prompt
         self.agent_id = agent_id
         self.agent_name = agent_name
 
@@ -38,21 +36,25 @@ class MessageBuilder:
         self,
         history: list[Message],
         scene_info: str = "",
+        mind_context: str = "",
     ) -> list[Message]:
         """Build the message list for LLM call.
 
         Format:
-          1. System: personality prompt (once per call)
-          2. System: scene info (if provided) — injected every turn
-          3. Conversation history with source tags [time | scene | sender]
+          1. System: mind files (AGENT.md + SOUL.md + PROFILE.md)
+          2. System: behavioral guidelines
+          3. System: memory hint (MEMORY.md path, not content)
+          4. System: scene info (if provided)
+          5. Conversation history with source tags [time | scene | sender]
         """
         result: list[Message] = []
 
-        if self.personality_prompt:
+        # Layer 1: Mind files (AGENT.md + SOUL.md + PROFILE.md)
+        if mind_context:
             result.append(
                 Message(
                     role="system",
-                    content=self.personality_prompt,
+                    content=mind_context,
                     meta=MessageMeta(session_id=self.agent_id),
                 )
             )
@@ -70,7 +72,23 @@ class MessageBuilder:
                     "不要把技术文档发给用户让用户自己操作。\n"
                     "3. 不确定如何修改时，必须调用 list_project_docs 或 search_project_docs 查找相关文档，"
                     "找到后立即调用 read_file 读取完整内容，然后按照文档指导直接执行。"
-                    "查到文档列表后不要停下来，必须继续读取。"
+                    "查到文档列表后不要停下来，必须继续读取。\n"
+                    "4. 当你不确定用户的真实意图时，优先向用户发起询问进行澄清。"
+                    "询问永远比不确定的胡乱操作更为有效——宁可多问一句，也不要在误解的前提下行动。"
+                ),
+                meta=MessageMeta(session_id=self.agent_id),
+            )
+        )
+
+        # Layer 3: Memory hint — Agent manages MEMORY.md by itself
+        result.append(
+            Message(
+                role="system",
+                content=(
+                    f"【记忆提示】\n"
+                    f"你的私人日记保存在 ~/.cloudmind-zome/agents/{self.agent_id}/MEMORY.md 中，"
+                    "记录了与用户的互动和事件。你可以在需要回忆具体事件时主动调用 read_file 读取，"
+                    "也可以在重要事件发生后主动调用 write_file 更新。"
                 ),
                 meta=MessageMeta(session_id=self.agent_id),
             )
@@ -188,8 +206,11 @@ class MessageBuilder:
     @staticmethod
     def extract_text_only(msg: Message) -> str:
         """Get text content only, excluding ThinkingBlock (reasoning)."""
+        content = msg.content
+        if isinstance(content, str):
+            return content
         parts: list[str] = []
-        for b in msg.content:
+        for b in content:
             if isinstance(b, TextBlock):
                 parts.append(b.text)
             elif isinstance(b, ToolResultBlock):

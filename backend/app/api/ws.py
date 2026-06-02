@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import AsyncSessionLocal
 from ..models import ChatSessionMember, User
 from ..services.event_bus import manager
-from ..services.proactive_wake_scheduler import send_offline_wake
 from .ws_handlers import _handle_agent_stop, _handle_chat_send, _handle_typing, _replay_offline_messages
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,6 @@ async def websocket_endpoint(ws: WebSocket):
 
     await manager.connect(user.id, ws)
     await ws.send_json({"type": "auth.success", "payload": {"user_id": user.id}})
-    await send_offline_wake(user.id, ws)
 
     # Replay offline messages
     await _replay_offline_messages(user.id, ws)

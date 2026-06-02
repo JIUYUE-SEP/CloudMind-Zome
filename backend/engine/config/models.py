@@ -72,6 +72,9 @@ class AgentConfig(BaseModel):
     # Tracing (OpenTelemetry, disabled by default)
     tracing_enabled: bool = False
     tracing_endpoint: str = "http://localhost:4318/v1/traces"
+    # Memory system selection
+    memory_system: str = "simple"  # "simple" | "topic_compression"
+    max_memory_messages: int = 500
 
 
 class AssistantModelConfig(BaseModel):
@@ -89,7 +92,7 @@ class AssistantModelConfig(BaseModel):
 class EmbeddingModelConfig(BaseModel):
     """Embedding model configuration.
 
-    Fully independent. Used for semantic memory search via ChromaDB.
+    Fully independent. Used for semantic memory search via zvec.
     """
 
     base_url: str = ""
@@ -107,6 +110,12 @@ class ContextConfig(BaseModel):
     keep_recent: int = 3  # Number of recent messages to keep in compression
     hot_memory_limit: int = 10  # Max messages in hot memory
     warm_memory_limit: int = 20  # Max summaries in warm memory
+    # Context Pipeline settings
+    max_context_tokens: int = 128000  # Model context window (for downgrade)
+    semantic_search_top_k: int = 10  # Zvec initial top-K
+    semantic_score_threshold: float = 0.3  # Minimum relevance score after decay
+    hot_context_initial: int = 20  # Initial recent messages in hot context
+    time_decay_half_life_hours: float = 72.0  # Time decay half-life for scoring
 
 
 class ToolItemConfig(BaseModel):

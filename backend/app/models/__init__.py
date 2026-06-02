@@ -16,8 +16,6 @@ from .notifications import Notification
 from .settings import Setting
 from .trash import TrashItem
 from .themes import Theme
-from .intimacy import AgentUserRelation
-
 __all__ = [
     "Base",
     "_uuid",
@@ -39,5 +37,4 @@ __all__ = [
     "Setting",
     "TrashItem",
     "Theme",
-    "AgentUserRelation",
 ]

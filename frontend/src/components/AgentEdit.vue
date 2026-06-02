@@ -187,31 +187,71 @@
 
             <!-- 算力配置 -->
             <div v-if="activeTab === 'compute'" class="panel-section">
-              <label>算力平台</label>
-              <select v-model="form.llm_config.provider_id" @change="onProviderChange">
+              <label>推理模型</label>
+              <select v-model="form.llm_config.provider" @change="onLlmProviderChange">
                 <option value="">请选择平台</option>
-                <option
-                  v-for="p in computeStore.providers"
-                  :key="p.id"
-                  :value="p.id"
-                >
+                <option v-for="p in llmProviders" :key="p.name" :value="p.name">
                   {{ p.display_name }}
                 </option>
               </select>
 
-              <label>模型</label>
-              <select v-model="form.llm_config.model" :disabled="!currentProviderModels.length">
-                <option value="">请选择模型</option>
-                <option
-                  v-for="m in currentProviderModels"
-                  :key="m"
-                  :value="m"
-                >
-                  {{ m }}
-                </option>
-              </select>
-              <div v-if="!currentProviderModels.length && form.llm_config.provider_id" class="hint-text">
-                该平台未配置模型，请到算力中枢添加
+              <div v-if="currentLlmProvider" class="model-select-row">
+                <select v-model="form.llm_config.model" :disabled="!currentLlmModels.length">
+                  <option value="">请选择模型</option>
+                  <option v-for="m in currentLlmModels" :key="m" :value="m">
+                    {{ m }}
+                  </option>
+                </select>
+                <div class="capability-icons">
+                  <span v-if="currentLlmProvider.supports_vision" title="支持图片输入">👁️</span>
+                  <span v-if="currentLlmProvider.supports_reasoning" title="支持推理">🧠</span>
+                  <span v-if="currentLlmProvider.supports_streaming" title="支持流式">⚡</span>
+                </div>
+              </div>
+              <div v-if="!currentLlmModels.length && form.llm_config.provider" class="hint-text">
+                该平台未配置模型
+              </div>
+
+              <div class="sep" />
+
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="form.useIndependentMarker" />
+                使用独立标注模型
+              </label>
+              <div v-if="form.useIndependentMarker" class="sub-config">
+                <select v-model="form.llm_config.marker.provider" @change="onMarkerProviderChange">
+                  <option value="">请选择平台</option>
+                  <option v-for="p in llmProviders" :key="p.name" :value="p.name">
+                    {{ p.display_name }}
+                  </option>
+                </select>
+                <select v-model="form.llm_config.marker.model" :disabled="!currentMarkerModels.length">
+                  <option value="">请选择模型</option>
+                  <option v-for="m in currentMarkerModels" :key="m" :value="m">
+                    {{ m }}
+                  </option>
+                </select>
+              </div>
+
+              <div class="sep" />
+
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="form.useIndependentEmbedder" />
+                使用独立嵌入模型
+              </label>
+              <div v-if="form.useIndependentEmbedder" class="sub-config">
+                <select v-model="form.llm_config.embedder.provider" @change="onEmbedderProviderChange">
+                  <option value="">请选择平台</option>
+                  <option v-for="p in llmProviders" :key="p.name" :value="p.name">
+                    {{ p.display_name }}
+                  </option>
+                </select>
+                <select v-model="form.llm_config.embedder.model" :disabled="!currentEmbedderModels.length">
+                  <option value="">请选择模型</option>
+                  <option v-for="m in currentEmbedderModels" :key="m" :value="m">
+                    {{ m }}
+                  </option>
+                </select>
               </div>
             </div>
 
@@ -323,6 +363,8 @@ const displayModes = [
   { key: 'vrm' as const, label: '3D' },
 ]
 
+const llmProviders = ref<any[]>([])
+
 const form = ref<any>({
   name: '',
   codename: '',
@@ -331,13 +373,40 @@ const form = ref<any>({
   capabilities: [],
   aliases: [],
   tags: [],
-  llm_config: { provider_id: '', model: '' },
+  llm_config: { provider: '', model: '' },
+  useIndependentMarker: false,
+  useIndependentEmbedder: false,
   portrait_url: '',
   model_url: '',
   live2d_model_url: '',
 })
 
+const currentLlmProvider = computed(() => {
+  const name = form.value.llm_config.provider
+  if (!name) return null
+  return llmProviders.value.find((p: any) => p.name === name)
+})
+
+const currentLlmModels = computed(() => {
+  return currentLlmProvider.value?.models || []
+})
+
+const currentMarkerModels = computed(() => {
+  const name = form.value.llm_config.marker?.provider
+  if (!name) return []
+  const p = llmProviders.value.find((x: any) => x.name === name)
+  return p?.models || []
+})
+
+const currentEmbedderModels = computed(() => {
+  const name = form.value.llm_config.embedder?.provider
+  if (!name) return []
+  const p = llmProviders.value.find((x: any) => x.name === name)
+  return p?.models || []
+})
+
 const currentProviderModels = computed(() => {
+  // Backward compat
   const pid = form.value.llm_config.provider_id
   if (!pid) return []
   const p = computeStore.providers.find(x => x.id === pid)
@@ -361,7 +430,11 @@ const modelFileName = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([agentsStore.fetchList(), computeStore.fetchProviders()])
+  await Promise.all([
+    agentsStore.fetchList(),
+    computeStore.fetchProviders(),
+    fetchLlmProviders(),
+  ])
 
   const routeId = route.params.id as string | undefined
   if (routeId) {
@@ -373,6 +446,13 @@ onMounted(async () => {
   }
   window.addEventListener('ws:agent.status', onAgentStatus as any)
 })
+
+async function fetchLlmProviders() {
+  const json = await api.get('/agents/providers')
+  if (json.code === 0) {
+    llmProviders.value = json.data || []
+  }
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('ws:agent.status', onAgentStatus as any)
@@ -395,7 +475,7 @@ function createNew() {
   selectedId.value = null
   activeTab.value = 'profile'
   displayMode.value = 'portrait'
-  const firstProv = computeStore.providers[0]
+  const firstProv = llmProviders.value[0]
   form.value = {
     name: '',
     codename: '',
@@ -405,13 +485,35 @@ function createNew() {
     aliases: [],
     tags: [],
     llm_config: {
-      provider_id: firstProv?.id || '',
+      provider: firstProv?.name || '',
       model: firstProv?.models?.[0] || '',
     },
+    useIndependentMarker: false,
+    useIndependentEmbedder: false,
     portrait_url: '',
     model_url: '',
     live2d_model_url: '',
   }
+}
+
+function onLlmProviderChange() {
+  const name = form.value.llm_config.provider
+  const p = llmProviders.value.find((x: any) => x.name === name)
+  form.value.llm_config.model = p?.models?.[0] || ''
+}
+
+function onMarkerProviderChange() {
+  const name = form.value.llm_config.marker?.provider
+  const p = llmProviders.value.find((x: any) => x.name === name)
+  if (!form.value.llm_config.marker) form.value.llm_config.marker = {}
+  form.value.llm_config.marker.model = p?.models?.[0] || ''
+}
+
+function onEmbedderProviderChange() {
+  const name = form.value.llm_config.embedder?.provider
+  const p = llmProviders.value.find((x: any) => x.name === name)
+  if (!form.value.llm_config.embedder) form.value.llm_config.embedder = {}
+  form.value.llm_config.embedder.model = p?.models?.[0] || ''
 }
 
 function onProviderChange() {
@@ -445,15 +547,23 @@ async function selectAgent(id: string) {
   if (!data) return
   liveStatus.value = data.status || 'idle'
 
-  // Migrate old provider string to provider_id
-  let llmCfg = data.llm_config || {}
-  if (!llmCfg.provider_id && llmCfg.provider) {
-    // Try to match old provider_type to a platform id
-    const matched = computeStore.providers.find(p => p.provider_type === llmCfg.provider)
-    if (matched) {
-      llmCfg = { provider_id: matched.id, model: llmCfg.model || matched.models?.[0] || '' }
-    }
-  }
+  const llmCfg = data.llm_config || {}
+  // New format: { provider, model, marker?, embedder? }
+  // Old format: { provider_id, model }
+  const isNewFormat = !!llmCfg.provider
+
+  const newLlmConfig = isNewFormat
+    ? {
+        provider: llmCfg.provider || llmProviders.value[0]?.name || '',
+        model: llmCfg.model || '',
+        marker: llmCfg.marker ? { ...llmCfg.marker } : undefined,
+        embedder: llmCfg.embedder ? { ...llmCfg.embedder } : undefined,
+      }
+    : {
+        provider: llmProviders.value[0]?.name || '',
+        model: '',
+      }
+
   form.value = {
     name: data.name || '',
     codename: data.codename || '',
@@ -462,9 +572,9 @@ async function selectAgent(id: string) {
     capabilities: Array.isArray(data.capabilities) ? [...data.capabilities] : [],
     aliases: Array.isArray(data.aliases) ? [...data.aliases] : [],
     tags: Array.isArray(data.tags) ? [...data.tags] : [],
-    llm_config: llmCfg.provider_id
-      ? { provider_id: llmCfg.provider_id, model: llmCfg.model || '' }
-      : { provider_id: computeStore.providers[0]?.id || '', model: computeStore.providers[0]?.models?.[0] || '' },
+    llm_config: newLlmConfig,
+    useIndependentMarker: !!llmCfg.marker,
+    useIndependentEmbedder: !!llmCfg.embedder,
     portrait_url: data.portrait_url || '',
     model_url: data.model_url || '',
     live2d_model_url: data.live2d_model_url || '',
@@ -501,7 +611,38 @@ function removeTag(i: number) {
 }
 
 async function save() {
-  const body = { ...form.value }
+  const body: any = {
+    name: form.value.name,
+    codename: form.value.codename,
+    personality_prompt: form.value.personality_prompt,
+    represent_color: form.value.represent_color,
+    capabilities: form.value.capabilities,
+    aliases: form.value.aliases,
+    tags: form.value.tags,
+    portrait_url: form.value.portrait_url,
+    model_url: form.value.model_url,
+    live2d_model_url: form.value.live2d_model_url,
+  }
+
+  // Build llm_config
+  const llm: any = {
+    provider: form.value.llm_config.provider,
+    model: form.value.llm_config.model,
+  }
+  if (form.value.useIndependentMarker && form.value.llm_config.marker?.provider) {
+    llm.marker = {
+      provider: form.value.llm_config.marker.provider,
+      model: form.value.llm_config.marker.model,
+    }
+  }
+  if (form.value.useIndependentEmbedder && form.value.llm_config.embedder?.provider) {
+    llm.embedder = {
+      provider: form.value.llm_config.embedder.provider,
+      model: form.value.llm_config.embedder.model,
+    }
+  }
+  body.llm_config = llm
+
   if (isCreate.value) {
     const json = await api.post('/agents', body)
     if (json.code === 0) {
@@ -937,6 +1078,37 @@ async function uploadLive2d(e: Event) {
   border-color: rgba(0, 229, 201, 0.4);
 }
 .hint-text { font-size: 11px; color: #5A6A7A; margin-top: 4px; }
+.model-select-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-select-row select {
+  flex: 1;
+}
+.capability-icons {
+  display: flex;
+  gap: 4px;
+  font-size: 14px;
+}
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #d8e1ec;
+  cursor: pointer;
+}
+.checkbox-label input[type='checkbox'] {
+  width: auto;
+}
+.sub-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 16px;
+  border-left: 2px solid rgba(0, 229, 201, 0.15);
+}
 .panel-section input[type='color'] {
   width: 48px;
   height: 36px;

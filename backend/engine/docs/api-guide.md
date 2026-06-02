@@ -79,6 +79,7 @@ All routes under `/api/v1/`
 | POST | /upload | File upload |
 | GET | /auth/me | Get current user |
 | PUT | /auth/me | Update user profile |
+| GET | /system/health | Health check |
 
 ## WebSocket API
 
@@ -87,7 +88,7 @@ Endpoint: `ws://host/api/v1/ws`
 ### Client -> Server Messages
 | Type | Payload | Description |
 |------|---------|-------------|
-| chat.send | {session_id, content, content_type, reply_to} | Send message |
+| chat.send | {session_id, content, content_type, reply_to, client_msg_id} | Send message |
 | chat.typing | {session_id, is_typing} | Typing indicator |
 | agent.stop | {session_id, agent_id} | Stop agent (private only) |
 | ping | {} | Heartbeat |
@@ -105,22 +106,31 @@ Endpoint: `ws://host/api/v1/ws`
 | action.progress | {run_id, node_id, node_status, overall_progress} | Workflow progress |
 | intermind.start | {session_id} | Intermind begins |
 | intermind.end | {session_id} | Intermind ends |
+| notification.new | {title, content} | System notification |
 
 ## Key Data Models
 
 ### Agent (agents table)
 - id, name, codename, personality_prompt
-- model_config: {provider_id, model}
-- llm_config: JSON field, used by Worker
-- status: idle/busy/introspecting
+- model_config: {provider_id, model, provider, temperature, max_tokens}
+- tags: list[str] — grouping labels
+- aliases: list[str] — alternative names for @mention
+- capabilities: list[str] — capability tags for intent routing
+- status: idle / busy / introspecting
+- role: member / conductor
+- daily_token_limit, daily_tokens_used
 
 ### ChatSession
 - id, type (private/group), name, settings
+- conductor_agent_id — group conductor
 - members: ChatSessionMember[]
+- status: active / dissolved
 
 ### ChatMessage
 - id, session_id, sender_id, sender_type
-- content, content_type, reply_to, batch_id
+- content, content_type (text/image/mixed/system)
+- reply_to, batch_id, client_msg_id
+- is_deleted
 
 ## Important Backend Files
 | Purpose | Path |
@@ -129,7 +139,8 @@ Endpoint: `ws://host/api/v1/ws`
 | Agent Worker | `backend/app/services/agent_worker.py` |
 | Engine Bridge | `backend/app/services/engine_bridge.py` |
 | ReActAgent | `backend/engine/agent/react.py` |
+| Context Pipeline | `backend/engine/context/context_pipeline.py` |
 | Transport | `backend/engine/provider/transport.py` |
 | Tool Registry | `backend/engine/tool/registry.py` |
-| Context Manager | `backend/engine/context/manager.py` |
 | Session Store | `backend/engine/session/store.py` |
+| Vector Store | `backend/engine/context/vector_store.py` |

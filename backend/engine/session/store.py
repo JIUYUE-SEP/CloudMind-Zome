@@ -101,34 +101,12 @@ class SessionStore:
                 """
             )
 
-            # Topics table (engine layer)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS llm_topics (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL REFERENCES llm_sessions(id),
-                    name TEXT NOT NULL,
-                    subtopic_name TEXT,
-                    importance TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    original_message_ids TEXT,
-                    start_round INTEGER,
-                    end_round INTEGER,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-                """
-            )
-
             # Indexes
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_llm_messages_session ON llm_messages(session_id)"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_llm_messages_topic ON llm_messages(topic_id)"
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_topics_session ON llm_topics(session_id)"
             )
 
             # FTS5 virtual tables (engine layer)
@@ -140,14 +118,11 @@ class SessionStore:
                 )
                 """
             )
-            await db.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS llm_topics_fts USING fts5(
-                    name, summary,
-                    content=llm_topics, content_rowid=id
-                )
-                """
-            )
+
+            # llm_topics and llm_topics_fts are deprecated — replaced by
+            # _compressed/*.md + zvec agent_topics collection.
+            # We intentionally do NOT create them on new installs.
+            # Existing tables are left untouched for migration safety.
 
             # Ensure message_uuid column exists in old databases (llm_messages)
             await self._ensure_columns(db)
@@ -589,10 +564,32 @@ class SessionStore:
         start_round: int = 0,
         end_round: int = 0,
     ) -> None:
-        """Save or replace a topic summary."""
+        """DEPRECATED: Topic summaries now live in _compressed/*.md and zvec.
+
+        Kept for backward compatibility with existing data.
+        """
+        logger.warning("SessionStore.save_topic() is deprecated")
         import time as time_mod
 
         db = await self.connect()
+        # Ensure table exists for legacy data
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_topics (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                subtopic_name TEXT,
+                importance TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                original_message_ids TEXT,
+                start_round INTEGER,
+                end_round INTEGER,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
         await db.execute(
             """
             INSERT OR REPLACE INTO llm_topics
@@ -619,8 +616,19 @@ class SessionStore:
     async def load_topics(
         self, session_id: str, importance: str | None = None, limit: int = 20
     ) -> list[dict]:
-        """Load topic summaries for a session."""
+        """DEPRECATED: Topic summaries now live in _compressed/*.md and zvec.
+
+        Kept for backward compatibility with existing data.
+        """
+        logger.warning("SessionStore.load_topics() is deprecated")
         db = await self.connect()
+        # Check if table exists (it won't on new installs)
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_topics'"
+        )
+        if not await cursor.fetchone():
+            return []
+
         if importance:
             async with db.execute(
                 """
@@ -763,6 +771,7 @@ class SessionStore:
         self,
         agent_id: str,
         source: str | None = None,
+        source_id: str | None = None,
         limit: int = 1000,
     ) -> list[Message]:
         """Load messages from the unified agent memory pool."""
@@ -770,34 +779,32 @@ class SessionStore:
         import time as time_mod
 
         db = await self.connect()
+
+        conditions = ["agent_id = ?"]
+        params: list[Any] = [agent_id]
         if source:
-            async with db.execute(
-                """
-                SELECT role, content, tool_calls, reasoning_content, timestamp,
-                       token_count, round, compressed, message_uuid, tool_call_id,
-                       source, source_id, source_name, sender_id, sender_name
-                FROM agent_messages
-                WHERE agent_id = ? AND source = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (agent_id, source, limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
-        else:
-            async with db.execute(
-                """
-                SELECT role, content, tool_calls, reasoning_content, timestamp,
-                       token_count, round, compressed, message_uuid, tool_call_id,
-                       source, source_id, source_name, sender_id, sender_name
-                FROM agent_messages
-                WHERE agent_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (agent_id, limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
+            conditions.append("source = ?")
+            params.append(source)
+        if source_id:
+            conditions.append("source_id = ?")
+            params.append(source_id)
+        params.append(limit)
+
+        where_clause = " AND ".join(conditions)
+
+        async with db.execute(
+            f"""
+            SELECT role, content, tool_calls, reasoning_content, timestamp,
+                   token_count, round, compressed, message_uuid, tool_call_id,
+                   source, source_id, source_name, sender_id, sender_name
+            FROM agent_messages
+            WHERE {where_clause}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ) as cursor:
+            rows = await cursor.fetchall()
 
         messages = []
         for row in reversed(rows):
@@ -808,6 +815,86 @@ class SessionStore:
             ) = row
 
             # Normalize timestamp (ISO string or float)
+            ts_val: float
+            if isinstance(timestamp, str):
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    ts_val = dt.timestamp()
+                except Exception:
+                    ts_val = time_mod.time()
+            else:
+                ts_val = timestamp or time_mod.time()
+
+            meta = MessageMeta(
+                id=message_uuid or shortuuid.uuid(),
+                session_id=source_id,
+                timestamp=ts_val,
+                tokens_used=token_count or 0,
+                round=round_num or 0,
+                compressed=bool(compressed),
+                source=source or "private",
+                source_name=source_name or "",
+                sender_id=sender_id or "",
+                sender_name=sender_name or "",
+            )
+
+            content_blocks: list[ContentBlock] = []
+            if reasoning_content:
+                content_blocks.append(ThinkingBlock(thinking=reasoning_content))
+            if tool_calls:
+                tc_data = json.loads(tool_calls)
+                for tc in tc_data:
+                    content_blocks.append(
+                        ToolUseBlock(id=tc["id"], name=tc["name"], input=tc.get("input", {}))
+                    )
+            elif tool_call_id:
+                content_blocks.append(
+                    ToolResultBlock(id=tool_call_id, content=content or "", truncated=False)
+                )
+            elif content:
+                if content_blocks:
+                    content_blocks.append(TextBlock(text=content))
+                else:
+                    content_blocks = content
+
+            messages.append(Message(role=role, content=content_blocks, meta=meta))
+
+        return messages
+
+    async def load_agent_messages_by_uuids(
+        self, agent_id: str, uuids: list[str]
+    ) -> list[Message]:
+        """Load specific messages by their message_uuid values."""
+        from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
+        import time as time_mod
+
+        if not uuids:
+            return []
+
+        db = await self.connect()
+        placeholders = ",".join("?" for _ in uuids)
+        async with db.execute(
+            f"""
+            SELECT role, content, tool_calls, reasoning_content, timestamp,
+                   token_count, round, compressed, message_uuid, tool_call_id,
+                   source, source_id, source_name, sender_id, sender_name
+            FROM agent_messages
+            WHERE agent_id = ? AND message_uuid IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            [agent_id, *uuids],
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        messages: list[Message] = []
+        for row in rows:
+            (
+                role, content, tool_calls, reasoning_content, timestamp,
+                token_count, round_num, compressed, message_uuid, tool_call_id,
+                source, source_id, source_name, sender_id, sender_name,
+            ) = row
+
             ts_val: float
             if isinstance(timestamp, str):
                 try:
@@ -875,8 +962,19 @@ class SessionStore:
         return cursor.rowcount
 
     async def load_cold_memories(self, limit: int = 20) -> list[dict]:
-        """Load cross-session high-importance topics as cold memory."""
+        """DEPRECATED: Cold memory now handled by zvec semantic search.
+
+        Kept for backward compatibility with existing data.
+        """
+        logger.warning("SessionStore.load_cold_memories() is deprecated")
         db = await self.connect()
+        # Check if table exists (it won't on new installs)
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_topics'"
+        )
+        if not await cursor.fetchone():
+            return []
+
         async with db.execute(
             """
             SELECT id, session_id, name, subtopic_name, importance, summary,

@@ -1,6 +1,6 @@
 # CloudMind-Zome 架构文档
 
-> Version: 1.0 | Date: 2026-05-23 | Branch: dev
+> Version: 2.0 | Date: 2026-06-02 | Branch: dev
 
 ---
 
@@ -12,10 +12,10 @@ CloudMind-Zome 是一个多 Agent 协作平台，核心设计理念是**"每个 
 
 | 特性 | 说明 |
 |------|------|
-| **私聊** | 用户与单个 Agent 一对一对话 |
-| **群聊** | 多 Agent 协作，支持队长(Conductor)机制 |
+| **私聊** | 用户与单个 Agent 一对一对话，支持图片、引用回复 |
+| **群聊** | 多 Agent 协作，支持队长(Conductor)机制、@mention、@所有人 |
 | **工具调用** | Agent 可调用心智工具（搜索、文件操作、代码执行、生图等） |
-| **记忆系统** | 分层语义记忆（语义/温热/冷），支持自动压缩 |
+| **记忆系统** | Context Pipeline + zvec 语义检索 + Topic Compression 三层架构 |
 | **主动性** | Commission（定时任务）+ 亲密度唤醒 |
 | **视觉能力** | 用户发图 Agent 可识图；Agent 可生图分享 |
 | **无登录** | 纯访客模式，零门槛使用 |
@@ -31,8 +31,8 @@ CloudMind-Zome 是一个多 Agent 协作平台，核心设计理念是**"每个 
 | 框架 | FastAPI + Uvicorn |
 | ORM | SQLAlchemy 2.0 (async) |
 | 数据库 | SQLite (`~/.cloudmind-zome/cloudmind.db`, WAL 模式) |
-| 向量存储 | ChromaDB (`~/.cloudmind-zome/vectors/`) |
-| LLM 客户端 | OpenAI SDK (兼容 DeepSeek/SiliconFlow 等) |
+| 向量存储 | zvec (C++ HNSW，`~/.cloudmind-zome/zvec/`) |
+| LLM 客户端 | OpenAI SDK (兼容 DeepSeek/MiMo/KimiCode/GLM) |
 | 任务调度 | asyncio + 自定义轮询器 |
 
 ### 2.2 前端
@@ -62,10 +62,11 @@ backend/
 │   └── database.py        # 数据库连接
 ├── engine/                # 引擎层 (Agent Engine)
 │   ├── agent/             # ReActAgent 核心循环
-│   ├── provider/          # LLM Transport + Thinking Profile
+│   ├── context/           # ContextPipeline + zvec + Embedder
+│   ├── memory/            # MemorySystem 插件 + TopicCompressionMemory
+│   ├── provider/          # LLM Transport + Thinking Profile + Factory
 │   ├── tool/              # 工具注册中心
 │   ├── tools/             # 工具实现
-│   ├── context/           # 语义记忆/向量存储
 │   ├── message/           # 消息类型定义
 │   ├── session/           # 持久化存储
 │   ├── config/            # 配置加载
@@ -99,17 +100,17 @@ backend/
 │  - GroupChatRouter     (群聊路由: @mention / 语义)          │
 │  - ConductorService    (队长管理群任务)                      │
 │  - CommissionScheduler (定时任务调度)                        │
-│  - ProactiveWake       (亲密度唤醒调度)                      │
 │  - EventBus            (全局状态广播)                        │
 └────────────────────────────┬────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Agent Engine                                               │
-│  - ReActAgent          (ReAct 循环 + 统一记忆池)             │
+│  - ReActAgent          (ReAct 循环 + 场景隔离记忆)           │
+│  - ContextPipeline     (L1-L6 组装 + 逐层降级)              │
 │  - ChatCompletionsTransport  (OpenAI API 调用)              │
 │  - ToolRegistry        (工具注册/发现/执行)                  │
-│  - ContextManager      (语义记忆 + 自动压缩)                 │
+│  - TopicCompressionMemory (话题检测 + 异步压缩)              │
 │  - SessionStore        (SQLite 持久化)                      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -127,10 +128,9 @@ backend/
 | `chat_sessions` | 会话（私聊/群聊） |
 | `chat_messages` | 平台层消息记录 |
 | `chat_session_members` | 会话成员关系 |
-| `agent_messages` | Agent 引擎层统一记忆池 |
+| `agent_messages` | Agent 引擎层统一记忆池（按 agent_id + source 存储） |
 | `llm_sessions` | 引擎层会话统计 |
 | `llm_messages` | 引擎层消息（与 agent_messages 互补） |
-| `llm_topics` | 话题摘要（压缩后） |
 | `actions` / `action_runs` | 工作流蓝图与执行记录 |
 | `commissions` / `commission_logs` | 定时任务与执行日志 |
 | `compute_providers` | LLM 算力提供商配置 |
@@ -147,7 +147,7 @@ User (1) ───< Agent (N)
 ChatSession (1) ───< ChatMessage (N)
                  ───< ChatSessionMember (N)
 
-Agent (1) ───< agent_messages (N, 统一记忆池)
+Agent (1) ───< agent_messages (N, 统一记忆池，按 source 区分场景)
 ```
 
 ---
@@ -160,7 +160,7 @@ Agent (1) ───< agent_messages (N, 统一记忆池)
 
 - **一个 asyncio.Task** — 串行处理所有 Jobs
 - **一个 asyncio.Queue** — FIFO 队列，不区分优先级
-- **一个 ReActAgent 实例** — 永不重建，持有统一记忆池 `_messages`
+- **一个 ReActAgent 实例** — 永不重建，持有场景隔离的记忆 `_messages`
 - **一个状态** — idle / busy / introspecting，由 Worker 单点维护
 
 ```python
@@ -174,16 +174,23 @@ async def run(self):
 ### 5.2 ReAct 循环
 
 ```
-用户消息 → 加入 _messages → 构建 Prompt → LLM 调用 → 解析响应
-                                                    ↓
-                                          ┌─────────┴─────────┐
-                                          ↓                   ↓
-                                    [普通回复]           [Tool Calls]
-                                          ↓                   ↓
-                                    保存并结束          执行工具 → 结果加入 _messages
-                                                            ↓
-                                                    继续下一轮 LLM
+用户消息 → 加入 _messages → ContextPipeline 组装 Prompt → LLM 流式调用 → 解析响应
+                                                              ↓
+                                                    ┌─────────┴─────────┐
+                                                    ↓                   ↓
+                                              [普通回复]           [Tool Calls]
+                                                    ↓                   ↓
+                                              保存并结束          执行工具 → 结果加入 _messages
+                                                                          ↓
+                                                                  继续下一轮 LLM
 ```
+
+**流式输出**：`transport.stream()` 逐 token 推送，`AgentEvent` 事件类型：
+- `thinking` — 推理内容（折叠显示）
+- `content` — 正文内容
+- `tool_call` — 工具调用（折叠显示）
+- `tool_result` — 工具执行结果
+- `done` — 流结束
 
 ### 5.3 消息模型 (Message)
 
@@ -205,36 +212,82 @@ class Message:
 | `ToolResultBlock` | 工具执行结果（id 必须匹配 ToolUseBlock） |
 | `ImageBlock` | 图片（vision 模型） |
 
-### 5.4 记忆系统
+**MessageMeta 字段：**
+- `id` — 消息 UUID
+- `session_id` / `source_id` — 场景标识
+- `source` — "private" | "group" | "workflow"
+- `source_name` — 场景显示名
+- `sender_name` — 发送者显示名
+- `timestamp` — 时间戳
+- `compressed` — 是否为压缩摘要
 
-**分层架构：**
+### 5.4 Context Pipeline
+
+`ContextPipeline` 是每轮 LLM 调用前的核心组装逻辑：
+
+```
+Stage 1: Retriever
+  - 用户最新消息做 embedding
+  - 在 zvec 中搜索全场景记忆（不按 source 过滤），取 top-K
+
+Stage 2: Scorer + Filter
+  - 基础分 = zvec 语义相似度
+  - 乘以时间衰减系数（越近越高）
+  - 低于阈值（默认 0.3）的丢掉
+  - 排序：当前场景的结果排前面
+
+Stage 3: Assembler
+  - 按优先级 L1→L6 拼接完整 prompt
+  - L1(Mind) + L2(Scene) + L3(Hot) + L4(Semantic) + L5(Topics) + L6(Tools)
+
+Stage 4: Downgrade
+  - 总 token 超限 → L5 合并 → L4 缩减 → L3 截断
+  - L1/L2/L6 永不动
+```
+
+**降级配置项**（`engine/config.yaml`）：
+- `context.max_context_tokens` — 模型 context window（默认 128000）
+- `context.semantic_search_top_k` — zvec 初始 top-K（默认 10）
+- `context.semantic_score_threshold` — 最低相关度（默认 0.3）
+- `context.hot_context_initial` — Hot Context 初始条数（默认 20）
+- `context.time_decay_half_life_hours` — 时间衰减半衰期（默认 72h）
+
+### 5.5 记忆系统
+
+**三层架构：**
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Hot Memory  (ReActAgent._messages)         │
-│  - 最近 N 条消息，内存中直接访问              │
-│  - 跨场景统一，所有 Job 共享                  │
+│  Hot Context  (ReActAgent._messages)        │
+│  - 按 source_id 场景隔离，内存中直接访问      │
+│  - 切换场景时清空重载                         │
 ├─────────────────────────────────────────────┤
-│  Semantic Memory  (ChromaDB 向量)            │
+│  Semantic Memory  (zvec 向量)                │
 │  - 每条消息自动 embedding                     │
-│  - 按语义相似度检索                           │
+│  - 跨场景语义相似度检索                       │
+│  - 时间衰减打分，低于阈值过滤                 │
 ├─────────────────────────────────────────────┤
-│  Warm Memory  (llm_topics 摘要)              │
-│  - 自动压缩后的话题摘要                       │
-│  - 由 assistant_model 生成                   │
-├─────────────────────────────────────────────┤
-│  Cold Memory  (llm_topics high-importance)   │
-│  - 跨 Agent 共享的高重要性主题                │
+│  Topic Summaries  (_compressed/*.md)        │
+│  - TopicMarker 检测话题切换                   │
+│  - CompressionWorker 异步压缩生成             │
+│  - 按修改时间排序，Pipeline L5 注入           │
 └─────────────────────────────────────────────┘
 ```
 
-**压缩触发：**
-- 上下文窗口达到阈值（默认 80%）
+**话题压缩流程：**
+1. `TopicMarker` 分析最近消息，检测话题标签切换
+2. 话题关闭时，`CompressionWorker` 异步生成摘要
+3. 摘要保存为 `~/.cloudmind-zome/agents/{id}/_compressed/{topic}.md`
+4. 摘要同时索引到 zvec `agent_topics` collection
+5. 原始消息从 `agent_messages` 中删除（释放 token）
+
+**压缩触发条件：**
+- 上下文 token 数超过阈值（默认 80% of context window）
 - Agent 空闲超过 5 分钟且消息数 > 10（内省）
 
-### 5.5 工具系统
+### 5.6 工具系统
 
-**10 个内置工具：**
+**10+ 内置工具：**
 
 | 工具 | 功能 |
 |------|------|
@@ -249,7 +302,12 @@ class Message:
 | `send_private_message` | Agent 间私信 |
 | `report_workflow_progress` | 报告工作流进度 |
 
-**工具注册：** 使用 `@tool_registry.register()` 装饰器自动注册，支持从目录递归发现。
+**工具注册：** 使用 `@tool_registry.register()` 装饰器自动注册，支持从目录递归发现（AST 解析，支持别名 import）。
+
+**工具执行：**
+- 同步工具使用有界线程池（`ThreadPoolExecutor(max_workers=8)`）
+- 异步工具直接 `asyncio.wait_for`
+- 并行策略：所有工具标记为 `safe_to_parallel=true` 时并行执行
 
 ---
 
@@ -285,7 +343,9 @@ Server ──WebSocket──► Client
 ┌─────────────────────┐
 │ GroupChatRouter     │
 │ - @mention 精确路由  │
+│ - @所有人 / @all     │
 │ - 语义意图路由       │
+│ - 随机兜底           │
 └──────────┬──────────┘
            │
            ▼
@@ -300,7 +360,7 @@ Server ──WebSocket──► Client
 
 ### 6.3 跨 Agent 记忆同步
 
-当 Agent A 在群聊中回复后，该交换（用户消息 + Agent A 回复）会被写入**所有其他 Agent** 的 `agent_messages` 表中，确保每个 Agent 都能看到群聊上下文。
+当 Agent A 在群聊中回复后，该交换（用户消息 + Agent A 回复）会被写入**所有其他 Agent** 的 `agent_messages` 表中（source="group"），确保每个 Agent 都能看到群聊上下文。
 
 ---
 
@@ -349,4 +409,148 @@ frontend/src/
 前端解析消息中的特殊标记：
 - `[image:url]` → 内联图片
 - `[file:url]` → 下载链接
-- `content_type === 
+- `content_type === 'image'` → 图片消息
+- `content_type === 'mixed'` → 图文混排
+
+**Agent 回复气泡合并**：同一 `batch_id` 的消息合并为一个气泡：
+- 顶部：`reasoning` 折叠栏（"已思考 N 字"）
+- 中部：`tool_calls` 标签栏（可展开查看参数）
+- 底部：`content` 正文内容
+
+**智能滚动**：
+- 用户主动上滑时，自动暂停滚动
+- 新消息到达显示 "↓ 新消息" 浮动按钮
+- 用户滑到底部时自动恢复自动滚动
+
+---
+
+## 8. 错误处理与恢复
+
+### 8.1 错误分类
+
+| 类型 | 示例 | 策略 |
+|------|------|------|
+| 可重试 | RateLimit, Timeout | 指数退避重试（最多 3 次） |
+| 可降级 | API 故障, 认证失败 | 切换 fallback provider |
+| 不可恢复 | 模型不支持, 参数错误 | 直接报错 |
+
+### 8.2 Provider 降级链
+
+配置项：`config.provider.fallback_chain`
+
+```
+默认: deepseek → mimo → kimicode → glm
+
+LLM 调用失败时:
+  1. 判断错误类型（classify_error）
+  2. 可重试 → 指数退避重试
+  3. 不可重试 → 切换 fallback provider
+  4. 全部失败 → 返回错误给前端
+```
+
+### 8.3 SmartStop
+
+防止 Agent 陷入无限循环：
+- `max_turns` — 最大轮数（默认 50）
+- `max_tokens` — 最大 token 数（默认 200K）
+- `timeout_seconds` — 超时（默认 600s）
+- `no_progress_rounds` — 无进展轮数（默认 3）
+- `loop_detect_rounds` — 循环检测（默认 2）
+
+---
+
+## 9. 配置系统
+
+单一真相源：`backend/engine/config.yaml`
+
+```yaml
+provider:
+  default: glm
+  fallback_chain: [glm, kimicode]
+  deepseek: { base_url: ..., model: ..., api_key: ... }
+  glm: { base_url: ..., model: ..., api_key: ... }
+
+assistant_model: { base_url: ..., model: ..., api_key: ... }
+embedding_model: { base_url: ..., model: ..., api_key: ... }
+
+agent:
+  max_turns: 50
+  memory_system: topic_compression  # simple | topic_compression
+  smart_stop: { max_turns: 50, max_tokens: 200000, ... }
+
+context:
+  max_context_tokens: 128000
+  semantic_search_top_k: 10
+  semantic_score_threshold: 0.3
+  hot_context_initial: 20
+  time_decay_half_life_hours: 72.0
+
+tools:
+  toolsets: [web, file, code]
+  max_result_chars: 12000
+```
+
+---
+
+## 10. 数据流详细时序
+
+### 10.1 私聊完整链路
+
+```
+User        Frontend    WS        Platform    EngineBridge    AgentWorker    ReActAgent    LLM API
+ │             │         │            │              │              │              │           │
+ │──input───▶│         │            │              │              │              │           │
+ │             │──WS───▶│            │              │              │              │           │
+ │             │        │──save msg─▶│              │              │              │           │
+ │             │        │            │──Job────────▶│              │              │           │
+ │             │        │            │              │──enqueue───▶ │              │           │
+ │             │        │            │              │              │──Job───────▶ │           │
+ │             │        │            │              │              │              │──Context──│
+ │             │        │            │              │              │              │ Pipeline  │
+ │             │        │            │              │              │              │──stream──▶│
+ │             │◀──WS───│◀───────────│◀─────────────│◀─────────────│◀──chunk─────│           │
+ │◀─render───│         │            │              │              │              │           │
+ │             │        │            │              │              │              │◀──done───│
+ │             │        │            │              │              │              │──persist─▶│
+ │             │        │            │              │              │              │ (session  │
+ │             │        │            │              │              │              │  store)   │
+```
+
+### 10.2 群聊完整链路
+
+```
+User        Frontend    WS        Platform        GroupChatRouter    EngineBridge    ...
+ │             │         │            │                   │                │
+ │──input───▶│         │            │                   │                │
+ │             │──WS───▶│            │                   │                │
+ │             │        │──save msg─▶│                   │                │
+ │             │        │            │──route()─────────▶│                │
+ │             │        │            │                   │──for each─────▶│
+ │             │        │            │                   │  selected      │──▶ AgentWorker x N
+ │             │◀──WS───│◀───────────│◀──────────────────│◀───────────────│◀── chunks
+ │◀─render───│         │            │                   │                │
+ │             │        │            │                   │──sync memory──▶│ (other agents)
+```
+
+---
+
+## 11. 性能与安全
+
+### 11.1 已知性能瓶颈
+
+| 瓶颈 | 原因 | 方案 |
+|------|------|------|
+| Agent 首次回复慢 | Worker 冷启动（查 DB + 建 Transport） | Worker 预启动或连接池 |
+| 群聊多 Agent 并行 | N 个 Agent 同时查 DB、调 LLM | 并发控制 3 个 |
+| 图片 base64 传输 | 大图片导致 WS 帧过大 | 限制 5MB，图片 CDN |
+| 向量检索 | zvec 本地文件，大数据量时 | 迁移 Milvus/Pinecone |
+
+### 11.2 安全模型
+
+| 风险 | 现状 | 建议 |
+|------|------|------|
+| 文件系统逃逸 | `write_file` 有路径白名单 | 增加 chroot 或沙箱 |
+| 代码执行 | `python_execute` / `shell_command` | 增加确认弹窗或禁用开关 |
+| API Key 泄露 | 存在 config.yaml | 支持环境变量覆盖 `${ENV_VAR}` |
+| WS 无鉴权 | 任意客户端可连接 | 增加简单 token（即使 guest 也验证） |
+| SQLite 并发 | WAL 模式但单进程 | 生产环境迁移 PostgreSQL |

@@ -31,141 +31,210 @@
       </div>
     </aside>
 
-    <!-- 中间：展示该心智眼中的你 -->
+    <!-- 中间：心智文件编辑器 -->
     <main v-if="selectedAgent" class="si-main">
-      <div class="perception-card">
-        <div class="card-header">
+      <div class="editor-header">
+        <div class="agent-info">
           <img
             v-if="selectedAgent.portrait_url"
             :src="selectedAgent.portrait_url"
-            class="card-avatar"
+            class="editor-avatar"
           />
           <div
             v-else
-            class="card-avatar fallback"
+            class="editor-avatar fallback"
             :style="{ backgroundColor: selectedAgent.represent_color }"
           >
             {{ selectedAgent.name.charAt(0) }}
           </div>
-          <div class="card-title">
-            <div class="card-name">{{ selectedAgent.name }}</div>
-            <div class="card-sub">{{ selectedAgent.codename }} 眼中的你</div>
+          <div>
+            <div class="editor-name">{{ selectedAgent.name }}</div>
+            <div class="editor-sub">{{ selectedAgent.codename }}</div>
           </div>
         </div>
+        <div class="save-status">
+          <span v-if="saving" class="status-saving">保存中…</span>
+          <span v-else-if="dirty" class="status-dirty">未保存</span>
+          <span v-else class="status-saved">已保存</span>
+          <button class="save-btn" :disabled="saving || !dirty" @click="saveCurrent">
+            保存
+          </button>
+        </div>
+      </div>
 
-        <div class="card-body">
-          <div class="perception-text">{{ perceptionText }}</div>
+      <!-- Tab 栏 -->
+      <div class="tab-bar">
+        <button
+          v-for="tab in tabs"
+          :key="tab.key"
+          class="tab-btn"
+          :class="{ active: currentTab === tab.key }"
+          @click="switchTab(tab.key)"
+        >
+          {{ tab.label }}
+          <span v-if="dirtyMap[tab.key]" class="tab-dirty">●</span>
+        </button>
+      </div>
 
-          <div class="trait-row">
-            <span class="trait-label">关系阶段</span>
-            <div class="trait-bar">
-              <div class="trait-fill" :style="{ width: familiarity + '%' }" />
-            </div>
-            <span class="trait-value">{{ familiarity }}%</span>
-          </div>
-
-          <div class="intimacy-panel">
-            <div class="int-header">亲密度</div>
-            <div class="int-score">
-              <span class="int-num">{{ intimacy.score }}</span>
-              <span class="int-level">{{ intimacy.level_label }}</span>
-            </div>
-            <div class="int-bar-bg">
-              <div class="int-bar-fill" :style="{ width: (intimacy.score / 10) + '%' }" />
-            </div>
-            <div v-if="intimacy.unlocks.length" class="int-unlocks">
-              <div v-for="u in intimacy.unlocks" :key="u" class="int-unlock-tag">{{ u }}</div>
-            </div>
-          </div>
-
-          <div class="keywords">
-            <span
-              v-for="k in keywords"
-              :key="k"
-              class="keyword"
-              :style="{ borderColor: selectedAgent.represent_color, color: selectedAgent.represent_color }"
-            >
-              {{ k }}
-            </span>
-          </div>
+      <!-- 编辑器 -->
+      <div class="editor-body">
+        <textarea
+          v-model="contentMap[currentTab]"
+          class="editor-textarea"
+          :placeholder="currentPlaceholder"
+          spellcheck="false"
+          @input="onInput"
+        />
+        <div class="editor-footer">
+          <span class="footer-hint">
+            {{ currentTabDesc }} · {{ contentLength }} 字符
+          </span>
+          <span class="footer-hint">
+            快捷键 Ctrl+S 保存
+          </span>
         </div>
       </div>
     </main>
 
     <!-- 空状态 -->
     <main v-else class="si-main empty">
-      <div class="empty-hint">选择一个心智，了解它如何看待你</div>
+      <div class="empty-hint">选择一个心智，编辑它的心智文件</div>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
-import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
 
 const agentsStore = useAgentsStore()
-const auth = useAuthStore()
 const selectedId = ref<string | null>(null)
+
+const tabs = [
+  { key: 'USER', label: 'USER', desc: '心智眼中的用户：你对指挥官的理解和印象' },
+  { key: 'SOUL', label: 'SOUL', desc: '灵魂内核：人格、创伤、原则、说话风格' },
+  { key: 'AGENT', label: 'AGENT', desc: '工作规范：规则、安全、心跳、记忆策略' },
+  { key: 'MEMORY', label: 'MEMORY', desc: '记忆日记：事件、互动、情感记录' },
+] as const
+
+type TabKey = typeof tabs[number]['key']
+const currentTab = ref<TabKey>('USER')
+
+const contentMap = ref<Record<TabKey, string>>({
+  USER: '',
+  SOUL: '',
+  AGENT: '',
+  MEMORY: '',
+})
+
+const originalMap = ref<Record<TabKey, string>>({
+  USER: '',
+  SOUL: '',
+  AGENT: '',
+  MEMORY: '',
+})
+
+const dirtyMap = ref<Record<TabKey, boolean>>({
+  USER: false,
+  SOUL: false,
+  AGENT: false,
+  MEMORY: false,
+})
+
+const saving = ref(false)
 
 const selectedAgent = computed(() =>
   agentsStore.list.find((a) => a.id === selectedId.value)
 )
 
-const familiarity = computed(() => {
-  if (!selectedAgent.value) return 0
-  const created = selectedAgent.value.created_at
-    ? new Date(selectedAgent.value.created_at).getTime()
-    : Date.now()
-  const days = Math.floor((Date.now() - created) / 86400000)
-  return Math.min(30 + days * 5, 100)
+const dirty = computed(() => dirtyMap.value[currentTab.value])
+
+const currentPlaceholder = computed(() => {
+  const t = tabs.find((x) => x.key === currentTab.value)
+  return t ? `${t.label}.md — ${t.desc}` : ''
 })
 
-const intimacy = ref({ score: 0, level: 'stranger', level_label: '陌生人', unlocks: [] as string[] })
+const currentTabDesc = computed(() => {
+  const t = tabs.find((x) => x.key === currentTab.value)
+  return t?.desc || ''
+})
 
-async function loadIntimacy() {
-  if (!selectedAgent.value) return
-  const json = await api.get(`/intimacy/${selectedAgent.value.id}`)
-  if (json.code === 0) {
-    intimacy.value = json.data
+const contentLength = computed(() =>
+  (contentMap.value[currentTab.value] || '').length
+)
+
+function onInput() {
+  const key = currentTab.value
+  dirtyMap.value[key] = contentMap.value[key] !== originalMap.value[key]
+}
+
+async function loadFile(key: TabKey) {
+  if (!selectedId.value) return
+  const res = await api.get<{ content: string }>(
+    `/agents/${selectedId.value}/mind/${key}`
+  )
+  if (res.code === 0 && res.data) {
+    contentMap.value[key] = res.data.content
+    originalMap.value[key] = res.data.content
+    dirtyMap.value[key] = false
   }
 }
 
-watch(() => selectedId.value, () => {
-  loadIntimacy()
-})
+async function loadAll() {
+  for (const tab of tabs) {
+    await loadFile(tab.key)
+  }
+}
 
-const perceptionText = computed(() => {
-  const a = selectedAgent.value
-  const u = auth.user
-  if (!a || !u) return ''
-  const name = u.nickname || u.codename || '你'
-  return `${a.name}（${a.codename}）对${name}的印象：\n\n"${name}是一个值得关注的对象。${a.personality_summary || ''}"`
-})
+async function saveCurrent() {
+  if (!selectedId.value || !dirty.value) return
+  const key = currentTab.value
+  saving.value = true
+  const res = await api.put(`/agents/${selectedId.value}/mind/${key}`, {
+    content: contentMap.value[key],
+  })
+  saving.value = false
+  if (res.code === 0) {
+    originalMap.value[key] = contentMap.value[key]
+    dirtyMap.value[key] = false
+  } else {
+    alert('保存失败：' + (res.message || '未知错误'))
+  }
+}
 
-const keywords = computed(() => {
-  const a = selectedAgent.value
-  if (!a) return []
-  const base = ['观察者', '协作者']
-  const summary = (a.personality_summary || '').toLowerCase()
-  if (summary.includes('代码') || summary.includes('程序')) base.push('技术伙伴')
-  if (summary.includes('文') || summary.includes('写')) base.push('创作伙伴')
-  return base
-})
+function switchTab(key: TabKey) {
+  currentTab.value = key
+}
+
+function selectAgent(id: string) {
+  if (selectedId.value === id) return
+  selectedId.value = id
+  loadAll()
+}
+
+// Ctrl+S shortcut
+function onKeyDown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault()
+    saveCurrent()
+  }
+}
 
 onMounted(() => {
+  window.addEventListener('keydown', onKeyDown)
   agentsStore.fetchList().then(() => {
     if (agentsStore.list.length && !selectedId.value) {
       selectedId.value = agentsStore.list[0].id
+      loadAll()
     }
   })
 })
 
-function selectAgent(id: string) {
-  selectedId.value = id
-}
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown)
+})
 </script>
 
 <style scoped>
@@ -261,153 +330,151 @@ function selectAgent(id: string) {
 .si-main {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
+  flex-direction: column;
+  min-width: 0;
 }
 .si-main.empty {
+  align-items: center;
+  justify-content: center;
   color: #5a6a7a;
   font-size: 14px;
 }
-.perception-card {
-  width: 100%;
-  max-width: 560px;
-  background: rgba(20, 27, 36, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  padding: 32px;
-}
-.card-header {
+
+/* Editor header */
+.editor-header {
+  height: 56px;
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 24px;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
 }
-.card-avatar {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  object-fit: cover;
-}
-.card-avatar.fallback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  font-weight: 600;
-  color: #0b0f17;
-}
-.card-name {
-  font-size: 18px;
-  font-weight: 500;
-  color: #d8e1ec;
-}
-.card-sub {
-  font-size: 13px;
-  color: #5a6a7a;
-  margin-top: 4px;
-}
-.perception-text {
-  font-size: 15px;
-  line-height: 1.8;
-  color: #b0c0d0;
-  white-space: pre-wrap;
-  margin-bottom: 24px;
-}
-.trait-row {
+.agent-info {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 20px;
 }
-.trait-label {
-  font-size: 12px;
-  color: #8899aa;
-  width: 60px;
-  flex-shrink: 0;
+.editor-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
 }
-.trait-bar {
-  flex: 1;
-  height: 6px;
-  background: #1e2731;
-  border-radius: 3px;
-  overflow: hidden;
-}
-.trait-fill {
-  height: 100%;
-  background: #00e5c9;
-  border-radius: 3px;
-  transition: width 0.6s ease;
-}
-.trait-value {
-  font-size: 12px;
-  color: #00e5c9;
-  width: 36px;
-  text-align: right;
-}
-.intimacy-panel {
-  margin-top: 20px;
-  padding: 16px;
-  background: rgba(20, 27, 36, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
-}
-.int-header {
-  font-size: 13px;
-  color: #8899AA;
-  margin-bottom: 8px;
-}
-.int-score {
+.editor-avatar.fallback {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.int-num {
-  font-size: 24px;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
   font-weight: 600;
-  color: #00E5C9;
+  color: #0b0f17;
 }
-.int-level {
-  font-size: 13px;
-  color: #D8E1EC;
+.editor-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #d8e1ec;
 }
-.int-bar-bg {
-  height: 6px;
-  background: #1E2731;
-  border-radius: 3px;
-  overflow: hidden;
-  margin-bottom: 10px;
-}
-.int-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #00E5C9, #00BFA0);
-  border-radius: 3px;
-  transition: width 0.4s ease;
-}
-.int-unlocks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.int-unlock-tag {
-  padding: 3px 10px;
-  background: rgba(0, 229, 201, 0.1);
-  color: #00E5C9;
-  border-radius: 10px;
+.editor-sub {
   font-size: 11px;
+  color: #5a6a7a;
 }
 
-.keywords {
+.save-status {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.keyword {
-  padding: 5px 12px;
-  border: 1px solid;
-  border-radius: 12px;
+  align-items: center;
+  gap: 12px;
   font-size: 12px;
-  background: rgba(0, 229, 201, 0.05);
+}
+.status-saving { color: #f0c040; }
+.status-dirty { color: #ff7b72; }
+.status-saved { color: #3fb950; }
+.save-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: none;
+  background: #00e5c9;
+  color: #0b0f17;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.save-btn:not(:disabled):hover {
+  opacity: 0.85;
+}
+
+/* Tab bar */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 8px 20px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+.tab-btn {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: #8899aa;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tab-btn:hover {
+  color: #d8e1ec;
+}
+.tab-btn.active {
+  color: #00e5c9;
+  border-bottom-color: #00e5c9;
+}
+.tab-dirty {
+  color: #ff7b72;
+  font-size: 8px;
+}
+
+/* Editor body */
+.editor-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 20px 0;
+}
+.editor-textarea {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(20, 27, 36, 0.6);
+  color: #d8e1ec;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 16px;
+  outline: none;
+}
+.editor-textarea::placeholder {
+  color: #5a6a7a;
+}
+.editor-textarea:focus {
+  border-color: rgba(0, 229, 201, 0.3);
+}
+.editor-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 4px 12px;
+  font-size: 11px;
+  color: #5a6a7a;
+  flex-shrink: 0;
 }
 </style>

@@ -41,6 +41,11 @@
         <button class="save-btn" @click="save">保存</button>
         <button class="cancel-btn" @click="$emit('close')">取消</button>
       </div>
+      <div class="modal-extra">
+        <button class="link-btn" @click="goUserProfile">
+          ✎ 编辑档案文件（profile.md）
+        </button>
+      </div>
     </div>
   </div>
 
@@ -49,11 +54,13 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 
 const emit = defineEmits(['close'])
 const auth = useAuthStore()
+const router = useRouter()
 
 const form = ref({
   codename: '',
@@ -107,6 +114,11 @@ async function save() {
 
 function triggerAvatar() {
   avatarInput.value?.click()
+}
+
+function goUserProfile() {
+  emit('close')
+  router.push('/user-profile')
 }
 
 async function uploadAvatar(e: Event) {
@@ -298,5 +310,23 @@ async function uploadAvatar(e: Event) {
 .cancel-btn:hover {
   border-color: rgba(255, 255, 255, 0.2);
   color: #d8e1ec;
+}
+
+.modal-extra {
+  padding: 8px 20px 16px;
+  text-align: center;
+}
+.link-btn {
+  background: transparent;
+  border: none;
+  color: #00e5c9;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  opacity: 0.8;
+}
+.link-btn:hover {
+  opacity: 1;
 }
 </style>

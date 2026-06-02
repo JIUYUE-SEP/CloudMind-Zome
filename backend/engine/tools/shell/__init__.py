@@ -1,46 +1,54 @@
 """Shell command execution tools.
 
 Executes shell commands in a subprocess with timeout, output limits,
-and a deny-list of dangerous commands / patterns.
+and an allow-list of safe commands.  Shell chaining metacharacters
+(pipes, redirections, command substitution, etc.) are rejected.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import subprocess
-import sys
 from pathlib import Path
 
 from ...tool.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
-# Commands that are completely blocked
-_BLOCKED_COMMANDS = {
-    "rm", "dd", "mkfs", "mkfs.ext4", "mkfs.ntfs", "mkfs.fat", "fdisk",
-    "parted", "format", "del", "rd", "rmdir", "shutdown", "reboot",
-    "poweroff", "halt", "init", "systemctl", "service", "kill", "pkill",
-    "killall", "chmod", "chown", "chgrp", "sudo", "su", "doas",
-    "passwd", "useradd", "userdel", "usermod", "groupadd", "groupdel",
-    "iptables", "ufw", "firewalld", "wget", "curl", "nc", "netcat",
-    "nmap", "ssh", "scp", "sftp", "ftp", "telnet", "mount", "umount",
-    "mknod", "mkswap", "swapon", "swapoff", "fsck", "dd", "pv",
-    "crontab", "at", "batch", "nohup", "screen", "tmux",
-    "docker", "podman", "kubectl", "helm",
-    "pyenv", "conda", "venv", "virtualenv",  # avoid env mangling
+# Allow-list: only these commands may be executed.
+# If you need to run something else, extend this list consciously.
+_ALLOWED_COMMANDS = {
+    "ls", "cat", "echo", "pwd", "mkdir", "touch", "cp", "mv",
+    "find", "grep", "head", "tail", "wc", "date", "whoami",
+    "git", "npm", "yarn", "pip", "pip3", "ps", "df", "du",
 }
 
-# Dangerous patterns in the full command string
-_BLOCKED_PATTERNS = [
-    r"[|;&]\s*bash\b",       # curl ... | bash
-    r"[|;&]\s*sh\b",          # curl ... | sh
-    r">\s*/dev/(sd|hd|mmc|nvme)",  # overwrite disk devices
-    r"<\s*/dev/zero\b",       # zero-fill
-    r"rm\s+-rf\s+/\b",        # rm -rf /
-    r":\(\)\{\s*:\|:\&\};:",  # fork bomb
-    r"\b(eval|exec)\s+",      # eval / exec
-]
+
+def _has_unquoted_metachar(command: str) -> bool:
+    """Return True if command contains unquoted shell metacharacters.
+
+    Blocks: | ; & < > ( ) $ `
+    These enable command chaining, substitution, and redirection.
+    """
+    in_single = False
+    in_double = False
+    escaped = False
+    for ch in command:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if not in_single and not in_double and ch in "|;&<>()$`":
+            return True
+    return False
 
 
 def _sanitize_command(command: str) -> tuple[bool, str]:
@@ -51,6 +59,14 @@ def _sanitize_command(command: str) -> tuple[bool, str]:
     stripped = command.strip()
     if not stripped:
         return False, "empty command"
+
+    # Reject any unquoted shell metacharacter (pipes, redirection, etc.)
+    if _has_unquoted_metachar(stripped):
+        return (
+            False,
+            "shell metacharacters (|, ;, &, <, >, $(), `) are not allowed; "
+            "run a single simple command only",
+        )
 
     # Extract the first token (the command name)
     # Handle leading env vars like FOO=bar python script.py
@@ -68,14 +84,16 @@ def _sanitize_command(command: str) -> tuple[bool, str]:
     # Strip any path prefix to get basename
     base = Path(cmd_name).name.lower()
 
-    if base in _BLOCKED_COMMANDS:
-        return False, f"blocked command: {base}"
+    if base not in _ALLOWED_COMMANDS:
+        return False, f"command not in allow-list: {base}"
 
-    # Check dangerous patterns
-    lower_cmd = stripped.lower()
-    for pat in _BLOCKED_PATTERNS:
-        if re.search(pat, lower_cmd):
-            return False, f"blocked pattern: {pat}"
+    # Block python/python3 -c (arbitrary code execution bypass)
+    if base in ("python", "python3"):
+        if "-c" in tokens:
+            return (
+                False,
+                "python -c is not allowed; use the python_execute tool instead",
+            )
 
     return True, ""
 
@@ -85,13 +103,11 @@ def shell_command(command: str, timeout_seconds: int = 30) -> str:
     """Run a shell command and return stdout + stderr.
 
     The command executes in a subprocess with a 30-second timeout.
-    Dangerous commands (rm, dd, sudo, curl, ssh, docker, etc.) and
-    suspicious patterns (| bash, > /dev/sd*, rm -rf /, fork bombs)
-    are blocked automatically.
+    Only single simple commands from an allow-list are permitted;
+    shell metacharacters (|, ;, &, <, >, $(), `) are blocked.
 
-    Common safe commands: ls, cat, echo, pwd, mkdir, touch, cp, mv,
-    find, grep, head, tail, wc, date, whoami, python, python3, git,
-    npm, yarn, pip, ps, df, du.
+    Allowed commands: ls, cat, echo, pwd, mkdir, touch, cp, mv,
+    find, grep, head, tail, wc, date, whoami, git, npm, yarn, pip, ps, df, du.
 
     Args:
         command: The shell command to run.

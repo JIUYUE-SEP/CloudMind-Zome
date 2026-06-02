@@ -33,6 +33,7 @@ def my_tool(param: str) -> str:
 | code | python_execute |
 | shell | shell_command |
 | comms | send_private_message, report_workflow_progress |
+| project | project_knowledge |
 
 ## Adding a New Tool
 
@@ -70,6 +71,7 @@ Tool discovery runs at startup. No manual registration needed.
 5. For async functions, use `async def` (runs directly in event loop)
 6. Return `str` for text results, `dict` for structured data
 7. Return error messages starting with "Error:"
+8. Tools can be sync or async; the registry handles both
 
 ## Tool Schema Auto-Generation
 
@@ -78,13 +80,38 @@ The registry inspects function signature and docstring to generate OpenAI functi
 - `Args:` section → parameter descriptions
 - Docstring first paragraph → tool description
 - Default values → optional parameters
+- Supports: str/int/float/bool/list/dict, Optional[T], Literal[...], dataclass, TypedDict
+
+## Tool Execution
+
+### Parallel vs Serial
+- If all tool calls in a round are `safe_to_parallel=True` → execute concurrently
+- If any tool is `safe_to_parallel=False` → execute sequentially
+
+### Timeout
+- Default: 60s (from `config.tools.default_timeout`)
+- Per-tool override: `@tool_registry.register(timeout=120)`
+- Sync tools run in `ThreadPoolExecutor(max_workers=8)`
+- Async tools run directly in event loop
+
+### Result Truncation
+- Results exceeding `max_result_chars` are truncated
+- Truncation note appended to inform the LLM
+
+## MCP Support (Future)
+
+The registry supports MCP (Model Context Protocol) server tools:
+- Configure in `config.tools.mcp_servers`
+- Each server: `{command, args, env, timeout, supports_parallel_tool_calls}`
+- MCP tools are registered alongside native tools
 
 ## File Locations
 | Purpose | Path |
 |---------|------|
 | Registry | `backend/engine/tool/registry.py` |
-| Discovery | `backend/app/main.py` line ~56 |
+| Discovery | `backend/app/main.py` lifespan |
 | Tool directory | `backend/engine/tools/` |
+| Config | `backend/engine/config.yaml` → `tools:` |
 
 ## Modifying Existing Tools
 

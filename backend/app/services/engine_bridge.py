@@ -19,7 +19,6 @@ from engine.provider.thinking.deepseek import DeepSeekThinkingProfile
 from engine.provider.thinking.glm import GLMThinkingProfile
 from engine.provider.thinking.kimicode import KimiCodeThinkingProfile
 from engine.provider.thinking.mimo import MiMoThinkingProfile
-from engine.context.manager import ContextManager
 from engine.session.store import SessionStore
 from engine.config.loader import load_config
 from engine.config.models import AppConfig
@@ -63,11 +62,9 @@ class EngineBridge:
     def __init__(
         self,
         session_store: SessionStore,
-        context_manager: ContextManager,
         app_config: AppConfig | None = None,
     ):
         self.session_store = session_store
-        self.context_manager = context_manager
         if app_config is None:
             import pathlib
             _cfg_path = pathlib.Path(__file__).resolve().parent.parent.parent / "engine" / "config.yaml"
@@ -86,6 +83,7 @@ class EngineBridge:
         source_name: str = "",
         sender_name: str = "",
         content_type: str = "text",
+        is_mentioned: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Dispatch a Job to the Agent Worker and yield streaming chunks."""
         agent_row = await self._get_agent(agent_id)
@@ -129,6 +127,7 @@ class EngineBridge:
             sender_name=sender_name,
             content=user_message,
             content_type=content_type,
+            is_mentioned=is_mentioned,
             on_chunk=on_chunk,
             on_done=on_done,
         )

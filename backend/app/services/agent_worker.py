@@ -22,10 +22,6 @@ from .event_bus import manager as event_manager
 from engine.agent.react import ReActAgent
 from engine.provider.transport import ChatCompletionsTransport
 from engine.tool.registry import tool_registry
-from engine.context.manager import ContextManager
-from engine.session.store import SessionStore
-from engine.config.loader import load_config
-from engine.config.models import AppConfig
 
 
 
@@ -58,9 +54,6 @@ class AgentWorker:
         self._react_agent: ReActAgent | None = None
         self._running = True
         self._current_job: AgentJob | None = None
-        self._context_manager: ContextManager | None = None
-        self._last_activity = datetime.now(timezone.utc)
-        self._introspected_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -89,18 +82,17 @@ class AgentWorker:
             # Create the single ReActAgent instance
             from ..main import _app_state as _state
             app_config = _state["config"]
-            self._context_manager = _state["context_manager"]
             self._react_agent = ReActAgent(
                 name=self.agent_row.name,
                 model=transport,
                 toolkit=tool_registry,
-                context_manager=self._context_manager,
                 session_store=_state["session_store"],
                 agent_id=self.agent_id,
                 config=app_config,
                 personality_prompt=self.agent_row.personality_prompt or "",
                 embedder=_state.get("embedder"),
                 memory_store=_state.get("memory_store"),
+                model_config=self.agent_row.model_config or {},
             )
 
             logger.info("AgentWorker started for %s (%s)", self.agent_row.name, self.agent_id)
@@ -121,12 +113,10 @@ class AgentWorker:
             try:
                 job = await asyncio.wait_for(self.queue.get(), timeout=60.0)
             except asyncio.TimeoutError:
-                await self._maybe_introspect()
                 continue
             except asyncio.CancelledError:
                 break
 
-            self._last_activity = datetime.now(timezone.utc)
             self._current_job = job
             try:
                 await self._execute_job(job)
@@ -155,7 +145,7 @@ class AgentWorker:
     def stop(self) -> None:
         """Signal shutdown."""
         self._running = False
-        # Cancel current job's stop event to unblock any awaiters
+        # Signal the current job to stop so stream loops can exit early
         if self._current_job:
             self._current_job.stop_event.set()
 
@@ -169,6 +159,27 @@ class AgentWorker:
                 await job.on_done("[Agent 未就绪]", False)
             except Exception:
                 pass
+            return
+
+        # NEW: Ingest-only job (group chat — write memory, no reply)
+        if job.ingest_only:
+            try:
+                await self._react_agent.ingest_message(
+                    user_message=job.content,
+                    source=job.source,
+                    source_id=job.source_id,
+                    source_name=job.source_name,
+                    sender_name=job.sender_name,
+                    content_type=job.content_type,
+                )
+            except Exception as exc:
+                logger.warning("Agent %s ingest failed: %s", self.agent_id, exc)
+            finally:
+                await asyncio.shield(self._set_db_status("idle"))
+                try:
+                    await job.on_done("", True)
+                except Exception:
+                    pass
             return
 
         # Set busy status
@@ -190,6 +201,7 @@ class AgentWorker:
                 source_name=job.source_name,
                 sender_name=job.sender_name,
                 content_type=job.content_type,
+                is_mentioned=job.is_mentioned,
             ):
                 # Check stop signal (global stop or private chat stop)
                 if not self._running or (job.source == "private" and job.stop_event.is_set()):
@@ -257,36 +269,6 @@ class AgentWorker:
                     job.future.set_result(full_content)
                 else:
                     job.future.set_exception(RuntimeError(f"Job failed: {full_content}"))
-
-    async def _maybe_introspect(self) -> None:
-        """If idle for >5 min and memory has grown, compress / reflect."""
-        now = datetime.now(timezone.utc)
-        idle_seconds = (now - self._last_activity).total_seconds()
-        if idle_seconds < 300:
-            return
-        if self._introspected_at and (now - self._introspected_at).total_seconds() < 300:
-            return
-        if not self._react_agent or not self._context_manager:
-            return
-        msg_count = len(self._react_agent._messages)
-        if msg_count <= 10:
-            return
-
-        logger.info("Agent %s entering introspection (%d messages)", self.agent_id, msg_count)
-        await self._set_db_status("introspecting")
-        try:
-            if self._context_manager:
-                compressed = await self._context_manager._compress_topics(
-                    self._react_agent._messages, self.agent_id
-                )
-                self._react_agent._messages = compressed
-                self._introspected_at = now
-                logger.info("Agent %s introspection complete: %d -> %d messages",
-                            self.agent_id, msg_count, len(compressed))
-        except Exception:
-            logger.exception("Agent %s introspection failed", self.agent_id)
-        finally:
-            await self._set_db_status("idle")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -379,6 +361,18 @@ class AgentWorker:
                     if ec:
                         base_url = ec.base_url or base_url
                         api_key = ec.api_key or api_key
+
+            # Fallback to llmprovider/*.json (new canonical source)
+            if not api_key:
+                try:
+                    from engine.provider.registry import get_registry
+                    registry = get_registry()
+                    if registry.has(ptype):
+                        pcfg = registry.get(ptype)
+                        base_url = pcfg.base_url or base_url
+                        api_key = pcfg.api_key or api_key
+                except Exception:
+                    pass
 
             if not api_key:
                 return None

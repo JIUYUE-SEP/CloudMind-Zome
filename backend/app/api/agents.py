@@ -43,8 +43,6 @@ def _save_upload(file: UploadFile, subfolder: str) -> str:
 class AgentCreate(BaseModel):
     name: str
     personality_prompt: str = ""
-    language_style: str = "neutral"
-    opening_line: str = ""
     capabilities: List[str] = Field(default_factory=list)
     aliases: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
@@ -56,8 +54,6 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = None
     codename: Optional[str] = None
     personality_prompt: Optional[str] = None
-    language_style: Optional[str] = None
-    opening_line: Optional[str] = None
     capabilities: Optional[List[str]] = None
     aliases: Optional[List[str]] = None
     tags: Optional[List[str]] = None
@@ -84,8 +80,6 @@ class AgentListItem(BaseModel):
 
 class AgentDetail(AgentListItem):
     personality_prompt: str
-    language_style: str
-    opening_line: str
     memory_count: int = 0
     capabilities: List[str]
     llm_config: dict
@@ -168,8 +162,6 @@ async def get_agent(
         "name": a.name,
         "codename": a.codename,
         "personality_prompt": a.personality_prompt,
-        "language_style": a.language_style,
-        "opening_line": a.opening_line,
         "memory_count": 0,
         "capabilities": a.capabilities or [],
         "aliases": a.aliases or [],
@@ -200,8 +192,6 @@ async def create_agent(
         name=body.name,
         codename=codename,
         personality_prompt=body.personality_prompt,
-        language_style=body.language_style,
-        opening_line=body.opening_line,
         capabilities=body.capabilities,
         aliases=body.aliases,
         tags=body.tags,
@@ -339,6 +329,149 @@ async def upload_model(
     await db.commit()
 
     return ListResp(data={"model_url": url})
+
+
+# ------------------------------------------------------------------
+# Mind files (AGENT.md / SOUL.md / PROFILE.md / MEMORY.md)
+# ------------------------------------------------------------------
+_MIND_FILES = {"AGENT", "SOUL", "USER", "MEMORY"}
+_MIND_DIR = Path.home() / ".cloudmind-zome" / "agents"
+
+
+def _mind_path(agent_id: str, file: str) -> Path:
+    return _MIND_DIR / agent_id / f"{file}.md"
+
+
+@router.get("/{agent_id}/mind/{file}")
+async def get_mind_file(
+    agent_id: str,
+    file: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read a mind file (AGENT/SOUL/PROFILE/MEMORY)."""
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if file not in _MIND_FILES:
+        raise HTTPException(status_code=400, detail=f"Invalid file. Allowed: {', '.join(_MIND_FILES)}")
+
+    path = _mind_path(agent_id, file)
+    if not path.exists():
+        return ListResp(data={"content": ""})
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Read failed: {e}")
+
+    return ListResp(data={"content": content})
+
+
+class MindFileUpdate(BaseModel):
+    content: str
+
+
+@router.put("/{agent_id}/mind/{file}")
+async def update_mind_file(
+    agent_id: str,
+    file: str,
+    body: MindFileUpdate,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Write a mind file (AGENT/SOUL/PROFILE/MEMORY)."""
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if file not in _MIND_FILES:
+        raise HTTPException(status_code=400, detail=f"Invalid file. Allowed: {', '.join(_MIND_FILES)}")
+
+    path = _mind_path(agent_id, file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        path.write_text(body.content, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+
+    return ListResp(data={"updated": True})
+
+
+# ------------------------------------------------------------------
+# Providers
+# ------------------------------------------------------------------
+@router.get("/providers", response_model=ListResp)
+async def list_providers(user: User = Depends(require_user)):
+    """List available LLM providers from llmprovider/*.json"""
+    from engine.provider.registry import get_registry
+    providers = get_registry().list()
+    return ListResp(data=[
+        {
+            "name": p.name,
+            "display_name": p.display_name,
+            "models": p.models,
+            "supports_streaming": p.supports_streaming,
+            "supports_vision": p.supports_vision,
+            "supports_reasoning": p.supports_reasoning,
+        }
+        for p in providers
+    ])
+
+
+# ------------------------------------------------------------------
+# Personality analysis
+# ------------------------------------------------------------------
+@router.post("/{agent_id}/analyze-personality", response_model=ListResp)
+async def analyze_agent_personality(
+    agent_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Analyze agent personality from SOUL.md + personality_prompt.
+
+    Returns Big-5 scores. Does NOT save to DB — caller must PUT update.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    from engine.personality.extractor import PersonalityExtractor, build_personality_text
+
+    agent_dir = Path.home() / ".cloudmind-zome" / "agents" / agent_id
+    text = build_personality_text(agent, agent_dir)
+
+    model_cfg = agent.model_config or {}
+    try:
+        extractor = PersonalityExtractor.from_marker_config(model_cfg)
+        personality = await extractor.analyze(text)
+    except Exception as e:
+        logger.warning("Personality analysis failed for %s: %s", agent_id, e)
+        personality = {
+            "extraversion": 0.5,
+            "talkativeness": 0.5,
+            "reactiveness": 0.5,
+            "agreeableness": 0.5,
+            "emotional_stability": 0.5,
+        }
+
+    return ListResp(data={
+        "personality": personality,
+        "source": "SOUL.md + personality_prompt",
+        "auto": True,
+    })
 
 
 # ------------------------------------------------------------------

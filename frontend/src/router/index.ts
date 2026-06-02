@@ -11,6 +11,7 @@ import CommissionCenter from '@/components/CommissionCenter.vue'
 import ApprovalLog from '@/components/ApprovalLog.vue'
 import CommunicationHub from '@/components/CommunicationHub.vue'
 import SelfImageView from '@/views/SelfImageView.vue'
+import UserProfileView from '@/views/UserProfileView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -34,6 +35,7 @@ const router = createRouter({
     { path: '/approvals', component: ApprovalLog },
     { path: '/communications', component: CommunicationHub },
     { path: '/self-image', component: SelfImageView },
+    { path: '/user-profile', component: UserProfileView },
   ],
 })
 

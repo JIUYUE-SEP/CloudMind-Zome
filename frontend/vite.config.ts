@@ -16,11 +16,11 @@ export default defineConfig({
     proxy: {
       // WS must be BEFORE the generic /api prefix
       '/api/v1/ws': {
-        target: 'ws://127.0.0.1:8849',
+        target: 'ws://127.0.0.1:8848',
         ws: true,
       },
-      '/api': 'http://127.0.0.1:8849',
-      '/uploads': 'http://127.0.0.1:8849',
+      '/api': 'http://127.0.0.1:8848',
+      '/uploads': 'http://127.0.0.1:8848',
     },
   },
 })

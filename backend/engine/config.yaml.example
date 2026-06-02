@@ -33,6 +33,8 @@ embedding_model:
 agent:
   max_turns: 50
   identity: agent.identity.yaml
+  memory_system: simple
+  max_memory_messages: 500
   smart_stop:
     max_turns: 50
     max_tokens: 200000

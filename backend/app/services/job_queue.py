@@ -28,6 +28,13 @@ class AgentJob:
     content: str = ""         # message content / workflow instruction
     content_type: str = "text"  # "text" | "image" | "file"
 
+    # Ingest-only mode: write message to memory without generating reply
+    # Used in group chat Step 1 — ALL agents get the message, then LLM decides
+    ingest_only: bool = False
+
+    # Group chat: whether this agent was @mentioned
+    is_mentioned: bool = False
+
     # Optional: user can set a display name override for this job
     sender_display: str = ""
 

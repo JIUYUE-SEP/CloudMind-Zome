@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +15,9 @@ from ..dependencies import get_db, require_user
 from ..models import User, Profile
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_USERDATA_DIR = Path.home() / ".cloudmind-zome" / "userdata"
+_USERDATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class AuthMeOut(BaseModel):
@@ -108,3 +112,42 @@ async def update_me(
             },
         }
     )
+
+
+# ------------------------------------------------------------------
+# User self-defined profile (markdown)
+# ------------------------------------------------------------------
+class ProfileMdOut(BaseModel):
+    code: int = 0
+    data: dict
+
+
+@router.get("/me/profile-md", response_model=ProfileMdOut)
+async def get_profile_md(user: User = Depends(require_user)):
+    """Read user's self-defined profile from userdata/profile.md."""
+    path = _USERDATA_DIR / "profile.md"
+    if not path.exists():
+        return ProfileMdOut(data={"content": ""})
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Read failed: {e}")
+    return ProfileMdOut(data={"content": content})
+
+
+class ProfileMdUpdate(BaseModel):
+    content: str
+
+
+@router.put("/me/profile-md", response_model=ProfileMdOut)
+async def update_profile_md(
+    body: ProfileMdUpdate,
+    user: User = Depends(require_user),
+):
+    """Write user's self-defined profile to userdata/profile.md."""
+    path = _USERDATA_DIR / "profile.md"
+    try:
+        path.write_text(body.content, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+    return ProfileMdOut(data={"updated": True})

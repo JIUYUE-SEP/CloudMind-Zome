@@ -15,5 +15,5 @@ pyyaml>=6.0
 watchfiles>=1.0
 openai>=1.30
 croniter>=2.0
-chromadb>=0.5
+zvec>=0.4.0
 send2trash>=1.8

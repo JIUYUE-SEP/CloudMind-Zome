@@ -24,6 +24,7 @@
           <span v-else>我</span>
         </button>
         <button class="bar-btn" @click="goProfile">心智侧写</button>
+        <button class="bar-btn" @click="goUserProfile">用户档案</button>
         <button class="bar-btn" @click="goCompute">算力余量</button>
       </div>
     </footer>
@@ -60,6 +61,7 @@ function handleNav(e: Event, item: typeof navItems[0]) {
 }
 
 function goProfile() { router.push('/self-image') }
+function goUserProfile() { router.push('/user-profile') }
 function goCompute() { router.push('/compute') }
 </script>
 

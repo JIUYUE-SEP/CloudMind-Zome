@@ -20,14 +20,13 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from engine.config.loader import load_config
-from engine.context.manager import ContextManager
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
+from engine.provider._default_providers import ensure_default_providers
 
 from .database import engine, Base
-from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, intimacy
+from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config
 from .services.commission_scheduler import get_scheduler
-from .services.proactive_wake_scheduler import get_wake_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +48,13 @@ async def lifespan(app: FastAPI):
     # 2. Engine infra
     cfg = load_config(_BACKEND_DIR / "engine" / "config.yaml")
     app.state.config = cfg
+
+    # Ensure llmprovider/ directory has default templates
+    ensure_default_providers()
+
+    # Migrate legacy config.yaml provider credentials to llmprovider/*.json
+    from scripts.migrate_providers import migrate_providers
+    migrate_providers()
 
     # Discover tools (inside local engine/)
     tools_dir = _BACKEND_DIR / "engine" / "tools"
@@ -105,20 +111,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Embedding model not configured; semantic memory search disabled")
 
-    # Context manager (now with assistant model for real compression/filtering)
-    ctx_mgr = ContextManager(
-        config=cfg.context,
-        model=assistant_transport,
-        session_store=store,
-        embedder=embedder,
-        memory_store=memory_store,
-    )
-    app.state.context_manager = ctx_mgr
-
     # Share with ws module
     _app_state["config"] = cfg
     _app_state["session_store"] = store
-    _app_state["context_manager"] = ctx_mgr
     _app_state["embedder"] = embedder
     _app_state["memory_store"] = memory_store
 
@@ -126,17 +121,11 @@ async def lifespan(app: FastAPI):
     scheduler = get_scheduler()
     await scheduler.start()
 
-    # Start proactive wake scheduler (Agent主动性: 私聊唤醒)
-    wake_scheduler = get_wake_scheduler()
-    await wake_scheduler.start()
-
     yield
 
     # Shutdown
     scheduler = get_scheduler()
     await scheduler.stop()
-    wake_scheduler = get_wake_scheduler()
-    await wake_scheduler.stop()
     await store.close()
     await engine.dispose()
     logger.info("Shutdown complete")
@@ -175,7 +164,6 @@ app.include_router(approvals.router, prefix="/api/v1")
 app.include_router(compute.router, prefix="/api/v1")
 app.include_router(commissions.router, prefix="/api/v1")
 app.include_router(config.router, prefix="/api/v1")
-app.include_router(intimacy.router, prefix="/api/v1")
 app.include_router(ws.router)
 
 

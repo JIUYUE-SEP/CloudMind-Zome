@@ -1,8 +1,9 @@
-"""Context management: hot/warm/cold memory, topic compression, token estimation.
+"""Context management.
 
-Design reference: §6.4 上下文注入策略
+- ContextPipeline: assembles LLM prompt with scene-isolated hot context,
+  cross-scene semantic retrieval, and tiered token downgrade.
 """
 
-from .manager import ContextManager
+from .context_pipeline import ContextPipeline
 
-__all__ = ["ContextManager"]
+__all__ = ["ContextPipeline"]

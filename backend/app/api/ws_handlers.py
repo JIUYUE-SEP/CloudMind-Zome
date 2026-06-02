@@ -20,7 +20,6 @@ from ..services.group_chat_router import GroupChatRouter
 from ..services.conductor_service import ConductorService
 from ..services.event_bus import manager
 from ..services.group_task_engine import GroupTaskEngine
-from ..services.intimacy import add_score
 from .ws_protocol import (
     _build_ws_frame,
     _check_stop_signal,
@@ -166,7 +165,6 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                         target_name = agent.name
                     break
             if target_id:
-                await add_score(target_id, user.id, "private_user_msg")
                 await _cancel_and_start_private_agent(
                     session_id=session_id,
                     agent_id=target_id,
@@ -185,6 +183,17 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
         # Interrupt running task chain if any
         if GroupTaskEngine.is_running(session_id):
             GroupTaskEngine.stop_session(session_id)
+
+        # Step 1: ingest message to ALL agents in the group (memory broadcast)
+        for m in member_rows:
+            if m.member_type == "agent":
+                await _dispatch_ingest_to_agent(
+                    agent_id=m.member_id,
+                    user_message=content,
+                    source_id=session_id,
+                    source_name=session.name or "群聊",
+                    sender_name=user.nickname,
+                )
 
         broadcast_frame = _build_ws_frame("chat.message", {
             "session_id": session_id,
@@ -228,11 +237,6 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 await manager.broadcast_to_session_members(other_members, no_reply_frame)
             return
 
-        # Intimacy: group chat user msg triggers agents
-        for t in targets:
-            if t.reason == "mention":
-                await add_score(t.agent_id, user.id, "group_mention")
-
         # Build source name from session name or default
         source_name = session.name or (settings.get("name") if settings else None) or "群聊"
 
@@ -250,6 +254,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 sender_name=user.nickname,
                 user_id=user.id,
                 content_type=content_type,
+                is_mentioned=t.is_mentioned,
             )))
         agent_replies = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -262,7 +267,6 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
             state = _engine_state()
             bridge = EngineBridge(
                 session_store=state["session_store"],
-                context_manager=state["context_manager"],
                 app_config=state["config"],
             )
             cond_svc = ConductorService(bridge=bridge)
@@ -361,6 +365,37 @@ async def _private_agent_worker(
 
 
 # ------------------------------------------------------------------
+# Ingest helper (group chat — broadcast memory without reply)
+# ------------------------------------------------------------------
+async def _dispatch_ingest_to_agent(
+    agent_id: str,
+    user_message: str,
+    source_id: str,
+    source_name: str,
+    sender_name: str,
+) -> None:
+    """Send an ingest-only Job to an agent's Worker queue.
+
+    The Job goes through the same FIFO queue as stream Jobs,
+    ensuring no concurrent access to _messages.
+    """
+    from ..services.job_queue import AgentJob
+    from ..services.agent_worker import dispatch_job
+
+    job = AgentJob(
+        source="group",
+        source_id=source_id,
+        source_name=source_name,
+        sender_name=sender_name,
+        content=user_message,
+        ingest_only=True,
+        on_chunk=lambda _t: asyncio.sleep(0),
+        on_done=lambda _t, _ok: asyncio.sleep(0),
+    )
+    await dispatch_job(agent_id, job)
+
+
+# ------------------------------------------------------------------
 # Agent stop handler (private chat only)
 # ------------------------------------------------------------------
 async def _handle_agent_stop(user: User, payload: dict, ws: WebSocket):
@@ -417,11 +452,11 @@ async def _stream_single_agent(
     sender_name: str,
     user_id: str = "",
     content_type: str = "text",
+    is_mentioned: bool = False,
 ) -> tuple[str, str]:
     state = _engine_state()
     bridge = EngineBridge(
         session_store=state["session_store"],
-        context_manager=state["context_manager"],
         app_config=state["config"],
     )
 
@@ -460,6 +495,7 @@ async def _stream_single_agent(
             source_name=source_name,
             sender_name=sender_name,
             content_type=content_type,
+            is_mentioned=is_mentioned,
         ):
             # Check private stop signal
             if source == "private" and _check_stop_signal(signal_key):
@@ -569,15 +605,6 @@ async def _stream_single_agent(
                 db2.add(assistant_msg)
                 await db2.commit()
 
-            # Cross-agent memory: let every agent in the group see this exchange
-            if source == "group" and user_id:
-                await _sync_group_memory(session_id, agent_id, user_message, full_content, sender_name)
-
-            # Intimacy: agent replied
-            if user_id:
-                event_key = "private_agent_reply" if source == "private" else "group_mention"
-                await add_score(agent_id, user_id, event_key)
-
     except Exception as exc:
         logger.exception("Agent stream failed for %s", agent_id)
         _has_error = True
@@ -614,6 +641,18 @@ async def _stream_single_agent(
             await ws.send_json(err_frame)
             if broadcast_to:
                 await manager.broadcast_to_session_members(broadcast_to, err_frame)
+
+        # Sync agent reply to other agents via ingest Job (FIFO queue)
+        if source == "group" and full_content and not _has_error:
+            other_agents = await _get_other_agent_members(session_id, agent_id)
+            for member_id in other_agents:
+                await _dispatch_ingest_to_agent(
+                    agent_id=member_id,
+                    user_message=full_content,
+                    source_id=session_id,
+                    source_name=source_name,
+                    sender_name=agent_name,
+                )
 
     return agent_id, full_content
 
@@ -719,84 +758,16 @@ async def _handle_typing(user: User, payload: dict, ws: WebSocket) -> None:
 
 
 # ------------------------------------------------------------------
-# Cross-agent memory sync
+# Get other agent members in a session
 # ------------------------------------------------------------------
-async def _sync_group_memory(
-    session_id: str,
-    replying_agent_id: str,
-    user_message: str,
-    agent_reply: str,
-    sender_name: str,
-) -> None:
-    """Save this exchange to every other agent's memory in the group."""
-    try:
-        state = _engine_state()
-        store = state.get("session_store")
-        if not store:
-            return
-
-        async with AsyncSessionLocal() as db:
-            # Get all agent members except the replying one
-            result = await db.execute(
-                select(ChatSessionMember).where(
-                    ChatSessionMember.session_id == session_id,
-                    ChatSessionMember.member_type == "agent",
-                    ChatSessionMember.member_id != replying_agent_id,
-                )
+async def _get_other_agent_members(session_id: str, exclude_agent_id: str) -> list[str]:
+    """Get all agent member IDs in a session except the specified one."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ChatSessionMember.member_id).where(
+                ChatSessionMember.session_id == session_id,
+                ChatSessionMember.member_type == "agent",
+                ChatSessionMember.member_id != exclude_agent_id,
             )
-            other_agents = [r.member_id for r in result.scalars().all()]
-
-            if not other_agents:
-                return
-
-            # Resolve replying agent's name
-            ar = await db.execute(select(Agent).where(Agent.id == replying_agent_id))
-            agent_row = ar.scalar_one_or_none()
-            agent_name = agent_row.name if agent_row else "Agent"
-
-        from engine.message.types import Message, MessageMeta
-        import time
-
-        now = time.time()
-
-        for other_id in other_agents:
-            engine_sid = f"{session_id}:{other_id}"
-            # Save user message
-            user_msg = Message(
-                role="user",
-                content=user_message,
-                meta=MessageMeta(
-                    session_id=engine_sid,
-                    source="group",
-                    source_name="群聊",
-                    sender_name=sender_name,
-                    timestamp=now,
-                ),
-            )
-            # Save agent reply — stored as user-role because from this agent's
-            # perspective, someone else (not themselves) said it.
-            agent_msg = Message(
-                role="user",
-                content=agent_reply,
-                meta=MessageMeta(
-                    session_id=engine_sid,
-                    source="group",
-                    source_name="群聊",
-                    sender_name=agent_name,
-                    timestamp=now + 0.001,
-                ),
-            )
-            try:
-                await store.save_agent_message(
-                    user_msg, agent_id=other_id, source="group",
-                    source_id=engine_sid, source_name="群聊", sender_name=sender_name,
-                )
-                await store.save_agent_message(
-                    agent_msg, agent_id=other_id, source="group",
-                    source_id=engine_sid, source_name="群聊", sender_name=agent_name,
-                )
-            except Exception:
-                pass
-
-    except Exception:
-        logger.exception("Cross-agent memory sync failed")
+        )
+        return [row[0] for row in result.fetchall()]

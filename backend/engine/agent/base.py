@@ -12,7 +12,6 @@ from ..message.types import Message, ToolUseBlock, ToolResultBlock
 if TYPE_CHECKING:
     from ..provider.transport import ChatCompletionsTransport
     from ..tool.registry import ToolRegistry
-    from ..context.manager import ContextManager
     from ..config.models import AppConfig
 
 

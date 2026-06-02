@@ -27,7 +27,6 @@ from .stop import SmartStop
 from ..provider.transport import ChatCompletionsTransport
 from ..provider.thinking.base import LLMResponse
 from ..tool.registry import ToolRegistry
-from ..context.manager import ContextManager
 from ..context.embedder import Embedder
 from ..context.vector_store import AgentMemoryStore
 from ..config.models import AppConfig
@@ -35,6 +34,8 @@ from ..session.store import SessionStore
 from ..error.classifier import classify_error
 from ..error.retry import get_retry_delay, RetryConfig
 from ..error.fallback import FallbackChain
+from ..memory.base import MemorySystem
+from ..memory.registry import create_memory_system
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,8 @@ class ReActAgent(AgentBase):
         name: str,
         model: ChatCompletionsTransport,
         toolkit: ToolRegistry,
-        context_manager: ContextManager,
+        context_manager: Any = None,  # DEPRECATED: kept for backward compat
+        memory_system: MemorySystem | None = None,
         session_store: SessionStore | None = None,
         agent_id: str = "",
         config: AppConfig | None = None,
@@ -62,16 +64,29 @@ class ReActAgent(AgentBase):
         personality_prompt: str = "",
         embedder: Embedder | None = None,
         memory_store: AgentMemoryStore | None = None,
+        model_config: dict | None = None,
     ):
         super().__init__(name=name, session_id="", config=config)
 
         self.agent_id = agent_id or name
         self.model = model
         self.toolkit = toolkit
-        self.context_manager = context_manager
         self.session_store = session_store
         self.embedder = embedder
         self.memory_store = memory_store
+        self.model_config = model_config or {}
+
+        # Create memory system if not provided
+        if memory_system is None:
+            mem_cfg = "simple"
+            if config and config.agent:
+                mem_cfg = getattr(config.agent, "memory_system", "simple") or "simple"
+            try:
+                memory_system = create_memory_system(mem_cfg, agent=self, config=config)
+            except Exception as e:
+                logger.warning("Failed to create memory system '%s', falling back to simple: %s", mem_cfg, e)
+                memory_system = create_memory_system("simple", agent=self, config=config)
+        self.memory_system = memory_system
 
         # Error recovery
         self._fallback = FallbackChain(
@@ -91,27 +106,100 @@ class ReActAgent(AgentBase):
             loop_detect_rounds=smart_stop_config.loop_detect_rounds if smart_stop_config else 2,
         )
 
-        # Conversation history in memory (accumulated across all Jobs)
+        # Conversation history in memory (scene-isolated by source_id)
         self._messages: list[Message] = []
-
-        # Personality prompt (loaded once, reused every turn)
-        self._personality_prompt: str | None = None
-        if personality_prompt:
-            self._personality_prompt = personality_prompt
-        elif config and config.agent.identity:
-            try:
-                from pathlib import Path
-                identity_path = Path(config.agent.identity)
-                if identity_path.exists():
-                    self._personality_prompt = identity_path.read_text(encoding="utf-8")
-            except Exception as e:
-                logger.warning("Failed to load identity prompt: %s", e)
+        self._current_source_id: str = ""
 
         self._msg_builder = MessageBuilder(
-            personality_prompt=self._personality_prompt,
             agent_id=self.agent_id,
             agent_name=self.name,
         )
+
+    # ------------------------------------------------------------------
+    # Ingest (no reply)
+    # ------------------------------------------------------------------
+
+    async def ingest_message(
+        self,
+        user_message: str,
+        scene_info: str = "",
+        source: str = "private",
+        source_id: str = "",
+        source_name: str = "",
+        sender_name: str = "",
+        content_type: str = "text",
+    ) -> None:
+        """Receive a message into memory WITHOUT generating a reply.
+
+        Used in group chat: ALL agents get the message via AgentWorker FIFO queue,
+        then each Agent's LLM decides whether to reply or stay_silent.
+
+        Does NOT trigger:
+        - SmartStop
+        - Tool execution
+        - LLM inference
+
+        Does trigger:
+        - MemorySystem.on_user_message()
+        - _save_message() (persist to DB + vector store)
+        """
+        # Scene isolation: switch _messages when source_id changes
+        if source_id != self._current_source_id:
+            self._messages.clear()
+            self._current_source_id = source_id
+            logger.info("Agent %s ingest switched to source_id %s", self.agent_id, source_id)
+        else:
+            self._messages = [
+                m for m in self._messages
+                if not getattr(m, '_smart_hint', False)
+            ]
+
+        # Load history for current source_id if empty
+        if not self._messages:
+            await self._load_history(source_id=source_id)
+
+        # Add user message to history
+        if content_type == "image":
+            image_source = await self._resolve_image_source(user_message)
+            user_content = [ImageBlock(source=image_source)]
+        elif content_type == "mixed":
+            user_content = await self._parse_mixed_content(user_message)
+        else:
+            user_content = user_message
+
+        user_msg = Message(
+            role="user",
+            content=user_content,
+            meta=MessageMeta(
+                session_id=source_id,
+                round=len(self._messages) // 2,
+                source=source,
+                source_name=source_name,
+                sender_name=sender_name,
+            ),
+        )
+        self._messages.append(user_msg)
+        await self._save_message(user_msg, source, source_id, source_name, sender_name)
+
+        # Initialize memory system on first use
+        if not getattr(self, '_memory_initialized', False):
+            try:
+                await self.memory_system.initialize()
+            except Exception as e:
+                logger.warning("Memory system initialize failed: %s", e)
+            self._memory_initialized = True
+
+        # Notify memory system of user message
+        try:
+            await self.memory_system.on_user_message(user_msg)
+        except Exception as e:
+            logger.warning("Memory system on_user_message failed: %s", e)
+
+        # Compression check (lightweight)
+        try:
+            await self.memory_system.check_compression()
+        except Exception as e:
+            logger.warning("Memory system check_compression failed: %s", e)
 
     async def stream(
         self,
@@ -122,6 +210,7 @@ class ReActAgent(AgentBase):
         source_name: str = "",
         sender_name: str = "",
         content_type: str = "text",
+        is_mentioned: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Stream-based conversation entry point.
 
@@ -131,6 +220,7 @@ class ReActAgent(AgentBase):
             source: "private" | "group" | "workflow".
             source_id: Session/group/workflow ID.
             sender_name: Display name of the sender.
+            is_mentioned: Whether this agent was @mentioned in group chat.
 
         Yields:
             AgentEvent: thinking / content / tool_call / tool_result / done
@@ -140,15 +230,21 @@ class ReActAgent(AgentBase):
         self._fallback.reset()
         self._current_transport = self.model
 
-        # Purge SmartStop hints from previous Jobs (they are transient)
-        self._messages = [
-            m for m in self._messages
-            if not getattr(m, '_smart_hint', False)
-        ]
+        # Scene isolation: switch _messages when source_id changes
+        if source_id != self._current_source_id:
+            self._messages.clear()
+            self._current_source_id = source_id
+            logger.info("Agent %s switched to source_id %s, cleared in-memory messages", self.agent_id, source_id)
+        else:
+            # Purge SmartStop hints from previous Jobs (they are transient)
+            self._messages = [
+                m for m in self._messages
+                if not getattr(m, '_smart_hint', False)
+            ]
 
-        # Load unified history on first use (filters out personality)
+        # Load history for current source_id if empty
         if not self._messages:
-            await self._load_history()
+            await self._load_history(source_id=source_id)
 
         # Trim in-memory history to prevent unbounded growth
         max_mem_msgs = 500
@@ -181,19 +277,72 @@ class ReActAgent(AgentBase):
         self._messages.append(user_msg)
         await self._save_message(user_msg, source, source_id, source_name, sender_name)
 
-        # Step 0: Compress pure history (without personality/scene)
-        # before building the full message list
-        self._messages = await self.context_manager.compress_if_needed(
-            self._messages, self.agent_id
-        )
+        # Initialize memory system on first use
+        if not getattr(self, '_memory_initialized', False):
+            try:
+                await self.memory_system.initialize()
+            except Exception as e:
+                logger.warning("Memory system initialize failed: %s", e)
+            self._memory_initialized = True
+
+        # Notify memory system of user message
+        try:
+            await self.memory_system.on_user_message(user_msg)
+        except Exception as e:
+            logger.warning("Memory system on_user_message failed: %s", e)
+
+        # Compression check
+        try:
+            await self.memory_system.check_compression()
+        except Exception as e:
+            logger.warning("Memory system check_compression failed: %s", e)
 
         # ReAct loop
         while True:
             self.smart_stop.increment_turn()
 
-            # Step 1: Build messages with personality + scene + history
-            messages = self._msg_builder.build(self._messages, scene_info)
-            messages = await self.on_before_llm(messages)
+            # Step 1: Build messages via Context Pipeline (retrieval + downgrade)
+            mind_context = self._load_mind_files()
+
+            # Build personality description for group chat
+            personality_desc = ""
+            if source != "private" and self.model_config:
+                personality = (self.model_config.get("personality") or {})
+                if personality:
+                    from ..personality.prompt_builder import personality_to_prompt
+                    personality_desc = personality_to_prompt(personality)
+                    if is_mentioned:
+                        personality_desc += "\n\n【注意】有人在群聊中 @了你（提到了你的名字），请认真考虑是否要回复。"
+
+            # Lazy-init pipeline
+            if not hasattr(self, "_context_pipeline"):
+                from ..context.context_pipeline import ContextPipeline
+                self._context_pipeline = ContextPipeline(
+                    agent_id=self.agent_id,
+                    msg_builder=self._msg_builder,
+                    embedder=self.embedder,
+                    memory_store=self.memory_store,
+                    memory_system=self.memory_system,
+                    config=self.config.context if self.config else None,
+                )
+
+            try:
+                messages = await self._context_pipeline.assemble(
+                    history=self._messages,
+                    scene_info=scene_info,
+                    mind_context=mind_context,
+                    tools=await self._get_tools(),
+                    source_id=source_id,
+                    source_name=source_name,
+                    personality_desc=personality_desc,
+                )
+            except Exception as e:
+                logger.warning("ContextPipeline failed, falling back to legacy build: %s", e)
+                messages = self._msg_builder.build(self._messages, scene_info, mind_context)
+                try:
+                    messages = await self.memory_system.before_llm(messages)
+                except Exception as e2:
+                    logger.warning("Memory system before_llm failed: %s", e2)
 
             # Step 3: Call LLM via true streaming (retry/fallback inline)
             content_parts: list[str] = []
@@ -231,6 +380,12 @@ class ReActAgent(AgentBase):
                 finish_reason="",
                 usage={},
             )
+
+            # Notify memory system of assistant response
+            try:
+                await self.memory_system.on_assistant_response(response)
+            except Exception as e:
+                logger.warning("Memory system on_assistant_response failed: %s", e)
 
             # Track tokens (streaming path has no usage; estimate)
             text_len = len((response.content or "").encode("utf-8"))
@@ -364,11 +519,16 @@ class ReActAgent(AgentBase):
                 for tc in valid_tool_calls
             )
 
+            # Detect stay_silent and exit early if called
+            def _is_stay_silent(tool_name: str, tool_result: ToolResultBlock) -> bool:
+                return tool_name == "stay_silent" or "[stay_silent]" in str(tool_result.content)
+
             if parallel and len(valid_tool_calls) > 1:
                 tasks = [self._execute_tool(tc) for tc in valid_tool_calls]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 for tc, result in zip(valid_tool_calls, results):
+                    tool_name = tc.get("name", "")
                     if isinstance(result, Exception):
                         tool_result = ToolResultBlock(
                             id=tc["id"],
@@ -378,6 +538,12 @@ class ReActAgent(AgentBase):
                     else:
                         tool_result = result
 
+                    # stay_silent: end turn without output
+                    if _is_stay_silent(tool_name, tool_result):
+                        logger.info("Agent %s stay_silent in %s, ending turn", self.agent_id, source)
+                        yield AgentEvent(type="done")
+                        return
+
                     yield AgentEvent(type="tool_result", data=tool_result)
 
                     result_msg = Message(
@@ -393,9 +559,21 @@ class ReActAgent(AgentBase):
                     )
                     self._messages.append(result_msg)
                     await self._save_message(result_msg, source, source_id, source_name, "系统")
+                    try:
+                        await self.memory_system.on_tool_result(tool_result)
+                    except Exception as e:
+                        logger.warning("Memory system on_tool_result failed: %s", e)
             else:
                 for tc in valid_tool_calls:
+                    tool_name = tc.get("name", "")
                     tool_result = await self._execute_tool(tc)
+
+                    # stay_silent: end turn without output
+                    if _is_stay_silent(tool_name, tool_result):
+                        logger.info("Agent %s stay_silent in %s, ending turn", self.agent_id, source)
+                        yield AgentEvent(type="done")
+                        return
+
                     yield AgentEvent(type="tool_result", data=tool_result)
 
                     result_msg = Message(
@@ -411,6 +589,10 @@ class ReActAgent(AgentBase):
                     )
                     self._messages.append(result_msg)
                     await self._save_message(result_msg, source, source_id, source_name, "系统")
+                    try:
+                        await self.memory_system.on_tool_result(tool_result)
+                    except Exception as e:
+                        logger.warning("Memory system on_tool_result failed: %s", e)
 
             # Continue loop
 
@@ -516,16 +698,11 @@ class ReActAgent(AgentBase):
         return tool_result
 
     async def on_before_llm(self, messages: list[Message]) -> list[Message]:
-        """Inject semantic/warm/cold memory before LLM call.
+        """DEPRECATED: Replaced by MemorySystem.before_llm().
 
-        Note: hot memory is skipped because ReActAgent._messages already
-        contains the full unified history — hot memory would be 100% duplicate.
+        Kept for backward compatibility with external callers.
         """
-        return await self.context_manager.augment(
-            messages,
-            session_id=self.agent_id,
-            layers=["semantic", "warm", "cold"],
-        )
+        return messages
 
     async def _get_tools(self) -> list[dict]:
         """Get tool schemas for the LLM request."""
@@ -610,8 +787,85 @@ class ReActAgent(AgentBase):
         )
         return truncated
 
-    async def _load_history(self) -> None:
-        """Load unified history from agent_messages table.
+    def _load_mind_files(self) -> str:
+        """Read mind files every turn so edits on disk are reflected immediately.
+
+        Sources (in priority order):
+          1. userdata/profile.md  — user self-defined profile (read-only to agent)
+          2. agents/{id}/USER.md  — agent's perception of the user
+          3. agents/{id}/SOUL.md  — soul core / personality
+          4. agents/{id}/AGENT.md — working rules / guidelines
+        """
+        from pathlib import Path
+        import re
+
+        userdata_dir = Path.home() / ".cloudmind-zome" / "userdata"
+        agent_dir = Path.home() / ".cloudmind-zome" / "agents" / self.agent_id
+        parts: list[str] = []
+
+        def _strip_frontmatter(text: str) -> str:
+            text = text.strip()
+            if text.startswith("---"):
+                split = text.split("---", 2)
+                if len(split) >= 3:
+                    text = split[2].strip()
+            return text
+
+        # 1. userdata/profile.md — user self-defined profile
+        user_profile_path = userdata_dir / "profile.md"
+        if user_profile_path.exists():
+            try:
+                text = _strip_frontmatter(user_profile_path.read_text(encoding="utf-8"))
+                if text:
+                    parts.append(f"【用户档案】\n{text}")
+            except Exception as exc:
+                logger.warning("Failed to read userdata/profile.md: %s", exc)
+
+        # 2. USER.md — agent's perception of the user
+        user_path = agent_dir / "USER.md"
+        if user_path.exists():
+            try:
+                text = _strip_frontmatter(user_path.read_text(encoding="utf-8"))
+                if text:
+                    parts.append(f"【心智眼中的用户】\n{text}")
+            except Exception as exc:
+                logger.warning("Failed to read USER.md for %s: %s", self.agent_id, exc)
+
+        # 3. SOUL.md — soul core
+        soul_path = agent_dir / "SOUL.md"
+        if soul_path.exists():
+            try:
+                text = _strip_frontmatter(soul_path.read_text(encoding="utf-8"))
+                if text:
+                    parts.append(f"【灵魂内核】\n{text}")
+            except Exception as exc:
+                logger.warning("Failed to read SOUL.md for %s: %s", self.agent_id, exc)
+
+        # 4. AGENT.md — working rules / guidelines
+        agent_path = agent_dir / "AGENT.md"
+        if agent_path.exists():
+            try:
+                text = _strip_frontmatter(agent_path.read_text(encoding="utf-8"))
+                # Remove heartbeat / memory marker sections (same as QwenPaw)
+                text = re.sub(
+                    r"<!--\s*(heartbeat|memory):start\s*-->.*?<!--\s*\1:end\s*-->",
+                    "",
+                    text,
+                    flags=re.DOTALL,
+                )
+                text = text.strip()
+                if text:
+                    parts.append(f"【工作规范】\n{text}")
+            except Exception as exc:
+                logger.warning("Failed to read AGENT.md for %s: %s", self.agent_id, exc)
+
+        if not parts:
+            logger.info("No mind files found for agent %s at %s", self.agent_id, agent_dir)
+
+        return "\n\n".join(parts)
+
+    async def _load_history(self, source_id: str = "") -> None:
+        """Load scene-isolated history from agent_messages table.
 
         Filters out ALL system messages — personality and scene prompts are
         re-injected dynamically in _build_messages every turn, so they should
@@ -621,7 +875,7 @@ class ReActAgent(AgentBase):
             return
         try:
             raw = await self.session_store.load_agent_messages(
-                self.agent_id, limit=1000
+                self.agent_id, source_id=source_id, limit=1000
             )
             # Drop system messages EXCEPT compressed topic summaries
             self._messages = [
@@ -634,9 +888,10 @@ class ReActAgent(AgentBase):
                     len(raw) - len(self._messages),
                 )
             logger.info(
-                "Loaded %d messages for agent %s",
+                "Loaded %d messages for agent %s (source_id=%s)",
                 len(self._messages),
                 self.agent_id,
+                source_id or "(all)",
             )
         except Exception as e:
             logger.warning("Failed to load history for agent %s: %s", self.agent_id, e)
@@ -672,6 +927,7 @@ class ReActAgent(AgentBase):
                 try:
                     vec = await self.embedder.embed_single(text)
                     if vec:
+                        import time
                         self.memory_store.add(
                             agent_id=self.agent_id,
                             message_id=message.meta.id,
@@ -681,7 +937,9 @@ class ReActAgent(AgentBase):
                                 "role": message.role,
                                 "source": source,
                                 "source_name": source_name,
+                                "source_id": source_id,
                             },
+                            timestamp=time.time(),
                         )
                 except Exception as e:
                     logger.warning("Failed to index message vector: %s", e)

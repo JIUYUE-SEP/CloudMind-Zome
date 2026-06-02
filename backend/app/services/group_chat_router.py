@@ -71,7 +71,7 @@ class GroupChatRouter:
 
         if mentioned_ids:
             for aid in mentioned_ids:
-                targets.append(RouteTarget(agent_id=aid, reason="mention"))
+                targets.append(RouteTarget(agent_id=aid, reason="mention", is_mentioned=True))
             return targets
 
         # 2. No mentions -> follow routing_mode
@@ -229,3 +229,4 @@ class GroupChatRouter:
 class RouteTarget:
     agent_id: str
     reason: str  # mention | random | intermind
+    is_mentioned: bool = False  # True if this agent was @mentioned
