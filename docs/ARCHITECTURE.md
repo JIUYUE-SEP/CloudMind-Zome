@@ -6,18 +6,18 @@
 
 ## 1. 项目概述
 
-CloudMind-Zome 是一个多 Agent 协作平台，核心设计理念是**"每个 Agent 是一个独立的数字生命"**。用户可以与单个 Agent 私聊，也可以创建群聊让多个 Agent 协作讨论。Agent 具备完整的记忆系统、工具调用能力、主动性（定时任务/亲密度唤醒），以及视觉感知能力（图像理解/生成）。
+CloudMind-Zome 是一个多 Agent 协作平台，核心设计理念是**"每个 Agent 是一个独立的数字生命"**。用户可以与单个 Agent 私聊，也可以创建群聊让多个 Agent 协作讨论。Agent 具备完整的记忆系统、工具调用能力、主动性（定时任务）。
 
 ### 1.1 核心特性
 
 | 特性 | 说明 |
 |------|------|
 | **私聊** | 用户与单个 Agent 一对一对话，支持图片、引用回复 |
-| **群聊** | 多 Agent 协作，支持队长(Conductor)机制、@mention、@所有人 |
-| **工具调用** | Agent 可调用心智工具（搜索、文件操作、代码执行、生图等） |
+| **群聊** | 多 Agent 协作，支持 @mention、Agent 自主决策回复（stay_silent） |
+| **工具调用** | Agent 可调用工具（搜索、文件操作、代码执行、生图等） |
+| **算力平台** | 用户管理 LLM Provider（API Key、模型），与 Agent 配置打通 |
 | **记忆系统** | Context Pipeline + zvec 语义检索 + Topic Compression 三层架构 |
-| **主动性** | Commission（定时任务）+ 亲密度唤醒 |
-| **视觉能力** | 用户发图 Agent 可识图；Agent 可生图分享 |
+| **主动性** | Commission（定时任务） |
 | **无登录** | 纯访客模式，零门槛使用 |
 
 ---
@@ -61,12 +61,13 @@ backend/
 │   ├── main.py            # FastAPI 入口
 │   └── database.py        # 数据库连接
 ├── engine/                # 引擎层 (Agent Engine)
-│   ├── agent/             # ReActAgent 核心循环
+│   ├── agent/             # ReActAgent 核心循环 + MessageBuilder
 │   ├── context/           # ContextPipeline + zvec + Embedder
 │   ├── memory/            # MemorySystem 插件 + TopicCompressionMemory
-│   ├── provider/          # LLM Transport + Thinking Profile + Factory
+│   ├── personality/       # 人格提取（Big-5）+ 提示词构建
+│   ├── provider/          # LLM Transport + Thinking Profile + Factory + Registry
 │   ├── tool/              # 工具注册中心
-│   ├── tools/             # 工具实现
+│   ├── tools/             # 工具实现（搜索、代码、文件、通讯、群聊）
 │   ├── message/           # 消息类型定义
 │   ├── session/           # 持久化存储
 │   ├── config/            # 配置加载
@@ -133,9 +134,8 @@ backend/
 | `llm_messages` | 引擎层消息（与 agent_messages 互补） |
 | `actions` / `action_runs` | 工作流蓝图与执行记录 |
 | `commissions` / `commission_logs` | 定时任务与执行日志 |
-| `compute_providers` | LLM 算力提供商配置 |
+| `compute_providers` | LLM 算力提供商配置（API Key、Base URL、模型列表） |
 | `approvals` | 审批检查点 |
-| `agent_user_relations` | 亲密度系统 |
 
 ### 4.2 关键关系
 
@@ -148,6 +148,7 @@ ChatSession (1) ───< ChatMessage (N)
                  ───< ChatSessionMember (N)
 
 Agent (1) ───< agent_messages (N, 统一记忆池，按 source 区分场景)
+Agent (1) ───< compute_providers (N, 算力配置，用于构建 Transport)
 ```
 
 ---
@@ -161,7 +162,7 @@ Agent (1) ───< agent_messages (N, 统一记忆池，按 source 区分场�
 - **一个 asyncio.Task** — 串行处理所有 Jobs
 - **一个 asyncio.Queue** — FIFO 队列，不区分优先级
 - **一个 ReActAgent 实例** — 永不重建，持有场景隔离的记忆 `_messages`
-- **一个状态** — idle / busy / introspecting，由 Worker 单点维护
+- **一个状态** — idle / busy，由 Worker 单点维护
 
 ```python
 # AgentWorker 核心循环
@@ -170,6 +171,10 @@ async def run(self):
         job = await self.queue.get()   # FIFO
         await self._execute_job(job)   # 串行执行
 ```
+
+**Job 类型**：
+- `stream` — 正常对话，流式输出 content / thinking / tool_call
+- `ingest_only` — 群聊消息广播，只写入记忆不生成回复
 
 ### 5.2 ReAct 循环
 
@@ -192,6 +197,8 @@ async def run(self):
 - `tool_result` — 工具执行结果
 - `done` — 流结束
 
+**消息持久化**：`ChatMessage` 新增 `tool_calls`（JSON）和 `reasoning`（Text）字段。`ws_handlers.py` 在流式结束后统一写入数据库，历史消息加载时完整还原。
+
 ### 5.3 消息模型 (Message)
 
 ```python
@@ -211,6 +218,11 @@ class Message:
 | `ToolUseBlock` | 工具调用（id 自动生成 UUID） |
 | `ToolResultBlock` | 工具执行结果（id 必须匹配 ToolUseBlock） |
 | `ImageBlock` | 图片（vision 模型） |
+
+**MessageBuilder 消息拼装**：
+- 私聊：`user` 消息不加前缀，直接送入历史
+- 群聊：`user` 消息加 `sender_name:` 前缀（如 `小明: 大家好`）
+- 系统提示不再注入 `[时间 | 场景 | 发送者]` 标签和 scene_info 描述
 
 **MessageMeta 字段：**
 - `id` — 消息 UUID
@@ -244,6 +256,8 @@ Stage 4: Downgrade
   - 总 token 超限 → L5 合并 → L4 缩减 → L3 截断
   - L1/L2/L6 永不动
 ```
+
+**场景隔离**：`_messages` 按 `source_id` 隔离，切换场景时清空重载。群聊中其他 Agent 的回复会通过 `ingest_only` Job 写入当前 Agent 的 `agent_messages`，确保群聊上下文同步。
 
 **降级配置项**（`engine/config.yaml`）：
 - `context.max_context_tokens` — 模型 context window（默认 128000）
@@ -283,7 +297,7 @@ Stage 4: Downgrade
 
 **压缩触发条件：**
 - 上下文 token 数超过阈值（默认 80% of context window）
-- Agent 空闲超过 5 分钟且消息数 > 10（内省）
+- `before_llm()` 中触发 `check_compression()`
 
 ### 5.6 工具系统
 
@@ -301,6 +315,7 @@ Stage 4: Downgrade
 | `generate_image` | 生图（DALL-E / SiliconFlow 兼容） |
 | `send_private_message` | Agent 间私信 |
 | `report_workflow_progress` | 报告工作流进度 |
+| `stay_silent` | 群聊中 Agent 决定不回复 |
 
 **工具注册：** 使用 `@tool_registry.register()` 装饰器自动注册，支持从目录递归发现（AST 解析，支持别名 import）。
 
@@ -327,7 +342,7 @@ Client ──WebSocket──► Server
 
 Server ──WebSocket──► Client
   │
-  ├──► chat.message     (消息)
+  ├──► chat.message     (消息，含 tool_calls / reasoning)
   ├──► chat.thinking    (推理块)
   ├──► chat.tool_call   (工具调用)
   ├──► agent.status     (Agent 状态变更)
@@ -385,6 +400,7 @@ frontend/src/
 │   ├── auth.ts            # 访客用户状态
 │   ├── agents.ts          # Agent 列表
 │   ├── chat.ts            # 会话/消息/未读
+│   ├── compute.ts         # 算力平台 Provider
 │   └── ui.ts              # UI 状态
 ├── composables/
 │   └── useWebSocket.ts    # WebSocket 封装
@@ -402,6 +418,7 @@ frontend/src/
 | `auth` | 访客用户信息（固定 guest） |
 | `agents` | Agent 列表、创建、编辑 |
 | `chat` | 会话列表、消息、未读红点、当前会话 |
+| `compute` | 算力平台 Provider 列表、增删改 |
 | `ui` | 侧边栏展开、主题、加载状态 |
 
 ### 7.3 消息渲染
@@ -415,7 +432,9 @@ frontend/src/
 **Agent 回复气泡合并**：同一 `batch_id` 的消息合并为一个气泡：
 - 顶部：`reasoning` 折叠栏（"已思考 N 字"）
 - 中部：`tool_calls` 标签栏（可展开查看参数）
-- 底部：`content` 正文内容
+- 底部：`content` 正文内容（Markdown 渲染，含代码高亮、表格、引用）
+
+> Markdown 渲染使用 `marked` + `DOMPurify`，生成中保持纯文本 typing 效果，完成后渲染 HTML。
 
 **智能滚动**：
 - 用户主动上滑时，自动暂停滚动
@@ -544,6 +563,7 @@ User        Frontend    WS        Platform        GroupChatRouter    EngineBridg
 | 群聊多 Agent 并行 | N 个 Agent 同时查 DB、调 LLM | 并发控制 3 个 |
 | 图片 base64 传输 | 大图片导致 WS 帧过大 | 限制 5MB，图片 CDN |
 | 向量检索 | zvec 本地文件，大数据量时 | 迁移 Milvus/Pinecone |
+| 算力配置双轨 | `llmprovider/*.json` 与 `ComputeProvider` 表并存（JSON 已废弃） | 逐步清理 registry.py 的 JSON 依赖 |
 
 ### 11.2 安全模型
 

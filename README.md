@@ -9,10 +9,9 @@ CloudMind-Zome 是一个面向未来的多 Agent 协作平台。它将多个独�
 ## 功能特性
 
 - **心智管理** —— 创建、配置、形象化展示 Agent（立绘 / Live2D / 3D VRM）
+- **算力平台** —— 管理 LLM Provider（API Key、Base URL、模型列表），与心智配置打通
 - **私聊系统** —— 与单个 Agent 一对一对话，实时流式回复，支持图片发送
-- **群聊系统** —— 多 Agent 群组讨论，支持 `@mention` 指定回复对象、@所有人
-- **队长机制** —— 群聊可任命 Conductor（队长），负责话题引导与 Q&A
-- **心智互聊** —— 开启后 Agent 之间可自动对话，形成思维碰撞
+- **群聊系统** —— 多 Agent 群组讨论，支持 `@mention` 指定回复对象；Agent 自主决策是否回复（`stay_silent`）
 - **蓝图工作流** —— 可视化节点编辑器编排复杂任务流程，支持审批节点
 - **任务调度** —— Cron / Interval / 手动触发，Agent 主动执行计划（Commission）
 - **审批系统** —— 敏感操作需人工审批后方可执行
@@ -106,15 +105,16 @@ MindCloud-Zome/
 │   ├── app/                 # FastAPI 平台层
 │   │   ├── api/             # REST + WebSocket API
 │   │   ├── models/          # SQLAlchemy 数据模型
-│   │   ├── services/        # 业务服务（Worker、调度器、事件总线）
+│   │   ├── services/        # 业务服务（Worker、调度器、事件总线、群聊路由）
 │   │   └── main.py          # 应用入口
 │   ├── engine/              # Agent 引擎层（ReAct 循环、工具、记忆）
-│   │   ├── agent/           # ReActAgent 核心循环
+│   │   ├── agent/           # ReActAgent 核心循环 + MessageBuilder
 │   │   ├── context/         # ContextPipeline + zvec 向量存储 + Embedder
 │   │   ├── memory/          # MemorySystem 插件体系 + TopicCompressionMemory
-│   │   ├── provider/        # LLM Transport + Thinking Profile + Factory
+│   │   ├── personality/     # 人格提取（Big-5）+ 提示词构建
+│   │   ├── provider/        # LLM Transport + Thinking Profile + Factory + Registry
 │   │   ├── tool/            # 工具注册中心
-│   │   ├── tools/           # 工具实现（搜索、代码、文件、通讯）
+│   │   ├── tools/           # 工具实现（搜索、代码、文件、通讯、群聊）
 │   │   ├── message/         # 消息类型定义
 │   │   ├── session/         # SQLite 持久化存储
 │   │   ├── config/          # 配置加载（Pydantic）
@@ -122,8 +122,8 @@ MindCloud-Zome/
 │   └── requirements.txt
 ├── frontend/
 │   └── src/
-│       ├── components/      # Vue 组件（ChatView、GroupChatView、BlueprintCanvas 等）
-│       ├── stores/          # Pinia 状态管理
+│       ├── components/      # Vue 组件（ChatView、AgentEdit、ComputeCenter 等）
+│       ├── stores/          # Pinia 状态管理（auth / agents / chat / compute / ui）
 │       ├── api/             # 统一 API 客户端
 │       ├── views/           # 页面视图
 │       └── composables/     # WebSocket 封装
@@ -150,14 +150,16 @@ MindCloud-Zome/
 
 | 层级 | 内容 | 优先级 | 降级策略 |
 |------|------|--------|----------|
-| L1 | Mind 文件（SOUL.md / AGENT.md / USER.md） | 最高 | 不降级 |
-| L2 | 场景信息（当前场景名 + 发送者） | 最高 | 不降级 |
+| L1 | Mind 文件（SOUL.md / AGENT.md / USER.md / profile.md） | 最高 | 不降级 |
+| L2 | 群聊 sender 前缀（MessageBuilder 为 group source 的 user 消息加前缀） | 最高 | 不降级 |
 | L3 | Hot Context（当前场景最近 N 条消息） | 高 | 从最老开始去掉：20→15→10→5 |
 | L4 | 语义检索结果（zvec 跨场景 top-K） | 中 | 从低分开始去掉：10→5→3→0 |
 | L5 | 话题摘要（`_compressed/*.md` 压缩历史） | 低 | 多条合并成一条概要 |
-| L6 | 工具描述 | 最高 | 不降级 |
+| L6 | 工具描述 + 人格描述（群聊时注入） | 最高 | 不降级 |
 
 **降级顺序：L5 → L4 → L3**，超限时自动触发，L1/L2/L6 永不动。
+
+> 注：早期的 `[时间 | 场景 | 发送者]` 标签注入已移除。私聊不加标签；群聊 user 消息在 MessageBuilder 中加 `sender_name:` 前缀。
 
 ### 记忆系统
 
@@ -182,10 +184,11 @@ MindCloud-Zome/
   - `chat.thinking` — 推理块（折叠显示）
   - `chat.tool_call` — 工具调用（折叠显示）
   - `chat.typing` — 输入状态
-  - `agent.status` — Agent 状态变更（idle / busy / introspecting）
+  - `agent.status` — Agent 状态变更（idle / busy）
   - `intermind.start/end` — 心智互聊触发
   - `action.progress` — 工作流进度
   - `notification.new` — 系统通知
+- **消息持久化**：`tool_calls` 和 `reasoning` 随 `ChatMessage` 一并存入数据库，历史消息加载后完整还原
 
 ### 错误恢复
 
@@ -214,8 +217,10 @@ MindCloud-Zome/
   - `SOUL.md` — 灵魂内核 / 人格定义
   - `AGENT.md` — 工作规范 / 行为指南
   - `USER.md` — Agent 对用户的感知
+  - `MEMORY.md` — 长期记忆（由 CompressionWorker 追加摘要）
   - `_compressed/*.md` — 话题压缩摘要
   - `memory.db` — 话题上下文状态
+- `~/.cloudmind-zome/userdata/profile.md` — 用户自述（全局用户档案）
 
 ### 上传文件
 
@@ -235,7 +240,8 @@ MindCloud-Zome/
 - [x] Topic Compression Memory（自动话题压缩）
 - [x] 真流式逐字输出
 - [x] 消息合并（单气泡 reasoning + tools + content）
-- [ ] 亲密度系统（Intimacy）
+- [x] Markdown 渲染（代码块、表格、引用）
+- [x] 算力平台（ComputeProvider 数据库表）
 - [ ] 代称系统（Alias routing）
 - [ ] Skill 系统
 - [ ] MCP / ACP 管理
