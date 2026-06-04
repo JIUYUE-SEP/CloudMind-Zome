@@ -6,7 +6,7 @@ import json
 import shutil
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import aiosqlite
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -42,7 +42,6 @@ def _save_upload(file: UploadFile, subfolder: str) -> str:
 # ------------------------------------------------------------------
 class AgentCreate(BaseModel):
     name: str
-    personality_prompt: str = ""
     capabilities: List[str] = Field(default_factory=list)
     aliases: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
@@ -53,7 +52,6 @@ class AgentCreate(BaseModel):
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
     codename: Optional[str] = None
-    personality_prompt: Optional[str] = None
     capabilities: Optional[List[str]] = None
     aliases: Optional[List[str]] = None
     tags: Optional[List[str]] = None
@@ -79,7 +77,6 @@ class AgentListItem(BaseModel):
 
 
 class AgentDetail(AgentListItem):
-    personality_prompt: str
     memory_count: int = 0
     capabilities: List[str]
     llm_config: dict
@@ -88,7 +85,7 @@ class AgentDetail(AgentListItem):
 
 class ListResp(BaseModel):
     code: int = 0
-    data: dict
+    data: Any = {}
 
 
 # ------------------------------------------------------------------
@@ -135,13 +132,46 @@ async def list_agents(
             "portrait_url": a.portrait_url,
             "live2d_model_url": a.live2d_model_url,
             "model_url": a.model_url,
-            "personality_summary": a.personality_prompt[:80] + "..." if len(a.personality_prompt) > 80 else a.personality_prompt,
+            "personality_summary": "",
             "tags": a.tags or [],
             "represent_color": a.represent_color,
             "created_at": a.created_at.isoformat() if a.created_at else "",
         })
 
     return ListResp(data={"items": items, "total": total, "page": page, "page_size": page_size})
+
+
+# ------------------------------------------------------------------
+# Providers
+# ------------------------------------------------------------------
+@router.get("/providers", response_model=ListResp)
+async def list_providers(
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List available LLM providers from ComputeProvider table."""
+    from ..models import ComputeProvider
+    result = await db.execute(
+        select(ComputeProvider).where(
+            ComputeProvider.user_id == user.id,
+            ComputeProvider.status == "active",
+        )
+    )
+    items = []
+    for p in result.scalars().all():
+        cfg = p.config or {}
+        models = cfg.get("models", []) or []
+        items.append({
+            "id": p.id,
+            "name": p.provider_type,
+            "display_name": p.display_name,
+            "models": models,
+            "base_url": cfg.get("base_url", ""),
+            "supports_streaming": True,
+            "supports_vision": False,
+            "supports_reasoning": False,
+        })
+    return ListResp(data=items)
 
 
 @router.get("/{agent_id}", response_model=ListResp)
@@ -161,7 +191,6 @@ async def get_agent(
         "id": a.id,
         "name": a.name,
         "codename": a.codename,
-        "personality_prompt": a.personality_prompt,
         "memory_count": 0,
         "capabilities": a.capabilities or [],
         "aliases": a.aliases or [],
@@ -191,7 +220,6 @@ async def create_agent(
         user_id=user.id,
         name=body.name,
         codename=codename,
-        personality_prompt=body.personality_prompt,
         capabilities=body.capabilities,
         aliases=body.aliases,
         tags=body.tags,
@@ -405,27 +433,6 @@ async def update_mind_file(
 
 
 # ------------------------------------------------------------------
-# Providers
-# ------------------------------------------------------------------
-@router.get("/providers", response_model=ListResp)
-async def list_providers(user: User = Depends(require_user)):
-    """List available LLM providers from llmprovider/*.json"""
-    from engine.provider.registry import get_registry
-    providers = get_registry().list()
-    return ListResp(data=[
-        {
-            "name": p.name,
-            "display_name": p.display_name,
-            "models": p.models,
-            "supports_streaming": p.supports_streaming,
-            "supports_vision": p.supports_vision,
-            "supports_reasoning": p.supports_reasoning,
-        }
-        for p in providers
-    ])
-
-
-# ------------------------------------------------------------------
 # Personality analysis
 # ------------------------------------------------------------------
 @router.post("/{agent_id}/analyze-personality", response_model=ListResp)
@@ -434,7 +441,7 @@ async def analyze_agent_personality(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Analyze agent personality from SOUL.md + personality_prompt.
+    """Analyze agent personality from SOUL.md.
 
     Returns Big-5 scores. Does NOT save to DB — caller must PUT update.
     """
@@ -469,7 +476,7 @@ async def analyze_agent_personality(
 
     return ListResp(data={
         "personality": personality,
-        "source": "SOUL.md + personality_prompt",
+        "source": "SOUL.md",
         "auto": True,
     })
 
@@ -499,45 +506,53 @@ async def get_agent_memory(
 
     async with aiosqlite.connect(str(_DB_PATH)) as engine_db:
         # Topics: try agent_id as session_id first, then pattern match
-        async with engine_db.execute(
-            """
-            SELECT id, name, subtopic_name, importance, summary,
-                   start_round, end_round, updated_at
-            FROM llm_topics
-            WHERE session_id = ? OR session_id LIKE ?
-            ORDER BY updated_at DESC
-            LIMIT 50
-            """,
-            (agent_id, f"%:{agent_id}"),
-        ) as cur:
-            rows = await cur.fetchall()
-            for row in rows:
-                topics.append({
-                    "id": row[0],
-                    "name": row[1],
-                    "subtopic_name": row[2],
-                    "importance": row[3],
-                    "summary": row[4],
-                    "start_round": row[5],
-                    "end_round": row[6],
-                    "updated_at": row[7],
-                })
+        try:
+            async with engine_db.execute(
+                """
+                SELECT id, name, subtopic_name, importance, summary,
+                       start_round, end_round, updated_at
+                FROM llm_topics
+                WHERE session_id = ? OR session_id LIKE ?
+                ORDER BY updated_at DESC
+                LIMIT 50
+                """,
+                (agent_id, f"%:{agent_id}"),
+            ) as cur:
+                rows = await cur.fetchall()
+                for row in rows:
+                    topics.append({
+                        "id": row[0],
+                        "name": row[1],
+                        "subtopic_name": row[2],
+                        "importance": row[3],
+                        "summary": row[4],
+                        "start_round": row[5],
+                        "end_round": row[6],
+                        "updated_at": row[7],
+                    })
+        except aiosqlite.OperationalError:
+            # llm_topics may not exist yet (lazy creation)
+            pass
 
         # Stats from agent_messages
-        async with engine_db.execute(
-            """
-            SELECT COUNT(*), SUM(CASE WHEN compressed = 1 THEN 1 ELSE 0 END)
-            FROM agent_messages WHERE agent_id = ?
-            """,
-            (agent_id,),
-        ) as cur:
-            row = await cur.fetchone()
-            if row:
-                stats["total_messages"] = row[0] or 0
-                stats["compressed_messages"] = row[1] or 0
-                if stats["total_messages"] > 0:
-                    stats["compression_rate"] = round(
-                        stats["compressed_messages"] / stats["total_messages"] * 100, 1
-                    )
+        try:
+            async with engine_db.execute(
+                """
+                SELECT COUNT(*), SUM(CASE WHEN compressed = 1 THEN 1 ELSE 0 END)
+                FROM agent_messages WHERE agent_id = ?
+                """,
+                (agent_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                if row:
+                    stats["total_messages"] = row[0] or 0
+                    stats["compressed_messages"] = row[1] or 0
+                    if stats["total_messages"] > 0:
+                        stats["compression_rate"] = round(
+                            stats["compressed_messages"] / stats["total_messages"] * 100, 1
+                        )
+        except aiosqlite.OperationalError:
+            # agent_messages may not exist yet (engine not initialized)
+            pass
 
     return ListResp(data={"topics": topics, "stats": stats})

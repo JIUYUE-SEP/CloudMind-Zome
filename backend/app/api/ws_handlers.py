@@ -463,6 +463,8 @@ async def _stream_single_agent(
     engine_session_id = f"{session_id}:{agent_id}"
     batch_id = str(uuid.uuid4())
     full_content = ""
+    reasoning_parts: list[str] = []
+    tool_calls_list: list[dict] = []
     signal_key = f"{session_id}:{agent_id}"
 
     # Fallback agent name lookup
@@ -562,6 +564,7 @@ async def _stream_single_agent(
 
             elif event.get("type") == "thinking":
                 thinking_text = event.get("data", {}).get("thinking", "")
+                reasoning_parts.append(thinking_text)
                 thinking_frame = _build_ws_frame("chat.thinking", {
                     "session_id": session_id,
                     "agent_id": agent_id,
@@ -577,6 +580,7 @@ async def _stream_single_agent(
             elif event.get("type") == "tool_call":
                 tool_name = event.get("data", {}).get("name", "")
                 tool_input = event.get("data", {}).get("input", {})
+                tool_calls_list.append({"name": tool_name, "input": tool_input})
                 tool_frame = _build_ws_frame("chat.tool_call", {
                     "session_id": session_id,
                     "agent_id": agent_id,
@@ -591,7 +595,7 @@ async def _stream_single_agent(
                     await manager.broadcast_to_session_members(broadcast_to, tool_frame)
 
         # Persist
-        if full_content:
+        if full_content or tool_calls_list or reasoning_parts:
             async with AsyncSessionLocal() as db2:
                 assistant_msg = ChatMessage(
                     id=str(uuid.uuid4()),
@@ -601,6 +605,8 @@ async def _stream_single_agent(
                     content=full_content,
                     content_type="text",
                     batch_id=batch_id,
+                    tool_calls=tool_calls_list if tool_calls_list else None,
+                    reasoning="\n".join(reasoning_parts) if reasoning_parts else None,
                 )
                 db2.add(assistant_msg)
                 await db2.commit()
@@ -712,6 +718,8 @@ async def _replay_offline_messages(user_id: str, ws: WebSocket) -> None:
                         "timestamp": r.created_at.isoformat() if r.created_at else "",
                         "is_me": r.sender_id == user_id and r.sender_type == "user",
                         "batch_id": r.batch_id,
+                        "tool_calls": r.tool_calls or [],
+                        "reasoning": r.reasoning or "",
                     }
                 })
                 try:

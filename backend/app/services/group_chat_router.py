@@ -141,7 +141,7 @@ class GroupChatRouter:
         Pure local text matching — no embedding or LLM dependency.
         """
         result = await self.db.execute(
-            select(Agent.id, Agent.name, Agent.personality_prompt, Agent.capabilities)
+            select(Agent.id, Agent.name, Agent.capabilities)
             .where(Agent.id.in_(agent_ids))
         )
         rows = result.all()
@@ -157,7 +157,6 @@ class GroupChatRouter:
             agent_text = " ".join(
                 filter(None, [
                     row.name,
-                    row.personality_prompt,
                     " ".join(row.capabilities or []),
                 ])
             )

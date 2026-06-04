@@ -261,6 +261,8 @@ async def get_messages(
             "timestamp": m.created_at.isoformat() if m.created_at else "",
             "is_me": m.sender_id == user.id and m.sender_type == "user",
             "batch_id": m.batch_id,
+            "tool_calls": m.tool_calls or [],
+            "reasoning": m.reasoning or "",
         }
         for m in reversed(rows)
     ]

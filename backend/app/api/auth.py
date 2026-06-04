@@ -28,9 +28,6 @@ class AuthMeOut(BaseModel):
 class ProfileUpdate(BaseModel):
     nickname: Optional[str] = None
     avatar_url: Optional[str] = None
-    bio: Optional[str] = None
-    quote: Optional[str] = None
-    tags: Optional[list] = None
     radar: Optional[dict] = None
 
 
@@ -82,12 +79,6 @@ async def update_me(
         user.avatar_url = body.avatar_url
 
     profile = await _get_or_create_profile(user.id, db)
-    if body.bio is not None:
-        profile.profile_text = body.bio
-    if body.quote is not None:
-        profile.quote = body.quote
-    if body.tags is not None:
-        profile.tags = body.tags
     if body.radar is not None:
         profile.radar = body.radar
 

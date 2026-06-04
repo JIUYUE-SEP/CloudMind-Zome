@@ -29,7 +29,6 @@ class Agent(Base):
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     codename: Mapped[str] = mapped_column(String(64), nullable=False)
-    personality_prompt: Mapped[str] = mapped_column(Text, default="")
     capabilities: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     aliases: Mapped[Optional[list]] = mapped_column(JSON, default=list)  # ["vivi", "维维"]
     tags: Mapped[Optional[list]] = mapped_column(JSON, default=list)  # ["工作", "编程"]

@@ -37,14 +37,6 @@ _PROFILE_MAP = {
     "openai": DeepSeekThinkingProfile,
 }
 
-_DEFAULT_BASE_URLS = {
-    "deepseek": "https://api.deepseek.com/v1",
-    "mimo": "https://api.miaomi.cn/v1",
-    "kimicode": "https://api.kimi.ai/v1",
-    "glm": "https://api.glm.ai/v1",
-}
-
-
 def _decrypt_key(enc: str) -> str:
     import base64
     return base64.b64decode(enc.encode()).decode()
@@ -200,32 +192,36 @@ class EngineBridge:
         """Kept for compatibility; Worker builds its own transport."""
         from ..database import AsyncSessionLocal
         model_cfg: dict = agent_row.model_config or {}
+        provider_id = model_cfg.get("provider_id")
         provider_type = (model_cfg.get("provider") or "deepseek").lower()
         model_name = model_cfg.get("model") or "deepseek-v4-pro"
 
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(ComputeProvider).where(
-                    ComputeProvider.provider_type == provider_type,
-                    ComputeProvider.status == "active",
-                ).limit(1)
-            )
+            if provider_id:
+                result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.id == provider_id,
+                        ComputeProvider.status == "active",
+                    ).limit(1)
+                )
+            else:
+                result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.provider_type == provider_type,
+                        ComputeProvider.status == "active",
+                    ).limit(1)
+                )
             prov_row: ComputeProvider | None = result.scalars().first()
 
-        base_url = _DEFAULT_BASE_URLS.get(provider_type, "")
-        api_key = ""
+        if not prov_row:
+            logger.error("No active ComputeProvider for agent %s (provider_id=%s, type=%s)", agent_row.id, provider_id, provider_type)
+            return None
 
-        if prov_row:
-            base_url = (prov_row.config or {}).get("base_url") or base_url
-            api_key = _decrypt_key(prov_row.api_key_encrypted) if prov_row.api_key_encrypted else ""
-        else:
-            engine_cfg = getattr(self.app_config.provider, provider_type, None)
-            if engine_cfg:
-                base_url = engine_cfg.base_url or base_url
-                api_key = engine_cfg.api_key or ""
+        base_url = (prov_row.config or {}).get("base_url", "")
+        api_key = _decrypt_key(prov_row.api_key_encrypted) if prov_row.api_key_encrypted else ""
 
         if not api_key:
-            logger.error("No API key for provider %s", provider_type)
+            logger.error("No API key for provider %s", prov_row.id)
             return None
 
         profile_cls = _PROFILE_MAP.get(provider_type, DeepSeekThinkingProfile)

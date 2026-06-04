@@ -47,7 +47,7 @@ class ReActAgent(AgentBase):
     - One instance per Agent identity, shared across all Jobs.
     - Unified memory pool keyed by agent_id, not session_id.
     - SmartStop is global across all scenes (no reset per Job).
-    - Scene info is injected into system prompt every turn.
+    - Group-chat user messages are prefixed with sender_name by MessageBuilder.
     """
 
     def __init__(
@@ -216,7 +216,7 @@ class ReActAgent(AgentBase):
 
         Args:
             user_message: User's input message.
-            scene_info: Scene injection string (e.g. "当前场景：私聊").
+            scene_info: Deprecated, kept for backward compat.
             source: "private" | "group" | "workflow".
             source_id: Session/group/workflow ID.
             sender_name: Display name of the sender.

@@ -22,8 +22,6 @@ if str(_BACKEND_DIR) not in sys.path:
 from engine.config.loader import load_config
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
-from engine.provider._default_providers import ensure_default_providers
-
 from .database import engine, Base
 from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config
 from .services.commission_scheduler import get_scheduler
@@ -43,18 +41,23 @@ async def lifespan(app: FastAPI):
     # 1. Platform tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Run lightweight migrations for additive schema changes
+        def _migrate(sync_conn):
+            from sqlalchemy import inspect, text
+            inspector = inspect(sync_conn)
+            cols = {c['name'] for c in inspector.get_columns('chat_messages')}
+            if 'tool_calls' not in cols:
+                sync_conn.execute(text("ALTER TABLE chat_messages ADD COLUMN tool_calls JSON"))
+                logger.info("Migration: added chat_messages.tool_calls")
+            if 'reasoning' not in cols:
+                sync_conn.execute(text("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT"))
+                logger.info("Migration: added chat_messages.reasoning")
+        await conn.run_sync(_migrate)
     logger.info("Platform tables ensured")
 
     # 2. Engine infra
     cfg = load_config(_BACKEND_DIR / "engine" / "config.yaml")
     app.state.config = cfg
-
-    # Ensure llmprovider/ directory has default templates
-    ensure_default_providers()
-
-    # Migrate legacy config.yaml provider credentials to llmprovider/*.json
-    from scripts.migrate_providers import migrate_providers
-    migrate_providers()
 
     # Discover tools (inside local engine/)
     tools_dir = _BACKEND_DIR / "engine" / "tools"

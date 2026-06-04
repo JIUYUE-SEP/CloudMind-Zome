@@ -71,6 +71,8 @@ class ChatMessage(Base):
     )
     client_msg_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     batch_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    tool_calls: Mapped[Optional[list]] = mapped_column(JSON, default=list)
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, default="")
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
 

@@ -24,6 +24,18 @@ class ProviderCreate(BaseModel):
     display_name: str
     api_key: str
     base_url: str = ""
+    provider_type: Optional[str] = None
+
+
+def _detect_provider_type(base_url: str) -> str:
+    base_url = base_url.lower()
+    if "deepseek" in base_url:
+        return "deepseek"
+    if "siliconflow" in base_url or "silicon" in base_url:
+        return "siliconflow"
+    if "openai" in base_url:
+        return "openai"
+    return "openai"
 
 
 class ProviderUpdate(BaseModel):
@@ -89,10 +101,11 @@ async def create_provider(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    provider_type = body.provider_type or _detect_provider_type(body.base_url)
     prov = ComputeProvider(
         id=str(uuid.uuid4()),
         user_id=user.id,
-        provider_type="openai",
+        provider_type=provider_type,
         display_name=body.display_name,
         api_key_encrypted=_encrypt_key(body.api_key),
         config={"base_url": body.base_url, "models": []},
@@ -132,6 +145,12 @@ async def test_provider(
         if r.status_code == 200:
             data = r.json()
             models = data.get("data", [])
+            model_ids = [m.get("id", "") for m in models if m.get("id")]
+            # Persist models to DB so AgentEdit can pick them
+            cfg = dict(prov.config or {})
+            cfg["models"] = model_ids
+            prov.config = cfg
+            await db.commit()
             return Resp(data={
                 "success": True,
                 "message": f"连接成功，发现 {len(models)} 个可用模型",

@@ -43,7 +43,7 @@
             <div v-else class="comm-avatar placeholder">{{ a.name?.[0] || '?' }}</div>
             <div class="comm-info">
               <div class="comm-name">{{ a.name }}</div>
-              <div class="comm-preview">{{ a.personality_summary || '点击开始对话' }}</div>
+              <div class="comm-preview">{{ a.codename || '点击开始对话' }}</div>
             </div>
             <div v-if="unreadCount(privateSessionMap[a.id]) > 0" class="comm-badge">{{ unreadCount(privateSessionMap[a.id]) }}</div>
             <button

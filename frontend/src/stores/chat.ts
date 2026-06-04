@@ -27,6 +27,8 @@ interface Message {
   batch_id?: string
   reply_to?: any
   is_generating?: boolean
+  tool_calls?: { name: string; input: any }[]
+  reasoning?: string
 }
 
 export const useChatStore = defineStore('chat', () => {

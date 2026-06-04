@@ -89,7 +89,6 @@ class AgentWorker:
                 session_store=_state["session_store"],
                 agent_id=self.agent_id,
                 config=app_config,
-                personality_prompt=self.agent_row.personality_prompt or "",
                 embedder=_state.get("embedder"),
                 memory_store=_state.get("memory_store"),
                 model_config=self.agent_row.model_config or {},
@@ -275,19 +274,15 @@ class AgentWorker:
     # ------------------------------------------------------------------
     def _build_scene_info(self, job: AgentJob) -> str:
         """Build scene description for system prompt injection.
-        Keep it concise and avoid meta-discussion triggers."""
-        lines = [f"当前场景：{job.source_name}"]
-        if job.source == "group":
-            lines.append(f"发言者：{job.sender_name}")
-        elif job.source == "workflow":
-            lines.append("任务类型：工作流执行")
-            if job.source_id.startswith("wf:"):
-                parts = job.source_id.split(":")
-                if len(parts) >= 3:
-                    lines.append(f"节点：{parts[2]}")
-        elif job.source == "private":
-            lines.append(f"对话者：{job.sender_name or '用户'}")
-        return "\n".join(lines)
+
+        Engine no longer injects [time | scene | sender] tags.
+        Group chat sender is handled by MessageBuilder._with_sender_prefix().
+        """
+        if job.source == "workflow" and job.source_id.startswith("wf:"):
+            parts = job.source_id.split(":")
+            if len(parts) >= 3:
+                return f"工作流节点：{parts[2]}"
+        return ""
 
     async def _set_db_status(self, status: str) -> None:
         async with AsyncSessionLocal() as db:
@@ -352,27 +347,6 @@ class AgentWorker:
                         api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
                     except Exception:
                         api_key = prov.api_key_encrypted
-            # Fallback to engine config
-            if not api_key:
-                from ..main import _app_state
-                cfg = _app_state.get("config")
-                if cfg:
-                    ec = getattr(cfg.provider, ptype, None)
-                    if ec:
-                        base_url = ec.base_url or base_url
-                        api_key = ec.api_key or api_key
-
-            # Fallback to llmprovider/*.json (new canonical source)
-            if not api_key:
-                try:
-                    from engine.provider.registry import get_registry
-                    registry = get_registry()
-                    if registry.has(ptype):
-                        pcfg = registry.get(ptype)
-                        base_url = pcfg.base_url or base_url
-                        api_key = pcfg.api_key or api_key
-                except Exception:
-                    pass
 
             if not api_key:
                 return None

@@ -10,7 +10,6 @@ export interface AgentItem {
   portrait_url?: string
   live2d_model_url?: string
   model_url?: string
-  personality_summary: string
   represent_color: string
   tags?: string[]
   created_at: string

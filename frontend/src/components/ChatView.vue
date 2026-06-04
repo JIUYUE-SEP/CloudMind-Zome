@@ -40,7 +40,8 @@
               <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
                 <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
                 <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>
-                <span v-else>{{ seg.value }}</span>
+                <span v-else-if="msg.is_generating">{{ seg.value }}</span>
+                <div v-else class="md-segment" v-html="sanitizeMd(seg.value)"></div>
               </template>
             </div>
             <div v-if="msg.reasoning" class="reasoning-bar" @click="toggleExpand(msg.id)">
@@ -60,7 +61,8 @@
               <template v-for="(seg, si) in parseContent(msg.content)" :key="si">
                 <img v-if="seg.type === 'image'" :src="seg.value" class="inline-img" @click="previewUrl = seg.value" />
                 <a v-else-if="seg.type === 'file'" :href="seg.value" class="inline-file" target="_blank">{{ seg.label || '下载文件' }}</a>
-                <span v-else>{{ seg.value }}</span>
+                <span v-else-if="msg.is_generating">{{ seg.value }}</span>
+                <div v-else class="md-segment" v-html="sanitizeMd(seg.value)"></div>
               </template>
             </div>
             <div class="time">{{ formatTime(msg.timestamp) }}</div>
@@ -119,6 +121,23 @@ import { useChatStore } from '@/stores/chat'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { api } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+})
+
+function sanitizeMd(text: string): string {
+  if (!text) return ''
+  try {
+    const html = marked.parse(text, { async: false }) as string
+    return DOMPurify.sanitize(html)
+  } catch (e) {
+    return text
+  }
+}
 
 const props = defineProps<{ sessionId: string; inline?: boolean }>()
 const emit = defineEmits(['close'])
@@ -334,6 +353,8 @@ function syncMessages() {
       existing.content = msg.content || ''
       existing.timestamp = msg.timestamp
       existing.is_generating = msg.is_generating ?? false
+      if (msg.reasoning !== undefined) existing.reasoning = msg.reasoning
+      if (msg.tool_calls !== undefined) existing.tool_calls = msg.tool_calls
       if (existing.is_generating) {
         if (existing._genTimeout) clearTimeout(existing._genTimeout)
         existing._genTimeout = setTimeout(() => { existing.is_generating = false }, 3000)
@@ -342,8 +363,8 @@ function syncMessages() {
       messages.value.push({
         ...msg,
         id: localId,
-        reasoning: '',
-        tool_calls: [],
+        reasoning: msg.reasoning ?? '',
+        tool_calls: msg.tool_calls ?? [],
         is_generating: msg.is_generating ?? false,
       })
     }
@@ -469,6 +490,111 @@ function formatTime(ts: string) {
 
 .typing-cursor::after { content: '▌'; animation: blink 1s step-end infinite; color: #00E5C9; margin-left: 2px; }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* Markdown rendering in bubbles */
+.md-content, .md-segment { line-height: 1.6; }
+.md-content :deep(p), .md-segment :deep(p) { margin: 0 0 8px 0; }
+.md-content :deep(p):last-child, .md-segment :deep(p):last-child { margin-bottom: 0; }
+.md-content :deep(ul), .md-segment :deep(ul),
+.md-content :deep(ol), .md-segment :deep(ol) { padding-left: 20px; margin: 4px 0; }
+.md-content :deep(li), .md-segment :deep(li) { margin: 2px 0; }
+.md-content :deep(pre), .md-segment :deep(pre) {
+  background: #141B24;
+  border: 1px solid #1E2731;
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  margin: 8px 0;
+  color: #D8E1EC;
+}
+.md-content :deep(code), .md-segment :deep(code) {
+  font-family: 'Fira Code', 'Courier New', Courier, monospace;
+  font-size: 12px;
+  background: rgba(0,0,0,0.2);
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: #D8E1EC;
+}
+.md-content :deep(pre code), .md-segment :deep(pre code) {
+  background: transparent;
+  padding: 0;
+}
+.md-content :deep(blockquote), .md-segment :deep(blockquote) {
+  border-left: 3px solid #00E5C9;
+  margin: 8px 0;
+  padding: 6px 10px;
+  color: #8899AA;
+  background: rgba(0,229,201,0.05);
+  border-radius: 0 4px 4px 0;
+}
+.md-content :deep(a), .md-segment :deep(a) {
+  color: #00E5C9;
+  text-decoration: none;
+}
+.md-content :deep(a):hover, .md-segment :deep(a):hover { text-decoration: underline; }
+.md-content :deep(table), .md-segment :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.md-content :deep(th), .md-segment :deep(th),
+.md-content :deep(td), .md-segment :deep(td) {
+  border: 1px solid #1E2731;
+  padding: 6px 8px;
+  text-align: left;
+}
+.md-content :deep(th), .md-segment :deep(th) {
+  background: rgba(0,0,0,0.2);
+  font-weight: 600;
+}
+.md-content :deep(hr), .md-segment :deep(hr) {
+  border: none;
+  border-top: 1px solid #1E2731;
+  margin: 10px 0;
+}
+.md-content :deep(h1), .md-segment :deep(h1),
+.md-content :deep(h2), .md-segment :deep(h2),
+.md-content :deep(h3), .md-segment :deep(h3),
+.md-content :deep(h4), .md-segment :deep(h4) {
+  margin: 10px 0 6px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md-content :deep(h1) { font-size: 18px; }
+.md-content :deep(h2) { font-size: 16px; }
+.md-content :deep(h3) { font-size: 14px; }
+.md-content :deep(h4) { font-size: 13px; }
+
+/* Light-bubble (user / me) markdown overrides */
+.msg-row.me .md-content :deep(pre),
+.msg-row.me .md-segment :deep(pre) {
+  background: #D0D5DB;
+  border-color: #B0B5BB;
+  color: #0B0F17;
+}
+.msg-row.me .md-content :deep(code),
+.msg-row.me .md-segment :deep(code) {
+  background: rgba(0,0,0,0.1);
+  color: #0B0F17;
+}
+.msg-row.me .md-content :deep(blockquote),
+.msg-row.me .md-segment :deep(blockquote) {
+  background: rgba(0,0,0,0.04);
+  color: #3A4A5A;
+  border-left-color: #00A08A;
+}
+.msg-row.me .md-content :deep(a),
+.msg-row.me .md-segment :deep(a) {
+  color: #006B5E;
+}
+.msg-row.me .md-content :deep(th), .msg-row.me .md-segment :deep(th),
+.msg-row.me .md-content :deep(td), .msg-row.me .md-segment :deep(td) {
+  border-color: #B0B5BB;
+}
+.msg-row.me .md-content :deep(hr), .msg-row.me .md-segment :deep(hr) {
+  border-top-color: #B0B5BB;
+}
 
 .typing-indicator { display: flex; gap: 4px; align-self: flex-start; padding: 12px 14px; background: #1E2731; border-radius: 12px; }
 .typing-indicator span { width: 6px; height: 6px; background: #5A6A7A; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }

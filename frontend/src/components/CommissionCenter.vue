@@ -33,9 +33,14 @@
         </select>
         <select v-model="form.trigger_type">
           <option value="cron">定时 (Cron)</option>
+          <option value="interval">间隔 (Interval)</option>
           <option value="manual">手动触发</option>
         </select>
         <input v-if="form.trigger_type === 'cron'" v-model="form.cron" placeholder="Cron 表达式，如 0 9 * * *" />
+        <div v-if="form.trigger_type === 'interval'" class="interval-row">
+          <input v-model.number="form.interval_seconds" type="number" min="60" placeholder="间隔秒数" />
+          <span class="interval-hint">{{ intervalHint }}</span>
+        </div>
         <textarea v-model="form.prompt" rows="3" placeholder="每次触发时发送给心智的指令" />
         <div class="modal-actions">
           <button @click="submit">保存</button>
@@ -61,7 +66,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
 import { api } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
@@ -72,7 +77,15 @@ const agents = ref<any[]>([])
 const showCreate = ref(false)
 const logId = ref<string | null>(null)
 const logs = ref<any[]>([])
-const form = ref({ name: '', agent_id: '', trigger_type: 'cron', cron: '', prompt: '' })
+const form = ref({ name: '', agent_id: '', trigger_type: 'cron', cron: '', interval_seconds: 3600, prompt: '' })
+
+const intervalHint = computed(() => {
+  const s = form.value.interval_seconds || 0
+  if (s < 60) return ''
+  if (s < 3600) return `≈ ${Math.round(s / 60)} 分钟`
+  if (s < 86400) return `≈ ${Math.round(s / 3600 * 10) / 10} 小时`
+  return `≈ ${Math.round(s / 86400 * 10) / 10} 天`
+})
 
 onMounted(async () => {
   await fetchCommissions()
@@ -91,7 +104,11 @@ async function submit() {
     name: form.value.name,
     agent_id: form.value.agent_id,
     trigger_type: form.value.trigger_type,
-    trigger_config: form.value.trigger_type === 'cron' ? { expression: form.value.cron } : {},
+    trigger_config: form.value.trigger_type === 'cron'
+      ? { expression: form.value.cron }
+      : form.value.trigger_type === 'interval'
+      ? { seconds: form.value.interval_seconds }
+      : {},
     action_type: 'preset_chat',
     action_config: { instruction: form.value.prompt },
   }
@@ -153,4 +170,7 @@ h2 { flex: 1; font-size: 18px; margin: 0; color: #D8E1EC; }
 .log-row .success { color: #10B981; }
 .log-row .failed { color: #EF4444; }
 .log-time { font-size: 11px; color: #5A6A7A; }
+.interval-row { display: flex; align-items: center; gap: 10px; }
+.interval-row input { flex: 1; }
+.interval-hint { font-size: 12px; color: #5A6A7A; white-space: nowrap; }
 </style>

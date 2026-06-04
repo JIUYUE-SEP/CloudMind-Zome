@@ -22,7 +22,7 @@ class ContextPipeline:
     """Assembles LLM prompt with retrieval, scoring, and tiered downgrade.
 
     - L1: Mind files + behavioral guidelines (highest priority, never downgraded)
-    - L2: Scene info (highest priority, never downgraded)
+    - L2: Group sender prefix (handled by MessageBuilder, never downgraded)
     - L3: Hot Context — recent messages from current scene
     - L4: Semantic retrieval results from Zvec (cross-scene)
     - L5: Topic summaries (warm/cold memory)
@@ -65,7 +65,7 @@ class ContextPipeline:
 
         Args:
             history: Full in-memory conversation history (already scene-isolated).
-            scene_info: Scene injection string (L2).
+            scene_info: Deprecated, kept for backward compat.
             mind_context: Mind files content (L1).
             tools: Tool schemas for token estimation (L6).
             source_id: Current scene identifier (used to label cross-scene memories).
@@ -86,7 +86,7 @@ class ContextPipeline:
 
         # Downgrade loop
         while True:
-            # Build L1+L2+L3 via MessageBuilder (handles tagging, scene-switch hints)
+            # Build L1+L3 via MessageBuilder (handles group sender prefix)
             base = self.msg_builder.build(hot_context, scene_info, mind_context)
 
             # Build L4 and L5 as system messages

@@ -2,13 +2,6 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 
-interface Profile {
-  bio: string
-  quote: string
-  tags: string[]
-  radar: Record<string, number>
-}
-
 interface User {
   user_id: string
   codename: string
@@ -17,7 +10,6 @@ interface User {
   level: number
   exp: number
   avatar_url: string
-  profile: Profile
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -34,7 +26,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function updateProfile(body: Partial<User & { bio?: string; quote?: string; tags?: string[]; radar?: Record<string, number> }>) {
+  async function updateProfile(body: { nickname?: string; avatar_url?: string }) {
     const json = await api.put('/auth/me', body)
     if (json.code === 0) {
       user.value = json.data

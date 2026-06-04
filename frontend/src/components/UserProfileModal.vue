@@ -19,32 +19,12 @@
         <label class="field-label">昵称</label>
         <input v-model="form.nickname" placeholder="你的心智如何称呼你" />
 
-        <label class="field-label">个人简介</label>
-        <textarea v-model="form.bio" rows="3" placeholder="描述你的身份、职业、兴趣...心智会根据这些了解你" />
-
-        <label class="field-label">签名</label>
-        <input v-model="form.quote" placeholder="一句代表你的话" />
-
-        <label class="field-label">身份标签</label>
-        <div class="tag-list">
-          <span v-for="(t, i) in form.tags" :key="i" class="tag">
-            {{ t }}
-            <button @click="removeTag(i)">×</button>
-          </span>
-          <input v-model="tagInput" @keydown.enter.prevent="addTag" placeholder="+ 添加标签" />
-        </div>
-
         <div v-if="saveError" class="save-error">{{ saveError }}</div>
       </div>
 
       <div class="modal-actions">
         <button class="save-btn" @click="save">保存</button>
         <button class="cancel-btn" @click="$emit('close')">取消</button>
-      </div>
-      <div class="modal-extra">
-        <button class="link-btn" @click="goUserProfile">
-          ✎ 编辑档案文件（profile.md）
-        </button>
       </div>
     </div>
   </div>
@@ -54,23 +34,17 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 
 const emit = defineEmits(['close'])
 const auth = useAuthStore()
-const router = useRouter()
 
 const form = ref({
   codename: '',
   nickname: '',
   avatar_url: '',
-  bio: '',
-  quote: '',
-  tags: [] as string[],
 })
-const tagInput = ref('')
 const saveError = ref('')
 const avatarInput = ref<HTMLInputElement>()
 
@@ -81,29 +55,14 @@ onMounted(() => {
       codename: u.codename || '',
       nickname: u.nickname || '',
       avatar_url: u.avatar_url || '',
-      bio: u.profile?.bio || '',
-      quote: u.profile?.quote || '',
-      tags: Array.isArray(u.profile?.tags) ? [...u.profile.tags] : [],
     }
   }
 })
-
-function addTag() {
-  const t = tagInput.value.trim()
-  if (t && !form.value.tags.includes(t)) form.value.tags.push(t)
-  tagInput.value = ''
-}
-function removeTag(i: number) {
-  form.value.tags.splice(i, 1)
-}
 
 async function save() {
   saveError.value = ''
   const json = await auth.updateProfile({
     nickname: form.value.nickname,
-    bio: form.value.bio,
-    quote: form.value.quote,
-    tags: form.value.tags,
   })
   if (json.code === 0) {
     emit('close')
@@ -114,11 +73,6 @@ async function save() {
 
 function triggerAvatar() {
   avatarInput.value?.click()
-}
-
-function goUserProfile() {
-  emit('close')
-  router.push('/user-profile')
 }
 
 async function uploadAvatar(e: Event) {
@@ -148,8 +102,7 @@ async function uploadAvatar(e: Event) {
   z-index: 1000;
 }
 .modal-card {
-  width: 420px;
-  max-height: 80vh;
+  width: 360px;
   background: rgba(11, 15, 23, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
@@ -186,8 +139,6 @@ async function uploadAvatar(e: Event) {
   color: #d8e1ec;
 }
 .modal-body {
-  flex: 1;
-  overflow-y: auto;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -229,8 +180,7 @@ async function uploadAvatar(e: Event) {
   font-size: 12px;
   color: #8899aa;
 }
-.modal-body input,
-.modal-body textarea {
+.modal-body input {
   width: 100%;
   padding: 10px;
   background: #141b24;
@@ -240,38 +190,13 @@ async function uploadAvatar(e: Event) {
   font-size: 13px;
   box-sizing: border-box;
 }
-.modal-body input:focus,
-.modal-body textarea:focus {
+.modal-body input:focus {
   outline: none;
   border-color: rgba(0, 229, 201, 0.4);
 }
 .modal-body input:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  background: rgba(0, 229, 201, 0.1);
-  color: #00e5c9;
-  border-radius: 12px;
-  font-size: 12px;
-}
-.tag button {
-  background: transparent;
-  border: none;
-  color: #00e5c9;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0;
 }
 .save-error {
   padding: 8px 10px;
@@ -310,23 +235,5 @@ async function uploadAvatar(e: Event) {
 .cancel-btn:hover {
   border-color: rgba(255, 255, 255, 0.2);
   color: #d8e1ec;
-}
-
-.modal-extra {
-  padding: 8px 20px 16px;
-  text-align: center;
-}
-.link-btn {
-  background: transparent;
-  border: none;
-  color: #00e5c9;
-  font-size: 12px;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  opacity: 0.8;
-}
-.link-btn:hover {
-  opacity: 1;
 }
 </style>

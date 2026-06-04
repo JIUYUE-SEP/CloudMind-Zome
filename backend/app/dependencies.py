@@ -26,19 +26,22 @@ async def get_db() -> AsyncSession:
 # ------------------------------------------------------------------
 # Auth (guest-only, no login required)
 # ------------------------------------------------------------------
-GUEST_CACHED: User | None = None
+GUEST_CACHED_ID: str | None = None
 
 
 async def require_user(db: AsyncSession = Depends(get_db)) -> User:
     """Return guest user. Auto-creates if not exists."""
-    global GUEST_CACHED
-    if GUEST_CACHED:
-        return GUEST_CACHED
+    global GUEST_CACHED_ID
+    if GUEST_CACHED_ID:
+        result = await db.execute(select(User).where(User.id == GUEST_CACHED_ID))
+        user = result.scalar_one_or_none()
+        if user:
+            return user
 
     result = await db.execute(select(User).where(User.codename == "guest"))
     guest = result.scalar_one_or_none()
     if guest:
-        GUEST_CACHED = guest
+        GUEST_CACHED_ID = guest.id
         return guest
 
     guest = User(
@@ -52,7 +55,7 @@ async def require_user(db: AsyncSession = Depends(get_db)) -> User:
     db.add(guest)
     await db.commit()
     await db.refresh(guest)
-    GUEST_CACHED = guest
+    GUEST_CACHED_ID = guest.id
     return guest
 
 
