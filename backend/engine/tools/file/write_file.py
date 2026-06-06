@@ -22,7 +22,6 @@ FORBIDDEN_PREFIXES = [
 # Whitelist: only these subtrees may be written by the agent
 _ALLOWED_WRITE_BASES = [
     Path.home() / ".cloudmind-zome",
-    Path.cwd(),
 ]
 
 
