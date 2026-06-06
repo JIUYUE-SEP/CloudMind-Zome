@@ -361,11 +361,11 @@ async def upload_model(
 # Mind files (AGENT.md / SOUL.md / PROFILE.md / MEMORY.md)
 # ------------------------------------------------------------------
 _MIND_FILES = {"AGENT", "SOUL", "USER", "MEMORY"}
-_MIND_DIR = Path.home() / ".cloudmind-zome" / "agents"
 
 
 def _mind_path(agent_id: str, file: str) -> Path:
-    return _MIND_DIR / agent_id / f"{file}.md"
+    from ..database import WORKSPACE_ROOT
+    return WORKSPACE_ROOT / agent_id / f"{file}.md"
 
 
 @router.get("/{agent_id}/mind/{file}")
@@ -455,7 +455,8 @@ async def analyze_agent_personality(
 
     from engine.personality.extractor import PersonalityExtractor, build_personality_text
 
-    agent_dir = Path.home() / ".cloudmind-zome" / "agents" / agent_id
+    from ..database import WORKSPACE_ROOT
+    agent_dir = WORKSPACE_ROOT / agent_id
     text = build_personality_text(agent, agent_dir)
 
     model_cfg = dict(agent.model_config or {})

@@ -22,9 +22,12 @@ class ToolResultPruner:
         self.old_max_bytes = old_max_bytes
         self.recent_max_bytes = recent_max_bytes
         self.recent_rounds = recent_rounds
-        self.cache_dir = (
-            Path.home() / ".cloudmind-zome" / "agents" / agent_id / "tool_results_cache"
-        )
+        try:
+            from app.database import WORKSPACE_ROOT
+        except ImportError:
+            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+
+        self.cache_dir = WORKSPACE_ROOT / agent_id / "tool_results_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def prune(

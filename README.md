@@ -12,6 +12,7 @@ CloudMind-Zome 是一个面向未来的多 Agent 协作平台。它将多个独�
 - **算力平台** —— 管理 LLM Provider（API Key、Base URL、模型列表），与心智配置打通
 - **私聊系统** —— 与单个 Agent 一对一对话，实时流式回复，支持图片发送
 - **群聊系统** —— 多 Agent 群组讨论，支持 `@mention` 指定回复对象；Agent 自主决策是否回复（`stay_silent`）
+- **代称系统** —— Agent 支持多个 aliases（昵称/代称），群聊 `@mention` 可通过代称精确路由（case-insensitive）
 - **蓝图工作流** —— 可视化节点编辑器编排复杂任务流程，支持审批节点
 - **任务调度** —— Cron / Interval / 手动触发，Agent 主动执行计划（Commission）
 - **审批系统** —— 敏感操作需人工审批后方可执行
@@ -150,16 +151,18 @@ MindCloud-Zome/
 
 | 层级 | 内容 | 优先级 | 降级策略 |
 |------|------|--------|----------|
+| L0 | Identity 注入（`你是 {agent_name}`） | 最高 | 不降级 |
 | L1 | Mind 文件（SOUL.md / AGENT.md / USER.md / profile.md） | 最高 | 不降级 |
-| L2 | 群聊 sender 前缀（MessageBuilder 为 group source 的 user 消息加前缀） | 最高 | 不降级 |
-| L3 | Hot Context（当前场景最近 N 条消息） | 高 | 从最老开始去掉：20→15→10→5 |
-| L4 | 语义检索结果（zvec 跨场景 top-K） | 中 | 从低分开始去掉：10→5→3→0 |
-| L5 | 话题摘要（`_compressed/*.md` 压缩历史） | 低 | 多条合并成一条概要 |
-| L6 | 工具描述 + 人格描述（群聊时注入） | 最高 | 不降级 |
+| L2 | 硬编码行为指南 | 最高 | 不降级 |
+| L3 | 记忆路径提示（MEMORY.md 位置） | 最高 | 不降级 |
+| L4 | Hot Context（当前场景最近 N 条消息） | 高 | 从最老开始去掉：20→15→10→5 |
+| L5 | 语义检索结果（zvec 跨场景 top-K） | 中 | 从低分开始去掉：10→5→3→0 |
+| L6 | 话题摘要（`_compressed/*.md` 压缩历史） | 低 | 多条合并成一条概要 |
+| L7 | 工具描述 + 人格描述（群聊时注入） | 最高 | 不降级 |
 
-**降级顺序：L5 → L4 → L3**，超限时自动触发，L1/L2/L6 永不动。
+**降级顺序：L6 → L5 → L4**，超限时自动触发，L0/L1/L2/L3/L7 永不动。
 
-> 注：早期的 `[时间 | 场景 | 发送者]` 标签注入已移除。私聊不加标签；群聊 user 消息在 MessageBuilder 中加 `sender_name:` 前缀。
+> 注：MessageBuilder 负责 L0-L3：Identity 注入、Mind 文件加载、行为指南、记忆路径提示，以及群聊 sender 前缀。私聊不加标签；群聊 user 消息在 MessageBuilder 中加 `sender_name:` 前缀。
 
 ### 记忆系统
 
@@ -242,7 +245,7 @@ MindCloud-Zome/
 - [x] 消息合并（单气泡 reasoning + tools + content）
 - [x] Markdown 渲染（代码块、表格、引用）
 - [x] 算力平台（ComputeProvider 数据库表）
-- [ ] 代称系统（Alias routing）
+- [x] 代称系统（Alias routing）
 - [ ] Skill 系统
 - [ ] MCP / ACP 管理
 - [ ] 部署文档与 Docker 支持

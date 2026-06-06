@@ -19,8 +19,8 @@ Agent Alpha Worker (asyncio.Task)
   |
   +-- ReActAgent (single instance)
   |     + personality_prompt (system, reused every round)
-  |     + unified message history (NOT isolated by session)
-  |     + scene info injected per round
+  |     + scene-isolated message history (by source_id)
+  |     + L0-L3 system prompt injected by MessageBuilder per round
   |     + SmartStop (global, cross-scene)
   |
   +-- Unified Memory Pool (SQLite: agent_messages)
@@ -106,13 +106,13 @@ Only private chat supports user-initiated stop:
 | `app/services/group_chat_router.py` | Update | Remove `status == idle` filter |
 | `engine/agent/react.py` | Update | `_build_system_prompt(scene_info)` |
 | `engine/session/store.py` | Update | Store by agent_id with source tag |
-| `engine/context/manager.py` | Update | `augment(source_filter)` |
+| `engine/context/manager.py` | Delete | 已被 ContextPipeline 完全替代 |
 
 ## 9. Risks
 
 | Risk | Mitigation |
 |------|------------|
 | Workflow node blocks waiting for Agent busy in chat | Same FIFO queue, strict fairness. V1.2: add priority |
-| Unified memory too large, token overflow | ContextManager.compress exists. V1.2: add summarization |
+| Unified memory too large, token overflow | ContextPipeline downgrade (L6→L5→L4) + TopicCompressionMemory. V1.2: add summarization |
 | Group reply delayed (waiting for private chat) | By design. User sees "Alpha is thinking" |
 | Worker Task crashes | `try/except` around Job execution; single Job failure does not kill Worker |

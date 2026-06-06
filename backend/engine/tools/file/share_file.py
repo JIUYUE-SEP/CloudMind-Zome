@@ -75,15 +75,21 @@ def share_file(path: str) -> str:
         return f"Error: {exc}"
 
 
+try:
+    from app.database import WORKSPACE_ROOT
+except ImportError:
+    WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+
 _ALLOWED_BASES = [
     Path.home() / ".cloudmind-zome",
+    WORKSPACE_ROOT,
 ]
 
 
 def _resolve_path(path: str) -> Path:
     """Resolve a path to a local file.
 
-    Only paths under ~/.cloudmind-zome/ are allowed.
+    Only paths under ~/.cloudmind-zome/ or the agent workspace/ are allowed.
     /uploads/... URLs are accepted as a shorthand for
     ~/.cloudmind-zome/uploads/...
     """
@@ -114,5 +120,5 @@ def _resolve_path(path: str) -> Path:
 
     raise ValueError(
         f"Access denied: {path} is outside the allowed directories. "
-        f"You can only share files under ~/.cloudmind-zome/ or /uploads/ URLs."
+        f"You can only share files under ~/.cloudmind-zome/, the agent workspace/, or /uploads/ URLs."
     )

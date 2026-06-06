@@ -108,7 +108,7 @@ backend/
 ┌─────────────────────────────────────────────────────────────┐
 │  Agent Engine                                               │
 │  - ReActAgent          (ReAct 循环 + 场景隔离记忆)           │
-│  - ContextPipeline     (L1-L6 组装 + 逐层降级)              │
+│  - ContextPipeline     (L0-L7 组装 + 逐层降级)              │
 │  - ChatCompletionsTransport  (OpenAI API 调用)              │
 │  - ToolRegistry        (工具注册/发现/执行)                  │
 │  - TopicCompressionMemory (话题检测 + 异步压缩)              │
@@ -222,7 +222,7 @@ class Message:
 **MessageBuilder 消息拼装**：
 - 私聊：`user` 消息不加前缀，直接送入历史
 - 群聊：`user` 消息加 `sender_name:` 前缀（如 `小明: 大家好`）
-- 系统提示不再注入 `[时间 | 场景 | 发送者]` 标签和 scene_info 描述
+- **MessageBuilder 负责 L0-L3**：Identity 注入（`你是 {agent_name}`）、Mind 文件加载、硬编码行为指南、记忆路径提示（MEMORY.md 位置）
 
 **MessageMeta 字段：**
 - `id` — 消息 UUID
@@ -250,11 +250,11 @@ Stage 2: Scorer + Filter
 
 Stage 3: Assembler
   - 按优先级 L1→L6 拼接完整 prompt
-  - L1(Mind) + L2(Scene) + L3(Hot) + L4(Semantic) + L5(Topics) + L6(Tools)
+  - L0(Identity) + L1(Mind) + L2(指南) + L3(记忆路径) + L4(Hot) + L5(Semantic) + L6(Topics) + L7(Tools+人格)
 
 Stage 4: Downgrade
-  - 总 token 超限 → L5 合并 → L4 缩减 → L3 截断
-  - L1/L2/L6 永不动
+  - 总 token 超限 → L6 合并 → L5 缩减 → L4 截断
+  - L0/L1/L2/L3/L7 永不动
 ```
 
 **场景隔离**：`_messages` 按 `source_id` 隔离，切换场景时清空重载。群聊中其他 Agent 的回复会通过 `ingest_only` Job 写入当前 Agent 的 `agent_messages`，确保群聊上下文同步。
@@ -265,6 +265,8 @@ Stage 4: Downgrade
 - `context.semantic_score_threshold` — 最低相关度（默认 0.3）
 - `context.hot_context_initial` — Hot Context 初始条数（默认 20）
 - `context.time_decay_half_life_hours` — 时间衰减半衰期（默认 72h）
+
+> 注：L0-L3 由 `MessageBuilder.build()` 硬编码注入（`engine/agent/message_builder.py:32-123`）；L4-L7 由 `ContextPipeline.assemble()` 插入（`engine/context/context_pipeline.py:169-220`）。
 
 ### 5.5 记忆系统
 
@@ -564,6 +566,12 @@ User        Frontend    WS        Platform        GroupChatRouter    EngineBridg
 | 图片 base64 传输 | 大图片导致 WS 帧过大 | 限制 5MB，图片 CDN |
 | 向量检索 | zvec 本地文件，大数据量时 | 迁移 Milvus/Pinecone |
 | 算力配置双轨 | `llmprovider/*.json` 与 `ComputeProvider` 表并存（JSON 已废弃） | 逐步清理 registry.py 的 JSON 依赖 |
+
+### 11.3 已知限制
+
+| 限制 | 现状 | 建议 |
+|------|------|------|
+| 前端 systemLogs 无持久化 | `frontend/src/composables/useWebSocket.ts:24` 为内存数组 `ref<LogEntry[]>([])`，无 localStorage 或后端持久化 | 如需持久化，建议写入 localStorage 或后端 |
 
 ### 11.2 安全模型
 

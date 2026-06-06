@@ -19,9 +19,15 @@ FORBIDDEN_PREFIXES = [
     "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)",
 ]
 
+try:
+    from app.database import WORKSPACE_ROOT
+except ImportError:
+    WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+
 # Whitelist: only these subtrees may be written by the agent
 _ALLOWED_WRITE_BASES = [
     Path.home() / ".cloudmind-zome",
+    WORKSPACE_ROOT,
 ]
 
 

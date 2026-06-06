@@ -24,6 +24,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "cloudmind.db"
 DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 
+# Agent workspace: per-agent writable files live under project root
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent / "workspace"
+
 # ------------------------------------------------------------------
 # Engine
 # ------------------------------------------------------------------

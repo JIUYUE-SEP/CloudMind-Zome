@@ -22,7 +22,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from engine.config.loader import load_config
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
-from .database import engine, Base, AsyncSessionLocal
+from .database import engine, Base, AsyncSessionLocal, WORKSPACE_ROOT
 from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config
 from .services.commission_scheduler import get_scheduler
 
@@ -38,6 +38,20 @@ _app_state: dict = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create tables + init engine infra; Shutdown: dispose."""
+    # 0. Ensure workspace root exists
+    WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
+    # 0.5 Migrate old agent directories if present
+    old_agents_dir = Path.home() / ".cloudmind-zome" / "agents"
+    if old_agents_dir.exists() and old_agents_dir.is_dir():
+        import shutil
+        for agent_dir in old_agents_dir.iterdir():
+            if agent_dir.is_dir():
+                target = WORKSPACE_ROOT / agent_dir.name
+                if not target.exists():
+                    shutil.copytree(agent_dir, target)
+                    logger.info("Migrated agent workspace: %s -> %s", agent_dir, target)
+
     # 1. Platform tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

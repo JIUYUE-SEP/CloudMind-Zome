@@ -87,12 +87,18 @@ class MessageBuilder:
         )
 
         # Layer 3: Memory hint — Agent manages MEMORY.md by itself
+        try:
+            from app.database import WORKSPACE_ROOT
+        except ImportError:
+            from pathlib import Path
+            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+        memory_md_path = WORKSPACE_ROOT / self.agent_id / "MEMORY.md"
         result.append(
             Message(
                 role="system",
                 content=(
                     f"【记忆提示】\n"
-                    f"你的私人日记保存在 ~/.cloudmind-zome/agents/{self.agent_id}/MEMORY.md 中，"
+                    f"你的私人日记保存在 {memory_md_path} 中，"
                     "记录了与用户的互动和事件。你可以在需要回忆具体事件时主动调用 read_file 读取，"
                     "也可以在重要事件发生后主动调用 write_file 更新。"
                 ),

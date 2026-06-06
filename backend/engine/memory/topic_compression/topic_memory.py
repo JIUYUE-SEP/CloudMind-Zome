@@ -31,7 +31,12 @@ class TopicCompressionMemory(MemorySystem):
         self.pruner: Optional[ToolResultPruner] = None
         self.worker: Optional[CompressionWorker] = None
 
-        agent_dir = Path.home() / ".cloudmind-zome" / "agents" / self.agent_id
+        try:
+            from app.database import WORKSPACE_ROOT
+        except ImportError:
+            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+
+        agent_dir = WORKSPACE_ROOT / self.agent_id
         self.compressed_dir = agent_dir / "_compressed"
         self.compressed_dir.mkdir(parents=True, exist_ok=True)
         self.memory_db_path = agent_dir / "memory.db"

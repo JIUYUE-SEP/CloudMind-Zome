@@ -47,20 +47,22 @@ Stage 3: Assembler + 降级
 
 | 层级 | 内容 | 优先级 | 降级策略 |
 |------|------|--------|----------|
-| L1 | 人格 prompt + 行为指南 | 最高 | 不降级 |
-| L2 | 场景信息（当前场景名 + 发送者） | 最高 | 不降级 |
-| L3 | Hot Context（当前场景最近 N 条） | 高 | 从最老的消息开始去掉：20→15→10 |
-| L4 | 语义检索结果（Zvec top-K） | 中 | 从低分结果开始去掉：10→5→3 |
-| L5 | 话题摘要（温/冷记忆） | 低 | 多条摘要合并成一条概要 |
-| L6 | 工具描述 | 最高 | 不降级 |
+| L0 | Identity 注入（`你是 {agent_name}`） | 最高 | 不降级 |
+| L1 | Mind 文件（AGENT.md / SOUL.md 等） | 最高 | 不降级 |
+| L2 | 行为指南（硬编码系统提示） | 最高 | 不降级 |
+| L3 | 记忆路径提示（MEMORY.md 位置，非内容） | 最高 | 不降级 |
+| L4 | Hot Context（当前场景最近 N 条） | 高 | 从最老的消息开始去掉：20→15→10 |
+| L5 | 语义检索结果（Zvec top-K） | 中 | 从低分结果开始去掉：10→5→3 |
+| L6 | 话题摘要（温/冷记忆） | 低 | 多条摘要合并成一条概要 |
+| L7 | 工具描述 | 最高 | 不降级 |
 
-**降级顺序：L5 → L4 → L3 → （L1/L2/L6 不动）**
+**降级顺序：L6 → L5 → L4 → （L0/L1/L2/L3/L7 不动）**
 
 降级流程：
 1. 按优先级把所有层拼起来，算总长度
-2. 超了 → 先压缩 L5 话题摘要（多条合并成一条概要）
-3. 还超 → 减少 L4 top-K（从最低分结果开始去掉）
-4. 还超 → 缩减 L3 Hot Context（从最老的消息开始去掉）
+2. 超了 → 先压缩 L6 话题摘要（多条合并成一条概要）
+3. 还超 → 减少 L5 top-K（从最低分结果开始去掉）
+4. 还超 → 缩减 L4 Hot Context（从最老的消息开始去掉）
 5. 正常情况下前两轮就够了
 
 ## 需要做的事
@@ -73,8 +75,11 @@ Stage 3: Assembler + 降级
 
 - **`engine/agent/react.py`** — ReActAgent 核心循环：
   - 每轮 LLM 调用前，调用 ContextPipeline 组装 prompt
-  - 现有的 `_build_messages()` 改为由 ContextPipeline 接管
+  - 现有的 `_build_messages()` 改为由 ContextPipeline 接管 L4-L7
   - Hot Context 需要按场景隔离加载（只取当前 source 的最近 N 条）
+- **`engine/agent/message_builder.py`** — MessageBuilder：
+  - 负责 L0-L3：Identity 注入、Mind 文件加载、硬编码行为指南、记忆路径提示（MEMORY.md 位置）
+  - 群聊 user 消息加 `sender_name:` 前缀
 - **`engine/memory/`** — 记忆系统：
   - 确认 Zvec 集成方式
   - `search()` 方法需要支持不按 source 过滤（搜全场景）
@@ -88,9 +93,9 @@ Stage 3: Assembler + 降级
 请先阅读以下文件，理解现有实现后再动手：
 
 - `engine/agent/react.py` — ReActAgent 核心循环，`_build_messages()` 是当前上下文组装逻辑
-- `engine/agent/message_builder.py` — MessageBuilder，场景注入和标签格式化
+- `engine/agent/message_builder.py` — MessageBuilder，负责 L0-L3 + sender 前缀（`build()` 方法硬编码 L0-L3）
 - `engine/memory/` — 记忆系统目录
-- `engine/context/manager.py` — 现有 ContextManager
+- `engine/context/manager.py` — 现有 ContextManager（已删除）
 - `engine/context/embedder.py` — Embedding 模型封装
 - `app/services/agent_worker.py` — AgentWorker，Job 执行入口
 - `app/services/job_queue.py` — AgentJob 定义，包含 source 和 source_name

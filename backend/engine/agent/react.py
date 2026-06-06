@@ -797,15 +797,20 @@ class ReActAgent(AgentBase):
 
         Sources (in priority order):
           1. userdata/profile.md  — user self-defined profile (read-only to agent)
-          2. agents/{id}/USER.md  — agent's perception of the user
-          3. agents/{id}/SOUL.md  — soul core / personality
-          4. agents/{id}/AGENT.md — working rules / guidelines
+          2. workspace/{id}/USER.md  — agent's perception of the user
+          3. workspace/{id}/SOUL.md  — soul core / personality
+          4. workspace/{id}/AGENT.md — working rules / guidelines
         """
         from pathlib import Path
         import re
 
+        try:
+            from app.database import WORKSPACE_ROOT
+        except ImportError:
+            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+
         userdata_dir = Path.home() / ".cloudmind-zome" / "userdata"
-        agent_dir = Path.home() / ".cloudmind-zome" / "agents" / self.agent_id
+        agent_dir = WORKSPACE_ROOT / self.agent_id
         parts: list[str] = []
 
         def _strip_frontmatter(text: str) -> str:

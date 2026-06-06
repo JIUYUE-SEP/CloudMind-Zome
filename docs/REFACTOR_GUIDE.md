@@ -12,12 +12,15 @@
 | 等级 | 问题 | 影响 | 状态 | 建议方案 |
 |------|------|------|------|----------|
 | P0 | `ws_handlers.py` 集 WS 协议/路由/业务/持久化于一体 | 难以测试、改动风险高 | ✅ 已拆分 | 拆分为 `protocol/` + `handlers/`（ws.py 只留路由分发） |
-| P0 | `ContextManager` 死代码未清理 | 误导新开发者 | ✅ 已清理 | 删除 `engine/context/manager.py`，更新所有引用 |
+| P0 | `ContextManager` 死代码未清理 | 误导新开发者 | ✅ 已清理 | 删除 `engine/context/manager.py`，更新所有引用。`engine/context/__init__.py` 已无残留导出 |
 | P0 | `agent_worker.py` + `engine_bridge.py` 边界模糊 | 同一件事在两个文件里各做一半 | ✅ 已优化 | EngineBridge 只做"序列化/反序列化"，Worker 只做"调度" |
 | P1 | `react.py` 直接 import `AsyncSessionLocal` 查 DB | 引擎层不应依赖平台层 | ⚠️ 部分修复 | `session_store` 已注入，但 `_save_message` 仍通过 `session_store` 间接操作 DB |
 | P1 | `main.py` 的 `_app_state` 全局字典 | 类型不安全，隐式依赖 | 待处理 | 改为 TypedDict 或 dataclass，lifespan 只初始化一次 |
 | P1 | `engine/config.yaml` 与 `app/api/config.py` 双头管理 | 配置源不一致 | 待处理 | 统一配置中心，平台只提供 HTTP 代理 |
-| P2 | `chat_messages` 和 `agent_messages` 双写 | 数据冗余、一致性问题 | 待处理 | 明确分工：`chat_messages` = 平台展示，`agent_messages` = Agent 记忆 |
+| P2 | `chat_messages` 和 `agent_messages` 双写 | — | Intentional 设计 | `chat_messages` = 平台展示（`backend/app/models/chat.py:58-86`），`agent_messages` = Agent 记忆（`backend/engine/session/store.py:678-768`）。用户消息先保存到 `ChatMessage`，再 dispatch 到 Agent（`backend/app/api/ws_handlers.py:113-125`） |
+| P1 | TopicCompressionMemory 和 ContextPipeline 重复做 zvec 检索 | 同一轮 LLM 两次 embedding + 搜索，浪费 token。`topic_memory.py:210-228` 的 `before_llm()` 与 `context_pipeline.py:169-220` 的 `_retrieve_semantic()` 各自独立检索 | 待处理 | 统一检索入口，避免重复 |
+| P2 | CommissionScheduler 失败无退避 | 执行失败后 `next_run_at` 不更新，60s 后无限重试（`backend/app/services/commission_scheduler.py:76-82`） | 待处理 | 增加失败计数和指数退避 |
+| P2 | 前端 systemLogs 无持久化 | `frontend/src/composables/useWebSocket.ts:24` 为内存数组，刷新页面丢失 | 待处理 | 写入 localStorage 或后端持久化 |
 | P2 | `_stream_text` 模拟流式 | 延迟不自然，大文本卡顿 | ✅ 已修复 | 迁移到真正的 `transport.stream()` |
 
 ### 1.2 代码级债务
@@ -27,7 +30,7 @@
 | `ws_handlers.py` | 超长函数 `_handle_chat_send` | ✅ 已优化 | Extract Method：拆分为 `save_message()`, `route_private()`, `route_group()` |
 | `ws_handlers.py` | 多个 `_build_ws_frame` 重复构造 | ✅ 已提取 | Extract Class：`WSFrameBuilder` 在 `ws_protocol.py` |
 | `agent_worker.py` | `_build_transport()` 200 行内联 | ⚠️ 已简化 | AgentWorker 不再内联构建 transport，改为 `_build_transport` 方法 + factory 模式 |
-| `react.py` | `_build_messages()` 负责 tag + scene + format | ✅ 已拆分 | ContextPipeline 接管上下文组装，MessageBuilder 负责 tag + scene |
+| `react.py` | `_build_messages()` 负责 tag + scene + format | ✅ 已拆分 | ContextPipeline 接管 L4-L7 上下文组装，MessageBuilder 负责 L0-L3（Identity、Mind、行为指南、记忆路径）+ 群聊 sender 前缀 |
 | `session/store.py` | 3 套几乎相同的 load/save 逻辑 | 待处理 | Template Method：统一 `save_blocks()` / `load_blocks()` |
 | `transport.py` | `_normalize_response()` 与 `stream()` 工具调用解析重复 | 待处理 | Extract：统一 `ToolCallParser` |
 
@@ -45,7 +48,7 @@
 **实现**：
 - 新增 `ContextPipeline`（`engine/context/context_pipeline.py`）
 - 4 阶段组装：Retriever → Scorer → Assembler → Downgrade
-- L1-L6 优先级分层，超限时 L5→L4→L3 逐层降级
+- L0-L7 优先级分层，超限时 L6→L5→L4 逐层降级
 - zvec 跨场景语义检索 + 时间衰减打分
 
 **文件变更**：
@@ -119,15 +122,17 @@
     └────────────┘
 ```
 
-**当前状态**：`engine/` 目录不再直接 import `app/` 模块。
+**当前状态**：`engine/` 目录仍有 2 处 try/except 包裹的 import（`message_builder.py:90-94`、`react.py:808-811`），用于获取 `WORKSPACE_ROOT`。建议改为通过构造函数注入。
 - `react.py` 通过注入的 `session_store`（`SessionStore` 类）操作数据库
 - `SessionStore` 位于 `engine/session/store.py`，属于引擎层
 
 ### 3.2 遗留违规依赖
 
 ```bash
-# 当前引擎层 import 平台层的情况（已清理）
-# grep -r "from app\." backend/engine/  →  空
+# 当前引擎层 import 平台层的情况（部分残留）
+$ grep -r "from app\." backend/engine/
+# backend/engine/agent/message_builder.py:90-94: try: from app.database import WORKSPACE_ROOT
+# backend/engine/agent/react.py:808-811:  try: from app.database import WORKSPACE_ROOT
 ```
 
 **历史问题已修复**：
@@ -209,7 +214,7 @@ from app.models import Agent                     # ❌
 **验证命令**：
 ```bash
 grep -r "from app\." backend/engine/
-# 应该返回空
+# 仍有 2 处 try/except 包裹的 import（message_builder.py, react.py），见 §3.2
 ```
 
 ### 5.2 EngineBridge 契约
@@ -266,8 +271,8 @@ class ContextPipeline:
     职责：
       1. 语义检索（zvec 跨场景）
       2. 打分过滤（时间衰减）
-      3. 按优先级组装 L1-L6
-      4. Token 超限降级（L5→L4→L3）
+      3. 按优先级组装 L0-L7
+      4. Token 超限降级（L6→L5→L4）
     """
     async def assemble(...) -> list[Message]: ...
 ```

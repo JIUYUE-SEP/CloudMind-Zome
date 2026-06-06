@@ -38,6 +38,9 @@ Thumbs.db
 # Uploads (generated files)
 backend/uploads/
 
+# Agent workspace (per-agent writable files, auto-generated)
+/workspace/
+
 # Tauri build
 frontend/src-tauri/target/
 frontend/src-tauri/gen/

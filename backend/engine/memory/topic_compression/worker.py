@@ -229,9 +229,12 @@ message_ids: {json.dumps(msg_ids, ensure_ascii=False)}
         self, topic: TopicState, subtopic: SubtopicState, summary: dict
     ) -> None:
         """Append a brief record to MEMORY.md."""
-        memory_path = (
-            Path.home() / ".cloudmind-zome" / "agents" / self.agent_id / "MEMORY.md"
-        )
+        try:
+            from app.database import WORKSPACE_ROOT
+        except ImportError:
+            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+
+        memory_path = WORKSPACE_ROOT / self.agent_id / "MEMORY.md"
         if not memory_path.exists():
             return
 
