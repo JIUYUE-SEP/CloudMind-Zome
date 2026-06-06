@@ -5,49 +5,7 @@ Design reference: §6.8.2 配置结构, §6.8.3 加载流程
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
-
-
-class ProviderItemConfig(BaseModel):
-    """Single provider configuration."""
-
-    base_url: str = ""
-    api_key: str = ""  # Resolved from env var at load time
-    model: str = ""      # Model name, e.g. deepseek-chat
-    thinking: Literal["enabled", "disabled"] = "disabled"
-    timeout: float = 120.0
-
-
-class ProviderConfig(BaseModel):
-    """All providers configuration."""
-
-    default: str = "deepseek"
-    deepseek: ProviderItemConfig = Field(
-        default_factory=lambda: ProviderItemConfig(
-            base_url="https://api.deepseek.com/v1"
-        )
-    )
-    mimo: ProviderItemConfig = Field(
-        default_factory=lambda: ProviderItemConfig(
-            base_url="https://api.miaomi.cn/v1"
-        )
-    )
-    kimicode: ProviderItemConfig = Field(
-        default_factory=lambda: ProviderItemConfig(
-            base_url="https://api.kimi.ai/v1"
-        )
-    )
-    glm: ProviderItemConfig = Field(
-        default_factory=lambda: ProviderItemConfig(
-            base_url="https://api.glm.ai/v1"
-        )
-    )
-    # Provider fallback chain for error recovery
-    fallback_chain: list[str] = Field(
-        default_factory=lambda: ["deepseek", "mimo", "kimicode", "glm"]
-    )
 
 
 class SmartStopConfig(BaseModel):
@@ -75,29 +33,6 @@ class AgentConfig(BaseModel):
     # Memory system selection
     memory_system: str = "simple"  # "simple" | "topic_compression"
     max_memory_messages: int = 500
-
-
-class AssistantModelConfig(BaseModel):
-    """Assistant (non-agent) model for background NLP tasks.
-
-    Fully independent from Agent provider config. User supplies
-    base_url, model name, and api_key directly.
-    """
-
-    base_url: str = ""
-    model: str = ""
-    api_key: str = ""
-
-
-class EmbeddingModelConfig(BaseModel):
-    """Embedding model configuration.
-
-    Fully independent. Used for semantic memory search via zvec.
-    """
-
-    base_url: str = ""
-    model: str = ""
-    api_key: str = ""
 
 
 class ContextConfig(BaseModel):
@@ -147,10 +82,7 @@ class AppConfig(BaseModel):
     """
 
     _version: int = 1
-    provider: ProviderConfig = Field(default_factory=ProviderConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    assistant_model: AssistantModelConfig = Field(default_factory=AssistantModelConfig)
-    embedding_model: EmbeddingModelConfig = Field(default_factory=EmbeddingModelConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     tavily: dict = Field(default_factory=dict)  # Tavily Search API config: {api_key: str}

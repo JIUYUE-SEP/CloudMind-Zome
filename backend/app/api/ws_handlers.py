@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -16,7 +17,6 @@ from ..database import AsyncSessionLocal
 from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember, User
 from ..services.agent_worker import get_current_job
 from ..services.engine_bridge import EngineBridge
-from ..services.group_chat_router import GroupChatRouter
 from ..services.conductor_service import ConductorService
 from ..services.event_bus import manager
 from ..services.group_task_engine import GroupTaskEngine
@@ -211,41 +211,32 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
         })
         await manager.broadcast_to_session_members(other_members, broadcast_frame)
 
-        # Normal routing
-        router = GroupChatRouter(db)
-        targets = await router.route(session, user.id, content)
-        logger.info("Group chat routing session=%s mode=%s targets=%s",
-                    session_id, (session.settings or {}).get("routing_mode", "intent"),
-                    [t.agent_id for t in targets])
-        if not targets:
-            no_reply_frame = _build_ws_frame("chat.message", {
-                "session_id": session_id,
-                "message": {
-                    "id": str(uuid.uuid4()),
-                    "sender_id": "system",
-                    "sender_type": "system",
-                    "sender_name": "系统",
-                    "content": "【没有 Agent 被选中回复。尝试 @某个Agent 或检查群聊路由设置】",
-                    "content_type": "text",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "is_me": False,
-                    "batch_id": None,
-                }
-            })
-            await ws.send_json(no_reply_frame)
-            if other_members:
-                await manager.broadcast_to_session_members(other_members, no_reply_frame)
-            return
+        # Step 2: all agents decide autonomously via LLM (stay_silent supported)
+        agent_member_ids = [m.member_id for m in member_rows if m.member_type == "agent"]
+        agent_rows_result = await db.execute(
+            select(Agent).where(Agent.id.in_(agent_member_ids))
+        )
+        agent_map = {a.id: a for a in agent_rows_result.scalars().all()}
 
-        # Build source name from session name or default
+        mention_tokens = set(re.findall(r"@(\S+)", content.lower()))
+        is_all_mentioned = bool(mention_tokens & {"所有人", "all", "全体成员"})
+
         source_name = session.name or (settings.get("name") if settings else None) or "群聊"
 
         tasks = []
-        for t in targets:
+        mentioned_ids: list[str] = []
+        for aid in agent_member_ids:
+            agent = agent_map.get(aid)
+            is_mentioned = is_all_mentioned or _is_agent_mentioned(agent, mention_tokens)
+            if not is_mentioned and aid == session.conductor_agent_id and "队长" in mention_tokens:
+                is_mentioned = True
+            if is_mentioned:
+                mentioned_ids.append(aid)
+
             tasks.append(asyncio.create_task(_stream_single_agent(
                 session_id=session_id,
-                agent_id=t.agent_id,
-                agent_name="",
+                agent_id=aid,
+                agent_name=agent.name if agent else "",
                 user_message=content,
                 ws=ws,
                 broadcast_to=other_members,
@@ -254,8 +245,11 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 sender_name=user.nickname,
                 user_id=user.id,
                 content_type=content_type,
-                is_mentioned=t.is_mentioned,
+                is_mentioned=is_mentioned,
             )))
+
+        logger.info("Group chat stream session=%s agents=%s mentioned=%s",
+                    session_id, agent_member_ids, mentioned_ids)
         agent_replies = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Intermind: if enabled, trigger other agents to respond to the first reply
@@ -648,18 +642,6 @@ async def _stream_single_agent(
             if broadcast_to:
                 await manager.broadcast_to_session_members(broadcast_to, err_frame)
 
-        # Sync agent reply to other agents via ingest Job (FIFO queue)
-        if source == "group" and full_content and not _has_error:
-            other_agents = await _get_other_agent_members(session_id, agent_id)
-            for member_id in other_agents:
-                await _dispatch_ingest_to_agent(
-                    agent_id=member_id,
-                    user_message=full_content,
-                    source_id=session_id,
-                    source_name=source_name,
-                    sender_name=agent_name,
-                )
-
     return agent_id, full_content
 
 
@@ -763,6 +745,16 @@ async def _handle_typing(user: User, payload: dict, ws: WebSocket) -> None:
             "is_typing": is_typing,
         })
         await manager.broadcast_to_session_members(other_members, typing_frame)
+
+
+# ------------------------------------------------------------------
+# Mention helper
+# ------------------------------------------------------------------
+def _is_agent_mentioned(agent: Agent | None, mention_tokens: set[str]) -> bool:
+    if not agent:
+        return False
+    names = {agent.name, agent.codename} | set((agent.aliases or []))
+    return bool(mention_tokens & {n.lower() for n in names if n})
 
 
 # ------------------------------------------------------------------

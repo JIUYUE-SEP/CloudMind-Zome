@@ -19,6 +19,19 @@
         <label class="field-label">昵称</label>
         <input v-model="form.nickname" placeholder="你的心智如何称呼你" />
 
+        <label class="field-label">用户档案 (profile.md)</label>
+        <div class="profile-md-hint" style="font-size: 11px; color: #5A6A7A; margin-bottom: 4px;">
+          所有 Agent 共享这份档案，内容会在每次对话时注入 system prompt
+        </div>
+        <textarea
+          v-model="profileMd.content"
+          :disabled="profileMd.loading"
+          rows="10"
+          placeholder="编辑你的 profile.md..."
+          style="width: 100%; padding: 10px; background: #141b24; border: 1px solid #1e2731; border-radius: 8px; color: #d8e1ec; font-size: 13px; font-family: monospace; box-sizing: border-box; resize: vertical;"
+        />
+        <div v-if="profileMd.loading" style="font-size: 11px; color: #5A6A7A;">加载中...</div>
+
         <div v-if="saveError" class="save-error">{{ saveError }}</div>
       </div>
 
@@ -48,6 +61,8 @@ const form = ref({
 const saveError = ref('')
 const avatarInput = ref<HTMLInputElement>()
 
+const profileMd = ref({ content: '', loading: false, saving: false })
+
 onMounted(() => {
   const u = auth.user
   if (u) {
@@ -57,18 +72,36 @@ onMounted(() => {
       avatar_url: u.avatar_url || '',
     }
   }
+  loadProfileMd()
 })
+
+async function loadProfileMd() {
+  profileMd.value.loading = true
+  try {
+    const json = await api.get('/me/profile-md')
+    if (json.code === 0) {
+      profileMd.value.content = json.data?.content || ''
+    }
+  } catch (e: any) {
+    console.error('加载 profile.md 失败:', e)
+  } finally {
+    profileMd.value.loading = false
+  }
+}
 
 async function save() {
   saveError.value = ''
-  const json = await auth.updateProfile({
-    nickname: form.value.nickname,
-  })
-  if (json.code === 0) {
-    emit('close')
-  } else {
-    saveError.value = json.message || '保存失败'
+  const [profileJson] = await Promise.all([
+    api.put('/me/profile-md', { content: profileMd.value.content }),
+    auth.updateProfile({
+      nickname: form.value.nickname,
+    }),
+  ])
+  if (profileJson.code !== 0) {
+    saveError.value = profileJson.message || '保存 profile.md 失败'
+    return
   }
+  emit('close')
 }
 
 function triggerAvatar() {

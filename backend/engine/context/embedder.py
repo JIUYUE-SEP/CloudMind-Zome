@@ -10,16 +10,22 @@ from typing import Any
 
 import httpx
 
-from ..config.models import EmbeddingModelConfig
-
 logger = logging.getLogger(__name__)
 
 
 class Embedder:
-    """Lightweight async embedder."""
+    """Lightweight async embedder.
 
-    def __init__(self, cfg: EmbeddingModelConfig):
-        self.cfg = cfg
+    Args:
+        base_url: Provider base URL (e.g. https://api.siliconflow.cn/v1).
+        api_key: Provider API key.
+        model: Model name for the embedding endpoint.
+    """
+
+    def __init__(self, base_url: str, api_key: str, model: str):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model = model
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -32,14 +38,14 @@ class Embedder:
 
         Returns empty list if not configured.
         """
-        if not self.cfg.base_url or not self.cfg.model or not self.cfg.api_key:
+        if not self.base_url or not self.model or not self.api_key:
             return []
 
         if not texts:
             return []
 
         # Build endpoint: handle "https://host", "https://host/v1", or full path
-        base = self.cfg.base_url.rstrip('/')
+        base = self.base_url.rstrip('/')
         if base.endswith('/embeddings'):
             endpoint = base
         elif base.endswith('/v1'):
@@ -52,11 +58,11 @@ class Embedder:
             resp = await client.post(
                 endpoint,
                 headers={
-                    "Authorization": f"Bearer {self.cfg.api_key}",
+                    "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": self.cfg.model,
+                    "model": self.model,
                     "input": texts,
                 },
             )

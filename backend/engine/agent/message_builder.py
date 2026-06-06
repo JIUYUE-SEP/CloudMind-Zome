@@ -23,9 +23,11 @@ class MessageBuilder:
         self,
         agent_id: str,
         agent_name: str,
+        codename: str = "",
     ):
         self.agent_id = agent_id
         self.agent_name = agent_name
+        self.codename = codename
 
     def build(
         self,
@@ -42,6 +44,18 @@ class MessageBuilder:
           4. Conversation history (group-chat user messages prefixed with sender_name:)
         """
         result: list[Message] = []
+
+        # Layer 0: Identity fallback — always injected so the LLM knows who it is
+        identity_line = f"你是 {self.agent_name}"
+        if self.codename and self.codename != self.agent_name:
+            identity_line += f"（{self.codename}）"
+        result.append(
+            Message(
+                role="system",
+                content=identity_line + "。",
+                meta=MessageMeta(session_id=self.agent_id),
+            )
+        )
 
         # Layer 1: Mind files (AGENT.md + SOUL.md + PROFILE.md)
         if mind_context:

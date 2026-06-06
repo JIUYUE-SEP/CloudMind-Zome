@@ -8,33 +8,36 @@ from engine.message.types import Message, MessageMeta, TextBlock, ThinkingBlock,
 from engine.agent.message_builder import MessageBuilder
 
 
-def test_build_injects_personality():
+def test_build_injects_mind_context():
     builder = MessageBuilder(
-        personality_prompt="You are a helpful assistant.",
+        agent_id="agent-1",
+        agent_name="TestAgent",
+    )
+    messages = builder.build([], scene_info="", mind_context="SOUL.md content here")
+    assert len(messages) >= 2
+    assert messages[0].role == "system"
+    assert "你是 TestAgent" in messages[0].get_text()
+    assert messages[1].role == "system"
+    assert "SOUL.md" in messages[1].get_text()
+
+
+def test_build_has_system_messages():
+    builder = MessageBuilder(
         agent_id="agent-1",
         agent_name="TestAgent",
     )
     messages = builder.build([], scene_info="")
-    assert len(messages) == 1
+    assert len(messages) == 3
     assert messages[0].role == "system"
-    assert "helpful assistant" in messages[0].get_text()
+    assert messages[1].role == "system"
+    assert messages[2].role == "system"
+    assert "你是 TestAgent" in messages[0].get_text()
+    assert "行为指南" in messages[1].get_text()
+    assert "记忆提示" in messages[2].get_text()
 
 
-def test_build_injects_scene():
+def test_build_adds_sender_prefix_for_group_chat():
     builder = MessageBuilder(
-        personality_prompt=None,
-        agent_id="agent-1",
-        agent_name="TestAgent",
-    )
-    messages = builder.build([], scene_info="当前场景：私聊")
-    assert len(messages) == 1
-    assert "私聊" in messages[0].get_text()
-    assert "不要使用" in messages[0].get_text()
-
-
-def test_build_adds_source_tags():
-    builder = MessageBuilder(
-        personality_prompt=None,
         agent_id="agent-1",
         agent_name="TestAgent",
     )
@@ -45,23 +48,26 @@ def test_build_adds_source_tags():
             meta=MessageMeta(
                 session_id="sess-1",
                 timestamp=1716500000.0,
-                source_name="私聊",
+                source="group",
+                source_name="测试群",
                 sender_name="用户A",
             ),
         ),
     ]
     messages = builder.build(history, scene_info="")
-    # system scene + user msg
-    assert len(messages) == 1
-    tagged = messages[0].get_text()
-    assert "[05-24" in tagged or "[" in tagged  # timestamp prefix
-    assert "用户A" in tagged
+    # 3 system messages + prefixed user msg
+    assert len(messages) == 4
+    assert messages[0].role == "system"
+    assert messages[1].role == "system"
+    assert messages[2].role == "system"
+    assert messages[3].role == "user"
+    tagged = messages[2].get_text()
+    assert "用户A: " in tagged
     assert "Hello" in tagged
 
 
-def test_build_inserts_scene_separator():
+def test_build_preserves_history_order():
     builder = MessageBuilder(
-        personality_prompt=None,
         agent_id="agent-1",
         agent_name="TestAgent",
     )
@@ -78,8 +84,15 @@ def test_build_inserts_scene_separator():
         ),
     ]
     messages = builder.build(history, scene_info="")
-    contents = [m.get_text() for m in messages]
-    assert any("场景切换" in c for c in contents)
+    # 3 system messages + 2 history messages
+    assert len(messages) == 5
+    assert messages[0].role == "system"
+    assert messages[1].role == "system"
+    assert messages[2].role == "system"
+    assert messages[3].role == "user"
+    assert messages[4].role == "user"
+    assert "msg1" in messages[2].get_text()
+    assert "msg2" in messages[3].get_text()
 
 
 def test_extract_text_only_skips_thinking():

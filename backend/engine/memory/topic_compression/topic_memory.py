@@ -16,7 +16,6 @@ from .pruner import ToolResultPruner
 from .worker import CompressionWorker
 from ...message.types import Message, ToolResultBlock, MessageMeta
 from ...provider.thinking.base import LLMResponse
-from ...provider.registry import get_registry
 
 logger = logging.getLogger(__name__)
 

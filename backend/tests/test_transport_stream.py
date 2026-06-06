@@ -1,4 +1,4 @@
-"""Unit tests for ChatCompletionsTransport streaming with callback."""
+"""Unit tests for ChatCompletionsTransport streaming."""
 
 from __future__ import annotations
 
@@ -10,9 +10,24 @@ from engine.provider.thinking.plain import PlainThinkingProfile
 from engine.message.types import Message, TextBlock
 
 
+class _AsyncIter:
+    """Helper to mock an async iterable for OpenAI stream response."""
+    def __init__(self, items):
+        self._items = items
+        self._idx = 0
+    def __aiter__(self):
+        return self
+    async def __anext__(self):
+        if self._idx >= len(self._items):
+            raise StopAsyncIteration
+        item = self._items[self._idx]
+        self._idx += 1
+        return item
+
+
 @pytest.mark.asyncio
-async def test_chat_with_on_text_chunk_uses_stream():
-    """When on_text_chunk is provided, chat() should yield tokens via callback."""
+async def test_stream_yields_text_blocks():
+    """stream() should yield TextBlock chunks from the API."""
     transport = ChatCompletionsTransport(
         base_url="http://fake",
         api_key="fake",
@@ -20,22 +35,25 @@ async def test_chat_with_on_text_chunk_uses_stream():
         thinking_profile=PlainThinkingProfile(),
     )
 
-    # Mock the underlying stream method
-    async def fake_stream(*args, **kwargs):
-        yield TextBlock(text="Hello ")
-        yield TextBlock(text="world!")
+    # Mock the underlying OpenAI client
+    mock_chunk1 = MagicMock()
+    mock_chunk1.choices = [MagicMock()]
+    mock_chunk1.choices[0].delta.content = "Hello "
+    mock_chunk1.choices[0].delta.reasoning_content = None
+    mock_chunk1.choices[0].delta.tool_calls = None
 
-    transport.stream = fake_stream
+    mock_chunk2 = MagicMock()
+    mock_chunk2.choices = [MagicMock()]
+    mock_chunk2.choices[0].delta.content = "world!"
+    mock_chunk2.choices[0].delta.reasoning_content = None
+    mock_chunk2.choices[0].delta.tool_calls = None
 
-    chunks: list[str] = []
-    def cb(text: str):
-        chunks.append(text)
+    mock_response = _AsyncIter([mock_chunk1, mock_chunk2])
+    transport._client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-    response = await transport.chat(
-        messages=[Message(role="user", content="hi")],
-        on_text_chunk=cb,
-    )
+    chunks = []
+    async for block in transport.stream(messages=[Message(role="user", content="hi")]):
+        if isinstance(block, TextBlock):
+            chunks.append(block.text)
 
     assert "".join(chunks) == "Hello world!"
-    assert response.content == "Hello world!"
-    assert response.tool_calls == []

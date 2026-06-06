@@ -53,6 +53,45 @@
       <canvas ref="chartCanvas" width="600" height="200"></canvas>
     </div>
 
+    <!-- Global model settings -->
+    <div class="cc-global-settings">
+      <div class="cc-global-card">
+        <div class="cc-global-title">🧬 嵌入模型（语义搜索）</div>
+        <div class="cc-global-desc">用于记忆语义检索的向量模型，要求 OpenAI 兼容 /v1/embeddings</div>
+        <div class="cc-global-row">
+          <select v-model="embeddingSetting.provider_id" @change="onEmbeddingProviderChange">
+            <option value="">请选择平台</option>
+            <option v-for="p in store.providers" :key="p.id" :value="p.id">{{ p.display_name }}</option>
+          </select>
+          <select v-model="embeddingSetting.model" :disabled="!embeddingModels.length">
+            <option value="">请选择模型</option>
+            <option v-for="m in embeddingModels" :key="m" :value="m">{{ m }}</option>
+          </select>
+          <button class="mini-btn" :disabled="!embeddingSetting.provider_id || !embeddingSetting.model || savingEmbedding" @click="saveEmbedding">
+            {{ savingEmbedding ? '保存中...' : '保存' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="cc-global-card">
+        <div class="cc-global-title">🎨 图像生成模型</div>
+        <div class="cc-global-desc">用于 AI 生图的模型平台</div>
+        <div class="cc-global-row">
+          <select v-model="imageGenSetting.provider_id" @change="onImageGenProviderChange">
+            <option value="">请选择平台</option>
+            <option v-for="p in store.providers" :key="p.id" :value="p.id">{{ p.display_name }}</option>
+          </select>
+          <select v-model="imageGenSetting.model" :disabled="!imageGenModels.length">
+            <option value="">请选择模型</option>
+            <option v-for="m in imageGenModels" :key="m" :value="m">{{ m }}</option>
+          </select>
+          <button class="mini-btn" :disabled="!imageGenSetting.provider_id || !imageGenSetting.model || savingImageGen" @click="saveImageGen">
+            {{ savingImageGen ? '保存中...' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Add Provider Modal -->
     <div v-if="showAdd" class="modal-overlay" @click="showAdd = false">
       <div class="modal-card" @click.stop>
@@ -117,8 +156,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import { useComputeStore } from '@/stores/compute'
+import { api } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
 
 const emit = defineEmits(['close'])
@@ -146,13 +186,82 @@ const todayTokens = ref(0)
 const totalRemaining = ref(0)
 const estDays = ref('--')
 
+const embeddingSetting = ref({ provider_id: '', model: '' })
+const savingEmbedding = ref(false)
+const imageGenSetting = ref({ provider_id: '', model: '' })
+const savingImageGen = ref(false)
+
+const embeddingModels = computed(() => {
+  const p = store.providers.find((x: any) => x.id === embeddingSetting.value.provider_id)
+  return p?.models || []
+})
+
+const imageGenModels = computed(() => {
+  const p = store.providers.find((x: any) => x.id === imageGenSetting.value.provider_id)
+  return p?.models || []
+})
+
 onMounted(async () => {
   await store.fetchProviders()
   await store.fetchUsage(7)
   computeStats()
   nextTick(drawChart)
   window.addEventListener('resize', drawChart)
+  await loadGlobalSettings()
 })
+
+async function loadGlobalSettings() {
+  try {
+    const emb = await api.get('/compute/embedding-model')
+    if (emb.code === 0 && emb.data) {
+      embeddingSetting.value.provider_id = emb.data.provider_id || ''
+      embeddingSetting.value.model = emb.data.model || ''
+    }
+    const img = await api.get('/compute/image-gen')
+    if (img.code === 0 && img.data) {
+      imageGenSetting.value.provider_id = img.data.provider_id || ''
+      imageGenSetting.value.model = img.data.model || ''
+    }
+  } catch (e) {
+    console.error('Failed to load global settings', e)
+  }
+}
+
+function onEmbeddingProviderChange() {
+  const p = store.providers.find((x: any) => x.id === embeddingSetting.value.provider_id)
+  embeddingSetting.value.model = p?.models?.[0] || ''
+}
+
+async function saveEmbedding() {
+  savingEmbedding.value = true
+  try {
+    const res = await api.put('/compute/embedding-model', {
+      provider_id: embeddingSetting.value.provider_id,
+      model: embeddingSetting.value.model,
+    })
+    if (res.code !== 0) alert(res.message || '保存失败')
+  } finally {
+    savingEmbedding.value = false
+  }
+}
+
+function onImageGenProviderChange() {
+  const p = store.providers.find((x: any) => x.id === imageGenSetting.value.provider_id)
+  imageGenSetting.value.model = p?.models?.[0] || ''
+}
+
+async function saveImageGen() {
+  savingImageGen.value = true
+  try {
+    const res = await api.put('/compute/image-gen', {
+      provider_id: imageGenSetting.value.provider_id,
+      model: imageGenSetting.value.model,
+    })
+    if (res.code !== 0) alert(res.message || '保存失败')
+  } finally {
+    savingImageGen.value = false
+  }
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', drawChart)
@@ -346,4 +455,14 @@ h2 { flex: 1; font-size: 18px; margin: 0; color: #D8E1EC; }
 .model-add-row { display: flex; gap: 8px; }
 .model-add-row input { flex: 1; margin: 0; }
 .model-add-btn { padding: 8px 14px; background: rgba(0,229,201,0.12); border: 1px solid rgba(0,229,201,0.25); border-radius: 6px; color: #00E5C9; font-size: 12px; cursor: pointer; font-weight: 500; }
+
+.cc-global-settings { padding: 0 20px 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.cc-global-card { background: rgba(20,27,36,0.5); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 16px; }
+.cc-global-title { font-size: 14px; color: #D8E1EC; font-weight: 500; margin-bottom: 4px; }
+.cc-global-desc { font-size: 11px; color: #5A6A7A; margin-bottom: 12px; }
+.cc-global-row { display: flex; gap: 8px; align-items: center; }
+.cc-global-row select { flex: 1; padding: 8px; background: #0B0F17; border: 1px solid #1E2731; border-radius: 6px; color: #D8E1EC; font-size: 12px; }
+.cc-global-row select:focus { outline: none; border-color: #00E5C9; }
+.cc-global-row .mini-btn { padding: 8px 14px; background: rgba(0,229,201,0.12); border: 1px solid rgba(0,229,201,0.25); border-radius: 6px; color: #00E5C9; font-size: 12px; cursor: pointer; font-weight: 500; }
+.cc-global-row .mini-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

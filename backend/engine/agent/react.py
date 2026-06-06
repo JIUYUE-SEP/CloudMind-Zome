@@ -61,14 +61,15 @@ class ReActAgent(AgentBase):
         agent_id: str = "",
         config: AppConfig | None = None,
         fallback_transports: dict[str, ChatCompletionsTransport] | None = None,
-        personality_prompt: str = "",
         embedder: Embedder | None = None,
         memory_store: AgentMemoryStore | None = None,
         model_config: dict | None = None,
+        codename: str = "",
     ):
         super().__init__(name=name, session_id="", config=config)
 
         self.agent_id = agent_id or name
+        self.codename = codename or name
         self.model = model
         self.toolkit = toolkit
         self.session_store = session_store
@@ -88,10 +89,13 @@ class ReActAgent(AgentBase):
                 memory_system = create_memory_system("simple", agent=self, config=config)
         self.memory_system = memory_system
 
-        # Error recovery
-        self._fallback = FallbackChain(
-            config.provider.fallback_chain if config and config.provider else []
-        )
+        # Error recovery: fallback_chain from agent model_config
+        fb_chain_raw: list[dict] = self.model_config.get("fallback_chain") or []
+        fb_names = [
+            item.get("provider", "deepseek") if isinstance(item, dict) else str(item)
+            for item in fb_chain_raw
+        ]
+        self._fallback = FallbackChain(fb_names)
         self._transports = fallback_transports or {}
         self._current_transport = model
         self._retry_config = RetryConfig()
@@ -113,6 +117,7 @@ class ReActAgent(AgentBase):
         self._msg_builder = MessageBuilder(
             agent_id=self.agent_id,
             agent_name=self.name,
+            codename=self.codename,
         )
 
     # ------------------------------------------------------------------

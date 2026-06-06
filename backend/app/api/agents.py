@@ -67,7 +67,6 @@ class AgentListItem(BaseModel):
     portrait_url: Optional[str]
     live2d_model_url: Optional[str]
     model_url: Optional[str]
-    personality_summary: str = ""
     tags: List[str] = []
     represent_color: str
     created_at: str
@@ -132,7 +131,6 @@ async def list_agents(
             "portrait_url": a.portrait_url,
             "live2d_model_url": a.live2d_model_url,
             "model_url": a.model_url,
-            "personality_summary": "",
             "tags": a.tags or [],
             "represent_color": a.represent_color,
             "created_at": a.created_at.isoformat() if a.created_at else "",
@@ -460,7 +458,53 @@ async def analyze_agent_personality(
     agent_dir = Path.home() / ".cloudmind-zome" / "agents" / agent_id
     text = build_personality_text(agent, agent_dir)
 
-    model_cfg = agent.model_config or {}
+    model_cfg = dict(agent.model_config or {})
+    marker_cfg = model_cfg.get("marker") or {}
+    marker_provider_id = marker_cfg.get("provider_id")
+
+    # Resolve credentials from ComputeProvider (app-layer has DB access)
+    from ..models import ComputeProvider
+    if marker_provider_id:
+        prov_result = await db.execute(
+            select(ComputeProvider).where(
+                ComputeProvider.id == marker_provider_id,
+                ComputeProvider.status == "active",
+            ).limit(1)
+        )
+        prov = prov_result.scalars().first()
+    else:
+        main_provider_id = model_cfg.get("provider_id")
+        prov_result = await db.execute(
+            select(ComputeProvider).where(
+                ComputeProvider.id == main_provider_id,
+                ComputeProvider.status == "active",
+            ).limit(1)
+        )
+        prov = prov_result.scalars().first()
+        if not prov:
+            prov_result = await db.execute(
+                select(ComputeProvider).where(
+                    ComputeProvider.provider_type == (model_cfg.get("provider") or "deepseek"),
+                    ComputeProvider.status == "active",
+                ).limit(1)
+            )
+            prov = prov_result.scalars().first()
+
+    if prov:
+        base_url = (prov.config or {}).get("base_url", "")
+        api_key = ""
+        if prov.api_key_encrypted:
+            import base64
+            try:
+                api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
+            except Exception:
+                api_key = prov.api_key_encrypted
+        model_cfg.setdefault("marker", {})
+        model_cfg["marker"]["provider"] = marker_cfg.get("provider") or prov.provider_type
+        model_cfg["marker"]["model"] = marker_cfg.get("model") or model_cfg.get("model") or "deepseek-chat"
+        model_cfg["marker"]["api_key"] = api_key
+        model_cfg["marker"]["base_url"] = base_url
+
     try:
         extractor = PersonalityExtractor.from_marker_config(model_cfg)
         personality = await extractor.analyze(text)

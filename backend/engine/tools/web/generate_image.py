@@ -22,17 +22,18 @@ def _detect_provider_type(api_url: str) -> str:
     return "openai"
 
 
-def _get_image_config() -> dict:
-    """Read image_gen config from the engine config."""
-    try:
-        from ...config.loader import load_config
-        from pathlib import Path as P
+_image_gen_cfg: dict = {}
 
-        cfg_path = P(__file__).parent.parent.parent / "config.yaml"
-        cfg = load_config(str(cfg_path))
-        return getattr(cfg, "image_gen", {}) or {}
-    except Exception:
-        return {}
+
+def set_image_gen_config(cfg: dict) -> None:
+    """Inject image_gen config from app layer (e.g. main.py)."""
+    global _image_gen_cfg
+    _image_gen_cfg = dict(cfg)
+
+
+def _get_image_config() -> dict:
+    """Return injected image_gen config."""
+    return _image_gen_cfg
 
 
 @tool_registry.register(toolset="web", max_result_chars=500, safe_to_parallel=False, timeout=120)
@@ -51,7 +52,7 @@ async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = 
                    Supported by DashScope wan2.7-image-pro. Pass a URL or local file path.
     """
     cfg = _get_image_config()
-    api_url = (cfg.get("api_url") or "").strip()
+    api_url = (cfg.get("base_url") or "").strip()
     model = (cfg.get("model") or "").strip()
     api_key = (cfg.get("api_key") or "").strip()
 

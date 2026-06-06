@@ -28,9 +28,6 @@ _CFG_PATH = Path(__file__).resolve().parent.parent.parent / "engine" / "config.y
 
 # Whitelist of mutable top-level sections (safety)
 _MUTABLE_SECTIONS = {
-    "provider",
-    "assistant_model",
-    "embedding_model",
     "context",
     "tools",
     "tavily",
@@ -86,9 +83,6 @@ class ToolsResp(BaseModel):
 
 
 class UpdateConfigReq(BaseModel):
-    provider: dict | None = None
-    assistant_model: dict | None = None
-    embedding_model: dict | None = None
     context: dict | None = None
     tools: dict | None = None
     tavily: dict | None = None
@@ -122,15 +116,6 @@ async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
                     _deep_merge(updated[section], value)
                 else:
                     updated[section] = value
-
-        # Auto-sync provider.default from fallback_chain[0]
-        prov = updated.get("provider")
-        if isinstance(prov, dict):
-            chain = prov.get("fallback_chain", [])
-            if chain:
-                prov["default"] = chain[0]
-            else:
-                prov["default"] = ""
 
         _save_raw(updated)
         logger.info("Config updated by user %s", user.id)

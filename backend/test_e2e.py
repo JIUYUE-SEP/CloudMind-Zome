@@ -81,7 +81,6 @@ async def _setup_db():
             user_id=user.id,
             name="测试心智",
             codename="test_agent",
-            personality_prompt="你是一个测试用的数字生命。",
             model_config={"provider": "deepseek", "model": "mock"},
             status="idle",
         )

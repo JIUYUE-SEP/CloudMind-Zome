@@ -79,6 +79,46 @@ class AgentWorker:
                 self._running = False
                 return
 
+            # Resolve marker provider credentials and merge into model_config
+            model_cfg = dict(self.agent_row.model_config or {})
+            marker_cfg = model_cfg.get("marker") or {}
+            marker_provider_id = marker_cfg.get("provider_id")
+            main_provider_type = (model_cfg.get("provider") or "deepseek").lower()
+            main_model = model_cfg.get("model") or "deepseek-v4-pro"
+
+            if marker_provider_id:
+                marker_creds = await self._resolve_provider(provider_id=marker_provider_id)
+            else:
+                main_provider_id = model_cfg.get("provider_id")
+                marker_creds = await self._resolve_provider(
+                    provider_id=main_provider_id, provider_type=main_provider_type
+                )
+
+            if marker_creds:
+                model_cfg.setdefault("marker", {})
+                model_cfg["marker"]["provider"] = marker_cfg.get("provider") or main_provider_type
+                model_cfg["marker"]["api_key"] = marker_creds["api_key"]
+                model_cfg["marker"]["base_url"] = marker_creds["base_url"]
+
+            # Build fallback transports from Agent.model_config.fallback_chain
+            fallback_transports: dict[str, ChatCompletionsTransport] = {}
+            fb_chain_raw: list[dict] = model_cfg.get("fallback_chain") or []
+            for fb_item in fb_chain_raw:
+                if not isinstance(fb_item, dict):
+                    continue
+                fb_prov_id = fb_item.get("provider_id")
+                fb_model = fb_item.get("model") or main_model
+                fb_type = fb_item.get("provider") or main_provider_type
+                fb_creds = await self._resolve_provider(provider_id=fb_prov_id, provider_type=fb_type)
+                if fb_creds and fb_creds.get("api_key") and fb_creds.get("base_url"):
+                    from engine.provider.factory import build_transport
+                    fb_transport = await build_transport(fb_type, fb_model, lambda _t: fb_creds)
+                    if fb_transport:
+                        fallback_transports[fb_type] = fb_transport
+                        logger.info("Built fallback transport for %s (%s)", fb_type, fb_model)
+                else:
+                    logger.warning("Failed to resolve fallback provider %s", fb_prov_id or fb_type)
+
             # Create the single ReActAgent instance
             from ..main import _app_state as _state
             app_config = _state["config"]
@@ -91,7 +131,9 @@ class AgentWorker:
                 config=app_config,
                 embedder=_state.get("embedder"),
                 memory_store=_state.get("memory_store"),
-                model_config=self.agent_row.model_config or {},
+                model_config=model_cfg,
+                fallback_transports=fallback_transports,
+                codename=self.agent_row.codename or self.agent_row.name,
             )
 
             logger.info("AgentWorker started for %s (%s)", self.agent_row.name, self.agent_id)
@@ -305,6 +347,48 @@ class AgentWorker:
         except Exception:
             pass
 
+    async def _resolve_provider(
+        self,
+        provider_id: str | None = None,
+        provider_type: str | None = None,
+    ) -> dict | None:
+        """Resolve provider credentials from ComputeProvider table."""
+        from ..models import ComputeProvider
+        async with AsyncSessionLocal() as db:
+            if provider_id:
+                result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.id == provider_id,
+                        ComputeProvider.status == "active",
+                    ).limit(1)
+                )
+            elif provider_type:
+                result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.provider_type == provider_type,
+                        ComputeProvider.status == "active",
+                    ).limit(1)
+                )
+            else:
+                return None
+            prov = result.scalars().first()
+
+        if not prov:
+            return None
+
+        base_url = (prov.config or {}).get("base_url", "")
+        api_key = ""
+        if prov.api_key_encrypted:
+            import base64
+            try:
+                api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
+            except Exception:
+                api_key = prov.api_key_encrypted
+
+        if not api_key:
+            return None
+        return {"base_url": base_url, "api_key": api_key}
+
     async def _build_transport(self) -> ChatCompletionsTransport | None:
         """Resolve provider credentials and build transport via engine factory."""
         if not self.agent_row:
@@ -316,41 +400,7 @@ class AgentWorker:
         model_name = model_cfg.get("model") or "deepseek-v4-pro"
 
         async def _resolve(ptype: str) -> dict | None:
-            from ..models import ComputeProvider
-            async with AsyncSessionLocal() as db:
-                # Prefer provider_id for exact match
-                if provider_id:
-                    result = await db.execute(
-                        select(ComputeProvider).where(
-                            ComputeProvider.id == provider_id,
-                            ComputeProvider.status == "active",
-                        ).limit(1)
-                    )
-                    prov = result.scalars().first()
-                else:
-                    result = await db.execute(
-                        select(ComputeProvider).where(
-                            ComputeProvider.provider_type == ptype,
-                            ComputeProvider.status == "active",
-                        ).limit(1)
-                    )
-                    prov = result.scalars().first()
-
-            base_url = ""
-            api_key = ""
-
-            if prov:
-                base_url = (prov.config or {}).get("base_url", "")
-                if prov.api_key_encrypted:
-                    import base64
-                    try:
-                        api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
-                    except Exception:
-                        api_key = prov.api_key_encrypted
-
-            if not api_key:
-                return None
-            return {"base_url": base_url, "api_key": api_key}
+            return await self._resolve_provider(provider_id=provider_id, provider_type=ptype)
 
         from engine.provider.factory import build_transport
         return await build_transport(provider_type, model_name, _resolve)

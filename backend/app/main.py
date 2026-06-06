@@ -22,7 +22,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from engine.config.loader import load_config
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
-from .database import engine, Base
+from .database import engine, Base, AsyncSessionLocal
 from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config
 from .services.commission_scheduler import get_scheduler
 
@@ -86,33 +86,98 @@ async def lifespan(app: FastAPI):
     logger.info("SessionStore connected to unified DB")
     app.state.session_store = store
 
-    # Assistant model transport for background NLP (memory compression, etc.)
-    am_cfg = cfg.assistant_model
-    assistant_transport = None
-    if am_cfg.base_url and am_cfg.model and am_cfg.api_key:
-        from engine.provider.transport import ChatCompletionsTransport
-        from engine.provider.thinking.plain import PlainThinkingProfile
-        assistant_transport = ChatCompletionsTransport(
-            base_url=am_cfg.base_url,
-            api_key=am_cfg.api_key,
-            model=am_cfg.model,
-            thinking_profile=PlainThinkingProfile(),
-            timeout=60.0,
-        )
-        logger.info("Assistant model (%s) ready", am_cfg.model)
-    else:
-        logger.warning("Assistant model not configured; memory compression will skip LLM steps")
-
-    # Embedding model (for semantic memory search)
     from engine.context.embedder import Embedder
     from engine.context.vector_store import AgentMemoryStore
+    from .models import Setting, ComputeProvider
+    from sqlalchemy import select
+    import base64
 
-    embedder = Embedder(cfg.embedding_model)
+    embedder = Embedder(base_url="", api_key="", model="")
     memory_store = AgentMemoryStore()
-    if cfg.embedding_model.base_url and cfg.embedding_model.model and cfg.embedding_model.api_key:
-        logger.info("Embedding model (%s) ready for semantic search", cfg.embedding_model.model)
-    else:
-        logger.warning("Embedding model not configured; semantic memory search disabled")
+
+    async with AsyncSessionLocal() as db:
+        # ---- Embedding model (for semantic memory search) ----
+        result = await db.execute(
+            select(Setting).where(Setting.key == "embedding_model")
+        )
+        setting = result.scalar_one_or_none()
+
+        if setting and setting.value:
+            prov_id = setting.value.get("provider_id")
+            model_name = setting.value.get("model")
+
+            if prov_id and model_name:
+                prov_result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.id == prov_id,
+                        ComputeProvider.status == "active",
+                    )
+                )
+                prov = prov_result.scalar_one_or_none()
+                if prov:
+                    base_url = (prov.config or {}).get("base_url", "")
+                    api_key = ""
+                    if prov.api_key_encrypted:
+                        try:
+                            api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
+                        except Exception:
+                            api_key = prov.api_key_encrypted
+                    if base_url and api_key:
+                        embedder = Embedder(
+                            base_url=base_url,
+                            api_key=api_key,
+                            model=model_name,
+                        )
+                        logger.info("Embedding model (%s via %s) ready for semantic search", model_name, prov_id)
+                    else:
+                        logger.warning("Embedding provider %s missing base_url or api_key", prov_id)
+                else:
+                    logger.warning("Embedding provider %s not found or inactive", prov_id)
+            else:
+                logger.warning("Embedding model setting incomplete (provider_id or model missing)")
+        else:
+            logger.warning("Embedding model not configured in settings; semantic memory search disabled")
+
+        # ---- Image generation model ----
+        img_result = await db.execute(
+            select(Setting).where(Setting.key == "image_gen")
+        )
+        img_setting = img_result.scalar_one_or_none()
+        if img_setting and img_setting.value:
+            img_prov_id = img_setting.value.get("provider_id")
+            img_model = img_setting.value.get("model")
+            if img_prov_id:
+                img_prov_result = await db.execute(
+                    select(ComputeProvider).where(
+                        ComputeProvider.id == img_prov_id,
+                        ComputeProvider.status == "active",
+                    )
+                )
+                img_prov = img_prov_result.scalar_one_or_none()
+                if img_prov:
+                    img_base_url = (img_prov.config or {}).get("base_url", "")
+                    img_api_key = ""
+                    if img_prov.api_key_encrypted:
+                        try:
+                            img_api_key = base64.b64decode(img_prov.api_key_encrypted.encode()).decode()
+                        except Exception:
+                            img_api_key = img_prov.api_key_encrypted
+                    if img_base_url and img_api_key and img_model:
+                        from engine.tools.web.generate_image import set_image_gen_config
+                        set_image_gen_config({
+                            "base_url": img_base_url,
+                            "model": img_model,
+                            "api_key": img_api_key,
+                        })
+                        logger.info("Image generation model (%s via %s) ready", img_model, img_prov_id)
+                    else:
+                        logger.warning("Image generation provider %s missing base_url/api_key/model", img_prov_id)
+                else:
+                    logger.warning("Image generation provider %s not found or inactive", img_prov_id)
+            else:
+                logger.warning("Image generation setting incomplete (provider_id missing)")
+        else:
+            logger.warning("Image generation not configured in settings")
 
     # Share with ws module
     _app_state["config"] = cfg

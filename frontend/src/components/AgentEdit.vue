@@ -304,6 +304,36 @@
                   </option>
                 </select>
               </div>
+
+              <div class="sep" />
+
+              <label>降级链（按优先级排序）</label>
+              <div class="hint-text">当主推理模型失败时，自动降级到列表中的模型</div>
+              <div class="fallback-list">
+                <div
+                  v-for="(item, idx) in form.fallbackChain"
+                  :key="idx"
+                  class="fallback-item"
+                >
+                  <span class="fallback-index">{{ idx + 1 }}</span>
+                  <select v-model="item.provider_id" @change="onFallbackProviderChange(idx)">
+                    <option value="">请选择平台</option>
+                    <option v-for="p in llmProviders" :key="p.id" :value="p.id">
+                      {{ p.display_name }}
+                    </option>
+                  </select>
+                  <select v-model="item.model" :disabled="!fallbackModelsFor(idx).length">
+                    <option value="">请选择模型</option>
+                    <option v-for="m in fallbackModelsFor(idx)" :key="m" :value="m">
+                      {{ m }}
+                    </option>
+                  </select>
+                  <button class="fallback-up" :disabled="idx === 0" @click="moveFallback(idx, -1)">↑</button>
+                  <button class="fallback-down" :disabled="idx === form.fallbackChain.length - 1" @click="moveFallback(idx, 1)">↓</button>
+                  <button class="fallback-remove" @click="removeFallback(idx)">×</button>
+                </div>
+                <button class="fallback-add" @click="addFallback">+ 添加降级模型</button>
+              </div>
             </div>
 
             <!-- 心智文件 -->
@@ -559,6 +589,7 @@ const form = ref<any>({
   useIndependentMarker: false,
   useIndependentEmbedder: false,
   useIndependentCompressor: false,
+  fallbackChain: [] as { provider_id: string; provider: string; model: string }[],
   portrait_url: '',
   model_url: '',
   live2d_model_url: '',
@@ -686,6 +717,7 @@ function createNew() {
     useIndependentMarker: false,
     useIndependentEmbedder: false,
     useIndependentCompressor: false,
+    fallbackChain: [] as { provider_id: string; provider: string; model: string }[],
     portrait_url: '',
     model_url: '',
     live2d_model_url: '',
@@ -732,6 +764,39 @@ const currentCompressorModels = computed(() => {
   const p = llmProviders.value.find((x: any) => x.id === pid)
   return p?.models || []
 })
+
+function fallbackModelsFor(idx: number) {
+  const item = form.value.fallbackChain?.[idx]
+  if (!item?.provider_id) return []
+  const p = llmProviders.value.find((x: any) => x.id === item.provider_id)
+  return p?.models || []
+}
+
+function onFallbackProviderChange(idx: number) {
+  const item = form.value.fallbackChain[idx]
+  if (!item) return
+  const p = llmProviders.value.find((x: any) => x.id === item.provider_id)
+  item.provider = p?.name || ''
+  item.model = p?.models?.[0] || ''
+}
+
+function addFallback() {
+  if (!form.value.fallbackChain) form.value.fallbackChain = []
+  form.value.fallbackChain.push({ provider_id: '', provider: '', model: '' })
+}
+
+function removeFallback(idx: number) {
+  form.value.fallbackChain.splice(idx, 1)
+}
+
+function moveFallback(idx: number, dir: number) {
+  const arr = form.value.fallbackChain
+  const target = idx + dir
+  if (target < 0 || target >= arr.length) return
+  const tmp = arr[idx]
+  arr[idx] = arr[target]
+  arr[target] = tmp
+}
 
 function statusLabel(status: string) {
   const map: Record<string, string> = {
@@ -781,6 +846,20 @@ async function selectAgent(id: string) {
     compressor: llmCfg.compressor ? { ...llmCfg.compressor } : { provider_id: '', model: '' },
   }
 
+  // Restore fallback chain
+  const fbChain: { provider_id: string; provider: string; model: string }[] = []
+  if (Array.isArray(llmCfg.fallback_chain)) {
+    for (const item of llmCfg.fallback_chain) {
+      if (typeof item === 'object' && item) {
+        fbChain.push({
+          provider_id: item.provider_id || '',
+          provider: item.provider || '',
+          model: item.model || '',
+        })
+      }
+    }
+  }
+
   form.value = {
     name: data.name || '',
     codename: data.codename || '',
@@ -792,10 +871,14 @@ async function selectAgent(id: string) {
     useIndependentMarker: !!llmCfg.marker,
     useIndependentEmbedder: !!llmCfg.embedder,
     useIndependentCompressor: !!llmCfg.compressor,
+    fallbackChain: fbChain,
     portrait_url: data.portrait_url || '',
     model_url: data.model_url || '',
     live2d_model_url: data.live2d_model_url || '',
   }
+  // 清空旧内容，避免切换 Agent 后短暂显示上一个 Agent 的数据
+  mindEditor.value.content = ''
+  userMd.value.content = ''
   if (activeTab.value === 'persona') {
     loadUserMd()
   }
@@ -878,6 +961,13 @@ async function save() {
       provider: form.value.llm_config.compressor?.provider || '',
       model: form.value.llm_config.compressor?.model || '',
     }
+  }
+  if (form.value.fallbackChain?.length) {
+    llm.fallback_chain = form.value.fallbackChain.map((item: any) => ({
+      provider_id: item.provider_id,
+      provider: item.provider,
+      model: item.model,
+    }))
   }
   body.llm_config = llm
 
@@ -968,6 +1058,7 @@ async function loadMindFile(file: string) {
   }
   const loadId = ++_mindLoadId
   mindEditor.value.loading = true
+  mindEditor.value.content = ''
   console.log('[loadMindFile] start:', file, 'loadId:', loadId, 'selectedId:', selectedId.value)
   try {
     const url = `/agents/${selectedId.value}/mind/${file}`
@@ -1035,6 +1126,7 @@ function onMindEditorKeydown(e: KeyboardEvent) {
 async function loadUserMd() {
   if (!selectedId.value) return
   userMd.value.loading = true
+  userMd.value.content = ''
   try {
     const json = await api.get(`/agents/${selectedId.value}/mind/USER`)
     if (json.code === 0) {
@@ -1931,5 +2023,78 @@ async function uploadLive2d(e: Event) {
   font-size: 11px;
   color: #5a6a7a;
   text-align: center;
+}
+
+/* Fallback chain */
+.fallback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fallback-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #0b0f17;
+  border: 1px solid #1e2731;
+  border-radius: 8px;
+  padding: 8px;
+}
+.fallback-item select {
+  flex: 1;
+  padding: 6px;
+  background: #141b24;
+  border: 1px solid #1e2731;
+  border-radius: 6px;
+  color: #d8e1ec;
+  font-size: 12px;
+}
+.fallback-index {
+  width: 20px;
+  text-align: center;
+  font-size: 11px;
+  color: #00e5c9;
+  font-weight: 600;
+}
+.fallback-up,
+.fallback-down,
+.fallback-remove {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid #1e2731;
+  border-radius: 4px;
+  color: #8899aa;
+  font-size: 11px;
+  cursor: pointer;
+}
+.fallback-up:hover,
+.fallback-down:hover {
+  border-color: rgba(0, 229, 201, 0.3);
+  color: #00e5c9;
+}
+.fallback-remove:hover {
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+.fallback-up:disabled,
+.fallback-down:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.fallback-add {
+  padding: 8px;
+  background: rgba(0, 229, 201, 0.08);
+  border: 1px dashed rgba(0, 229, 201, 0.25);
+  border-radius: 6px;
+  color: #00e5c9;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fallback-add:hover {
+  background: rgba(0, 229, 201, 0.12);
 }
 </style>

@@ -25,14 +25,6 @@ _PROFILE_MAP = {
     "openai": DeepSeekThinkingProfile,
 }
 
-_DEFAULT_BASE_URLS = {
-    "deepseek": "https://api.deepseek.com/v1",
-    "mimo": "https://api.miaomi.cn/v1",
-    "kimicode": "https://api.kimi.ai/v1",
-    "glm": "https://api.glm.ai/v1",
-}
-
-
 async def build_transport(
     provider_type: str,
     model_name: str,
@@ -48,12 +40,16 @@ async def build_transport(
     """
     resolved = await resolve_config(provider_type)
 
-    base_url = _DEFAULT_BASE_URLS.get(provider_type, "")
-    api_key = ""
+    if not resolved:
+        logger.error("No credentials resolved for provider %s", provider_type)
+        return None
 
-    if resolved:
-        base_url = resolved.get("base_url") or base_url
-        api_key = resolved.get("api_key", "")
+    base_url = resolved.get("base_url", "")
+    api_key = resolved.get("api_key", "")
+
+    if not base_url:
+        logger.error("No base_url resolved for provider %s", provider_type)
+        return None
 
     if not api_key:
         logger.error("No API key resolved for provider %s", provider_type)

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_db, require_user
-from ..models import ComputeProvider, ComputeUsage, User
+from ..models import ComputeProvider, ComputeUsage, Setting, User
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 
@@ -219,6 +219,132 @@ async def delete_provider(
     await db.delete(prov)
     await db.commit()
     return Resp(data={"deleted": True})
+
+
+# ------------------------------------------------------------------
+# Embedding model global config (stored in settings table)
+# ------------------------------------------------------------------
+class ModelProviderSetting(BaseModel):
+    provider_id: str
+    model: str
+
+
+@router.get("/embedding-model", response_model=Resp)
+async def get_embedding_model(
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the global embedding model config from settings table."""
+    result = await db.execute(
+        select(Setting).where(
+            Setting.user_id == user.id,
+            Setting.key == "embedding_model",
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        return Resp(data={"provider_id": None, "model": None})
+    return Resp(data=row.value or {"provider_id": None, "model": None})
+
+
+@router.put("/embedding-model", response_model=Resp)
+async def set_embedding_model(
+    body: ModelProviderSetting,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save global embedding model config. Validate provider supports OpenAI-compatible /v1/embeddings."""
+    # Verify provider exists
+    prov_result = await db.execute(
+        select(ComputeProvider).where(
+            ComputeProvider.id == body.provider_id,
+            ComputeProvider.user_id == user.id,
+            ComputeProvider.status == "active",
+        )
+    )
+    prov = prov_result.scalar_one_or_none()
+    if not prov:
+        raise HTTPException(status_code=400, detail="Provider not found or inactive")
+
+    # Upsert into settings table
+    result = await db.execute(
+        select(Setting).where(
+            Setting.user_id == user.id,
+            Setting.key == "embedding_model",
+        )
+    )
+    row = result.scalar_one_or_none()
+    value = {"provider_id": body.provider_id, "model": body.model}
+    if row:
+        row.value = value
+    else:
+        row = Setting(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key="embedding_model",
+            value=value,
+        )
+        db.add(row)
+    await db.commit()
+    return Resp(data=value)
+
+
+@router.get("/image-gen", response_model=Resp)
+async def get_image_gen_model(
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the global image generation model config from settings table."""
+    result = await db.execute(
+        select(Setting).where(
+            Setting.user_id == user.id,
+            Setting.key == "image_gen",
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        return Resp(data={"provider_id": None, "model": None})
+    return Resp(data=row.value or {"provider_id": None, "model": None})
+
+
+@router.put("/image-gen", response_model=Resp)
+async def set_image_gen_model(
+    body: ModelProviderSetting,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save global image generation model config."""
+    prov_result = await db.execute(
+        select(ComputeProvider).where(
+            ComputeProvider.id == body.provider_id,
+            ComputeProvider.user_id == user.id,
+            ComputeProvider.status == "active",
+        )
+    )
+    prov = prov_result.scalar_one_or_none()
+    if not prov:
+        raise HTTPException(status_code=400, detail="Provider not found or inactive")
+
+    result = await db.execute(
+        select(Setting).where(
+            Setting.user_id == user.id,
+            Setting.key == "image_gen",
+        )
+    )
+    row = result.scalar_one_or_none()
+    value = {"provider_id": body.provider_id, "model": body.model}
+    if row:
+        row.value = value
+    else:
+        row = Setting(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key="image_gen",
+            value=value,
+        )
+        db.add(row)
+    await db.commit()
+    return Resp(data=value)
 
 
 @router.get("/usage", response_model=Resp)

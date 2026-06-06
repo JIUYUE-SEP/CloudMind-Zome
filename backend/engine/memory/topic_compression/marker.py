@@ -5,8 +5,6 @@ import logging
 from typing import Optional
 
 from ...message.types import Message
-from ...provider.registry import get_registry
-
 logger = logging.getLogger(__name__)
 
 _TOPIC_MARKER_PROMPT = """Analyze the following conversation context and determine the current topic domain and importance.
@@ -44,21 +42,25 @@ class TopicMarker:
     @classmethod
     def from_config(cls, agent_model_config: dict) -> "TopicMarker":
         """Build marker from agent config. Falls back to main provider if no marker config."""
-        marker_cfg = agent_model_config.get("marker")
-        if marker_cfg:
+        marker_cfg = agent_model_config.get("marker") or {}
+        if marker_cfg.get("provider") and marker_cfg.get("model"):
             provider_name = marker_cfg["provider"]
             model = marker_cfg["model"]
         else:
-            provider_name = agent_model_config["provider"]
-            provider = get_registry().get(provider_name)
-            model = provider.marker_model or provider.default_model
+            provider_name = agent_model_config.get("provider", "deepseek")
+            model = agent_model_config.get("model", "deepseek-chat")
 
-        provider = get_registry().get(provider_name)
+        api_key = marker_cfg.get("api_key", "") or agent_model_config.get("api_key", "")
+        base_url = marker_cfg.get("base_url", "") or agent_model_config.get("base_url", "")
+
+        if not api_key:
+            raise ValueError(f"No API key available for marker provider '{provider_name}'")
+
         return cls(
             provider_name=provider_name,
             model=model,
-            api_key=provider.api_key,
-            base_url=provider.base_url,
+            api_key=api_key,
+            base_url=base_url,
         )
 
     async def detect(self, recent_messages: list[Message]) -> Optional[str]:

@@ -8,7 +8,6 @@ from typing import Any
 from ..message.types import Message
 from ..provider.transport import ChatCompletionsTransport
 from ..provider.thinking.plain import PlainThinkingProfile
-from ..provider.registry import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -63,25 +62,16 @@ class PersonalityExtractor:
     @classmethod
     def from_marker_config(cls, agent_model_config: dict) -> "PersonalityExtractor":
         """Build extractor from agent config, falling back to main provider."""
-        marker_cfg = agent_model_config.get("marker")
-        if marker_cfg:
+        marker_cfg = agent_model_config.get("marker") or {}
+        if marker_cfg.get("provider") and marker_cfg.get("model"):
             provider_name = marker_cfg["provider"]
             model = marker_cfg["model"]
         else:
             provider_name = agent_model_config.get("provider", "deepseek")
-            try:
-                provider = get_registry().get(provider_name)
-                model = getattr(provider, "marker_model", None) or getattr(provider, "default_model", "deepseek-chat")
-            except Exception:
-                model = "deepseek-chat"
+            model = agent_model_config.get("model", "deepseek-chat")
 
-        try:
-            provider = get_registry().get(provider_name)
-            api_key = getattr(provider, "api_key", "")
-            base_url = getattr(provider, "base_url", "")
-        except Exception:
-            api_key = ""
-            base_url = ""
+        api_key = marker_cfg.get("api_key", "") or agent_model_config.get("api_key", "")
+        base_url = marker_cfg.get("base_url", "") or agent_model_config.get("base_url", "")
 
         return cls(provider_name, model, api_key, base_url)
 
@@ -168,10 +158,6 @@ def build_personality_text(agent_row: Any, agent_dir: Any) -> str:
     soul_path = Path(agent_dir) / "SOUL.md"
     if soul_path.exists():
         parts.append(soul_path.read_text(encoding="utf-8"))
-
-    # personality_prompt next
-    if getattr(agent_row, "personality_prompt", None):
-        parts.append(agent_row.personality_prompt)
 
     # AGENT.md may contain behavioral clues
     agent_path = Path(agent_dir) / "AGENT.md"
