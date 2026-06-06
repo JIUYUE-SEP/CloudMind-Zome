@@ -78,7 +78,7 @@ onMounted(() => {
 async function loadProfileMd() {
   profileMd.value.loading = true
   try {
-    const json = await api.get('/me/profile-md')
+    const json = await api.get('/auth/me/profile-md')
     if (json.code === 0) {
       profileMd.value.content = json.data?.content || ''
     }
@@ -91,17 +91,28 @@ async function loadProfileMd() {
 
 async function save() {
   saveError.value = ''
-  const [profileJson] = await Promise.all([
-    api.put('/me/profile-md', { content: profileMd.value.content }),
-    auth.updateProfile({
-      nickname: form.value.nickname,
-    }),
-  ])
-  if (profileJson.code !== 0) {
-    saveError.value = profileJson.message || '保存 profile.md 失败'
-    return
+  try {
+    const [profileJson, authJson] = await Promise.all([
+      api.put('/auth/me/profile-md', { content: profileMd.value.content }),
+      auth.updateProfile({
+        nickname: form.value.nickname,
+      }),
+    ])
+    const errors: string[] = []
+    if (profileJson.code !== 0) {
+      errors.push(profileJson.message || '保存 profile.md 失败')
+    }
+    if (authJson.code !== 0) {
+      errors.push(authJson.message || '保存个人信息失败')
+    }
+    if (errors.length) {
+      saveError.value = errors.join('；')
+      return
+    }
+    emit('close')
+  } catch (e: any) {
+    saveError.value = e?.message || '保存失败'
   }
-  emit('close')
 }
 
 function triggerAvatar() {

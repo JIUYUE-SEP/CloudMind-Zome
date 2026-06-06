@@ -19,6 +19,12 @@ FORBIDDEN_PREFIXES = [
     "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)",
 ]
 
+# Whitelist: only these subtrees may be written by the agent
+_ALLOWED_WRITE_BASES = [
+    Path.home() / ".cloudmind-zome",
+    Path.cwd(),
+]
+
 
 def _is_safe_path(path: Path) -> tuple[bool, str]:
     """Check if writing to this path is safe."""
@@ -34,6 +40,17 @@ def _is_safe_path(path: Path) -> tuple[bool, str]:
             return False, f"writing to {prefix} is not allowed"
         except ValueError:
             pass
+
+    # Whitelist check: must be under one of the allowed bases
+    for base in _ALLOWED_WRITE_BASES:
+        try:
+            resolved.relative_to(base.resolve())
+            break
+        except ValueError:
+            pass
+    else:
+        allowed = ", ".join(str(b) for b in _ALLOWED_WRITE_BASES)
+        return False, f"writing outside allowed directories is not allowed ({allowed})"
 
     return True, ""
 

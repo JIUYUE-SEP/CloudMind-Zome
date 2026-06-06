@@ -40,7 +40,10 @@ def share_file(path: str) -> str:
                 (automatically resolved to the local uploads directory)
               - A ~/... home-relative path
     """
-    src = _resolve_path(path)
+    try:
+        src = _resolve_path(path)
+    except ValueError as exc:
+        return f"Error: {exc}"
 
     if not src.exists():
         return f"Error: file not found: {path} (resolved to {src})"
@@ -72,13 +75,17 @@ def share_file(path: str) -> str:
         return f"Error: {exc}"
 
 
+_ALLOWED_BASES = [
+    Path.home() / ".cloudmind-zome",
+]
+
+
 def _resolve_path(path: str) -> Path:
     """Resolve a path to a local file.
 
-    Handles:
-    - Absolute local paths (C:\\... or /home/...)
-    - /uploads/... URLs -> ~/.cloudmind-zome/uploads/...
-    - ~/... home-relative paths
+    Only paths under ~/.cloudmind-zome/ are allowed.
+    /uploads/... URLs are accepted as a shorthand for
+    ~/.cloudmind-zome/uploads/...
     """
     p = path.strip()
 
@@ -87,9 +94,25 @@ def _resolve_path(path: str) -> Path:
         local = Path.home() / ".cloudmind-zome" / p.lstrip("/")
         return local
 
-    # Bare home-relative
+    # Bare home-relative -> expand and validate below
     if p.startswith("~/"):
-        return Path.home() / p[2:]
+        resolved = Path.home() / p[2:]
+    else:
+        resolved = Path(p).expanduser()
 
-    # Normal local path
-    return Path(p).expanduser()
+    try:
+        resolved = resolved.resolve(strict=False)
+    except Exception:
+        pass
+
+    for base in _ALLOWED_BASES:
+        try:
+            resolved.relative_to(base.resolve())
+            return resolved
+        except ValueError:
+            pass
+
+    raise ValueError(
+        f"Access denied: {path} is outside the allowed directories. "
+        f"You can only share files under ~/.cloudmind-zome/ or /uploads/ URLs."
+    )
