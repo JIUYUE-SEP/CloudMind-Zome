@@ -4,8 +4,9 @@ from pathlib import Path
 
 DB_PATH = Path.home() / ".cloudmind-zome" / "cloudmind.db"
 
-def main():
-    conn = sqlite3.connect(str(DB_PATH))
+def main(db_path: Path | None = None):
+    target = db_path or DB_PATH
+    conn = sqlite3.connect(str(target))
     cur = conn.cursor()
 
     # chat_sessions
@@ -52,6 +53,19 @@ def main():
     if "tags" not in cols:
         cur.execute("ALTER TABLE agents ADD COLUMN tags TEXT DEFAULT '[]'")
         print("Added agents.tags")
+    if "semantic_search_enabled" not in cols:
+        cur.execute("ALTER TABLE agents ADD COLUMN semantic_search_enabled INTEGER DEFAULT 1")
+        print("Added agents.semantic_search_enabled")
+    if "image_generation_enabled" not in cols:
+        cur.execute("ALTER TABLE agents ADD COLUMN image_generation_enabled INTEGER DEFAULT 1")
+        print("Added agents.image_generation_enabled")
+    if "topic_compression_enabled" not in cols:
+        cur.execute("ALTER TABLE agents ADD COLUMN topic_compression_enabled INTEGER DEFAULT 1")
+        print("Added agents.topic_compression_enabled")
+
+    # Cleanup leftover temporary table from previous migrations
+    cur.execute("DROP TABLE IF EXISTS llm_models_new")
+    print("Dropped leftover table llm_models_new (if existed)")
 
     conn.commit()
     conn.close()

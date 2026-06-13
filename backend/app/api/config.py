@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..dependencies import require_user
@@ -31,6 +31,14 @@ _MUTABLE_SECTIONS = {
     "context",
     "tools",
     "tavily",
+    "image_gen",
+}
+
+# Deprecated sections removed in Provider refactor (batch 4)
+_DEPRECATED_SECTIONS = {
+    "provider",
+    "assistant_model",
+    "embedding_model",
     "image_gen",
 }
 
@@ -53,6 +61,22 @@ def _deep_merge(target: dict, source: dict) -> None:
             _deep_merge(target[k], v)
         else:
             target[k] = v
+
+
+def _mask_secrets(obj: Any) -> Any:
+    """Recursively mask values whose keys look like secrets (api_key, secret, token)."""
+    if isinstance(obj, dict):
+        masked: dict[str, Any] = {}
+        for k, v in obj.items():
+            lower = k.lower()
+            if isinstance(v, str) and any(s in lower for s in ("api_key", "secret", "token")):
+                masked[k] = "********" if v else ""
+            else:
+                masked[k] = _mask_secrets(v)
+        return masked
+    if isinstance(obj, list):
+        return [_mask_secrets(v) for v in obj]
+    return obj
 
 
 def _save_raw(data: dict[str, Any]) -> None:
@@ -95,9 +119,9 @@ class UpdateConfigReq(BaseModel):
 
 @router.get("", response_model=ConfigResp)
 async def get_config(user=Depends(require_user)):
-    """Return raw config (secrets included — local single-user app)."""
+    """Return raw config with secrets masked in the HTTP response."""
     raw = _load_raw()
-    return ConfigResp(data=raw)
+    return ConfigResp(data=_mask_secrets(raw))
 
 
 @router.put("", response_model=ConfigResp)
@@ -109,6 +133,11 @@ async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
 
         payload = body.model_dump(exclude_unset=True)
         for section, value in payload.items():
+            if section in _DEPRECATED_SECTIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail="provider/assistant_model/embedding_model/image_gen 配置已废弃，请使用 /compute/providers、/compute/embedding-model 和 /compute/image-gen API",
+                )
             if section not in _MUTABLE_SECTIONS:
                 continue
             if value is not None:
@@ -119,7 +148,9 @@ async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
 
         _save_raw(updated)
         logger.info("Config updated by user %s", user.id)
-        return ConfigResp(data=updated)
+        return ConfigResp(data=_mask_secrets(updated))
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Config update failed")
         return ConfigResp(code=500, data={"error": str(exc)})

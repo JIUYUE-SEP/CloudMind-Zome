@@ -36,9 +36,6 @@ logger = logging.getLogger(__name__)
 # session_id -> asyncio.Task running _private_agent_worker
 _private_agent_tasks: dict[str, asyncio.Task] = {}
 
-# session_id -> Lock for serializing message persistence
-_session_persist_locks: dict[str, asyncio.Lock] = {}
-
 # WebSocket instance id -> Lock for safe send_json
 _ws_send_locks: dict[int, asyncio.Lock] = {}
 
@@ -49,8 +46,8 @@ async def _safe_send(ws: WebSocket, frame: dict) -> None:
     async with lock:
         try:
             await ws.send_json(frame)
-        except Exception:
-            pass  # WS may have disconnected
+        except Exception as e:
+            logger.debug("ws send failed: %s", e)
 
 
 # ------------------------------------------------------------------
@@ -354,8 +351,10 @@ async def _private_agent_worker(
         # Normal cancellation when user sends a new message
         pass
     finally:
-        # Clean up task registry
-        _private_agent_tasks.pop(session_id, None)
+        # Clean up task registry — only pop if we are still the current task
+        current_task = asyncio.current_task()
+        if _private_agent_tasks.get(session_id) is current_task:
+            _private_agent_tasks.pop(session_id, None)
 
 
 # ------------------------------------------------------------------
@@ -757,17 +756,4 @@ def _is_agent_mentioned(agent: Agent | None, mention_tokens: set[str]) -> bool:
     return bool(mention_tokens & {n.lower() for n in names if n})
 
 
-# ------------------------------------------------------------------
-# Get other agent members in a session
-# ------------------------------------------------------------------
-async def _get_other_agent_members(session_id: str, exclude_agent_id: str) -> list[str]:
-    """Get all agent member IDs in a session except the specified one."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(ChatSessionMember.member_id).where(
-                ChatSessionMember.session_id == session_id,
-                ChatSessionMember.member_type == "agent",
-                ChatSessionMember.member_id != exclude_agent_id,
-            )
-        )
-        return [row[0] for row in result.fetchall()]
+

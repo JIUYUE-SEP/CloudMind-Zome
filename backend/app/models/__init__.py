@@ -11,6 +11,7 @@ from .chat import ChatSession, ChatMessage, ChatSessionMember
 from .actions import Action, ActionRun
 from .commissions import Commission, CommissionLog
 from .compute import ComputeProvider, ComputeUsage
+from .models import LLMModel
 from .approvals import Approval
 from .notifications import Notification
 from .settings import Setting
@@ -32,6 +33,7 @@ __all__ = [
     "CommissionLog",
     "ComputeProvider",
     "ComputeUsage",
+    "LLMModel",
     "Approval",
     "Notification",
     "Setting",

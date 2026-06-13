@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy import (
     DateTime,
@@ -15,8 +15,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Boolean,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, _uuid, _utc_now
 
@@ -24,13 +25,13 @@ from .base import Base, _uuid, _utc_now
 class ComputeProvider(Base):
     __tablename__ = "compute_providers"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     config: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
     quota_total: Mapped[int] = mapped_column(Integer, default=0)
     quota_used: Mapped[int] = mapped_column(Integer, default=0)
@@ -41,6 +42,25 @@ class ComputeProvider(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utc_now, onupdate=_utc_now
+    )
+
+    # --- Provider 级新增字段（网络/认证）---
+    base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    auth_mode: Mapped[str] = mapped_column(String(16), default="api_key")
+    custom_headers: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    request_timeout: Mapped[float] = mapped_column(Float, default=120.0)
+    max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    rate_limit_qpm: Mapped[int] = mapped_column(Integer, default=0)
+    require_api_key: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # 关系：一对多 → LLMModel
+    models: Mapped[List["LLMModel"]] = relationship(
+        "LLMModel",
+        back_populates="provider",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
 
     __table_args__ = (

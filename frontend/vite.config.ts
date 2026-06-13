@@ -9,6 +9,44 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  build: {
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // Group async-loaded page components to avoid too many tiny chunks.
+          if (id.includes('src/components/viewer/')) return 'chunk-viewers'
+          if (
+            id.includes('src/views/SelfImageView.vue') ||
+            id.includes('src/views/UserProfileView.vue') ||
+            id.includes('src/components/ActionCenter.vue') ||
+            id.includes('src/components/ActionEdit.vue') ||
+            id.includes('src/components/AgentEdit.vue') ||
+            id.includes('src/components/ComputeCenter.vue') ||
+            id.includes('src/components/CommissionCenter.vue') ||
+            id.includes('src/components/ApprovalLog.vue')
+          ) {
+            return 'chunk-pages'
+          }
+
+          if (id.includes('node_modules')) {
+            if (id.includes('@pixiv/three-vrm')) return 'chunk-vrm'
+            if (id.includes('/three/')) return 'chunk-three'
+            if (id.includes('@tauri-apps')) return 'chunk-tauri'
+            if (
+              id.includes('highlight.js') ||
+              id.includes('marked') ||
+              id.includes('dompurify')
+            ) {
+              return 'chunk-markdown'
+            }
+            if (id.includes('live2d')) return 'chunk-live2d'
+            if (id.includes('vue') || id.includes('pinia')) return 'chunk-vendor'
+          }
+        },
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

@@ -15,31 +15,15 @@ from typing import Any, AsyncIterator
 
 from sqlalchemy import select
 from engine.provider.transport import ChatCompletionsTransport
-from engine.provider.thinking.deepseek import DeepSeekThinkingProfile
-from engine.provider.thinking.glm import GLMThinkingProfile
-from engine.provider.thinking.kimicode import KimiCodeThinkingProfile
-from engine.provider.thinking.mimo import MiMoThinkingProfile
 from engine.session.store import SessionStore
 from engine.config.loader import load_config
 from engine.config.models import AppConfig
 
-from ..models import Agent, ComputeProvider
+from ..models import Agent
 from .job_queue import AgentJob
 from .agent_worker import dispatch_job
 
 logger = logging.getLogger(__name__)
-
-_PROFILE_MAP = {
-    "deepseek": DeepSeekThinkingProfile,
-    "mimo": MiMoThinkingProfile,
-    "kimicode": KimiCodeThinkingProfile,
-    "glm": GLMThinkingProfile,
-    "openai": DeepSeekThinkingProfile,
-}
-
-def _decrypt_key(enc: str) -> str:
-    import base64
-    return base64.b64decode(enc.encode()).decode()
 
 
 def _engine_state() -> dict:
@@ -191,43 +175,34 @@ class EngineBridge:
     async def _build_transport(self, agent_row: Agent) -> ChatCompletionsTransport | None:
         """Kept for compatibility; Worker builds its own transport."""
         from ..database import AsyncSessionLocal
-        model_cfg: dict = agent_row.model_config or {}
-        provider_id = model_cfg.get("provider_id")
-        provider_type = (model_cfg.get("provider") or "deepseek").lower()
-        model_name = model_cfg.get("model") or "deepseek-v4-pro"
+        from .provider_resolver import resolve_provider_credentials
+
+        # Prefer new fields, fallback to legacy model_config
+        prov_id = agent_row.provider_id or ""
+        model_name = agent_row.model_id or ""
+        prov_type = ""
+
+        if not prov_id or not model_name:
+            model_cfg: dict = agent_row.model_config or {}
+            prov_id = model_cfg.get("provider_id", prov_id)
+            model_name = model_cfg.get("model", model_name) or "deepseek-v4-pro"
+            prov_type = (model_cfg.get("provider") or "deepseek").lower()
 
         async with AsyncSessionLocal() as db:
-            if provider_id:
-                result = await db.execute(
-                    select(ComputeProvider).where(
-                        ComputeProvider.id == provider_id,
-                        ComputeProvider.status == "active",
-                    ).limit(1)
-                )
-            else:
-                result = await db.execute(
-                    select(ComputeProvider).where(
-                        ComputeProvider.provider_type == provider_type,
-                        ComputeProvider.status == "active",
-                    ).limit(1)
-                )
-            prov_row: ComputeProvider | None = result.scalars().first()
+            creds = await resolve_provider_credentials(db, prov_id, model_name)
 
-        if not prov_row:
-            logger.error("No active ComputeProvider for agent %s (provider_id=%s, type=%s)", agent_row.id, provider_id, provider_type)
+        if not creds:
+            logger.error("No active ComputeProvider for agent %s (provider_id=%s)", agent_row.id, prov_id)
             return None
 
-        base_url = (prov_row.config or {}).get("base_url", "")
-        api_key = _decrypt_key(prov_row.api_key_encrypted) if prov_row.api_key_encrypted else ""
-
-        if not api_key:
-            logger.error("No API key for provider %s", prov_row.id)
-            return None
-
-        profile_cls = _PROFILE_MAP.get(provider_type, DeepSeekThinkingProfile)
-        return ChatCompletionsTransport(
-            base_url=base_url,
-            api_key=api_key,
-            model=model_name,
-            thinking_profile=profile_cls(),
+        effective_type = creds.provider_type or prov_type
+        from engine.provider.factory import build_transport
+        return await build_transport(
+            effective_type,
+            model_name,
+            lambda _t: {"base_url": creds.base_url, "api_key": creds.api_key or ""},
+            auth_mode=creds.auth_mode,
+            custom_headers=creds.custom_headers,
+            request_timeout=creds.request_timeout,
+            max_retries=creds.max_retries,
         )

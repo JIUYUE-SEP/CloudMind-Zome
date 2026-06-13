@@ -31,9 +31,10 @@ from ..context.embedder import Embedder
 from ..context.vector_store import AgentMemoryStore
 from ..config.models import AppConfig
 from ..session.store import SessionStore
-from ..error.classifier import classify_error
-from ..error.retry import get_retry_delay, RetryConfig
+from ..error.classifier import classify_error, ClassifiedError, FailoverReason
 from ..error.fallback import FallbackChain
+from ..provider.retry import RetryConfig, call_with_retry
+from ..error.fallback import FallbackNode
 from ..memory.base import MemorySystem
 from ..memory.registry import create_memory_system
 
@@ -65,6 +66,12 @@ class ReActAgent(AgentBase):
         memory_store: AgentMemoryStore | None = None,
         model_config: dict | None = None,
         codename: str = "",
+        allowed_paths: list[str] | None = None,
+        toolsets: list[str] | None = None,
+        enabled_skills: list[str] | None = None,
+        enable_semantic_search: bool = True,
+        enable_image_generation: bool = True,
+        enable_topic_compression: bool = True,
     ):
         super().__init__(name=name, session_id="", config=config)
 
@@ -73,15 +80,32 @@ class ReActAgent(AgentBase):
         self.model = model
         self.toolkit = toolkit
         self.session_store = session_store
-        self.embedder = embedder
+        self.enable_semantic_search = enable_semantic_search
+        self.enable_image_generation = enable_image_generation
+        self.enable_topic_compression = enable_topic_compression
+        self.embedder = embedder if self.enable_semantic_search else None
         self.memory_store = memory_store
         self.model_config = model_config or {}
+        self.allowed_paths = allowed_paths or []
+        self.toolsets = toolsets
+        self.enabled_skills = enabled_skills or []
+
+        # Resolve memory path (configurable via model_config)
+        try:
+            from app.database import WORKSPACE_ROOT
+        except ImportError:
+            from pathlib import Path
+            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+        memory_path = self.model_config.get("memory_file_path") or str(WORKSPACE_ROOT / self.agent_id / "MEMORY.md")
 
         # Create memory system if not provided
         if memory_system is None:
-            mem_cfg = "simple"
+            mem_cfg = "topic_compression" if self.enable_topic_compression else "simple"
             if config and config.agent:
-                mem_cfg = getattr(config.agent, "memory_system", "simple") or "simple"
+                mem_cfg = getattr(config.agent, "memory_system", mem_cfg) or mem_cfg
+                if not self.enable_topic_compression and mem_cfg == "topic_compression":
+                    logger.warning("Topic compression disabled for agent %s; forcing simple memory", self.agent_id)
+                    mem_cfg = "simple"
             try:
                 memory_system = create_memory_system(mem_cfg, agent=self, config=config)
             except Exception as e:
@@ -89,13 +113,24 @@ class ReActAgent(AgentBase):
                 memory_system = create_memory_system("simple", agent=self, config=config)
         self.memory_system = memory_system
 
-        # Error recovery: fallback_chain from agent model_config
-        fb_chain_raw: list[dict] = self.model_config.get("fallback_chain") or []
-        fb_names = [
-            item.get("provider", "deepseek") if isinstance(item, dict) else str(item)
-            for item in fb_chain_raw
-        ]
-        self._fallback = FallbackChain(fb_names)
+        # Error recovery: fallback_chain from agent config.
+        # Always include the primary model as the first fallback node so that
+        # _fallback.current_node is never empty, even when no explicit chain is configured.
+        fb_chain_raw: list[dict] = (
+            (self.model_config.get("fallback_chain") or [])
+            if self.model_config else []
+        )
+        from ..error.fallback import _parse_fallback_chain
+        fb_nodes = _parse_fallback_chain(fb_chain_raw)
+        if not fb_nodes:
+            # Derive a minimal node from the primary transport when possible.
+            primary_node = FallbackNode(
+                provider_id=getattr(model, "base_url", "primary"),
+                model_id=getattr(model, "model", ""),
+                display_name="primary",
+            )
+            fb_nodes = [primary_node]
+        self._fallback = FallbackChain(fb_nodes)
         self._transports = fallback_transports or {}
         self._current_transport = model
         self._retry_config = RetryConfig()
@@ -118,6 +153,8 @@ class ReActAgent(AgentBase):
             agent_id=self.agent_id,
             agent_name=self.name,
             codename=self.codename,
+            memory_path=memory_path,
+            enabled_skills=self.enabled_skills,
         )
 
     # ------------------------------------------------------------------
@@ -302,6 +339,9 @@ class ReActAgent(AgentBase):
         except Exception as e:
             logger.warning("Memory system check_compression failed: %s", e)
 
+        # Build time tag for the latest user message
+        time_tag = await self._build_time_tag()
+
         # ReAct loop
         while True:
             self.smart_stop.increment_turn()
@@ -311,13 +351,14 @@ class ReActAgent(AgentBase):
 
             # Build personality description for group chat
             personality_desc = ""
+            mention_desc = ""
             if source != "private" and self.model_config:
                 personality = (self.model_config.get("personality") or {})
                 if personality:
                     from ..personality.prompt_builder import personality_to_prompt
                     personality_desc = personality_to_prompt(personality)
-                    if is_mentioned:
-                        personality_desc += "\n\n【注意】有人在群聊中 @了你（提到了你的名字），请认真考虑是否要回复。"
+                if is_mentioned:
+                    mention_desc = "【注意】有人在群聊中 @了你（提到了你的名字），请认真考虑是否要回复。"
 
             # Lazy-init pipeline
             if not hasattr(self, "_context_pipeline"):
@@ -340,10 +381,12 @@ class ReActAgent(AgentBase):
                     source_id=source_id,
                     source_name=source_name,
                     personality_desc=personality_desc,
+                    mention_desc=mention_desc,
+                    time_tag=time_tag,
                 )
             except Exception as e:
                 logger.warning("ContextPipeline failed, falling back to legacy build: %s", e)
-                messages = self._msg_builder.build(self._messages, scene_info, mind_context)
+                messages = self._msg_builder.build(self._messages, scene_info, mind_context, time_tag=time_tag)
                 try:
                     messages = await self.memory_system.before_llm(messages)
                 except Exception as e2:
@@ -374,6 +417,11 @@ class ReActAgent(AgentBase):
             except Exception as e:
                 logger.error("LLM stream failed after all retries and fallbacks: %s", e)
                 yield AgentEvent(type="error", data=TextBlock(text=str(e)))
+                yield AgentEvent(type="done")
+                return
+
+            if not content_parts and not reasoning_parts and not tool_calls:
+                # Empty stream: treat as a non-retryable failure for this turn.
                 yield AgentEvent(type="done")
                 return
 
@@ -529,10 +577,26 @@ class ReActAgent(AgentBase):
                 return tool_name == "stay_silent" or "[stay_silent]" in str(tool_result.content)
 
             if parallel and len(valid_tool_calls) > 1:
-                tasks = [self._execute_tool(tc) for tc in valid_tool_calls]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                from ..tool.registry import TOOL_EXECUTOR_MAX_WORKERS
+                if len(valid_tool_calls) > TOOL_EXECUTOR_MAX_WORKERS:
+                    logger.warning(
+                        "Agent %s parallel tool batch size (%d) exceeds executor max_workers (%d); "
+                        "splitting into chunks to avoid timeout under queueing.",
+                        self.agent_id,
+                        len(valid_tool_calls),
+                        TOOL_EXECUTOR_MAX_WORKERS,
+                    )
 
-                for tc, result in zip(valid_tool_calls, results):
+                # Execute in chunks so queueing time inside ThreadPoolExecutor
+                # does not steal from the per-tool asyncio.wait_for timeout.
+                all_results: list[Any] = []
+                for i in range(0, len(valid_tool_calls), TOOL_EXECUTOR_MAX_WORKERS):
+                    chunk = valid_tool_calls[i:i + TOOL_EXECUTOR_MAX_WORKERS]
+                    tasks = [self._execute_tool(tc) for tc in chunk]
+                    chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+                    all_results.extend(chunk_results)
+
+                for tc, result in zip(valid_tool_calls, all_results):
                     tool_name = tc.get("name", "")
                     if isinstance(result, Exception):
                         tool_result = ToolResultBlock(
@@ -610,57 +674,57 @@ class ReActAgent(AgentBase):
         messages: list[Message],
         tools: list[dict],
     ) -> AsyncIterator[ContentBlock]:
-        """Stream LLM response with retry and provider fallback.
+        """Stream LLM response with unified retry and provider fallback.
 
-        Yields ContentBlock as they arrive from the API.
-        On retry/fallback, re-opens the stream from the new provider.
+        Yields ContentBlock as they arrive from the API.  When a retryable error
+        occurs, the transport's stream() is re-invoked and already-yielded chunks
+        are discarded (conservative resume).  When retries are exhausted for the
+        current provider, the fallback chain switches to the next provider.
         """
-        attempt = 0
-        last_error: Exception | None = None
+        async def _do_stream() -> AsyncIterator[ContentBlock]:
+            async for block in self._current_transport.stream(messages, tools):
+                yield block
 
         while True:
+            current_node = self._fallback.current_node
+
             try:
-                async for block in self._current_transport.stream(messages, tools):
+                # Unified retry on a single-shot streaming call.
+                # Because call_with_retry expects a coroutine, we collect the
+                # stream into an async generator wrapper that raises on failure.
+                async def _stream_once() -> list[ContentBlock]:
+                    blocks: list[ContentBlock] = []
+                    async for block in self._current_transport.stream(messages, tools):
+                        blocks.append(block)
+                    return blocks
+
+                blocks = await call_with_retry(
+                    _stream_once,
+                    config=self._retry_config,
+                )
+                for block in blocks:
                     yield block
                 return
             except Exception as e:
-                last_error = e
-                current_provider = self._fallback.current_provider
-                classified = classify_error(e, provider=current_provider)
-
-                if classified.retryable:
-                    delay = get_retry_delay(
-                        classified.reason.value, attempt, self._retry_config
-                    )
-                    if delay >= 0:
-                        logger.warning(
-                            "LLM stream failed on %s (attempt %d, %s), "
-                            "retrying in %.1fs: %s",
-                            current_provider,
-                            attempt,
-                            classified.reason.value,
-                            delay,
-                            e,
-                        )
-                        await asyncio.sleep(delay)
-                        attempt += 1
-                        continue
+                classified = classify_error(
+                    e,
+                    provider=current_node.display_name or current_node.provider_id,
+                )
 
                 if self._fallback.should_fallback(classified):
-                    old_provider = current_provider
-                    next_provider = self._fallback.fallback()
-                    if next_provider and next_provider in self._transports:
+                    old_node = current_node
+                    next_node = self._fallback.fallback()
+                    if next_node and next_node.key in self._transports:
                         logger.warning(
                             "Falling back from %s to %s (%s)",
-                            old_provider,
-                            next_provider,
+                            old_node.display_name or old_node.provider_id,
+                            next_node.display_name or next_node.provider_id,
                             classified.reason.value,
                         )
-                        self._current_transport = self._transports[next_provider]
-                        attempt = 0
+                        self._current_transport = self._transports[next_node.key]
                         continue
 
-                raise last_error
+                raise
 
     async def _execute_tool(self, tool_call: dict) -> ToolResultBlock:
         """Execute a single tool call with error handling."""
@@ -678,7 +742,9 @@ class ReActAgent(AgentBase):
             )
 
         from ..tools.comms.context import set_current_agent_id
+        from ..tools.file.security import set_agent_allowed_paths
         set_current_agent_id(self.agent_id)
+        set_agent_allowed_paths(self.allowed_paths)
         try:
             result = await self.toolkit.execute(tool_name, arguments)
             max_chars = self.toolkit.get_tool(tool_name).get("max_result_chars", 12000)
@@ -710,8 +776,15 @@ class ReActAgent(AgentBase):
         return messages
 
     async def _get_tools(self) -> list[dict]:
-        """Get tool schemas for the LLM request."""
-        return self.toolkit.get_schemas()
+        """Get tool schemas for the LLM request.
+
+        Filters by the agent's configured toolsets.  Default is [] which means
+        pure-chat mode (no tools exposed to the LLM).
+        """
+        toolsets = self.toolsets
+        if toolsets is None and self.config and self.config.tools:
+            toolsets = self.config.tools.toolsets
+        return self.toolkit.get_schemas(toolsets=toolsets)
 
     async def _parse_mixed_content(self, text: str) -> list[ContentBlock]:
         """Parse mixed content like '[image:/uploads/...]\\nHello' into blocks."""
@@ -791,6 +864,46 @@ class ReActAgent(AgentBase):
             "Only the first part is shown to save context space.]"
         )
         return truncated
+
+    async def _build_time_tag(self) -> str:
+        """Build time tag like [06-10 08:12 Wed | +3h22m] for the latest turn.
+
+        Uses Asia/Shanghai (UTC+8) for display; interval is computed against
+        the UTC timestamp stored in the database.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        tz_sh = timezone(timedelta(hours=8))
+        now = datetime.now(tz_sh)
+        weekday_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][now.weekday()]
+        date_str = now.strftime("%m-%d %H:%M ") + weekday_en
+
+        last_ts: float | None = None
+        if self.session_store:
+            try:
+                # offset=1 skips the message just saved in this turn
+                last_ts = await self.session_store.get_agent_last_message_timestamp(
+                    self.agent_id, offset=1
+                )
+            except Exception as exc:
+                logger.debug("Failed to get last message timestamp: %s", exc)
+
+        if last_ts is None:
+            gap_str = "首次对话"
+        else:
+            diff = max(0.0, now.timestamp() - last_ts)
+            hours = int(diff // 3600)
+            minutes = int((diff % 3600) // 60)
+            if hours > 0 and minutes > 0:
+                gap_str = f"+{hours}h{minutes}m"
+            elif hours > 0:
+                gap_str = f"+{hours}h"
+            elif minutes > 0:
+                gap_str = f"+{minutes}m"
+            else:
+                gap_str = "<1m"
+
+        return f"[{date_str} | {gap_str}]"
 
     def _load_mind_files(self) -> str:
         """Read mind files every turn so edits on disk are reflected immediately.

@@ -267,16 +267,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useAgentsStore } from '@/stores/agents'
 import { api } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
 import ChatView from '@/components/ChatView.vue'
 import GroupChatView from '@/components/GroupChatView.vue'
-import PortraitViewer from '@/components/viewer/PortraitViewer.vue'
-import Live2DViewer from '@/components/viewer/Live2DViewer.vue'
-import VRMViewer from '@/components/viewer/VRMViewer.vue'
+
+const PortraitViewer = defineAsyncComponent(() => import('@/components/viewer/PortraitViewer.vue'))
+const Live2DViewer = defineAsyncComponent(() => import('@/components/viewer/Live2DViewer.vue'))
+const VRMViewer = defineAsyncComponent(() => import('@/components/viewer/VRMViewer.vue'))
 
 const chat = useChatStore()
 const agents = useAgentsStore()

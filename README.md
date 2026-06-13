@@ -232,6 +232,15 @@ MindCloud-Zome/
 
 ---
 
+### 运行测试
+
+```bash
+cd backend
+python -m pytest tests/ -q
+```
+
+---
+
 ## 路线图
 
 - [x] 私聊 / 群聊系统

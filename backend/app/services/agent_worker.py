@@ -72,6 +72,9 @@ class AgentWorker:
                 self._running = False
                 return
 
+            # Resolve provider config: prefer new independent fields, fallback to model_config
+            prov_id, model_name, prov_type = await self._resolve_model_config()
+
             # Build transport (reused; lazy-build if provider missing)
             transport = await self._build_transport()
             if transport is None:
@@ -79,45 +82,131 @@ class AgentWorker:
                 self._running = False
                 return
 
-            # Resolve marker provider credentials and merge into model_config
+            # Capability kill-switches default to True
+            enable_semantic_search = bool(getattr(self.agent_row, "semantic_search_enabled", True))
+            enable_image_generation = bool(getattr(self.agent_row, "image_generation_enabled", True))
+            enable_topic_compression = bool(getattr(self.agent_row, "topic_compression_enabled", True))
+
             model_cfg = dict(self.agent_row.model_config or {})
+
+            # Resolve marker provider credentials (best-effort; failure disables topic compression)
             marker_cfg = model_cfg.get("marker") or {}
-            marker_provider_id = marker_cfg.get("provider_id")
-            main_provider_type = (model_cfg.get("provider") or "deepseek").lower()
-            main_model = model_cfg.get("model") or "deepseek-v4-pro"
+            marker_provider_id = self.agent_row.marker_provider_id or marker_cfg.get("provider_id")
+            marker_model_id = self.agent_row.marker_model_id or marker_cfg.get("model")
 
-            if marker_provider_id:
-                marker_creds = await self._resolve_provider(provider_id=marker_provider_id)
-            else:
-                main_provider_id = model_cfg.get("provider_id")
-                marker_creds = await self._resolve_provider(
-                    provider_id=main_provider_id, provider_type=main_provider_type
-                )
+            if enable_topic_compression and marker_provider_id:
+                try:
+                    from .provider_resolver import resolve_provider_credentials
+                    async with AsyncSessionLocal() as db:
+                        marker_creds = await resolve_provider_credentials(
+                            db, marker_provider_id, marker_model_id
+                        )
+                    if marker_creds:
+                        model_cfg.setdefault("marker", {})
+                        model_cfg["marker"]["provider"] = prov_type
+                        model_cfg["marker"]["api_key"] = marker_creds.api_key or ""
+                        model_cfg["marker"]["base_url"] = marker_creds.base_url
+                        model_cfg["marker"]["model"] = marker_creds.model_id or model_name
+                    else:
+                        logger.warning("Agent %s marker credentials unresolved; topic compression disabled", self.agent_id)
+                        enable_topic_compression = False
+                except Exception as e:
+                    logger.warning("Agent %s marker config failed; topic compression disabled: %s", self.agent_id, e)
+                    enable_topic_compression = False
 
-            if marker_creds:
-                model_cfg.setdefault("marker", {})
-                model_cfg["marker"]["provider"] = marker_cfg.get("provider") or main_provider_type
-                model_cfg["marker"]["api_key"] = marker_creds["api_key"]
-                model_cfg["marker"]["base_url"] = marker_creds["base_url"]
-
-            # Build fallback transports from Agent.model_config.fallback_chain
+            # Build fallback transports from Agent.fallback_chain (new field) or model_config
             fallback_transports: dict[str, ChatCompletionsTransport] = {}
-            fb_chain_raw: list[dict] = model_cfg.get("fallback_chain") or []
+            fb_chain_raw: list[dict] = (
+                (self.agent_row.fallback_chain or [])
+                or model_cfg.get("fallback_chain")
+                or []
+            )
+
+            from .provider_resolver import resolve_provider_credentials
+            from engine.provider.factory import build_transport
+
             for fb_item in fb_chain_raw:
                 if not isinstance(fb_item, dict):
                     continue
                 fb_prov_id = fb_item.get("provider_id")
-                fb_model = fb_item.get("model") or main_model
-                fb_type = fb_item.get("provider") or main_provider_type
-                fb_creds = await self._resolve_provider(provider_id=fb_prov_id, provider_type=fb_type)
-                if fb_creds and fb_creds.get("api_key") and fb_creds.get("base_url"):
-                    from engine.provider.factory import build_transport
-                    fb_transport = await build_transport(fb_type, fb_model, lambda _t: fb_creds)
+                fb_model = fb_item.get("model") or fb_item.get("model_id") or model_name
+                fb_type = fb_item.get("provider") or prov_type
+
+                async with AsyncSessionLocal() as db:
+                    fb_creds = await resolve_provider_credentials(db, fb_prov_id or "")
+                    if not fb_creds:
+                        # Legacy fallback: try by provider type
+                        fb_creds = await resolve_provider_credentials(db, fb_type)
+
+                if fb_creds and fb_creds.api_key and fb_creds.base_url:
+                    fb_transport = await build_transport(
+                        fb_creds.provider_type,
+                        fb_model,
+                        lambda _t, c=fb_creds: {"base_url": c.base_url, "api_key": c.api_key},
+                        auth_mode=fb_creds.auth_mode,
+                        custom_headers=fb_creds.custom_headers,
+                        request_timeout=fb_creds.request_timeout,
+                        max_retries=fb_creds.max_retries,
+                    )
                     if fb_transport:
-                        fallback_transports[fb_type] = fb_transport
-                        logger.info("Built fallback transport for %s (%s)", fb_type, fb_model)
+                        fb_key = f"{fb_creds.provider_id}::{fb_model}"
+                        fallback_transports[fb_key] = fb_transport
+                        logger.info("Built fallback transport for %s (%s)", fb_key, fb_model)
                 else:
                     logger.warning("Failed to resolve fallback provider %s", fb_prov_id or fb_type)
+
+            # ---- Build agent-level embedder ----
+            from engine.context.embedder import Embedder
+            embedder = None
+            if enable_semantic_search and self.agent_row.embedder_provider_id and self.agent_row.embedder_model_id:
+                try:
+                    async with AsyncSessionLocal() as db:
+                        emb_creds = await resolve_provider_credentials(
+                            db, self.agent_row.embedder_provider_id, self.agent_row.embedder_model_id
+                        )
+                    if emb_creds and emb_creds.base_url and emb_creds.api_key:
+                        embedder = Embedder(
+                            base_url=emb_creds.base_url,
+                            api_key=emb_creds.api_key,
+                            model=self.agent_row.embedder_model_id,
+                        )
+                        logger.info("Agent %s embedder ready (%s)", self.agent_id, self.agent_row.embedder_model_id)
+                    else:
+                        logger.warning("Agent %s embedder credentials incomplete; semantic search disabled", self.agent_id)
+                        enable_semantic_search = False
+                except Exception as e:
+                    logger.warning("Agent %s embedder build failed; semantic search disabled: %s", self.agent_id, e)
+                    enable_semantic_search = False
+            else:
+                if enable_semantic_search:
+                    logger.info("Agent %s has no embedder configured; semantic search disabled", self.agent_id)
+                enable_semantic_search = False
+
+            # ---- Inject agent-level image generation config ----
+            if enable_image_generation and self.agent_row.imagegen_provider_id and self.agent_row.imagegen_model_id:
+                try:
+                    async with AsyncSessionLocal() as db:
+                        img_creds = await resolve_provider_credentials(
+                            db, self.agent_row.imagegen_provider_id, self.agent_row.imagegen_model_id
+                        )
+                    if img_creds and img_creds.base_url and img_creds.api_key:
+                        from engine.tools.web.image_gen_context import set_image_gen_config_for_agent
+                        set_image_gen_config_for_agent(self.agent_id, {
+                            "base_url": img_creds.base_url,
+                            "model": self.agent_row.imagegen_model_id,
+                            "api_key": img_creds.api_key,
+                        })
+                        logger.info("Agent %s image-gen ready (%s)", self.agent_id, self.agent_row.imagegen_model_id)
+                    else:
+                        logger.warning("Agent %s image-gen credentials incomplete; image generation disabled", self.agent_id)
+                        enable_image_generation = False
+                except Exception as e:
+                    logger.warning("Agent %s image-gen config failed; image generation disabled: %s", self.agent_id, e)
+                    enable_image_generation = False
+            else:
+                if enable_image_generation:
+                    logger.info("Agent %s has no image-gen configured; image generation disabled", self.agent_id)
+                enable_image_generation = False
 
             # Create the single ReActAgent instance
             from ..main import _app_state as _state
@@ -129,11 +218,17 @@ class AgentWorker:
                 session_store=_state["session_store"],
                 agent_id=self.agent_id,
                 config=app_config,
-                embedder=_state.get("embedder"),
+                embedder=embedder,
                 memory_store=_state.get("memory_store"),
                 model_config=model_cfg,
                 fallback_transports=fallback_transports,
                 codename=self.agent_row.codename or self.agent_row.name,
+                allowed_paths=self.agent_row.allowed_paths or [],
+                toolsets=self.agent_row.toolsets or [],
+                enabled_skills=self.agent_row.enabled_skills or [],
+                enable_semantic_search=enable_semantic_search,
+                enable_image_generation=enable_image_generation,
+                enable_topic_compression=enable_topic_compression,
             )
 
             logger.info("AgentWorker started for %s (%s)", self.agent_row.name, self.agent_id)
@@ -189,6 +284,12 @@ class AgentWorker:
         # Signal the current job to stop so stream loops can exit early
         if self._current_job:
             self._current_job.stop_event.set()
+        # Clean up agent-scoped image gen config
+        try:
+            from engine.tools.web.image_gen_context import remove_image_gen_config_for_agent
+            remove_image_gen_config_for_agent(self.agent_id)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Job execution
@@ -347,63 +448,71 @@ class AgentWorker:
         except Exception:
             pass
 
-    async def _resolve_provider(
-        self,
-        provider_id: str | None = None,
-        provider_type: str | None = None,
-    ) -> dict | None:
-        """Resolve provider credentials from ComputeProvider table."""
-        from ..models import ComputeProvider
-        async with AsyncSessionLocal() as db:
-            if provider_id:
+    async def _resolve_model_config(self) -> tuple[str, str, str]:
+        """Return (provider_id, model_name, provider_type).
+
+        Prefer new independent fields; fallback to legacy model_config JSON.
+        If legacy config only has provider name (not id), resolve id from DB.
+        """
+        # New fields
+        prov_id = self.agent_row.provider_id or ""
+        model_name = self.agent_row.model_id or ""
+        prov_type = ""
+
+        if prov_id and model_name:
+            return prov_id, model_name, prov_type
+
+        # Legacy fallback
+        model_cfg: dict = self.agent_row.model_config or {}
+        prov_id = model_cfg.get("provider_id", prov_id)
+        model_name = model_cfg.get("model", model_name) or "deepseek-v4-pro"
+        prov_type = (model_cfg.get("provider") or "deepseek").lower()
+
+        # Backward compat: old agents may have provider name without id
+        if not prov_id and prov_type:
+            from ..models import ComputeProvider
+            async with AsyncSessionLocal() as db:
                 result = await db.execute(
                     select(ComputeProvider).where(
-                        ComputeProvider.id == provider_id,
+                        ComputeProvider.provider_type == prov_type,
                         ComputeProvider.status == "active",
                     ).limit(1)
                 )
-            elif provider_type:
-                result = await db.execute(
-                    select(ComputeProvider).where(
-                        ComputeProvider.provider_type == provider_type,
-                        ComputeProvider.status == "active",
-                    ).limit(1)
-                )
-            else:
-                return None
-            prov = result.scalars().first()
+                prov = result.scalar_one_or_none()
+                if prov:
+                    prov_id = prov.id
+                    logger.info(
+                        "Resolved legacy provider name '%s' to id '%s' for agent %s",
+                        prov_type, prov_id, self.agent_id,
+                    )
 
-        if not prov:
-            return None
-
-        base_url = (prov.config or {}).get("base_url", "")
-        api_key = ""
-        if prov.api_key_encrypted:
-            import base64
-            try:
-                api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
-            except Exception:
-                api_key = prov.api_key_encrypted
-
-        if not api_key:
-            return None
-        return {"base_url": base_url, "api_key": api_key}
+        return prov_id, model_name, prov_type
 
     async def _build_transport(self) -> ChatCompletionsTransport | None:
         """Resolve provider credentials and build transport via engine factory."""
         if not self.agent_row:
             return None
 
-        model_cfg: dict = self.agent_row.model_config or {}
-        provider_id = model_cfg.get("provider_id")
-        provider_type = (model_cfg.get("provider") or "deepseek").lower()
-        model_name = model_cfg.get("model") or "deepseek-v4-pro"
+        prov_id, model_name, prov_type = await self._resolve_model_config()
 
-        async def _resolve(ptype: str) -> dict | None:
-            return await self._resolve_provider(provider_id=provider_id, provider_type=ptype)
+        from .provider_resolver import resolve_provider_credentials
+        async with AsyncSessionLocal() as db:
+            creds = await resolve_provider_credentials(db, prov_id, model_name)
+
+        if not creds:
+            logger.error("Cannot build transport: no credentials for provider %s", prov_id)
+            return None
 
         from engine.provider.factory import build_transport
-        return await build_transport(provider_type, model_name, _resolve)
+        return await build_transport(
+            creds.provider_type or prov_type,
+            model_name,
+            lambda _t: {"base_url": creds.base_url, "api_key": creds.api_key or ""},
+            auth_mode=creds.auth_mode,
+            custom_headers=creds.custom_headers,
+            request_timeout=creds.request_timeout,
+            max_retries=creds.max_retries,
+        )
 
 
 # ------------------------------------------------------------------

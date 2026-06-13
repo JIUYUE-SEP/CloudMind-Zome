@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Bounded thread pool for sync tools to prevent unbounded thread leakage
 # when wait_for timeout fires but the thread cannot be killed.
-_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool-")
+TOOL_EXECUTOR_MAX_WORKERS = 8
+_executor = ThreadPoolExecutor(max_workers=TOOL_EXECUTOR_MAX_WORKERS, thread_name_prefix="tool-")
 
 # Global tool registry instance
 tool_registry = None  # Will be initialized below
@@ -173,11 +174,23 @@ class ToolRegistry:
         """Get OpenAI function calling schemas for registered tools.
 
         Args:
-            toolsets: Only include tools from these toolsets. None = all.
+            toolsets: Only include tools from these toolsets.
+                None        -> return all (backward compatible)
+                []          -> return empty (pure-chat mode)
+                ["*"]       -> return all (convenience wildcard)
+                ["file"]    -> only tools in the "file" toolset
 
         Returns:
             List of OpenAI-format tool schemas.
         """
+        if toolsets is not None and "*" in toolsets:
+            toolsets = None
+
+        if toolsets is not None:
+            unknown = [t for t in toolsets if t not in {info["toolset"] for info in self._tools.values()}]
+            if unknown:
+                logger.warning("get_schemas() received unknown toolsets: %s", ", ".join(unknown))
+
         schemas = []
         for name, tool_info in self._tools.items():
             if toolsets is None or tool_info["toolset"] in toolsets:
@@ -208,17 +221,6 @@ class ToolRegistry:
         tool_info = self._tools.get(name)
         if tool_info is None:
             raise ToolNotFoundError(f"Tool '{name}' not found")
-
-        # Check if this is an MCP tool
-        if tool_info.get("_mcp_client"):
-            if not tool_info.get("_available", True):
-                raise ToolExecutionError(
-                    f"MCP server unavailable for tool '{name}'. "
-                    "Please check the server status."
-                )
-            client = tool_info["_mcp_client"]
-            tool_name = tool_info["_mcp_tool_name"]
-            return await client.call_tool(tool_name, arguments)
 
         func = tool_info["func"]
         timeout = tool_info.get("timeout") or 60

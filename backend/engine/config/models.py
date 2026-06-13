@@ -67,11 +67,11 @@ class ToolItemConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tools configuration."""
 
-    toolsets: list[str] = Field(default_factory=lambda: ["web", "file", "code"])
+    toolsets: list[str] = Field(default_factory=list)  # default: no tools (pure chat)
     max_result_chars: int = 50000
     safe_to_parallel_default: bool = True
     default_timeout: int = 60  # Default tool timeout in seconds
-    # MCP servers
+    # MCP servers (reserved, not yet implemented)
     mcp_servers: dict[str, ToolItemConfig] = Field(default_factory=dict)
 
 

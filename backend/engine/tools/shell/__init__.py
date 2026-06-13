@@ -23,6 +23,27 @@ _ALLOWED_COMMANDS = {
     "git", "npm", "yarn", "pip", "pip3", "ps", "df", "du",
 }
 
+# Dangerous git arguments / subcommands
+_GIT_FORBIDDEN_ARGS = {
+    "--exec-path",
+    "-c",
+    "--config",
+}
+_GIT_FORBIDDEN_SUBCOMMANDS = {
+    "hook",
+}
+
+# Dangerous npm subcommands / args
+_NPM_FORBIDDEN_SUBCOMMANDS = {
+    "run",
+    "exec",
+    "x",
+    "explore",
+}
+_NPM_REQUIRED_ARGS = [
+    "--ignore-scripts",
+]
+
 
 def _has_unquoted_metachar(command: str) -> bool:
     """Return True if command contains unquoted shell metacharacters.
@@ -51,14 +72,14 @@ def _has_unquoted_metachar(command: str) -> bool:
     return False
 
 
-def _sanitize_command(command: str) -> tuple[bool, str]:
+def _sanitize_command(command: str) -> tuple[bool, str, str, list[str]]:
     """Check if a shell command is safe to run.
 
-    Returns (ok, reason).
+    Returns (ok, reason, base_command, tokens).
     """
     stripped = command.strip()
     if not stripped:
-        return False, "empty command"
+        return False, "empty command", "", []
 
     # Reject any unquoted shell metacharacter (pipes, redirection, etc.)
     if _has_unquoted_metachar(stripped):
@@ -66,6 +87,8 @@ def _sanitize_command(command: str) -> tuple[bool, str]:
             False,
             "shell metacharacters (|, ;, &, <, >, $(), `) are not allowed; "
             "run a single simple command only",
+            "",
+            [],
         )
 
     # Extract the first token (the command name)
@@ -79,13 +102,13 @@ def _sanitize_command(command: str) -> tuple[bool, str]:
         break
 
     if not cmd_name:
-        return False, "cannot determine command name"
+        return False, "cannot determine command name", "", []
 
     # Strip any path prefix to get basename
     base = Path(cmd_name).name.lower()
 
     if base not in _ALLOWED_COMMANDS:
-        return False, f"command not in allow-list: {base}"
+        return False, f"command not in allow-list: {base}", base, tokens
 
     # Block python/python3 -c (arbitrary code execution bypass)
     if base in ("python", "python3"):
@@ -93,9 +116,27 @@ def _sanitize_command(command: str) -> tuple[bool, str]:
             return (
                 False,
                 "python -c is not allowed; use the python_execute tool instead",
+                base,
+                tokens,
             )
 
-    return True, ""
+    # Git parameter-level restrictions
+    if base == "git":
+        for forbidden in _GIT_FORBIDDEN_ARGS:
+            for tok in tokens:
+                if tok.startswith(forbidden):
+                    return False, f"git argument '{forbidden}' is not allowed", base, tokens
+        for forbidden in _GIT_FORBIDDEN_SUBCOMMANDS:
+            if forbidden in tokens:
+                return False, f"git subcommand '{forbidden}' is not allowed", base, tokens
+
+    # NPM parameter-level restrictions
+    if base == "npm":
+        for forbidden in _NPM_FORBIDDEN_SUBCOMMANDS:
+            if forbidden in tokens:
+                return False, f"npm subcommand '{forbidden}' is not allowed", base, tokens
+
+    return True, "", base, tokens
 
 
 @tool_registry.register(toolset="shell", max_result_chars=12000, safe_to_parallel=False, timeout=30)
@@ -113,15 +154,21 @@ def shell_command(command: str, timeout_seconds: int = 30) -> str:
         command: The shell command to run.
         timeout_seconds: Max execution time (default 30, max 120).
     """
-    safe, reason = _sanitize_command(command)
+    safe, reason, base, tokens = _sanitize_command(command)
     if not safe:
         return f"Error: security check failed — {reason}"
 
     timeout = max(1, min(timeout_seconds, 120))
 
+    # Build safe command string
+    safe_cmd = command
+    if base == "npm" and "--ignore-scripts" not in tokens:
+        # Inject --ignore-scripts right after 'npm' to prevent postinstall hooks
+        safe_cmd = "npm --ignore-scripts " + command[len("npm"):].lstrip()
+
     try:
         result = subprocess.run(
-            command,
+            safe_cmd,
             shell=True,
             capture_output=True,
             text=True,

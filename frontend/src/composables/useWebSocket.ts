@@ -55,8 +55,12 @@ export function useWebSocket() {
     }
 
     ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data)
-      routeMessage(msg)
+      try {
+        const msg = JSON.parse(event.data)
+        routeMessage(msg)
+      } catch {
+        return
+      }
     }
 
     ws.onclose = () => {
@@ -173,7 +177,8 @@ export function useWebSocket() {
   }
   function scheduleReconnect() {
     if (reconnectAttempts >= MAX_RECONNECT) {
-      pushLog({ type: 'error', source: 'WS', message: '重连次数已达上限' })
+      pushLog({ type: 'warn', source: 'WS', message: '达到最大重连次数，进入固定 30s 间隔重试' })
+      reconnectTimer = setTimeout(connect, 30000)
       return
     }
     reconnectAttempts++

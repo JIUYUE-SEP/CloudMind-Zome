@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_db, require_user
 from ..models import ComputeProvider, ComputeUsage, Setting, User
+from app.core.crypto import encrypt_value, decrypt_value
+from app.services.provider_migration import sync_provider_yaml, ProviderSyncError
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 
@@ -22,9 +28,16 @@ router = APIRouter(prefix="/compute", tags=["compute"])
 # ------------------------------------------------------------------
 class ProviderCreate(BaseModel):
     display_name: str
-    api_key: str
+    api_key: str = ""
     base_url: str = ""
     provider_type: Optional[str] = None
+    auth_mode: str = "api_key"
+    custom_headers: Optional[dict] = None
+    request_timeout: float = 120.0
+    max_retries: int = 3
+    rate_limit_qpm: int = 0
+    require_api_key: bool = True
+    description: Optional[str] = None
 
 
 def _detect_provider_type(base_url: str) -> str:
@@ -44,25 +57,18 @@ class ProviderUpdate(BaseModel):
     base_url: Optional[str] = None
     models: Optional[list[str]] = None
     status: Optional[str] = None
+    auth_mode: Optional[str] = None
+    custom_headers: Optional[dict] = None
+    request_timeout: Optional[float] = None
+    max_retries: Optional[int] = None
+    rate_limit_qpm: Optional[int] = None
+    require_api_key: Optional[bool] = None
+    description: Optional[str] = None
 
 
 class Resp(BaseModel):
     code: int = 0
     data: dict
-
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-def _encrypt_key(raw: str) -> str:
-    """MVP: simple obfuscation. Production: use AES-GCM with device key."""
-    import base64
-    return base64.b64encode(raw.encode()).decode()
-
-
-def _decrypt_key(enc: str) -> str:
-    import base64
-    return base64.b64decode(enc.encode()).decode()
 
 
 # ------------------------------------------------------------------
@@ -73,18 +79,44 @@ async def list_providers(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy.orm import selectinload
     result = await db.execute(
-        select(ComputeProvider).where(ComputeProvider.user_id == user.id)
+        select(ComputeProvider)
+        .where(ComputeProvider.user_id == user.id)
+        .options(selectinload(ComputeProvider.models))
     )
     items = []
     for p in result.scalars().all():
-        cfg = p.config or {}
+        model_objs = []
+        for m in p.models:
+            model_objs.append({
+                "id": m.id.split("::")[-1],
+                "display_name": m.display_name,
+                "model_type": m.model_type,
+                "context_window": m.context_window,
+                "max_output_tokens": m.max_output_tokens,
+                "supports_multimodal": m.supports_multimodal,
+                "supports_streaming": m.supports_streaming,
+                "supports_tool_calling": m.supports_tool_calling,
+                "supports_reasoning": m.supports_reasoning,
+                "is_default": m.is_default,
+                "status": m.status,
+            })
         items.append({
             "id": p.id,
             "provider_type": p.provider_type,
             "display_name": p.display_name,
-            "base_url": cfg.get("base_url", ""),
-            "models": cfg.get("models", []),
+            "base_url": p.base_url or (p.config or {}).get("base_url", ""),
+            "api_key": "********" if p.api_key_encrypted else "",
+            "has_api_key": bool(p.api_key_encrypted),
+            "models": model_objs,
+            "auth_mode": p.auth_mode,
+            "request_timeout": p.request_timeout,
+            "max_retries": p.max_retries,
+            "rate_limit_qpm": p.rate_limit_qpm,
+            "require_api_key": p.require_api_key,
+            "is_builtin": p.is_builtin,
+            "description": p.description,
             "quota_total": p.quota_total,
             "quota_used": p.quota_used,
             "quota_remaining": p.quota_remaining,
@@ -107,14 +139,40 @@ async def create_provider(
         user_id=user.id,
         provider_type=provider_type,
         display_name=body.display_name,
-        api_key_encrypted=_encrypt_key(body.api_key),
+        api_key_encrypted=encrypt_value(body.api_key) if body.api_key else "",
         config={"base_url": body.base_url, "models": []},
         status="active",
+        base_url=body.base_url,
+        auth_mode=body.auth_mode,
+        custom_headers=body.custom_headers or {},
+        request_timeout=body.request_timeout,
+        max_retries=body.max_retries,
+        rate_limit_qpm=body.rate_limit_qpm,
+        require_api_key=body.require_api_key,
+        description=body.description,
     )
     db.add(prov)
     await db.commit()
     await db.refresh(prov)
+    try:
+        sync_provider_yaml("upsert", prov)
+    except ProviderSyncError as exc:
+        logger.error("Provider create sync failed for %s: %s", prov.id, exc)
+        raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
     return Resp(data={"id": prov.id, "display_name": prov.display_name})
+
+
+def infer_model_type(model_id: str) -> str:
+    lower = model_id.lower()
+    DISCOVERY_RULES = [
+        (r"\b(ada-002|ada\b|text-embedding|embedding|embed|bge-|e5-|gte-|m3e-|m-e5|multilingual-e5|nv-embed)", "embedding"),
+        (r"\b(dall-e|flux|sdxl|stable-diffusion|midjourney|wanx|cogview|kling|imagen|playground|recraft|ideogram)", "image"),
+        (r"\b(whisper|sensevoice|sense|nova-|stt-|asr-|speech-to-text|speech)", "stt"),
+    ]
+    for pattern, t in DISCOVERY_RULES:
+        if re.search(pattern, lower):
+            return t
+    return "llm"
 
 
 @router.post("/providers/{provider_id}/test", response_model=Resp)
@@ -133,7 +191,7 @@ async def test_provider(
     if not prov:
         raise HTTPException(status_code=404)
 
-    api_key = _decrypt_key(prov.api_key_encrypted)
+    api_key = decrypt_value(prov.api_key_encrypted)
     base_url = (prov.config or {}).get("base_url", "")
 
     # Quick connectivity test via a cheap models.list call
@@ -151,10 +209,19 @@ async def test_provider(
             cfg["models"] = model_ids
             prov.config = cfg
             await db.commit()
+            discovered_models = [
+                {
+                    "id": m_id,
+                    "type_hint": infer_model_type(m_id),
+                }
+                for m_id in model_ids
+            ]
             return Resp(data={
                 "success": True,
                 "message": f"连接成功，发现 {len(models)} 个可用模型",
                 "model_count": len(models),
+                "discovered_models": discovered_models,
+                "models": model_ids,
             })
         else:
             return Resp(data={
@@ -172,11 +239,14 @@ async def update_provider(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy.orm import selectinload
     result = await db.execute(
-        select(ComputeProvider).where(
+        select(ComputeProvider)
+        .where(
             ComputeProvider.id == provider_id,
             ComputeProvider.user_id == user.id,
         )
+        .options(selectinload(ComputeProvider.models))
     )
     prov = result.scalar_one_or_none()
     if not prov:
@@ -184,19 +254,41 @@ async def update_provider(
 
     if body.display_name is not None:
         prov.display_name = body.display_name
-    if body.api_key is not None:
-        prov.api_key_encrypted = _encrypt_key(body.api_key)
-    if body.base_url is not None or body.models is not None:
+    # Preserve existing API key when frontend sends empty string or omits the field.
+    if body.api_key:
+        prov.api_key_encrypted = encrypt_value(body.api_key)
+    if body.base_url is not None:
+        prov.base_url = body.base_url
         cfg = dict(prov.config or {})
-        if body.base_url is not None:
-            cfg["base_url"] = body.base_url
-        if body.models is not None:
-            cfg["models"] = body.models
+        cfg["base_url"] = body.base_url
+        prov.config = cfg
+    if body.models is not None:
+        cfg = dict(prov.config or {})
+        cfg["models"] = body.models
         prov.config = cfg
     if body.status is not None:
         prov.status = body.status
+    if body.auth_mode is not None:
+        prov.auth_mode = body.auth_mode
+    if body.custom_headers is not None:
+        prov.custom_headers = body.custom_headers
+    if body.request_timeout is not None:
+        prov.request_timeout = body.request_timeout
+    if body.max_retries is not None:
+        prov.max_retries = body.max_retries
+    if body.rate_limit_qpm is not None:
+        prov.rate_limit_qpm = body.rate_limit_qpm
+    if body.require_api_key is not None:
+        prov.require_api_key = body.require_api_key
+    if body.description is not None:
+        prov.description = body.description
 
     await db.commit()
+    try:
+        sync_provider_yaml("upsert", prov)
+    except ProviderSyncError as exc:
+        logger.error("Provider update sync failed for %s: %s", prov.id, exc)
+        raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
     return Resp(data={"updated": True})
 
 
@@ -206,6 +298,7 @@ async def delete_provider(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from ..models import Agent
     result = await db.execute(
         select(ComputeProvider).where(
             ComputeProvider.id == provider_id,
@@ -216,6 +309,52 @@ async def delete_provider(
     if not prov:
         raise HTTPException(status_code=404)
 
+    # Refuse to delete built-in providers
+    if prov.is_builtin:
+        raise HTTPException(status_code=403, detail="Cannot delete built-in provider")
+
+    # Check agent references
+    refs = []
+    for col in ["provider_id", "marker_provider_id", "embedder_provider_id", "compressor_provider_id"]:
+        r = await db.execute(
+            select(Agent).where(
+                Agent.user_id == user.id,
+                getattr(Agent, col) == provider_id,
+            )
+        )
+        for a in r.scalars().all():
+            if a not in refs:
+                refs.append(a)
+
+    # Check fallback_chain JSON
+    r = await db.execute(
+        select(Agent).where(
+            Agent.user_id == user.id,
+            Agent.fallback_chain.isnot(None),
+        )
+    )
+    for a in r.scalars().all():
+        chain = a.fallback_chain or []
+        for item in chain:
+            if item.get("provider_id") == provider_id:
+                if a not in refs:
+                    refs.append(a)
+                break
+
+    if refs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Provider is referenced by agents",
+                "agents": [{"id": a.id, "name": a.name} for a in refs[:10]],
+            },
+        )
+
+    try:
+        sync_provider_yaml("delete", prov)
+    except ProviderSyncError as exc:
+        logger.error("Provider delete sync failed for %s: %s", prov.id, exc)
+        raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
     await db.delete(prov)
     await db.commit()
     return Resp(data={"deleted": True})
@@ -234,17 +373,8 @@ async def get_embedding_model(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the global embedding model config from settings table."""
-    result = await db.execute(
-        select(Setting).where(
-            Setting.user_id == user.id,
-            Setting.key == "embedding_model",
-        )
-    )
-    row = result.scalar_one_or_none()
-    if not row:
-        return Resp(data={"provider_id": None, "model": None})
-    return Resp(data=row.value or {"provider_id": None, "model": None})
+    """DEPRECATED: Embedding model is now agent-level. Return empty for backward compat."""
+    return Resp(data={"provider_id": None, "model": None})
 
 
 @router.put("/embedding-model", response_model=Resp)
@@ -253,40 +383,8 @@ async def set_embedding_model(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Save global embedding model config. Validate provider supports OpenAI-compatible /v1/embeddings."""
-    # Verify provider exists
-    prov_result = await db.execute(
-        select(ComputeProvider).where(
-            ComputeProvider.id == body.provider_id,
-            ComputeProvider.user_id == user.id,
-            ComputeProvider.status == "active",
-        )
-    )
-    prov = prov_result.scalar_one_or_none()
-    if not prov:
-        raise HTTPException(status_code=400, detail="Provider not found or inactive")
-
-    # Upsert into settings table
-    result = await db.execute(
-        select(Setting).where(
-            Setting.user_id == user.id,
-            Setting.key == "embedding_model",
-        )
-    )
-    row = result.scalar_one_or_none()
-    value = {"provider_id": body.provider_id, "model": body.model}
-    if row:
-        row.value = value
-    else:
-        row = Setting(
-            id=str(uuid.uuid4()),
-            user_id=user.id,
-            key="embedding_model",
-            value=value,
-        )
-        db.add(row)
-    await db.commit()
-    return Resp(data=value)
+    """DEPRECATED: Embedding model is now agent-level."""
+    return Resp(code=400, data={"message": "Embedding model is now configured per-agent. Use AgentEdit -> Compute tab."})
 
 
 @router.get("/image-gen", response_model=Resp)
@@ -294,17 +392,8 @@ async def get_image_gen_model(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the global image generation model config from settings table."""
-    result = await db.execute(
-        select(Setting).where(
-            Setting.user_id == user.id,
-            Setting.key == "image_gen",
-        )
-    )
-    row = result.scalar_one_or_none()
-    if not row:
-        return Resp(data={"provider_id": None, "model": None})
-    return Resp(data=row.value or {"provider_id": None, "model": None})
+    """DEPRECATED: Image generation is now agent-level. Return empty for backward compat."""
+    return Resp(data={"provider_id": None, "model": None})
 
 
 @router.put("/image-gen", response_model=Resp)
@@ -313,38 +402,8 @@ async def set_image_gen_model(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Save global image generation model config."""
-    prov_result = await db.execute(
-        select(ComputeProvider).where(
-            ComputeProvider.id == body.provider_id,
-            ComputeProvider.user_id == user.id,
-            ComputeProvider.status == "active",
-        )
-    )
-    prov = prov_result.scalar_one_or_none()
-    if not prov:
-        raise HTTPException(status_code=400, detail="Provider not found or inactive")
-
-    result = await db.execute(
-        select(Setting).where(
-            Setting.user_id == user.id,
-            Setting.key == "image_gen",
-        )
-    )
-    row = result.scalar_one_or_none()
-    value = {"provider_id": body.provider_id, "model": body.model}
-    if row:
-        row.value = value
-    else:
-        row = Setting(
-            id=str(uuid.uuid4()),
-            user_id=user.id,
-            key="image_gen",
-            value=value,
-        )
-        db.add(row)
-    await db.commit()
-    return Resp(data=value)
+    """DEPRECATED: Image generation is now agent-level."""
+    return Resp(code=400, data={"message": "Image generation is now configured per-agent. Use AgentEdit -> Compute tab."})
 
 
 @router.get("/usage", response_model=Resp)

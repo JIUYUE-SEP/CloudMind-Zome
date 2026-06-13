@@ -1,7 +1,9 @@
 """Read file tool."""
 
 from pathlib import Path
+
 from engine.tool.registry import tool_registry
+from .security import is_safe_path
 
 
 @tool_registry.register(toolset="file", max_result_chars=12000, safe_to_parallel=True)
@@ -12,6 +14,10 @@ def read_file(path: str, encoding: str = "utf-8") -> str:
         path: 文件路径
         encoding: 编码格式，默认utf-8
     """
+    ok, reason = is_safe_path(path, mode="read")
+    if not ok:
+        return f"Error: {reason}"
+
     try:
         content = Path(path).read_text(encoding=encoding)
         return content

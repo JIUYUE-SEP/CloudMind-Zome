@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -266,12 +267,14 @@ class TopicCompressionMemory(MemorySystem):
         # For now, skip round-based pruning; just check size on very old results
 
     async def check_compression(self) -> bool:
-        context_window = 128000  # Should come from agent config
+        model_cfg = self.agent.model_config or {}
+        context_window = model_cfg.get("context_window") or model_cfg.get("max_tokens", 128000)
+        model_name = model_cfg.get("model", "")
         (
             should_compress,
             token_count,
             threshold,
-        ) = self.trigger.should_compress(self.agent._messages, context_window)
+        ) = self.trigger.should_compress(self.agent._messages, context_window, model_name)
 
         if not should_compress:
             return True

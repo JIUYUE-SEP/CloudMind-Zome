@@ -33,11 +33,15 @@ class TopicMarker:
         model: str,
         api_key: str,
         base_url: str,
+        timeout: float = 30.0,
+        context_window: int = 64000,
     ):
         self.provider_name = provider_name
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
+        self.timeout = timeout
+        self.context_window = context_window
 
     @classmethod
     def from_config(cls, agent_model_config: dict) -> "TopicMarker":
@@ -63,6 +67,46 @@ class TopicMarker:
             base_url=base_url,
         )
 
+    @classmethod
+    async def from_agent(cls, db, agent_row) -> "TopicMarker":
+        """Build marker from Agent row using new independent fields.
+
+        Falls back to from_config(agent_row.model_config) if no marker config.
+        Falls back to main model if marker not configured.
+        """
+        from app.services.provider_resolver import resolve_provider_credentials
+
+        marker_provider_id = agent_row.marker_provider_id
+        marker_model_id = agent_row.marker_model_id
+
+        if not marker_provider_id:
+            # Fall back to legacy model_config
+            return cls.from_config(agent_row.model_config or {})
+
+        creds = await resolve_provider_credentials(db, marker_provider_id, marker_model_id)
+        if not creds:
+            # Fallback to main model
+            creds = await resolve_provider_credentials(
+                db, agent_row.provider_id, agent_row.model_id
+            )
+
+        if not creds or not creds.api_key:
+            raise ValueError(f"No API key available for marker provider '{marker_provider_id}'")
+
+        # Resolve model physical attributes to set appropriate timeout
+        from app.services.provider_resolver import resolve_model_attributes
+        attrs = await resolve_model_attributes(db, creds.provider_id, creds.model_id)
+        timeout = max(30.0, min(180.0, (attrs.context_window or 64000) / 2000))
+
+        return cls(
+            provider_name=creds.provider_type,
+            model=creds.model_id,
+            api_key=creds.api_key,
+            base_url=creds.base_url,
+            timeout=timeout,
+            context_window=attrs.context_window or 64000,
+        )
+
     async def detect(self, recent_messages: list[Message]) -> Optional[str]:
         """Return label like '代码-重构|high' or 'same' or 'unknown'."""
         from ...provider.transport import ChatCompletionsTransport
@@ -78,7 +122,7 @@ class TopicMarker:
             api_key=self.api_key,
             model=self.model,
             thinking_profile=PlainThinkingProfile(),
-            timeout=30.0,
+            timeout=self.timeout,
         )
 
         try:

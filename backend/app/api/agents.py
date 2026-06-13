@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_db, require_user
 from ..models import Agent, User
+from app.core.crypto import decrypt_value
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -47,6 +48,28 @@ class AgentCreate(BaseModel):
     tags: List[str] = Field(default_factory=list)
     represent_color: str = "#00E5C9"
     llm_config: dict = Field(default_factory=dict)
+    allowed_paths: List[str] = Field(default_factory=list)
+    toolsets: List[str] = Field(default_factory=list)
+    enabled_skills: List[str] = Field(default_factory=list)
+    # New independent provider/model fields (batch 2)
+    provider_id: Optional[str] = None
+    model_id: Optional[str] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    marker_provider_id: Optional[str] = None
+    marker_model_id: Optional[str] = None
+    embedder_provider_id: Optional[str] = None
+    embedder_model_id: Optional[str] = None
+    compressor_provider_id: Optional[str] = None
+    compressor_model_id: Optional[str] = None
+    imagegen_provider_id: Optional[str] = None
+    imagegen_model_id: Optional[str] = None
+    fallback_chain: Optional[List[dict]] = None
+    personality: Optional[dict] = None
+    max_context_tokens: Optional[int] = None
+    semantic_search_enabled: Optional[bool] = True
+    image_generation_enabled: Optional[bool] = True
+    topic_compression_enabled: Optional[bool] = True
 
 
 class AgentUpdate(BaseModel):
@@ -57,6 +80,28 @@ class AgentUpdate(BaseModel):
     tags: Optional[List[str]] = None
     represent_color: Optional[str] = None
     llm_config: Optional[dict] = None
+    allowed_paths: Optional[List[str]] = None
+    toolsets: Optional[List[str]] = None
+    enabled_skills: Optional[List[str]] = None
+    # New independent provider/model fields (batch 2)
+    provider_id: Optional[str] = None
+    model_id: Optional[str] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    marker_provider_id: Optional[str] = None
+    marker_model_id: Optional[str] = None
+    embedder_provider_id: Optional[str] = None
+    embedder_model_id: Optional[str] = None
+    compressor_provider_id: Optional[str] = None
+    compressor_model_id: Optional[str] = None
+    imagegen_provider_id: Optional[str] = None
+    imagegen_model_id: Optional[str] = None
+    fallback_chain: Optional[List[dict]] = None
+    personality: Optional[dict] = None
+    max_context_tokens: Optional[int] = None
+    semantic_search_enabled: Optional[bool] = True
+    image_generation_enabled: Optional[bool] = True
+    topic_compression_enabled: Optional[bool] = True
 
 
 class AgentListItem(BaseModel):
@@ -147,27 +192,42 @@ async def list_providers(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List available LLM providers from ComputeProvider table."""
-    from ..models import ComputeProvider
+    """List available LLM providers with full model details."""
+    from ..models import ComputeProvider, LLMModel
+    from sqlalchemy.orm import selectinload
+
     result = await db.execute(
-        select(ComputeProvider).where(
+        select(ComputeProvider)
+        .where(
             ComputeProvider.user_id == user.id,
             ComputeProvider.status == "active",
         )
+        .options(selectinload(ComputeProvider.models))
     )
     items = []
     for p in result.scalars().all():
-        cfg = p.config or {}
-        models = cfg.get("models", []) or []
+        model_objs = []
+        for m in p.models:
+            if m.status != "active":
+                continue
+            model_objs.append({
+                "id": m.id.split("::")[-1],
+                "display_name": m.display_name,
+                "model_type": m.model_type,
+                "context_window": m.context_window,
+                "max_output_tokens": m.max_output_tokens,
+                "supports_multimodal": m.supports_multimodal,
+                "supports_streaming": m.supports_streaming,
+                "supports_tool_calling": m.supports_tool_calling,
+                "supports_reasoning": m.supports_reasoning,
+            })
         items.append({
             "id": p.id,
-            "name": p.provider_type,
+            "provider_type": p.provider_type,
             "display_name": p.display_name,
-            "models": models,
-            "base_url": cfg.get("base_url", ""),
+            "models": model_objs,
+            "base_url": p.base_url or (p.config or {}).get("base_url", ""),
             "supports_streaming": True,
-            "supports_vision": False,
-            "supports_reasoning": False,
         })
     return ListResp(data=items)
 
@@ -194,12 +254,34 @@ async def get_agent(
         "aliases": a.aliases or [],
         "tags": a.tags or [],
         "llm_config": a.model_config or {},
+        "allowed_paths": a.allowed_paths or [],
+        "toolsets": a.toolsets or [],
+        "enabled_skills": a.enabled_skills or [],
         "portrait_url": a.portrait_url,
         "model_url": a.model_url,
         "live2d_model_url": a.live2d_model_url,
         "represent_color": a.represent_color,
         "status": a.status,
         "created_at": a.created_at.isoformat() if a.created_at else "",
+        # New independent provider/model fields
+        "provider_id": a.provider_id,
+        "model_id": a.model_id,
+        "temperature": a.temperature,
+        "top_p": a.top_p,
+        "marker_provider_id": a.marker_provider_id,
+        "marker_model_id": a.marker_model_id,
+        "embedder_provider_id": a.embedder_provider_id,
+        "embedder_model_id": a.embedder_model_id,
+        "compressor_provider_id": a.compressor_provider_id,
+        "compressor_model_id": a.compressor_model_id,
+        "imagegen_provider_id": a.imagegen_provider_id,
+        "imagegen_model_id": a.imagegen_model_id,
+        "fallback_chain": a.fallback_chain or [],
+        "personality": a.personality or {},
+        "max_context_tokens": a.max_context_tokens,
+        "semantic_search_enabled": a.semantic_search_enabled,
+        "image_generation_enabled": a.image_generation_enabled,
+        "topic_compression_enabled": a.topic_compression_enabled,
     })
 
 
@@ -209,6 +291,10 @@ async def create_agent(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Validate: embedder is required
+    if not body.embedder_provider_id or not body.embedder_model_id:
+        raise HTTPException(status_code=400, detail="Embedder provider and model are required")
+
     existing = await db.execute(select(Agent.codename).where(Agent.user_id == user.id))
     codenames = [r for r in existing.scalars().all()]
     codename = _gen_codename(codenames)
@@ -223,6 +309,25 @@ async def create_agent(
         tags=body.tags,
         represent_color=body.represent_color,
         model_config=body.llm_config,
+        allowed_paths=body.allowed_paths,
+        toolsets=body.toolsets,
+        enabled_skills=body.enabled_skills,
+        # New independent provider/model fields
+        provider_id=body.provider_id,
+        model_id=body.model_id,
+        temperature=body.temperature,
+        top_p=body.top_p,
+        marker_provider_id=body.marker_provider_id,
+        marker_model_id=body.marker_model_id,
+        embedder_provider_id=body.embedder_provider_id,
+        embedder_model_id=body.embedder_model_id,
+        compressor_provider_id=body.compressor_provider_id,
+        compressor_model_id=body.compressor_model_id,
+        imagegen_provider_id=body.imagegen_provider_id,
+        imagegen_model_id=body.imagegen_model_id,
+        fallback_chain=body.fallback_chain,
+        personality=body.personality,
+        max_context_tokens=body.max_context_tokens,
     )
     db.add(agent)
     await db.commit()
@@ -460,20 +565,24 @@ async def analyze_agent_personality(
     text = build_personality_text(agent, agent_dir)
 
     model_cfg = dict(agent.model_config or {})
-    marker_cfg = model_cfg.get("marker") or {}
-    marker_provider_id = marker_cfg.get("provider_id")
 
-    # Resolve credentials from ComputeProvider (app-layer has DB access)
-    from ..models import ComputeProvider
+    # Prefer new independent fields; fallback to legacy model_config
+    marker_provider_id = agent.marker_provider_id or (model_cfg.get("marker") or {}).get("provider_id")
+    marker_model_id = agent.marker_model_id or (model_cfg.get("marker") or {}).get("model")
+
     if marker_provider_id:
-        prov_result = await db.execute(
-            select(ComputeProvider).where(
-                ComputeProvider.id == marker_provider_id,
-                ComputeProvider.status == "active",
-            ).limit(1)
-        )
-        prov = prov_result.scalars().first()
+        # Use provider_resolver (same lookup logic as new code path)
+        from ..services.provider_resolver import resolve_provider_credentials
+        creds = await resolve_provider_credentials(db, marker_provider_id, marker_model_id)
+        if creds:
+            model_cfg.setdefault("marker", {})
+            model_cfg["marker"]["provider"] = creds.provider_type
+            model_cfg["marker"]["model"] = creds.model_id or marker_model_id or "deepseek-chat"
+            model_cfg["marker"]["api_key"] = creds.api_key or ""
+            model_cfg["marker"]["base_url"] = creds.base_url
     else:
+        # Legacy fallback path (kept for backward compat, will be cleaned in batch 4)
+        from ..models import ComputeProvider
         main_provider_id = model_cfg.get("provider_id")
         prov_result = await db.execute(
             select(ComputeProvider).where(
@@ -490,21 +599,19 @@ async def analyze_agent_personality(
                 ).limit(1)
             )
             prov = prov_result.scalars().first()
-
-    if prov:
-        base_url = (prov.config or {}).get("base_url", "")
-        api_key = ""
-        if prov.api_key_encrypted:
-            import base64
-            try:
-                api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
-            except Exception:
-                api_key = prov.api_key_encrypted
-        model_cfg.setdefault("marker", {})
-        model_cfg["marker"]["provider"] = marker_cfg.get("provider") or prov.provider_type
-        model_cfg["marker"]["model"] = marker_cfg.get("model") or model_cfg.get("model") or "deepseek-chat"
-        model_cfg["marker"]["api_key"] = api_key
-        model_cfg["marker"]["base_url"] = base_url
+        if prov:
+            base_url = (prov.config or {}).get("base_url", "")
+            api_key = ""
+            if prov.api_key_encrypted:
+                try:
+                    api_key = decrypt_value(prov.api_key_encrypted)
+                except Exception:
+                    api_key = prov.api_key_encrypted
+            model_cfg.setdefault("marker", {})
+            model_cfg["marker"]["provider"] = (model_cfg.get("marker") or {}).get("provider") or prov.provider_type
+            model_cfg["marker"]["model"] = (model_cfg.get("marker") or {}).get("model") or model_cfg.get("model") or "deepseek-chat"
+            model_cfg["marker"]["api_key"] = api_key
+            model_cfg["marker"]["base_url"] = base_url
 
     try:
         extractor = PersonalityExtractor.from_marker_config(model_cfg)
@@ -601,3 +708,296 @@ async def get_agent_memory(
             pass
 
     return ListResp(data={"topics": topics, "stats": stats})
+
+
+# ------------------------------------------------------------------
+# Import conversation history
+# ------------------------------------------------------------------
+
+
+class ImportHistoryResp(BaseModel):
+    code: int = 0
+    data: Any = {}
+
+
+@router.post("/{agent_id}/import-history", response_model=ListResp)
+async def import_history(
+    agent_id: str,
+    platform: str = Form(...),
+    file: UploadFile = File(...),
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import conversation history from an external platform JSONL file.
+
+    Args:
+        platform: Source platform name (e.g. "qwenpaw").
+        file: JSONL file exported from the platform.
+
+    Returns:
+        { imported: N, skipped: M, errors: [...] }
+    """
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    from engine.importer import get_adapter
+
+    adapter = get_adapter(platform)
+    if adapter is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported platform '{platform}'. Supported: {', '.join(list_platforms())}"
+        )
+
+    content = await file.read()
+    try:
+        messages = adapter.parse(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Parse failed: {e}")
+
+    if not messages:
+        return ListResp(data={"imported": 0, "skipped": 0, "errors": ["No valid messages found"]})
+
+    # Connect to unified DB
+    db_path = Path.home() / ".cloudmind-zome" / "cloudmind.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    imported = 0
+    skipped = 0
+    errors: list[str] = []
+
+    async with aiosqlite.connect(str(db_path)) as conn:
+        # Ensure table exists (same schema as SessionStore)
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_calls TEXT,
+                tool_call_id TEXT,
+                tool_name TEXT,
+                reasoning_content TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                round INTEGER,
+                compressed INTEGER DEFAULT 0,
+                message_uuid TEXT,
+                source TEXT NOT NULL DEFAULT 'private',
+                source_id TEXT,
+                source_name TEXT,
+                sender_id TEXT,
+                sender_name TEXT
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_msgs_agent ON agent_messages(agent_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_msgs_source ON agent_messages(source, agent_id)"
+        )
+
+        # Fetch existing UUIDs for deduplication
+        cursor = await conn.execute(
+            "SELECT message_uuid FROM agent_messages WHERE agent_id = ? AND message_uuid IS NOT NULL",
+            (agent_id,),
+        )
+        existing_uuids = {row[0] for row in await cursor.fetchall()}
+
+        # Build insert batch
+        insert_rows = []
+        for idx, msg in enumerate(messages):
+            msg_uuid = msg.get("message_uuid", "")
+            if not msg_uuid or msg_uuid in existing_uuids:
+                skipped += 1
+                continue
+            existing_uuids.add(msg_uuid)
+
+            ts_raw = msg.get("timestamp")
+            try:
+                from datetime import datetime, timezone
+                if isinstance(ts_raw, str):
+                    ts_str = ts_raw.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(ts_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    ts_val = dt.timestamp()
+                else:
+                    ts_val = float(ts_raw or 0)
+            except Exception:
+                ts_val = 0.0
+
+            insert_rows.append(
+                (
+                    agent_id,
+                    msg.get("role", "user"),
+                    msg.get("content", ""),
+                    msg.get("tool_calls"),
+                    msg.get("tool_name"),
+                    msg.get("reasoning_content"),
+                    ts_val,
+                    msg.get("token_count"),
+                    msg.get("round", 0),
+                    1 if msg.get("compressed") else 0,
+                    msg_uuid,
+                    msg.get("tool_call_id"),
+                    "imported",          # source
+                    "imported",          # source_id
+                    "",                  # source_name
+                    "",                  # sender_id
+                    msg.get("sender_name", ""),
+                )
+            )
+
+        # Batch insert
+        if insert_rows:
+            await conn.executemany(
+                """
+                INSERT INTO agent_messages
+                (agent_id, role, content, tool_calls, tool_name, reasoning_content,
+                 timestamp, token_count, round, compressed, message_uuid, tool_call_id,
+                 source, source_id, source_name, sender_id, sender_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                insert_rows,
+            )
+            await conn.commit()
+            imported = len(insert_rows)
+
+    return ListResp(
+        data={"imported": imported, "skipped": skipped, "errors": errors}
+    )
+
+
+@router.get("/{agent_id}/import-platforms", response_model=ListResp)
+async def list_import_platforms(
+    agent_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return available import platforms."""
+    from engine.importer import list_platforms
+
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    return ListResp(data={"platforms": list_platforms()})
+
+
+# ------------------------------------------------------------------
+# Skill management
+# ------------------------------------------------------------------
+from engine.skill.loader import load_skills
+
+
+@router.get("/{agent_id}/skills/discovered", response_model=ListResp)
+async def list_discovered_skills(
+    agent_id: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Scan workspace/{agent_id}/skills/ and return all discovered SKILL.md files."""
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    skills = load_skills(agent_id)
+    return ListResp(
+        data=[
+            {"name": s.name, "description": s.description, "path": s.path}
+            for s in skills
+        ]
+    )
+
+
+@router.post("/{agent_id}/skills/upload", response_model=ListResp)
+async def upload_skill(
+    agent_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a SKILL.md file into workspace/{agent_id}/skills/{name}/SKILL.md.
+
+    The skill name is extracted from the YAML frontmatter if present,
+    otherwise falls back to the uploaded filename stem.
+    """
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if file.filename and not file.filename.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail="Only .md files are allowed")
+
+    content = await file.read()
+    text = content.decode("utf-8", errors="replace")
+
+    name = ""
+    try:
+        import yaml
+        front_text = ""
+        stripped = text.strip()
+        if stripped.startswith("---"):
+            parts = stripped.split("---", 2)
+            if len(parts) >= 3:
+                front_text = parts[1].strip()
+        if front_text:
+            meta = yaml.safe_load(front_text) or {}
+            if isinstance(meta, dict):
+                name = meta.get("name", "")
+    except Exception:
+        pass
+
+    if not name:
+        name = Path(file.filename or "skill").stem
+
+    if not name or ".." in name or "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
+    from ..database import WORKSPACE_ROOT
+    skill_dir = WORKSPACE_ROOT / agent_id / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    dest = skill_dir / "SKILL.md"
+    dest.write_text(text, encoding="utf-8")
+
+    return ListResp(data={"name": name, "path": str(dest)})
+
+
+@router.delete("/{agent_id}/skills/{skill_name}", response_model=ListResp)
+async def delete_skill(
+    agent_id: str,
+    skill_name: str,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a skill directory under workspace/{agent_id}/skills/{skill_name}."""
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not skill_name or ".." in skill_name or "/" in skill_name or "\\" in skill_name:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
+    from ..database import WORKSPACE_ROOT
+    skill_dir = WORKSPACE_ROOT / agent_id / "skills" / skill_name
+    if not skill_dir.exists():
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+    import shutil
+    shutil.rmtree(skill_dir)
+    return ListResp(data={"deleted": True})

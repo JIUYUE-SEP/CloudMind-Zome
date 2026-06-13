@@ -93,7 +93,7 @@ class GroupTaskEngine:
         _stop_signals.pop(self.session_id, None)
 
         try:
-            agent_map = await self._build_agent_map()
+            agent_map, self._agent_name_map = await self._build_agent_map()
             self.nodes = self._parse_plan(self.plan_text, agent_map)
 
             if not self.nodes:
@@ -182,8 +182,8 @@ class GroupTaskEngine:
                 })
         return nodes
 
-    async def _build_agent_map(self) -> dict:
-        """Return {name/codename/alias -> agent_id} for all agents in session."""
+    async def _build_agent_map(self) -> tuple[dict, dict]:
+        """Return ({name/codename/alias -> agent_id}, {agent_id -> name}) for all agents in session."""
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(ChatSessionMember).where(
@@ -193,6 +193,7 @@ class GroupTaskEngine:
             )
             members = result.scalars().all()
             agent_map: dict = {}
+            name_map: dict = {}
             for m in members:
                 agent = await db.execute(select(Agent).where(Agent.id == m.member_id))
                 a = agent.scalar_one_or_none()
@@ -201,7 +202,8 @@ class GroupTaskEngine:
                     agent_map[a.codename] = a.id
                     for alias in a.aliases or []:
                         agent_map[alias] = a.id
-            return agent_map
+                    name_map[a.id] = a.name
+            return agent_map, name_map
 
     # ------------------------------------------------------------------
     # Execution
@@ -396,6 +398,8 @@ class GroupTaskEngine:
             await db.commit()
 
     async def _agent_name(self, agent_id: str) -> str:
+        if hasattr(self, "_agent_name_map") and agent_id in self._agent_name_map:
+            return self._agent_name_map[agent_id]
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             a = result.scalar_one_or_none()

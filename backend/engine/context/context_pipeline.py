@@ -14,6 +14,7 @@ from typing import Any
 from ..message.types import Message, MessageMeta
 from ..agent.message_builder import MessageBuilder
 from ..config.models import ContextConfig
+from .token_counter import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 class ContextPipeline:
     """Assembles LLM prompt with retrieval, scoring, and tiered downgrade.
 
-    - L1: Mind files + behavioral guidelines (highest priority, never downgraded)
+    - L1: Mind files + platform capabilities (highest priority, never downgraded)
     - L2: Group sender prefix (handled by MessageBuilder, never downgraded)
     - L3: Hot Context — recent messages from current scene
     - L4: Semantic retrieval results from Zvec (cross-scene)
@@ -60,6 +61,8 @@ class ContextPipeline:
         source_id: str,
         source_name: str = "",
         personality_desc: str = "",
+        mention_desc: str = "",
+        time_tag: str = "",
     ) -> list[Message]:
         """Assemble full prompt for LLM call.
 
@@ -70,7 +73,8 @@ class ContextPipeline:
             tools: Tool schemas for token estimation (L6).
             source_id: Current scene identifier (used to label cross-scene memories).
             source_name: Human-readable scene name.
-            personality_desc: Natural-language personality description (L1.5, group chat only).
+            personality_desc: Group-chat stay-silent instructions (L1.5).
+            mention_desc: Group-chat @mention reminder (independent from personality).
 
         Returns:
             List of Message ready for LLM.
@@ -87,24 +91,33 @@ class ContextPipeline:
         # Downgrade loop
         while True:
             # Build L1+L3 via MessageBuilder (handles group sender prefix)
-            base = self.msg_builder.build(hot_context, scene_info, mind_context)
+            base = self.msg_builder.build(hot_context, scene_info, mind_context, time_tag=time_tag)
 
             # Build L4 and L5 as system messages
             l4_msgs = self._build_l4(semantic_candidates, source_id)
             l5_msgs = self._build_l5(topic_candidates)
 
-            # Insert L4/L5 + personality before conversation history (after all existing system msgs)
+            # Insert L4/L5 + personality + mention before conversation history (after all existing system msgs)
             sys_count = sum(1 for m in base if m.role == "system")
             personality_msgs: list[Message] = []
             if personality_desc:
                 personality_msgs.append(
                     Message(
                         role="system",
-                        content=f"【你的性格】\n{personality_desc}",
+                        content=f"【群聊行为】\n{personality_desc}",
                         meta=MessageMeta(session_id=self.agent_id),
                     )
                 )
-            messages = base[:sys_count] + personality_msgs + l5_msgs + l4_msgs + base[sys_count:]
+            mention_msgs: list[Message] = []
+            if mention_desc:
+                mention_msgs.append(
+                    Message(
+                        role="system",
+                        content=mention_desc,
+                        meta=MessageMeta(session_id=self.agent_id),
+                    )
+                )
+            messages = base[:sys_count] + personality_msgs + mention_msgs + l5_msgs + l4_msgs + base[sys_count:]
 
             # Estimate total tokens
             total_tokens = self._estimate_tokens(messages) + self._estimate_tools_tokens(tools)
@@ -289,39 +302,35 @@ class ContextPipeline:
     # Token estimation
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _estimate_tokens(messages: list[Message]) -> int:
-        """Rough token estimation for downgrade decisions.
-
-        Uses chars // 3 as a conservative heuristic for mixed CJK/English.
-        """
-        total_chars = 0
+    def _estimate_tokens(self, messages: list[Message]) -> int:
+        """Token estimation for downgrade decisions using tiktoken."""
+        total = 0
         for msg in messages:
             content = msg.content
             if isinstance(content, str):
-                total_chars += len(content)
+                total += count_tokens(content, self.agent_id)
             elif isinstance(content, list):
                 for block in content:
                     if hasattr(block, "text"):
-                        total_chars += len(block.text)
+                        total += count_tokens(block.text, self.agent_id)
                     elif hasattr(block, "thinking"):
-                        total_chars += len(block.thinking)
+                        total += count_tokens(block.thinking, self.agent_id)
                     elif hasattr(block, "content"):
-                        total_chars += len(block.content)
+                        total += count_tokens(block.content, self.agent_id)
                     elif hasattr(block, "name") and hasattr(block, "input"):
-                        # ToolUseBlock
-                        total_chars += len(block.name) + len(str(block.input))
+                        total += count_tokens(
+                            block.name + " " + str(block.input), self.agent_id
+                        )
             else:
-                total_chars += len(str(content))
-        return max(1, total_chars // 3)
+                total += count_tokens(str(content), self.agent_id)
+        return max(1, total)
 
-    @staticmethod
-    def _estimate_tools_tokens(tools: list[dict]) -> int:
-        """Rough token estimation for tool schemas."""
+    def _estimate_tools_tokens(self, tools: list[dict]) -> int:
+        """Token estimation for tool schemas."""
         if not tools:
             return 0
         try:
             json_str = json.dumps(tools, ensure_ascii=False)
-            return max(1, len(json_str) // 4)
+            return count_tokens(json_str, self.agent_id)
         except Exception:
             return 2000

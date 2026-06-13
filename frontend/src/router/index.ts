@@ -3,15 +3,16 @@ import AppShell from '@/views/AppShell.vue'
 import HomeView from '@/views/HomeView.vue'
 import ChatView from '@/components/ChatView.vue'
 import GroupChatView from '@/components/GroupChatView.vue'
-import ActionCenter from '@/components/ActionCenter.vue'
-import ActionEdit from '@/components/ActionEdit.vue'
-import AgentEdit from '@/components/AgentEdit.vue'
-import ComputeCenter from '@/components/ComputeCenter.vue'
-import CommissionCenter from '@/components/CommissionCenter.vue'
-import ApprovalLog from '@/components/ApprovalLog.vue'
 import CommunicationHub from '@/components/CommunicationHub.vue'
-import SelfImageView from '@/views/SelfImageView.vue'
-import UserProfileView from '@/views/UserProfileView.vue'
+
+const ActionCenter = () => import('@/components/ActionCenter.vue')
+const ActionEdit = () => import('@/components/ActionEdit.vue')
+const AgentEdit = () => import('@/components/AgentEdit.vue')
+const ComputeCenter = () => import('@/components/ComputeCenter.vue')
+const CommissionCenter = () => import('@/components/CommissionCenter.vue')
+const ApprovalLog = () => import('@/components/ApprovalLog.vue')
+const SelfImageView = () => import('@/views/SelfImageView.vue')
+const UserProfileView = () => import('@/views/UserProfileView.vue')
 
 const router = createRouter({
   history: createWebHashHistory(),

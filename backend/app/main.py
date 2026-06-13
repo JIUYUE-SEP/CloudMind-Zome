@@ -23,13 +23,76 @@ from engine.config.loader import load_config
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
 from .database import engine, Base, AsyncSessionLocal, WORKSPACE_ROOT
-from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config
+from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, tools, models as models_api
 from .services.commission_scheduler import get_scheduler
+from .services.bootstrap import ensure_builtin_provider
+from .services.key_migration import migrate_plaintext_keys
 
 logger = logging.getLogger(__name__)
 
 # Module-level state shared with ws.py (avoids circular import via app.state)
 _app_state: dict = {}
+
+
+async def _run_agent_cleanup_once() -> None:
+    """One-time cleanup: clear old agent config, messages, zvec, mind files."""
+    marker = WORKSPACE_ROOT / ".v2_agent_cleanup_done"
+    if marker.exists():
+        return
+
+    import aiosqlite
+    import shutil
+
+    # 1. Clear agent provider settings and mind data from DB
+    async with AsyncSessionLocal() as db:
+        from sqlalchemy import text
+        await db.execute(text("""
+            UPDATE agents SET
+                provider_id = NULL,
+                model_id = NULL,
+                temperature = NULL,
+                top_p = NULL,
+                marker_provider_id = NULL,
+                marker_model_id = NULL,
+                embedder_provider_id = NULL,
+                embedder_model_id = NULL,
+                compressor_provider_id = NULL,
+                compressor_model_id = NULL,
+                imagegen_provider_id = NULL,
+                imagegen_model_id = NULL,
+                fallback_chain = NULL,
+                personality = NULL,
+                max_context_tokens = NULL,
+                model_config = '{}'
+        """))
+        await db.commit()
+        logger.info("Agent cleanup: cleared provider settings and mind data")
+
+    # 2. Clear agent_messages table
+    db_path = Path.home() / ".cloudmind-zome" / "cloudmind.db"
+    if db_path.exists():
+        async with aiosqlite.connect(str(db_path)) as conn:
+            await conn.execute("DELETE FROM agent_messages")
+            await conn.commit()
+        logger.info("Agent cleanup: cleared agent_messages")
+
+    # 3. Clear zvec collections
+    zvec_dir = Path.home() / ".cloudmind-zome" / "zvec"
+    if zvec_dir.exists():
+        shutil.rmtree(str(zvec_dir), ignore_errors=True)
+        logger.info("Agent cleanup: cleared zvec collections")
+
+    # 4. Clear workspace mind files (keep directory structure)
+    for agent_dir in WORKSPACE_ROOT.iterdir():
+        if agent_dir.is_dir():
+            for fname in ("SOUL.md", "AGENT.md", "USER.md", "MEMORY.md"):
+                fpath = agent_dir / fname
+                if fpath.exists():
+                    fpath.write_text("", encoding="utf-8")
+            logger.info("Agent cleanup: cleared mind files for %s", agent_dir.name)
+
+    marker.write_text("done", encoding="utf-8")
+    logger.info("Agent cleanup completed")
 
 
 # ------------------------------------------------------------------
@@ -58,6 +121,8 @@ async def lifespan(app: FastAPI):
         # Run lightweight migrations for additive schema changes
         def _migrate(sync_conn):
             from sqlalchemy import inspect, text
+            import re
+
             inspector = inspect(sync_conn)
             cols = {c['name'] for c in inspector.get_columns('chat_messages')}
             if 'tool_calls' not in cols:
@@ -66,8 +131,189 @@ async def lifespan(app: FastAPI):
             if 'reasoning' not in cols:
                 sync_conn.execute(text("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT"))
                 logger.info("Migration: added chat_messages.reasoning")
+            # Agent allowed_paths migration
+            agent_cols = {c['name'] for c in inspector.get_columns('agents')}
+            if 'allowed_paths' not in agent_cols:
+                sync_conn.execute(text("ALTER TABLE agents ADD COLUMN allowed_paths JSON"))
+                logger.info("Migration: added agents.allowed_paths")
+            if 'toolsets' not in agent_cols:
+                sync_conn.execute(text("ALTER TABLE agents ADD COLUMN toolsets JSON"))
+                logger.info("Migration: added agents.toolsets")
+            if 'enabled_skills' not in agent_cols:
+                sync_conn.execute(text("ALTER TABLE agents ADD COLUMN enabled_skills JSON"))
+                logger.info("Migration: added agents.enabled_skills")
+            # Provider refactor migrations (batch 1)
+            prov_cols = {c['name'] for c in inspector.get_columns('compute_providers')}
+            new_prov_cols = [
+                ("base_url", "TEXT"),
+                ("auth_mode", "TEXT DEFAULT 'api_key'"),
+                ("custom_headers", "TEXT"),
+                ("request_timeout", "REAL DEFAULT 120.0"),
+                ("max_retries", "INTEGER DEFAULT 3"),
+                ("rate_limit_qpm", "INTEGER DEFAULT 0"),
+                ("require_api_key", "INTEGER DEFAULT 1"),
+                ("is_builtin", "INTEGER DEFAULT 0"),
+                ("description", "TEXT"),
+            ]
+            for col_name, col_def in new_prov_cols:
+                if col_name not in prov_cols:
+                    sync_conn.execute(text(f"ALTER TABLE compute_providers ADD COLUMN {col_name} {col_def}"))
+                    logger.info("Migration: added compute_providers.%s", col_name)
+            # Agent provider refactor columns
+            agent_new_cols = [
+                ("provider_id", "TEXT"),
+                ("model_id", "TEXT"),
+                ("temperature", "REAL"),
+                ("top_p", "REAL"),
+                ("marker_provider_id", "TEXT"),
+                ("marker_model_id", "TEXT"),
+                ("embedder_provider_id", "TEXT"),
+                ("embedder_model_id", "TEXT"),
+                ("compressor_provider_id", "TEXT"),
+                ("compressor_model_id", "TEXT"),
+                ("imagegen_provider_id", "TEXT"),
+                ("imagegen_model_id", "TEXT"),
+                ("fallback_chain", "TEXT"),
+                ("personality", "TEXT"),
+                ("max_context_tokens", "INTEGER"),
+                ("semantic_search_enabled", "INTEGER DEFAULT 1"),
+                ("image_generation_enabled", "INTEGER DEFAULT 1"),
+                ("topic_compression_enabled", "INTEGER DEFAULT 1"),
+            ]
+            for col_name, col_def in agent_new_cols:
+                if col_name not in agent_cols:
+                    sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {col_name} {col_def}"))
+                    logger.info("Migration: added agents.%s", col_name)
+
+            # ---- Model type classification migration ----
+            def infer_model_type(model_id: str) -> str:
+                lower = model_id.lower()
+                DISCOVERY_RULES = [
+                    (r"\b(ada-002|ada\b|text-embedding|embedding|embed|bge-|e5-|gte-|m3e-|m-e5|multilingual-e5|nv-embed)", "embedding"),
+                    (r"\b(dall-e|flux|sdxl|stable-diffusion|midjourney|wanx|cogview|kling|imagen|playground|recraft|ideogram)", "image"),
+                    (r"\b(whisper|sensevoice|sense|nova-|stt-|asr-|speech-to-text|speech)", "stt"),
+                ]
+                for pattern, t in DISCOVERY_RULES:
+                    if re.search(pattern, lower):
+                        return t
+                return "llm"
+
+            model_cols_info = {c['name']: c for c in inspector.get_columns('llm_models')}
+            ctx_col = model_cols_info.get('context_window')
+
+            # Rebuild llm_models if context_window is still NOT NULL
+            if ctx_col and ctx_col.get('nullable') is False:
+                sync_conn.execute(text("PRAGMA foreign_keys = OFF"))
+                sync_conn.execute(text("""
+                    CREATE TABLE llm_models_new (
+                        id TEXT PRIMARY KEY,
+                        provider_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        display_name TEXT NOT NULL,
+                        is_builtin INTEGER DEFAULT 0,
+                        status TEXT DEFAULT 'active',
+                        context_window INTEGER,
+                        max_output_tokens INTEGER,
+                        supports_multimodal INTEGER DEFAULT 0,
+                        input_modalities TEXT,
+                        output_modalities TEXT,
+                        supports_streaming INTEGER DEFAULT 1,
+                        supports_tool_calling INTEGER DEFAULT 0,
+                        supports_reasoning INTEGER DEFAULT 0,
+                        pricing TEXT,
+                        model_type TEXT DEFAULT 'llm' NOT NULL,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                """))
+                sync_conn.execute(text("""
+                    INSERT INTO llm_models_new SELECT
+                        id, provider_id, user_id, display_name, is_builtin, status,
+                        context_window, max_output_tokens, supports_multimodal,
+                        input_modalities, output_modalities, supports_streaming,
+                        supports_tool_calling, supports_reasoning, pricing,
+                        COALESCE(model_type, 'llm'), created_at, updated_at
+                    FROM llm_models
+                """))
+                sync_conn.execute(text("DROP TABLE llm_models"))
+                sync_conn.execute(text("ALTER TABLE llm_models_new RENAME TO llm_models"))
+                sync_conn.execute(text("CREATE INDEX idx_llm_models_provider ON llm_models(provider_id)"))
+                sync_conn.execute(text("CREATE INDEX idx_llm_models_user ON llm_models(user_id)"))
+                sync_conn.execute(text("PRAGMA foreign_keys = ON"))
+                logger.info("Migration: rebuilt llm_models (context_window/max_output_tokens now nullable, model_type added)")
+                # Re-fetch columns after rebuild
+                model_cols_info = {c['name']: c for c in inspector.get_columns('llm_models')}
+
+            # Ensure model_type column exists (if table was not rebuilt)
+            if 'model_type' not in model_cols_info:
+                sync_conn.execute(text("ALTER TABLE llm_models ADD COLUMN model_type TEXT DEFAULT 'llm' NOT NULL"))
+                logger.info("Migration: added llm_models.model_type")
+
+            # Add is_default flag for default model selection
+            if 'is_default' not in model_cols_info:
+                sync_conn.execute(text("ALTER TABLE llm_models ADD COLUMN is_default INTEGER DEFAULT 0"))
+                logger.info("Migration: added llm_models.is_default")
+
+            # Batch infer existing model types
+            result = sync_conn.execute(text(
+                "SELECT id FROM llm_models WHERE model_type = 'llm'"
+            )).fetchall()
+            for (model_id,) in result:
+                inferred = infer_model_type(model_id)
+                if inferred != 'llm':
+                    sync_conn.execute(
+                        text("UPDATE llm_models SET model_type = :mt WHERE id = :id"),
+                        {"mt": inferred, "id": model_id}
+                    )
+            if result:
+                logger.info("Migration: batch inferred %d model types for existing models", len(result))
+
+            # Clean deprecated settings
+            sync_conn.execute(text(
+                "DELETE FROM settings WHERE key IN ('embedding_model', 'image_gen', 'assistant_model')"
+            ))
+            logger.info("Migration: cleaned deprecated settings")
         await conn.run_sync(_migrate)
     logger.info("Platform tables ensured")
+
+    # 1.6 One-time cleanup: clear old agent config / messages / zvec / mind files
+    await _run_agent_cleanup_once()
+
+    # 1.5 Provider YAML migration + sync
+    from app.services.provider_migration import (
+        migrate_from_legacy_config,
+        sync_yaml_to_db,
+    )
+    mig_report = await migrate_from_legacy_config()
+    if not mig_report.skipped:
+        logger.info(
+            "Provider migration: %s (providers=%d, models=%d)",
+            mig_report.reason,
+            mig_report.migrated_providers,
+            mig_report.migrated_models,
+        )
+    async with AsyncSessionLocal() as db:
+        sync_report = await sync_yaml_to_db(db)
+        logger.info(
+            "providers.yaml synced: %d providers, %d models, %d errors",
+            sync_report.upserted_providers,
+            sync_report.upserted_models,
+            len(sync_report.errors),
+        )
+
+    # 1.7 Bootstrap built-in provider template when no providers exist
+    async with AsyncSessionLocal() as db:
+        await ensure_builtin_provider(db)
+
+    # 1.8 Encrypt any plaintext or legacy base64 API keys in DB / YAML
+    async with AsyncSessionLocal() as db:
+        key_mig = await migrate_plaintext_keys(db)
+        if key_mig["db_encrypted"] or key_mig["yaml_encrypted"]:
+            logger.info(
+                "API key migration: %d DB keys, %d YAML keys encrypted",
+                key_mig["db_encrypted"],
+                key_mig["yaml_encrypted"],
+            )
 
     # 2. Engine infra
     cfg = load_config(_BACKEND_DIR / "engine" / "config.yaml")
@@ -100,103 +346,14 @@ async def lifespan(app: FastAPI):
     logger.info("SessionStore connected to unified DB")
     app.state.session_store = store
 
-    from engine.context.embedder import Embedder
     from engine.context.vector_store import AgentMemoryStore
-    from .models import Setting, ComputeProvider
-    from sqlalchemy import select
-    import base64
 
-    embedder = Embedder(base_url="", api_key="", model="")
     memory_store = AgentMemoryStore()
-
-    async with AsyncSessionLocal() as db:
-        # ---- Embedding model (for semantic memory search) ----
-        result = await db.execute(
-            select(Setting).where(Setting.key == "embedding_model")
-        )
-        setting = result.scalar_one_or_none()
-
-        if setting and setting.value:
-            prov_id = setting.value.get("provider_id")
-            model_name = setting.value.get("model")
-
-            if prov_id and model_name:
-                prov_result = await db.execute(
-                    select(ComputeProvider).where(
-                        ComputeProvider.id == prov_id,
-                        ComputeProvider.status == "active",
-                    )
-                )
-                prov = prov_result.scalar_one_or_none()
-                if prov:
-                    base_url = (prov.config or {}).get("base_url", "")
-                    api_key = ""
-                    if prov.api_key_encrypted:
-                        try:
-                            api_key = base64.b64decode(prov.api_key_encrypted.encode()).decode()
-                        except Exception:
-                            api_key = prov.api_key_encrypted
-                    if base_url and api_key:
-                        embedder = Embedder(
-                            base_url=base_url,
-                            api_key=api_key,
-                            model=model_name,
-                        )
-                        logger.info("Embedding model (%s via %s) ready for semantic search", model_name, prov_id)
-                    else:
-                        logger.warning("Embedding provider %s missing base_url or api_key", prov_id)
-                else:
-                    logger.warning("Embedding provider %s not found or inactive", prov_id)
-            else:
-                logger.warning("Embedding model setting incomplete (provider_id or model missing)")
-        else:
-            logger.warning("Embedding model not configured in settings; semantic memory search disabled")
-
-        # ---- Image generation model ----
-        img_result = await db.execute(
-            select(Setting).where(Setting.key == "image_gen")
-        )
-        img_setting = img_result.scalar_one_or_none()
-        if img_setting and img_setting.value:
-            img_prov_id = img_setting.value.get("provider_id")
-            img_model = img_setting.value.get("model")
-            if img_prov_id:
-                img_prov_result = await db.execute(
-                    select(ComputeProvider).where(
-                        ComputeProvider.id == img_prov_id,
-                        ComputeProvider.status == "active",
-                    )
-                )
-                img_prov = img_prov_result.scalar_one_or_none()
-                if img_prov:
-                    img_base_url = (img_prov.config or {}).get("base_url", "")
-                    img_api_key = ""
-                    if img_prov.api_key_encrypted:
-                        try:
-                            img_api_key = base64.b64decode(img_prov.api_key_encrypted.encode()).decode()
-                        except Exception:
-                            img_api_key = img_prov.api_key_encrypted
-                    if img_base_url and img_api_key and img_model:
-                        from engine.tools.web.generate_image import set_image_gen_config
-                        set_image_gen_config({
-                            "base_url": img_base_url,
-                            "model": img_model,
-                            "api_key": img_api_key,
-                        })
-                        logger.info("Image generation model (%s via %s) ready", img_model, img_prov_id)
-                    else:
-                        logger.warning("Image generation provider %s missing base_url/api_key/model", img_prov_id)
-                else:
-                    logger.warning("Image generation provider %s not found or inactive", img_prov_id)
-            else:
-                logger.warning("Image generation setting incomplete (provider_id missing)")
-        else:
-            logger.warning("Image generation not configured in settings")
+    logger.info("AgentMemoryStore initialized (per-agent collections)")
 
     # Share with ws module
     _app_state["config"] = cfg
     _app_state["session_store"] = store
-    _app_state["embedder"] = embedder
     _app_state["memory_store"] = memory_store
 
     # Start commission scheduler (Agent主动性: cron/interval任务)
@@ -246,6 +403,8 @@ app.include_router(approvals.router, prefix="/api/v1")
 app.include_router(compute.router, prefix="/api/v1")
 app.include_router(commissions.router, prefix="/api/v1")
 app.include_router(config.router, prefix="/api/v1")
+app.include_router(tools.router, prefix="/api/v1")
+app.include_router(models_api.router, prefix="/api/v1")
 app.include_router(ws.router)
 
 

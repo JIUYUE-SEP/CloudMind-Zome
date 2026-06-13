@@ -23,10 +23,10 @@ class CompressionTrigger:
         )
 
     def should_compress(
-        self, messages: list[Message], context_window: int
+        self, messages: list[Message], context_window: int, model: str = ""
     ) -> Tuple[bool, int, int]:
         """Return (should_compress, token_count, threshold)."""
-        token_count = self.estimator.estimate(messages)
+        token_count = self.estimator.estimate(messages, model)
         threshold = min(int(self.threshold_ratio * context_window), self.hard_limit)
         return token_count > threshold, token_count, threshold
 

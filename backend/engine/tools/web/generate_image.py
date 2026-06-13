@@ -32,7 +32,13 @@ def set_image_gen_config(cfg: dict) -> None:
 
 
 def _get_image_config() -> dict:
-    """Return injected image_gen config."""
+    """Return agent-scoped config first, then legacy global fallback."""
+    from ...tools.comms.context import get_current_agent_id
+    from .image_gen_context import get_image_gen_config_for_agent
+    agent_id = get_current_agent_id()
+    cfg = get_image_gen_config_for_agent(agent_id)
+    if cfg:
+        return cfg
     return _image_gen_cfg
 
 
@@ -51,12 +57,17 @@ async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = 
         ref_image: Optional reference image URL or local path for image-to-image generation.
                    Supported by DashScope wan2.7-image-pro. Pass a URL or local file path.
     """
+    from ...tools.comms.context import get_current_agent_id
+    agent_id = get_current_agent_id()
+
     cfg = _get_image_config()
     api_url = (cfg.get("base_url") or "").strip()
     model = (cfg.get("model") or "").strip()
     api_key = (cfg.get("api_key") or "").strip()
 
     if not api_url or not api_key:
+        if agent_id:
+            return "Error: Image generation is not available for this agent."
         return "Error: image generation not configured. Please set api_url, model, and api_key in system settings."
 
     import httpx

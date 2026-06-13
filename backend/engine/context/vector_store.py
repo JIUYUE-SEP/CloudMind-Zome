@@ -1,8 +1,7 @@
 """Zvec vector store for semantic memory search.
 
 Replaces ChromaDB with Alibaba's zvec (C++ backend, Python bindings).
-Single collection for all agents, filtered by agent_id.
-Embedding dimension is inferred lazily on first add().
+Per-agent collections so each Agent can use a different embedding dimension.
 """
 
 from __future__ import annotations
@@ -35,49 +34,46 @@ def _check_schema_has_field(coll: zvec.Collection, field_name: str) -> bool:
 class AgentMemoryStore:
     """Semantic memory backed by zvec.
 
-    One collection holds all agents' memories.
-    ``agent_id`` is a scalar field used for filtering.
+    One collection per agent so different agents can use different embedding dimensions.
+    ``agent_id`` is a scalar field used for filtering within the collection as well.
     Embedding dimension is determined lazily on first ``add()`` call.
     """
 
     def __init__(self) -> None:
         _ZVEC_DIR.mkdir(parents=True, exist_ok=True)
-        self._path = _ZVEC_DIR / "agent_memory"
-        self._coll: zvec.Collection | None = None
-        self._dim: int | None = None
-        # Topic summaries collection
-        self._topics_path = _ZVEC_DIR / "agent_topics"
-        self._topics_coll: zvec.Collection | None = None
+        self._colls: dict[str, zvec.Collection] = {}
+        self._topics_colls: dict[str, zvec.Collection] = {}
+        self._dims: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ensure_collection(self, dim: int | None = None) -> zvec.Collection:
+    def _ensure_collection(self, agent_id: str, dim: int | None = None) -> zvec.Collection:
         """Open existing collection or create new one with inferred dim."""
-        if self._coll is not None:
-            return self._coll
+        if agent_id in self._colls:
+            return self._colls[agent_id]
 
-        if self._path.exists():
-            # Open existing and read dimension from schema
-            self._coll = zvec.open(str(self._path))
-            if not _check_schema_has_field(self._coll, "source_id") or not _check_schema_has_field(self._coll, "timestamp"):
+        path = _ZVEC_DIR / f"agent_memory_{agent_id}"
+        if path.exists():
+            coll = zvec.open(str(path))
+            if not _check_schema_has_field(coll, "source_id") or not _check_schema_has_field(coll, "timestamp"):
                 logger.warning(
                     "Old zvec agent_memory schema detected (missing source_id or timestamp), rebuilding..."
                 )
-                self._coll = None
-                shutil.rmtree(str(self._path), ignore_errors=True)
+                coll = None
+                shutil.rmtree(str(path), ignore_errors=True)
             else:
-                vec_schema = self._coll.schema.vectors
-                # vectors may be a single VectorSchema or a list
+                vec_schema = coll.schema.vectors
                 if isinstance(vec_schema, list):
-                    self._dim = vec_schema[0].dimension
+                    self._dims[agent_id] = vec_schema[0].dimension
                 else:
-                    self._dim = vec_schema.dimension
+                    self._dims[agent_id] = vec_schema.dimension
                 logger.info(
-                    "Opened existing zvec collection at %s (dim=%s)", self._path, self._dim
+                    "Opened existing zvec collection at %s (dim=%s)", path, self._dims[agent_id]
                 )
-                return self._coll
+                self._colls[agent_id] = coll
+                return coll
 
         # Create new collection — need dimension
         target_dim = dim
@@ -108,10 +104,11 @@ class AgentMemoryStore:
                 ),
             ),
         )
-        self._coll = zvec.create_and_open(str(self._path), schema)
-        self._dim = target_dim
-        logger.info("Created zvec collection at %s (dim=%s)", self._path, self._dim)
-        return self._coll
+        coll = zvec.create_and_open(str(path), schema)
+        self._colls[agent_id] = coll
+        self._dims[agent_id] = target_dim
+        logger.info("Created zvec collection at %s (dim=%s)", path, target_dim)
+        return coll
 
     @staticmethod
     def _doc_id(agent_id: str, message_id: str) -> str:
@@ -131,10 +128,10 @@ class AgentMemoryStore:
         metadata: dict[str, str] | None = None,
         timestamp: float = 0.0,
     ) -> None:
-        """Add a message embedding to the shared collection."""
+        """Add a message embedding to the agent's collection."""
         try:
             dim = len(embedding)
-            coll = self._ensure_collection(dim=dim)
+            coll = self._ensure_collection(agent_id, dim=dim)
 
             meta = metadata or {}
             coll.insert([
@@ -171,7 +168,7 @@ class AgentMemoryStore:
         Returns list of {message_id, text, score, metadata}.
         """
         try:
-            coll = self._ensure_collection()
+            coll = self._ensure_collection(agent_id)
 
             # Build filter expression
             filter_parts = [f'agent_id == "{agent_id}"']
@@ -216,7 +213,7 @@ class AgentMemoryStore:
         Returns number of deleted documents (estimated).
         """
         try:
-            coll = self._ensure_collection()
+            coll = self._ensure_collection(agent_id)
 
             filter_parts = [f'agent_id == "{agent_id}"']
             if where:
@@ -226,7 +223,7 @@ class AgentMemoryStore:
             # zvec delete_by_filter does not return count.
             # Peek first to estimate.
             peek = coll.query(
-                vectors=zvec.VectorQuery(field_name="embedding", vector=[0.0] * self._dim),
+                vectors=zvec.VectorQuery(field_name="embedding", vector=[0.0] * self._dims[agent_id]),
                 topk=99999,
                 filter=filter_expr,
             )
@@ -241,7 +238,7 @@ class AgentMemoryStore:
     def delete_agent(self, agent_id: str) -> None:
         """Drop all memory docs for an agent."""
         try:
-            coll = self._ensure_collection()
+            coll = self._ensure_collection(agent_id)
             coll.delete_by_filter(f'agent_id == "{agent_id}"')
         except Exception:
             pass
@@ -250,26 +247,28 @@ class AgentMemoryStore:
     # Topic summaries
     # ------------------------------------------------------------------
 
-    def _ensure_topics_collection(self, dim: int | None = None) -> zvec.Collection:
-        """Open or create the agent_topics collection."""
-        if self._topics_coll is not None:
-            return self._topics_coll
+    def _ensure_topics_collection(self, agent_id: str, dim: int | None = None) -> zvec.Collection:
+        """Open or create the agent's topics collection."""
+        if agent_id in self._topics_colls:
+            return self._topics_colls[agent_id]
 
-        if self._topics_path.exists():
-            self._topics_coll = zvec.open(str(self._topics_path))
-            if not _check_schema_has_field(self._topics_coll, "source_id"):
+        path = _ZVEC_DIR / f"agent_topics_{agent_id}"
+        if path.exists():
+            coll = zvec.open(str(path))
+            if not _check_schema_has_field(coll, "source_id"):
                 logger.warning(
                     "Old zvec agent_topics schema detected (missing source_id), rebuilding..."
                 )
-                self._topics_coll = None
-                shutil.rmtree(str(self._topics_path), ignore_errors=True)
+                coll = None
+                shutil.rmtree(str(path), ignore_errors=True)
             else:
-                vec_schema = self._topics_coll.schema.vectors
+                vec_schema = coll.schema.vectors
                 if isinstance(vec_schema, list):
-                    self._dim = vec_schema[0].dimension
+                    self._dims[agent_id] = vec_schema[0].dimension
                 else:
-                    self._dim = vec_schema.dimension
-                return self._topics_coll
+                    self._dims[agent_id] = vec_schema.dimension
+                self._topics_colls[agent_id] = coll
+                return coll
 
         target_dim = dim
         if target_dim is None:
@@ -296,10 +295,11 @@ class AgentMemoryStore:
                 ),
             ),
         )
-        self._topics_coll = zvec.create_and_open(str(self._topics_path), schema)
-        self._dim = target_dim
-        logger.info("Created zvec topics collection at %s (dim=%s)", self._topics_path, self._dim)
-        return self._topics_coll
+        coll = zvec.create_and_open(str(path), schema)
+        self._topics_colls[agent_id] = coll
+        self._dims[agent_id] = target_dim
+        logger.info("Created zvec topics collection at %s (dim=%s)", path, target_dim)
+        return coll
 
     def add_topic(
         self,
@@ -314,7 +314,7 @@ class AgentMemoryStore:
         """Add a topic summary to vector store."""
         try:
             dim = len(embedding)
-            coll = self._ensure_topics_collection(dim=dim)
+            coll = self._ensure_topics_collection(agent_id, dim=dim)
             doc_id = f"{agent_id}:{topic_id}:{subtopic}"
             coll.insert([
                 zvec.Doc(
@@ -338,7 +338,7 @@ class AgentMemoryStore:
     ) -> list[dict[str, Any]]:
         """Semantic search for related topics."""
         try:
-            coll = self._ensure_topics_collection()
+            coll = self._ensure_topics_collection(agent_id)
 
             filter_parts = [f'agent_id == "{agent_id}"']
             if where:
@@ -367,7 +367,7 @@ class AgentMemoryStore:
     def delete_agent_topics(self, agent_id: str) -> None:
         """Delete all topic summaries for an agent."""
         try:
-            coll = self._ensure_topics_collection()
+            coll = self._ensure_topics_collection(agent_id)
             coll.delete_by_filter(f'agent_id == "{agent_id}"')
         except Exception:
             pass

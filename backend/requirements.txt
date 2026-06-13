@@ -17,3 +17,4 @@ openai>=1.30
 croniter>=2.0
 zvec>=0.4.0
 send2trash>=1.8
+tiktoken>=0.7

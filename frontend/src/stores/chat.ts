@@ -14,7 +14,7 @@ interface Session {
   is_pinned?: boolean
 }
 
-interface Message {
+export interface Message {
   id: string
   session_id: string
   sender_id: string

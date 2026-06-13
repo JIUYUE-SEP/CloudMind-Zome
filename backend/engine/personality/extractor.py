@@ -75,6 +75,33 @@ class PersonalityExtractor:
 
         return cls(provider_name, model, api_key, base_url)
 
+    @classmethod
+    async def from_agent(cls, db, agent_row) -> "PersonalityExtractor":
+        """Build extractor from Agent row using new independent fields.
+
+        Falls back to from_marker_config(agent_row.model_config) if no marker config.
+        """
+        from app.services.provider_resolver import resolve_provider_credentials
+
+        marker_provider_id = getattr(agent_row, "marker_provider_id", None)
+        marker_model_id = getattr(agent_row, "marker_model_id", None)
+
+        if not marker_provider_id:
+            return cls.from_marker_config(agent_row.model_config or {})
+
+        creds = await resolve_provider_credentials(db, marker_provider_id, marker_model_id)
+        if not creds:
+            creds = await resolve_provider_credentials(
+                db, agent_row.provider_id, agent_row.model_id
+            )
+
+        return cls(
+            creds.provider_type if creds else "deepseek",
+            creds.model_id if creds else marker_model_id or "deepseek-chat",
+            creds.api_key or "" if creds else "",
+            creds.base_url or "" if creds else "",
+        )
+
     async def analyze(self, text: str) -> dict[str, float]:
         """Analyze personality text and return Big-5 scores."""
         if not text or len(text.strip()) < 30:

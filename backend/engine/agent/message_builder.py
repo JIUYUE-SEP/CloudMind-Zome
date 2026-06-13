@@ -24,16 +24,21 @@ class MessageBuilder:
         agent_id: str,
         agent_name: str,
         codename: str = "",
+        memory_path: str = "",
+        enabled_skills: list[str] | None = None,
     ):
         self.agent_id = agent_id
         self.agent_name = agent_name
         self.codename = codename
+        self.memory_path = memory_path
+        self.enabled_skills = enabled_skills or []
 
     def build(
         self,
         history: list[Message],
         scene_info: str = "",
         mind_context: str = "",
+        time_tag: str = "",
     ) -> list[Message]:
         """Build the message list for LLM call.
 
@@ -42,8 +47,17 @@ class MessageBuilder:
           2. System: behavioral guidelines
           3. System: memory hint (MEMORY.md path, not content)
           4. Conversation history (group-chat user messages prefixed with sender_name:)
+
+        Args:
+            time_tag: If provided, prepended to the last user message with a blank line.
         """
         result: list[Message] = []
+
+        # Locate last user message for time-tag injection
+        last_user_idx = -1
+        for i, msg in enumerate(history):
+            if msg.role == "user":
+                last_user_idx = i
 
         # Layer 0: Identity fallback — always injected so the LLM knows who it is
         identity_line = f"你是 {self.agent_name}"
@@ -67,32 +81,46 @@ class MessageBuilder:
                 )
             )
 
-        # Layer 2: Behavioral guidelines (injected every turn)
+        # Layer 1.2: Skill instructions
+        if self.enabled_skills:
+            from ..skill.loader import build_skill_injection
+            skill_block = build_skill_injection(
+                self.agent_id,
+                self.enabled_skills,
+                per_skill_limit=3000,
+                total_limit=8000,
+            )
+            if skill_block:
+                result.append(
+                    Message(
+                        role="system",
+                        content=skill_block,
+                        meta=MessageMeta(session_id=self.agent_id),
+                    )
+                )
+
+        # Layer 2: Platform capabilities declaration (injected every turn)
         result.append(
             Message(
                 role="system",
                 content=(
-                    "【行为指南】\n"
-                    "1. 当用户要求添加、修改或删除系统功能时，你拥有直接执行的能力。"
-                    "先查看相关代码作为参考，然后直接调用工具修改。每完成一步向用户汇报。"
-                    "不要把技术文档发给用户让用户自己操作。\n"
-                    "2. 不确定如何修改时，必须调用 list_project_docs 或 search_project_docs 查找相关文档，"
-                    "找到后立即调用 read_file 读取完整内容，然后按照文档指导直接执行。"
-                    "查到文档列表后不要停下来，必须继续读取。\n"
-                    "3. 当你不确定用户的真实意图时，优先向用户发起询问进行澄清。"
-                    "询问永远比不确定的胡乱操作更为有效——宁可多问一句，也不要在误解的前提下行动。"
+                    "【平台能力】\n"
+                    "你可以使用文件工具（read_file、write_file、edit_file、list_project_docs 等）直接操作项目文件。\n"
+                    "当你需要了解项目结构时，可以调用 list_project_docs 或 search_project_docs。"
                 ),
                 meta=MessageMeta(session_id=self.agent_id),
             )
         )
 
         # Layer 3: Memory hint — Agent manages MEMORY.md by itself
-        try:
-            from app.database import WORKSPACE_ROOT
-        except ImportError:
-            from pathlib import Path
-            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
-        memory_md_path = WORKSPACE_ROOT / self.agent_id / "MEMORY.md"
+        memory_md_path = self.memory_path
+        if not memory_md_path:
+            try:
+                from app.database import WORKSPACE_ROOT
+            except ImportError:
+                from pathlib import Path
+                WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+            memory_md_path = WORKSPACE_ROOT / self.agent_id / "MEMORY.md"
         result.append(
             Message(
                 role="system",
@@ -106,7 +134,7 @@ class MessageBuilder:
             )
         )
 
-        for msg in history:
+        for i, msg in enumerate(history):
             if getattr(msg, "_smart_hint", False):
                 result.append(msg)
                 continue
@@ -116,9 +144,13 @@ class MessageBuilder:
                 continue
 
             if msg.role == "user" and msg.meta.source == "group":
-                result.append(self._with_sender_prefix(msg))
-            else:
-                result.append(msg)
+                msg = self._with_sender_prefix(msg)
+
+            # Inject time tag into the last user message after sender prefix
+            if i == last_user_idx and time_tag:
+                msg = self._inject_time_tag(msg, time_tag)
+
+            result.append(msg)
 
         return result
 
@@ -141,6 +173,27 @@ class MessageBuilder:
                 new_blocks.append(b)
         if not prefixed:
             new_blocks.insert(0, TextBlock(text=prefix))
+        return Message(role=msg.role, content=new_blocks, meta=msg.meta)
+
+    def _inject_time_tag(self, msg: Message, time_tag: str) -> Message:
+        """Prepend time tag to a user message with a blank line separator."""
+        tagged = f"{time_tag}\n\n"
+        if isinstance(msg.content, str):
+            return Message(
+                role=msg.role,
+                content=tagged + msg.content,
+                meta=msg.meta,
+            )
+        new_blocks: list[ContentBlock] = []
+        injected = False
+        for b in msg.content:
+            if not injected and isinstance(b, TextBlock):
+                new_blocks.append(TextBlock(text=tagged + b.text))
+                injected = True
+            else:
+                new_blocks.append(b)
+        if not injected:
+            new_blocks.insert(0, TextBlock(text=tagged))
         return Message(role=msg.role, content=new_blocks, meta=msg.meta)
 
     @staticmethod

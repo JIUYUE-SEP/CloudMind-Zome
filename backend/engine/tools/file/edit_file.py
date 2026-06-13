@@ -6,35 +6,12 @@ import logging
 from pathlib import Path
 
 from ...tool.registry import tool_registry
+from .security import is_safe_path
 
 logger = logging.getLogger(__name__)
 
 # Max file size (5 MB)
 MAX_SIZE = 5 * 1024 * 1024
-
-# Critical paths that must never be modified
-FORBIDDEN_PREFIXES = [
-    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-    "/boot", "/sys", "/dev", "/proc", "/root",
-    "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)",
-]
-
-
-def _is_safe_path(path: Path) -> tuple[bool, str]:
-    """Check if modifying this path is safe."""
-    try:
-        resolved = path.resolve()
-    except Exception as exc:
-        return False, f"cannot resolve path: {exc}"
-
-    for prefix in FORBIDDEN_PREFIXES:
-        try:
-            resolved.relative_to(Path(prefix))
-            return False, f"modifying {prefix} is not allowed"
-        except ValueError:
-            pass
-
-    return True, ""
 
 
 @tool_registry.register(toolset="file", max_result_chars=3000, safe_to_parallel=False)
@@ -56,7 +33,7 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
     """
     dest = Path(path).expanduser()
 
-    ok, reason = _is_safe_path(dest)
+    ok, reason = is_safe_path(path, mode="write")
     if not ok:
         return f"Error: {reason}"
 

@@ -1,4 +1,4 @@
-"""Code execution tools: safe Python sandbox.
+"""Code execution tools: subprocess-based Python runner.
 
 Executes Python code in a subprocess with timeout and output limits.
 Dangerous operations are blocked by a simple AST-based deny-list.
@@ -23,6 +23,7 @@ _BLOCKED_IMPORTS = {
     "os", "sys", "subprocess", "shutil", "socket", "urllib", "http",
     "ftplib", "smtplib", "ctypes", "mmap", "resource", "signal",
     "multiprocessing", "concurrent", "threading", "asyncio", "importlib",
+    "pathlib", "io", "builtins",
 }
 
 _BLOCKED_BUILTINS = {

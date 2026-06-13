@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from ...tool.registry import tool_registry
+from .security import is_safe_path
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,10 @@ def share_file(path: str) -> str:
     except ValueError as exc:
         return f"Error: {exc}"
 
+    ok, reason = is_safe_path(str(src), mode="share")
+    if not ok:
+        return f"Error: {reason}"
+
     if not src.exists():
         return f"Error: file not found: {path} (resolved to {src})"
 
@@ -75,21 +80,9 @@ def share_file(path: str) -> str:
         return f"Error: {exc}"
 
 
-try:
-    from app.database import WORKSPACE_ROOT
-except ImportError:
-    WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
-
-_ALLOWED_BASES = [
-    Path.home() / ".cloudmind-zome",
-    WORKSPACE_ROOT,
-]
-
-
 def _resolve_path(path: str) -> Path:
     """Resolve a path to a local file.
 
-    Only paths under ~/.cloudmind-zome/ or the agent workspace/ are allowed.
     /uploads/... URLs are accepted as a shorthand for
     ~/.cloudmind-zome/uploads/...
     """
@@ -100,25 +93,8 @@ def _resolve_path(path: str) -> Path:
         local = Path.home() / ".cloudmind-zome" / p.lstrip("/")
         return local
 
-    # Bare home-relative -> expand and validate below
+    # Bare home-relative -> expand
     if p.startswith("~/"):
-        resolved = Path.home() / p[2:]
-    else:
-        resolved = Path(p).expanduser()
+        return Path.home() / p[2:]
 
-    try:
-        resolved = resolved.resolve(strict=False)
-    except Exception:
-        pass
-
-    for base in _ALLOWED_BASES:
-        try:
-            resolved.relative_to(base.resolve())
-            return resolved
-        except ValueError:
-            pass
-
-    raise ValueError(
-        f"Access denied: {path} is outside the allowed directories. "
-        f"You can only share files under ~/.cloudmind-zome/, the agent workspace/, or /uploads/ URLs."
-    )
+    return Path(p).expanduser()

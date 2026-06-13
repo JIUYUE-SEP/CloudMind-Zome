@@ -49,6 +49,8 @@ class ChatCompletionsTransport:
         thinking_profile: ThinkingProfile,
         timeout: float = 120.0,
         max_retries: int = 3,
+        auth_mode: str = "api_key",
+        custom_headers: dict[str, str] | None = None,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -56,12 +58,19 @@ class ChatCompletionsTransport:
         self.thinking_profile = thinking_profile
         self.timeout = timeout
         self.max_retries = max_retries
+        self.auth_mode = auth_mode
+
+        # OpenAI client internal retries are disabled; we use the unified retry helper.
+        headers = dict(custom_headers) if custom_headers else {}
+        # AsyncOpenAI always needs a non-empty api_key string; use dummy when none required
+        effective_key = api_key if api_key else "sk-dummy"
 
         self._client = AsyncOpenAI(
             base_url=base_url,
-            api_key=api_key,
+            api_key=effective_key,
             timeout=timeout,
-            max_retries=max_retries,
+            max_retries=0,
+            default_headers=headers,
         )
 
     # ------------------------------------------------------------------
@@ -77,7 +86,7 @@ class ChatCompletionsTransport:
         """Send messages and get a complete (non-streaming) response."""
         api_messages = self._format_messages(messages)
         api_kwargs = self._build_request_kwargs(api_messages, tools, kwargs)
-        response = await self._call_with_retry(api_kwargs)
+        response = await self._safe_call(api_kwargs)
         return self._normalize_response(response)
 
     async def stream(
@@ -86,13 +95,17 @@ class ChatCompletionsTransport:
         tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ContentBlock]:
-        """Send messages and stream response chunks."""
+        """Send messages and stream response chunks.
+
+        This is a single-shot stream. The caller (ReActAgent) is responsible for
+        re-invoking stream() on retry/fallback and discarding already-yielded chunks.
+        """
         api_messages = self._format_messages(messages)
         api_kwargs = self._build_request_kwargs(api_messages, tools, kwargs)
         api_kwargs["stream"] = True
 
         tool_calls_accum: dict[int, dict[str, Any]] = {}
-        response = await self._client.chat.completions.create(**api_kwargs)
+        response = await self._safe_call(api_kwargs)
 
         async for chunk in response:
             if not chunk.choices:
@@ -240,7 +253,11 @@ class ChatCompletionsTransport:
         kwargs.update(extra_kwargs)
         return kwargs
 
-    async def _call_with_retry(self, api_kwargs: dict) -> Any:
+    async def _safe_call(self, api_kwargs: dict) -> Any:
+        """Single-shot LLM call without any retry logic.
+
+        Retries are handled by the unified retry helper in engine.provider.retry.
+        """
         try:
             return await self._client.chat.completions.create(**api_kwargs)
         except RateLimitError as e:

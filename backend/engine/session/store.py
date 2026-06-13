@@ -942,6 +942,39 @@ class SessionStore:
 
         return messages
 
+    async def get_agent_last_message_timestamp(
+        self, agent_id: str, offset: int = 0
+    ) -> float | None:
+        """Get timestamp of the N-th most recent message for an agent.
+
+        offset=0 means the most recent message.
+        Returns None if no message found at the given offset.
+        """
+        db = await self.connect()
+        async with db.execute(
+            """
+            SELECT timestamp FROM agent_messages
+            WHERE agent_id = ?
+            ORDER BY id DESC
+            LIMIT 1 OFFSET ?
+            """,
+            (agent_id, offset),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        ts_raw = row[0]
+        if isinstance(ts_raw, str):
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                return dt.timestamp()
+            except Exception:
+                return None
+        return ts_raw
+
     async def delete_agent_messages_by_uuids(
         self, agent_id: str, uuids: list[str]
     ) -> int:

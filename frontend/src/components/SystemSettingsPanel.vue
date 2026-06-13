@@ -65,143 +65,23 @@
 
       <!-- LLM -->
       <div v-if="activeTab === 'llm'" class="ss-section">
-        <div class="ss-hint">
-          Fallback 链第一个即为默认 Provider。未配置 Fallback 时不启用外部模型。
-        </div>
+        <div class="deprecated-notice">
+          <div class="notice-icon">⚠️</div>
+          <h3>Provider 管理已迁移</h3>
+          <p>「对话模型」配置已移至「算力中枢」，请前往该页面管理 Provider、模型列表和 Fallback 链。</p>
+          <button class="mini-btn" @click="$router.push('/compute')">前往算力中枢</button>
 
-        <div class="ss-sub">Fallback 链（拖拽排序，第一个为默认）</div>
-        <div class="ss-tags">
-          <span
-            v-for="(p, i) in form.provider.fallback_chain"
-            :key="p + '-' + i"
-            class="ss-tag"
-            draggable="true"
-            :class="{ 'tag-dragging': dragFallbackIndex === i }"
-            @dragstart="onFallbackDragStart($event, i)"
-            @dragover.prevent="onFallbackDragOver($event, i)"
-            @drop="onFallbackDrop($event, i)"
-            @dragend="onFallbackDragEnd"
-          >
-            <span class="drag-handle">::</span>
-            {{ p }}
-            <button @click="removeFallback(i)">×</button>
-          </span>
+          <div class="tavily-section" style="margin-top: 24px;">
+            <label class="ss-field">
+              <span>Tavily API Key（网络搜索）</span>
+              <input v-model="form.tavily.api_key" :type="showKey.tavily ? 'text' : 'password'" placeholder="用于 search_web 工具的 Tavily API Key" />
+              <button class="ss-toggle-key" @click="showKey.tavily = !showKey.tavily">
+                {{ showKey.tavily ? '隐藏' : '显示' }}
+              </button>
+            </label>
+            <p class="hint-text">用于 Agent 调用网络搜索工具，可在 https://tavily.com 获取</p>
+          </div>
         </div>
-        <select v-model="fallbackInput" @change="addFallback">
-          <option value="">+ 添加 fallback</option>
-          <option value="deepseek">deepseek</option>
-          <option value="mimo">mimo</option>
-          <option value="kimicode">kimicode</option>
-          <option value="glm">glm</option>
-        </select>
-
-        <div class="ss-sub">Provider 配置</div>
-        <div v-for="name in ['deepseek', 'mimo', 'kimicode', 'glm']" :key="name" class="ss-provider-card">
-          <div class="ss-provider-name">{{ name }}</div>
-          <label class="ss-field small">
-            <span>Base URL</span>
-            <input v-model="form.provider[name].base_url" />
-          </label>
-          <label class="ss-field small">
-            <span>模型名称</span>
-            <input v-model="form.provider[name].model" placeholder="如 deepseek-chat" />
-          </label>
-          <label class="ss-field small">
-            <span>API Key</span>
-            <input
-              v-model="form.provider[name].api_key"
-              :type="showKey[name] ? 'text' : 'password'"
-              placeholder="未设置"
-            />
-            <button class="ss-toggle-key" @click="showKey[name] = !showKey[name]">
-              {{ showKey[name] ? '隐藏' : '显示' }}
-            </button>
-          </label>
-        </div>
-
-        <label class="ss-field">
-          <span>Tavily API Key</span>
-          <input v-model="form.tavily.api_key" :type="showKey.tavily ? 'text' : 'password'" placeholder="未设置" />
-          <button class="ss-toggle-key" @click="showKey.tavily = !showKey.tavily">
-            {{ showKey.tavily ? '隐藏' : '显示' }}
-          </button>
-        </label>
-      </div>
-
-      <!-- 图片生成 -->
-      <div v-if="activeTab === 'image'" class="ss-section">
-        <div class="ss-hint">
-          配置图片生成 API（DALL-E 兼容），Agent 可使用 generate_image 工具生图。
-        </div>
-        <label class="ss-field">
-          <span>API 地址</span>
-          <input v-model="form.image_gen.api_url" placeholder="https://api.openai.com" />
-        </label>
-        <label class="ss-field">
-          <span>模型</span>
-          <input v-model="form.image_gen.model" placeholder="dall-e-3" />
-        </label>
-        <label class="ss-field">
-          <span>API Key</span>
-          <input v-model="form.image_gen.api_key" :type="showKey.image_gen ? 'text' : 'password'" placeholder="未设置" />
-          <button class="ss-toggle-key" @click="showKey.image_gen = !showKey.image_gen">
-            {{ showKey.image_gen ? '隐藏' : '显示' }}
-          </button>
-        </label>
-      </div>
-
-      <!-- 辅助模型 -->
-      <div v-if="activeTab === 'assistant'" class="ss-section">
-        <div class="ss-hint">
-          辅助模型负责后台 NLP 任务（记忆压缩、相关性过滤等），<br />
-          与 Agent 对话模型完全独立。直接输入 URL、模型名称和 API Key 即可。
-        </div>
-        <label class="ss-field">
-          <span>Base URL</span>
-          <input v-model="form.assistant_model.base_url" placeholder="如 https://api.deepseek.com/v1" />
-        </label>
-        <label class="ss-field">
-          <span>模型名称</span>
-          <input v-model="form.assistant_model.model" placeholder="如 deepseek-chat" />
-        </label>
-        <label class="ss-field">
-          <span>API Key</span>
-          <input
-            v-model="form.assistant_model.api_key"
-            :type="showKey.assistant ? 'text' : 'password'"
-            placeholder="未设置"
-          />
-          <button class="ss-toggle-key" @click="showKey.assistant = !showKey.assistant">
-            {{ showKey.assistant ? '隐藏' : '显示' }}
-          </button>
-        </label>
-      </div>
-
-      <!-- Embedding -->
-      <div v-if="activeTab === 'embedding'" class="ss-section">
-        <div class="ss-hint">
-          Embedding 模型用于语义记忆搜索。<br />
-          与 Agent 对话模型完全独立。直接输入 URL、模型名称和 API Key 即可。
-        </div>
-        <label class="ss-field">
-          <span>Base URL</span>
-          <input v-model="form.embedding_model.base_url" placeholder="如 https://api.openai.com/v1" />
-        </label>
-        <label class="ss-field">
-          <span>模型名称</span>
-          <input v-model="form.embedding_model.model" placeholder="如 text-embedding-3-small" />
-        </label>
-        <label class="ss-field">
-          <span>API Key</span>
-          <input
-            v-model="form.embedding_model.api_key"
-            :type="showKey.embedding ? 'text' : 'password'"
-            placeholder="未设置"
-          />
-          <button class="ss-toggle-key" @click="showKey.embedding = !showKey.embedding">
-            {{ showKey.embedding ? '隐藏' : '显示' }}
-          </button>
-        </label>
       </div>
 
       <!-- Skill -->
@@ -211,7 +91,7 @@
 
       <!-- MCP -->
       <div v-if="activeTab === 'mcp'" class="ss-section">
-        <div class="ss-placeholder">MCP 服务器管理即将在 V1.2 推出</div>
+        <div class="ss-placeholder">MCP 支持开发中，暂未开放</div>
       </div>
 
       <!-- ACP -->
@@ -247,8 +127,6 @@ const tabs = [
   { key: 'memory', label: '记忆' },
   { key: 'llm', label: '对话模型' },
   { key: 'image', label: '图片生成' },
-  { key: 'assistant', label: '辅助模型' },
-  { key: 'embedding', label: 'Embedding' },
   { key: 'skill', label: '技能' },
   { key: 'mcp', label: 'MCP' },
   { key: 'acp', label: 'ACP' },
@@ -262,9 +140,6 @@ const showKey = reactive<Record<string, boolean>>({
   kimicode: false,
   glm: false,
   tavily: false,
-  image_gen: false,
-  assistant: false,
-  embedding: false,
 })
 
 const saveMsg = ref('')
@@ -282,10 +157,7 @@ const form = reactive<any>({
     kimicode: { base_url: '', model: '', api_key: '' },
     glm: { base_url: '', model: '', api_key: '' },
   },
-  assistant_model: { base_url: '', model: '', api_key: '' },
-  embedding_model: { base_url: '', model: '', api_key: '' },
   tavily: { api_key: '' },
-  image_gen: { api_url: '', model: '', api_key: '' },
 })
 
 /** Deep-merge source into target for nested objects. */
@@ -320,10 +192,7 @@ async function loadConfig() {
     const d = json.data
     if (d.context) mergeConfig(form.context, d.context)
     if (d.provider) mergeConfig(form.provider, d.provider)
-    if (d.assistant_model) mergeConfig(form.assistant_model, d.assistant_model)
-    if (d.embedding_model) mergeConfig(form.embedding_model, d.embedding_model)
     if (d.tavily) mergeConfig(form.tavily, d.tavily)
-    if (d.image_gen) mergeConfig(form.image_gen, d.image_gen)
   } else {
     console.error('[Settings] loadConfig failed:', json.message)
   }
@@ -376,18 +245,7 @@ function onFallbackDragEnd() {
 async function save() {
   const payload: any = {}
   payload.context = { ...form.context }
-  payload.provider = {
-    default: form.provider.fallback_chain[0] || '',
-    fallback_chain: [...form.provider.fallback_chain],
-    deepseek: { ...form.provider.deepseek },
-    mimo: { ...form.provider.mimo },
-    kimicode: { ...form.provider.kimicode },
-    glm: { ...form.provider.glm },
-  }
-  payload.assistant_model = { ...form.assistant_model }
-  payload.embedding_model = { ...form.embedding_model }
   payload.tavily = { ...form.tavily }
-  payload.image_gen = { ...form.image_gen }
 
   console.log('[Settings] save payload:', JSON.stringify(payload, null, 2))
   const json = await api.put('/config', payload)
