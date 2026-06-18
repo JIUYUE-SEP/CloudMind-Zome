@@ -11,11 +11,12 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import select, update
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from sqlalchemy import update
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.security import GUEST_TOKEN, verify_access_token
 from ..database import AsyncSessionLocal
 from ..models import ChatSessionMember, User
 from ..services.event_bus import manager
@@ -28,33 +29,28 @@ router = APIRouter()
 # ------------------------------------------------------------------
 # Helpers (WS-specific, not protocol)
 # ------------------------------------------------------------------
-async def _get_user_from_token(token: str | None, db: AsyncSession) -> User:
-    """Return guest user (login-free mode)."""
-    result = await db.execute(select(User).where(User.codename == "guest"))
-    guest = result.scalar_one_or_none()
-    if guest:
-        return guest
-    guest = User(
-        id="00000000-0000-0000-0000-000000000000",
-        codename="guest",
-        nickname="访客",
-        password_hash=None,
-        device_id="guest-device",
-        role="guest",
-    )
-    db.add(guest)
-    await db.commit()
-    await db.refresh(guest)
-    return guest
+async def _get_user_from_token(token: str | None, db: AsyncSession) -> User | None:
+    """Resolve a WebSocket token to a User.
+
+    Returns ``None`` when the token is missing or invalid so the endpoint can
+    reject the connection with a policy-violation close code.
+    """
+    if token is None:
+        return None
+    return await verify_access_token(token, db)
 
 
 # ------------------------------------------------------------------
 # Main WebSocket endpoint
 # ------------------------------------------------------------------
 @router.websocket("/api/v1/ws")
-async def websocket_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket, token: str | None = Query(None)):
     async with AsyncSessionLocal() as db:
-        user = await _get_user_from_token(None, db)
+        user = await _get_user_from_token(token, db)
+
+    if user is None:
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
     await manager.connect(user.id, ws)
     await ws.send_json({"type": "auth.success", "payload": {"user_id": user.id}})

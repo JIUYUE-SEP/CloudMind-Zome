@@ -18,18 +18,18 @@
         <option value="">请选择模型</option>
         <option v-for="m in currentModels" :key="m.id" :value="m.id">
           {{ m.display_name }}
-          <template v-if="m.supports_reasoning"> 🧠</template>
-          <template v-if="m.supports_tool_calling"> 🔧</template>
-          <template v-if="m.supports_multimodal"> 👁️</template>
+          <span v-if="m.supports_reasoning" class="cap-tag" title="支持深度思考">思</span>
+          <span v-if="m.supports_tool_calling" class="cap-tag" title="支持工具调用">工</span>
+          <span v-if="m.supports_multimodal" class="cap-tag" title="支持多模态">图</span>
         </option>
       </select>
       <p class="hint" v-if="currentModel">
         <template v-if="currentModel.model_type === 'llm'">
           上下文窗口：{{ currentModel.context_window?.toLocaleString() ?? '-' }} tokens，
           最大输出：{{ currentModel.max_output_tokens?.toLocaleString() ?? '-' }} tokens
-          <span v-if="currentModel.supports_reasoning" title="支持深度思考">🧠</span>
-          <span v-if="currentModel.supports_tool_calling" title="支持工具调用">🔧</span>
-          <span v-if="currentModel.supports_multimodal" title="支持图文输入">👁️</span>
+          <span v-if="currentModel.supports_reasoning" class="cap-tag" title="支持深度思考">思</span>
+          <span v-if="currentModel.supports_tool_calling" class="cap-tag" title="支持工具调用">工</span>
+          <span v-if="currentModel.supports_multimodal" class="cap-tag" title="支持多模态">图</span>
         </template>
         <template v-else-if="currentModel.model_type === 'embedding'">
           向量嵌入模型 · 用于语义搜索
@@ -143,5 +143,19 @@ function onModelChange(e: Event) {
   font-size: 11px;
   color: #5a6a7a;
   margin: 0;
+}
+
+.cap-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #00E5C9;
+  background: rgba(0, 229, 201, 0.1);
+  border: 1px solid rgba(0, 229, 201, 0.25);
+  cursor: help;
 }
 </style>

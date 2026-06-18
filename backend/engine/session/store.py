@@ -29,7 +29,11 @@ class SessionStore:
 
     def __init__(self, db_path: str | Path | None = None):
         if db_path is None:
-            db_path = Path.home() / ".cloudmind-zome" / "cloudmind.db"
+            try:
+                from app.database import DATA_DIR
+            except ImportError:
+                DATA_DIR = Path.home() / ".cloudmind-zome"
+            db_path = DATA_DIR / "cloudmind.db"
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db: aiosqlite.Connection | None = None

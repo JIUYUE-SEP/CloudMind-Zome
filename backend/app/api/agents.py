@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..database import DATA_DIR, UPLOAD_DIR as _UPLOAD_DIR
 from ..dependencies import get_db, require_user
 from ..models import Agent, User
 from app.core.crypto import decrypt_value
@@ -23,8 +24,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 # ------------------------------------------------------------------
 # Upload storage
 # ------------------------------------------------------------------
-UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = _UPLOAD_DIR
 
 
 def _save_upload(file: UploadFile, subfolder: str) -> str:
@@ -636,7 +636,7 @@ async def analyze_agent_personality(
 # ------------------------------------------------------------------
 # Agent memory state (topics + compression stats)
 # ------------------------------------------------------------------
-_DB_PATH = Path.home() / ".cloudmind-zome" / "cloudmind.db"
+_DB_PATH = DATA_DIR / "cloudmind.db"
 
 
 @router.get("/{agent_id}/memory", response_model=ListResp)
@@ -763,7 +763,7 @@ async def import_history(
         return ListResp(data={"imported": 0, "skipped": 0, "errors": ["No valid messages found"]})
 
     # Connect to unified DB
-    db_path = Path.home() / ".cloudmind-zome" / "cloudmind.db"
+    db_path = DATA_DIR / "cloudmind.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     imported = 0

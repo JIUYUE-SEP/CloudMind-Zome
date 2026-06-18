@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..database import UPLOAD_DIR
 from ..dependencies import get_db, require_user
 from ..models import Agent, ChatSession, ChatSessionMember, User
 
@@ -361,7 +362,7 @@ async def dissolve_group(
 # ------------------------------------------------------------------
 # Upload
 # ------------------------------------------------------------------
-UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads"
+# UPLOAD_DIR is imported from app.database
 
 
 def _save_upload(file: UploadFile, subfolder: str) -> str:

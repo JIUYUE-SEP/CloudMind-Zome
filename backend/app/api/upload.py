@@ -9,12 +9,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from ..database import UPLOAD_DIR
 from ..dependencies import require_user
 
 router = APIRouter(prefix="/upload", tags=["upload"])
-
-UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_UPLOAD_SIZE_MB = 50
 

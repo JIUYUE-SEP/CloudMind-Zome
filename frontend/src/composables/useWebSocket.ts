@@ -1,4 +1,5 @@
 import { useChatStore } from '@/stores/chat'
+import { getWsBase } from '@/api/config'
 import { ref } from 'vue'
 
 let ws: WebSocket | null = null
@@ -41,7 +42,8 @@ export function useWebSocket() {
 
   function connect() {
     if (ws && ws.readyState !== WebSocket.CLOSED) return
-    const url = `ws://${location.host}/api/v1/ws`
+    const token = localStorage.getItem('cloudmind-token') || 'cloudmind-guest-token'
+    const url = `${getWsBase()}/api/v1/ws?token=${encodeURIComponent(token)}`
     ws = new WebSocket(url)
 
     ws.onopen = () => {

@@ -447,10 +447,10 @@ async function deleteAgent() {
 .agent-edit {
   position: fixed;
   inset: 0;
-  background: var(--ae-bg);
+  background: #0b0f17;
+  color: #d8e1ec;
   z-index: 900;
   display: flex;
-  color: var(--ae-text);
   font-family: system-ui, -apple-system, sans-serif;
 }
 
@@ -732,6 +732,34 @@ async function deleteAgent() {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.save-btn {
+  width: 100%;
+  padding: 10px;
+  background: #00e5c9;
+  color: #0b0f17;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.danger-btn {
+  width: 100%;
+  padding: 10px;
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .panel-slide-enter-active,

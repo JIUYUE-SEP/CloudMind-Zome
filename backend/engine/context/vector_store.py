@@ -15,7 +15,10 @@ import zvec
 
 logger = logging.getLogger(__name__)
 
-_ZVEC_DIR = Path.home() / ".cloudmind-zome" / "zvec"
+try:
+    from app.database import ZVEC_DIR
+except ImportError:
+    ZVEC_DIR = Path.home() / ".cloudmind-zome" / "zvec"
 
 # Default HNSW parameters (tuned for ~1K-100K docs per desktop deployment)
 _HNSW_M = 16
@@ -40,7 +43,7 @@ class AgentMemoryStore:
     """
 
     def __init__(self) -> None:
-        _ZVEC_DIR.mkdir(parents=True, exist_ok=True)
+        ZVEC_DIR.mkdir(parents=True, exist_ok=True)
         self._colls: dict[str, zvec.Collection] = {}
         self._topics_colls: dict[str, zvec.Collection] = {}
         self._dims: dict[str, int] = {}
@@ -54,7 +57,7 @@ class AgentMemoryStore:
         if agent_id in self._colls:
             return self._colls[agent_id]
 
-        path = _ZVEC_DIR / f"agent_memory_{agent_id}"
+        path = ZVEC_DIR / f"agent_memory_{agent_id}"
         if path.exists():
             coll = zvec.open(str(path))
             if not _check_schema_has_field(coll, "source_id") or not _check_schema_has_field(coll, "timestamp"):
@@ -252,7 +255,7 @@ class AgentMemoryStore:
         if agent_id in self._topics_colls:
             return self._topics_colls[agent_id]
 
-        path = _ZVEC_DIR / f"agent_topics_{agent_id}"
+        path = ZVEC_DIR / f"agent_topics_{agent_id}"
         if path.exists():
             coll = zvec.open(str(path))
             if not _check_schema_has_field(coll, "source_id"):

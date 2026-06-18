@@ -12,7 +12,12 @@ from ...tool.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads" / "generated"
+try:
+    from app.database import UPLOAD_DIR
+except ImportError:
+    UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads"
+
+GENERATED_UPLOAD_DIR = UPLOAD_DIR / "generated"
 
 
 def _detect_provider_type(api_url: str) -> str:
@@ -205,9 +210,9 @@ async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = 
                     b64 = img_data.get("b64_json", "")
                     url = img_data.get("url", "")
                     if b64:
-                        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                        GENERATED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
                         filename = f"{uuid.uuid4().hex}.png"
-                        dest = UPLOAD_DIR / filename
+                        dest = GENERATED_UPLOAD_DIR / filename
                         dest.write_bytes(base64.b64decode(b64))
                         image_urls.append(f"/uploads/generated/{filename}")
                     elif url:
@@ -218,7 +223,7 @@ async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = 
 
             # Download and save all DashScope URLs (they expire in 24h)
             saved_urls: list[str] = []
-            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            GENERATED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
             for url in image_urls:
                 if url.startswith("/uploads/generated/"):
@@ -227,7 +232,7 @@ async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = 
                     continue
 
                 filename = f"{uuid.uuid4().hex}.png"
-                dest = UPLOAD_DIR / filename
+                dest = GENERATED_UPLOAD_DIR / filename
 
                 if url.startswith("data:"):
                     # data:image/png;base64,...

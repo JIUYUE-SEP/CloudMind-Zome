@@ -11,12 +11,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..database import DATA_DIR
 from ..dependencies import get_db, require_user
 from ..models import User, Profile
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_USERDATA_DIR = Path.home() / ".cloudmind-zome" / "userdata"
+_USERDATA_DIR = DATA_DIR / "userdata"
 _USERDATA_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -1,6 +1,7 @@
 """Provider migration and YAML <-> DB sync.
 
-- Load or create ~/.cloudmind-zome/providers.yaml
+- Load or create <DATA_DIR>/providers.yaml (``DATA_DIR`` comes from
+  ``CLOUDMIND_DATA_DIR`` or defaults to ``~/.cloudmind-zome``)
 - Migrate from legacy config.yaml (one-time)
 - Idempotent upsert into ComputeProvider + LLMModel tables on startup
 """

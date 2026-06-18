@@ -5,6 +5,7 @@ WAL mode + foreign keys enabled. All tables coexist in cloudmind.db.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -16,16 +17,38 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import declarative_base
 
+
 # ------------------------------------------------------------------
 # Paths
 # ------------------------------------------------------------------
-DATA_DIR = Path.home() / ".cloudmind-zome"
+def _get_data_dir() -> Path:
+    """Return the user-writable data directory.
+
+    Tauri desktop builds set CLOUDMIND_DATA_DIR to the app-local data
+    directory (e.g. ``%LOCALAPPDATA%\\com.cloudmind-zome.app``).  When
+    unset, fall back to ``~/.cloudmind-zome`` for development mode.
+    """
+    env_dir = os.environ.get("CLOUDMIND_DATA_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path.home() / ".cloudmind-zome"
+
+
+DATA_DIR = _get_data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 DB_PATH = DATA_DIR / "cloudmind.db"
 DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 
-# Agent workspace: per-agent writable files live under project root
-WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent / "workspace"
+# Agent workspace and other writable directories live under DATA_DIR.
+WORKSPACE_ROOT = DATA_DIR / "workspace"
+WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+ZVEC_DIR = DATA_DIR / "zvec"
+ZVEC_DIR.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------
 # Engine

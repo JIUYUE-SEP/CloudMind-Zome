@@ -1,7 +1,7 @@
 {
   "productName": "CloudMind-Zome",
   "version": "0.1.0",
-  "identifier": "com.cloudmind.zome",
+  "identifier": "com.cloudmind-zome.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -24,13 +24,33 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "category": "DeveloperTool",
+    "copyright": "",
+    "externalBin": [],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": [
+      "runtime",
+      "backend"
+    ],
+    "longDescription": "",
+    "shortDescription": "",
+    "targets": "all",
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "nsis": {
+        "installMode": "both",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
+      }
+    }
   }
 }

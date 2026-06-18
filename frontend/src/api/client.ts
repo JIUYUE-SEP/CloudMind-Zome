@@ -1,4 +1,4 @@
-const API_BASE = '/api/v1'
+import { getApiBase } from './config'
 
 function getHeaders(contentType = true): Record<string, string> {
   const headers: Record<string, string> = {}
@@ -18,7 +18,8 @@ async function request<T = any>(
   body?: any,
   contentType = true,
 ): Promise<ApiResponse<T>> {
-  const url = path.startsWith('http') ? path : `${API_BASE}${path}`
+  const base = getApiBase()
+  const url = path.startsWith('http') ? path : `${base}${path}`
   const opts: RequestInit = { method, headers: getHeaders(contentType), cache: 'no-store' }
   if (body && contentType) opts.body = JSON.stringify(body)
   else if (body) opts.body = body

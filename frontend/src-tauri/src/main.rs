@@ -2,7 +2,9 @@
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+
+use tauri::Manager;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -76,6 +78,20 @@ struct BackendProcess {
     job: Option<JobHandle>,
 }
 
+struct BackendState {
+    url: Mutex<String>,
+    child: Mutex<Option<BackendProcess>>,
+}
+
+impl Default for BackendState {
+    fn default() -> Self {
+        Self {
+            url: Mutex::new("http://127.0.0.1:8848".to_string()),
+            child: Mutex::new(None),
+        }
+    }
+}
+
 /// Terminate the Python backend with multiple fallback layers.
 fn kill_backend(proc_opt: &mut Option<BackendProcess>) {
     if let Some(mut proc) = proc_opt.take() {
@@ -87,8 +103,6 @@ fn kill_backend(proc_opt: &mut Option<BackendProcess>) {
             }
 
             // Layer 2: taskkill /T /F /PID <pid> — force-kill process tree
-            // This catches anything that escaped the job object (e.g. uvicorn
-            // reload supervisor spawned before assignment).
             let pid = proc.child.id();
             let _ = Command::new("taskkill")
                 .args(&["/T", "/F", "/PID", &pid.to_string()])
@@ -104,107 +118,234 @@ fn kill_backend(proc_opt: &mut Option<BackendProcess>) {
 }
 
 // ------------------------------------------------------------------
-fn main() {
-    let backend: Arc<Mutex<Option<BackendProcess>>> = Arc::new(Mutex::new(None));
-    let backend_setup = Arc::clone(&backend);
+// Tauri command: expose backend URL to the frontend
+// ------------------------------------------------------------------
+#[tauri::command]
+fn backend_url(state: tauri::State<BackendState>) -> String {
+    state.url.lock().unwrap().clone()
+}
 
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .setup(move |_app| {
-            let python_cmd = if cfg!(target_os = "windows") {
-                "python"
-            } else {
-                "python3"
-            };
+/// Poll the backend health endpoint until it responds or the timeout expires.
+async fn wait_for_backend(url: &str, timeout_secs: u64) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
-            // Resolve backend directory: src-tauri/ -> ../../backend
+    while std::time::Instant::now() < deadline {
+        match client
+            .get(format!("{}/api/v1/system/health", url))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+        }
+    }
+    Err(format!("backend did not start within {} seconds", timeout_secs))
+}
+
+/// Find an available TCP port starting from `start`.
+fn find_available_port(start: u16, max_attempts: u16) -> Result<u16, String> {
+    for port in start..start + max_attempts {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(_) => continue,      // port is in use, try next
+            Err(_) => return Ok(port), // connection refused → port is free
+        }
+    }
+    Err(format!(
+        "no available port found between {} and {}",
+        start,
+        start + max_attempts - 1
+    ))
+}
+
+/// Launch the embedded Python backend shipped with the Tauri bundle.
+/// Falls back to system python/python3 when running in development mode.
+fn start_backend(
+    app: &mut tauri::App,
+    port: u16,
+) -> Result<Child, Box<dyn std::error::Error>> {
+    let resource_dir = app.path().resource_dir()?;
+    let local_dir = app.path().app_local_data_dir()?;
+    std::fs::create_dir_all(&local_dir)?;
+
+    // Prefer the embedded Python runtime bundled with the app.
+    let embedded_python = resource_dir.join("runtime").join("python").join("python.exe");
+    let embedded_backend = resource_dir.join("backend").join("run.py");
+
+    let (python, backend_dir, backend_script): (std::path::PathBuf, std::path::PathBuf, Vec<String>) =
+        if embedded_python.exists() && embedded_backend.exists() {
+            eprintln!(
+                "[INFO] Using embedded Python runtime: {}",
+                embedded_python.display()
+            );
+            let backend_dir = resource_dir.join("backend");
+            (
+                embedded_python.clone(),
+                backend_dir.clone(),
+                vec![
+                    "-m".to_string(),
+                    "uvicorn".to_string(),
+                    "app.main:app".to_string(),
+                    "--host".to_string(),
+                    "127.0.0.1".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ],
+            )
+        } else {
+            // Development fallback: use system Python from the repository backend/.
+            eprintln!("[INFO] Embedded runtime not found, falling back to system Python (dev mode).");
             let manifest_dir = env!("CARGO_MANIFEST_DIR");
             let backend_dir = Path::new(manifest_dir)
                 .join("../../backend")
                 .canonicalize()
                 .unwrap_or_else(|_| Path::new(manifest_dir).join("../../backend"));
 
-            // Launch uvicorn directly with --no-reload to avoid the
-            // supervisor + worker subprocess tree that reload mode creates.
-            // A single-process uvicorn stays inside the job object reliably.
-            let mut cmd = Command::new(python_cmd);
-            cmd.arg("-m").arg("uvicorn")
-                .arg("app.main:app")
-                .arg("--host").arg("127.0.0.1")
-                .arg("--port").arg("8848")
-                .arg("--no-reload")
-                .current_dir(&backend_dir)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+            let python_cmd = if cfg!(target_os = "windows") {
+                "python"
+            } else {
+                "python3"
+            };
 
-            #[cfg(windows)]
-            let job = job::create();
+            (
+                std::path::PathBuf::from(python_cmd),
+                backend_dir,
+                vec![
+                    "-m".to_string(),
+                    "uvicorn".to_string(),
+                    "app.main:app".to_string(),
+                    "--host".to_string(),
+                    "127.0.0.1".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ],
+            )
+        };
 
-            #[cfg(windows)]
-            if job.is_some() {
-                const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
-                cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB);
+    // Open backend log in %LOCALAPPDATA%\com.cloudmind-zome.app\backend.log
+    let log_path = local_dir.join("backend.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let log_file_err = log_file.try_clone()?;
+
+    let mut cmd = Command::new(&python);
+    for arg in &backend_script {
+        cmd.arg(arg);
+    }
+
+    cmd.current_dir(&backend_dir)
+        .env("PYTHONPATH", &backend_dir)
+        .env("CLOUDMIND_DATA_DIR", &local_dir)
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_err));
+
+    #[cfg(windows)]
+    let job = job::create();
+
+    #[cfg(windows)]
+    if job.is_some() {
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
+        cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        eprintln!(
+            "[ERROR] Failed to spawn Python backend from {}: {}",
+            backend_dir.display(),
+            e
+        );
+        e
+    })?;
+
+    #[cfg(windows)]
+    {
+        if let Some(job) = job {
+            if !job::assign(job, &child) {
+                eprintln!("[WARN] Failed to assign Python process to job object");
             }
+        }
+    }
 
-            match cmd.spawn() {
+    if let Some(status) = child.try_wait()? {
+        return Err(format!("Backend exited immediately with status: {}", status).into());
+    }
+
+    eprintln!(
+        "[INFO] Backend started on port {}. Logs: {}",
+        port,
+        log_path.display()
+    );
+    Ok(child)
+}
+
+// ------------------------------------------------------------------
+fn main() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .manage(BackendState::default())
+        .invoke_handler(tauri::generate_handler![backend_url])
+        .setup(move |app| {
+            // Pick an available port and store the resulting backend URL.
+            let port = find_available_port(8848, 100).unwrap_or_else(|e| {
+                eprintln!("[WARN] Port detection failed: {}. Falling back to 8848.", e);
+                8848
+            });
+            let url = format!("http://127.0.0.1:{}", port);
+            std::env::set_var("CLOUDMIND_BACKEND_URL", &url);
+            eprintln!("[INFO] Backend URL set to {}", url);
+
+            match start_backend(app, port) {
                 Ok(child) => {
+                    let state = app.state::<BackendState>();
+                    *state.url.lock().unwrap() = url.clone();
                     #[cfg(windows)]
                     {
-                        if let Some(job) = job {
-                            if job::assign(job, &child) {
-                                *backend_setup.lock().unwrap() = Some(BackendProcess {
-                                    child,
-                                    job: Some(JobHandle(job)),
-                                });
-                            } else {
-                                eprintln!("[WARN] Failed to assign Python process to job object");
-                                *backend_setup.lock().unwrap() = Some(BackendProcess {
-                                    child,
-                                    job: None,
-                                });
-                            }
-                        } else {
-                            *backend_setup.lock().unwrap() = Some(BackendProcess {
-                                child,
-                                job: None,
-                            });
-                        }
+                        *state.child.lock().unwrap() = Some(BackendProcess {
+                            child,
+                            job: None,
+                        });
                     }
                     #[cfg(not(windows))]
                     {
-                        *backend_setup.lock().unwrap() = Some(BackendProcess { child });
+                        *state.child.lock().unwrap() = Some(BackendProcess { child });
+                    }
+
+                    // Wait for the backend health endpoint before letting the UI load.
+                    let url_for_wait = url.clone();
+                    if let Err(e) = tauri::async_runtime::block_on(wait_for_backend(
+                        &url_for_wait,
+                        30,
+                    )) {
+                        eprintln!("[ERROR] Backend failed to start: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[ERROR] Failed to spawn Python backend from {}: {}",
-                        backend_dir.display(),
-                        e
-                    );
+                    let state = app.state::<BackendState>();
+                    *state.url.lock().unwrap() = url.clone();
+                    eprintln!("[ERROR] Backend startup failed: {}", e);
+                    // Continue launching the app so the user can see the error UI if desired.
                 }
             }
-
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // Cleanup on window close OR app exit (covers taskbar close, Alt+F4,
-    // Ctrl+C in terminal, and normal window X button).
-    let backend_cleanup = Arc::clone(&backend);
-    app.run(move |_app_handle, event| {
+    // Cleanup on window close OR app exit.
+    app.run(move |app_handle, event| {
         match event {
-            // Window close button / taskbar right-click close
             tauri::RunEvent::WindowEvent { label, event: win_event, .. } => {
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { .. } = win_event {
-                        kill_backend(&mut *backend_cleanup.lock().unwrap());
+                        kill_backend(&mut *app_handle.state::<BackendState>().child.lock().unwrap());
                     }
                 }
             }
-            // Application exit (graceful shutdown path)
             tauri::RunEvent::ExitRequested { .. } => {
-                kill_backend(&mut *backend_cleanup.lock().unwrap());
+                kill_backend(&mut *app_handle.state::<BackendState>().child.lock().unwrap());
             }
             _ => {}
         }

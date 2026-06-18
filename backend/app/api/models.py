@@ -128,22 +128,26 @@ async def create_model(
         pricing=body.pricing,
     )
     db.add(m)
-    await db.commit()
-    await db.refresh(m)
-    # Sync provider back to YAML with updated models list
-    db.expire_all()
-    result = await db.execute(
-        select(ComputeProvider)
-        .where(ComputeProvider.id == body.provider_id)
-        .options(selectinload(ComputeProvider.models))
-        .execution_options(populate_existing=True)
-    )
-    prov = result.scalar_one()
     try:
+        await db.flush()
+        # Sync provider back to YAML with updated models list
+        db.expire_all()
+        result = await db.execute(
+            select(ComputeProvider)
+            .where(ComputeProvider.id == body.provider_id)
+            .options(selectinload(ComputeProvider.models))
+            .execution_options(populate_existing=True)
+        )
+        prov = result.scalar_one()
         sync_provider_yaml("upsert", prov)
+        await db.commit()
     except ProviderSyncError as exc:
+        await db.rollback()
         logging.getLogger(__name__).error("Model create sync failed for %s: %s", body.provider_id, exc)
         raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
+    except Exception:
+        await db.rollback()
+        raise
     return Resp(data={"id": body.id, "provider_id": body.provider_id})
 
 
@@ -181,21 +185,26 @@ async def update_model(
     if body.status is not None:
         m.status = body.status
 
-    await db.commit()
-    # Sync provider back to YAML with updated models list
-    db.expire_all()
-    result = await db.execute(
-        select(ComputeProvider)
-        .where(ComputeProvider.id == provider_id)
-        .options(selectinload(ComputeProvider.models))
-        .execution_options(populate_existing=True)
-    )
-    prov = result.scalar_one()
     try:
+        await db.flush()
+        # Sync provider back to YAML with updated models list
+        db.expire_all()
+        result = await db.execute(
+            select(ComputeProvider)
+            .where(ComputeProvider.id == provider_id)
+            .options(selectinload(ComputeProvider.models))
+            .execution_options(populate_existing=True)
+        )
+        prov = result.scalar_one()
         sync_provider_yaml("upsert", prov)
+        await db.commit()
     except ProviderSyncError as exc:
+        await db.rollback()
         logging.getLogger(__name__).error("Model update sync failed for %s: %s", provider_id, exc)
         raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
+    except Exception:
+        await db.rollback()
+        raise
     return Resp(data={"updated": True})
 
 
@@ -264,19 +273,24 @@ async def delete_model(
         )
 
     await db.delete(m)
-    await db.commit()
-    # Sync provider back to YAML with updated models list
-    db.expire_all()
-    result = await db.execute(
-        select(ComputeProvider)
-        .where(ComputeProvider.id == provider_id)
-        .options(selectinload(ComputeProvider.models))
-        .execution_options(populate_existing=True)
-    )
-    prov = result.scalar_one()
     try:
+        await db.flush()
+        # Sync provider back to YAML with updated models list
+        db.expire_all()
+        result = await db.execute(
+            select(ComputeProvider)
+            .where(ComputeProvider.id == provider_id)
+            .options(selectinload(ComputeProvider.models))
+            .execution_options(populate_existing=True)
+        )
+        prov = result.scalar_one()
         sync_provider_yaml("upsert", prov)
+        await db.commit()
     except ProviderSyncError as exc:
+        await db.rollback()
         logging.getLogger(__name__).error("Model delete sync failed for %s: %s", provider_id, exc)
         raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
+    except Exception:
+        await db.rollback()
+        raise
     return Resp(data={"deleted": True})

@@ -12,7 +12,12 @@ from .security import is_safe_path
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads" / "shared"
+try:
+    from app.database import UPLOAD_DIR
+except ImportError:
+    UPLOAD_DIR = Path.home() / ".cloudmind-zome" / "uploads"
+
+SHARED_UPLOAD_DIR = UPLOAD_DIR / "shared"
 
 # Allowed extensions
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -64,9 +69,9 @@ def share_file(path: str) -> str:
         return f"Error: unsupported file type '{ext}'. Supported: {', '.join(sorted(ALLOWED_EXTS))}"
 
     try:
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        SHARED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         filename = f"{uuid.uuid4().hex}{ext}"
-        dest = UPLOAD_DIR / filename
+        dest = SHARED_UPLOAD_DIR / filename
         shutil.copy2(src, dest)
 
         url = f"/uploads/shared/{filename}"
@@ -84,14 +89,13 @@ def _resolve_path(path: str) -> Path:
     """Resolve a path to a local file.
 
     /uploads/... URLs are accepted as a shorthand for
-    ~/.cloudmind-zome/uploads/...
+    <DATA_DIR>/uploads/...
     """
     p = path.strip()
 
     # URL-style /uploads/... -> local uploads dir
     if p.startswith("/uploads/"):
-        local = Path.home() / ".cloudmind-zome" / p.lstrip("/")
-        return local
+        return UPLOAD_DIR / p.lstrip("/")
 
     # Bare home-relative -> expand
     if p.startswith("~/"):

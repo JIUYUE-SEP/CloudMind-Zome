@@ -2,7 +2,8 @@
 
 Key management:
 - ``CLOUDMIND_ENCRYPTION_KEY`` environment variable (preferred for containers).
-- ``~/.cloudmind-zome/.encryption_key`` file, auto-generated on first use.
+- ``<DATA_DIR>/.encryption_key`` file (auto-generated). ``DATA_DIR`` comes from
+  ``CLOUDMIND_DATA_DIR`` or defaults to ``~/.cloudmind-zome``.
 
 Encrypted values are prefixed with ``enc:`` so they can be distinguished from
 legacy base64-obfuscated or plaintext values. ``decrypt_value()`` is
@@ -22,10 +23,12 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from app.database import DATA_DIR
+
 logger = logging.getLogger(__name__)
 
 ENC_PREFIX = "enc:"
-_KEY_FILE: Path = Path.home() / ".cloudmind-zome" / ".encryption_key"
+_KEY_FILE: Path = DATA_DIR / ".encryption_key"
 
 # Common API key prefixes used to decide whether a base64-decoded value is a
 # real API key (legacy base64 obfuscation) or just a plaintext string.
@@ -63,7 +66,7 @@ def get_or_create_encryption_key() -> bytes:
 
     Priority:
     1. ``CLOUDMIND_ENCRYPTION_KEY`` environment variable.
-    2. ``~/.cloudmind-zome/.encryption_key`` file (auto-generated).
+    2. ``<DATA_DIR>/.encryption_key`` file (auto-generated).
     """
     env_key = os.environ.get("CLOUDMIND_ENCRYPTION_KEY", "").strip()
     if env_key:

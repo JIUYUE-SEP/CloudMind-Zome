@@ -2,21 +2,12 @@
  * Imported in each child component so styles stay consistent.
  */
 
-:root {
-  --ae-bg: #0b0f17;
-  --ae-panel: rgba(11, 15, 23, 0.95);
-  --ae-card: rgba(20, 27, 36, 0.6);
-  --ae-border: rgba(255, 255, 255, 0.06);
-  --ae-border-hover: rgba(0, 229, 201, 0.3);
-  --ae-primary: #00e5c9;
-  --ae-primary-text: #0b0f17;
-  --ae-text: #d8e1ec;
-  --ae-text-muted: #8899aa;
-  --ae-text-dim: #5a6a7a;
-  --ae-danger: #ef4444;
-  --ae-warning: #ffb800;
-  --ae-input-bg: #141b24;
-  --ae-input-border: #1e2731;
+input,
+select,
+textarea {
+  background: var(--ae-input-bg, #141b24);
+  color: var(--ae-text, #d8e1ec);
+  border: 1px solid var(--ae-input-border, #1e2731);
 }
 
 .ae-panel-section {

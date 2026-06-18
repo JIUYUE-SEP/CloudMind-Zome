@@ -827,8 +827,8 @@ class ReActAgent(AgentBase):
         # URL format: /uploads/{folder}/{filename}
         if url.startswith("/uploads/"):
             relative_path = url[len("/uploads/"):]
-            upload_dir = Path.home() / ".cloudmind-zome" / "uploads"
-            file_path = upload_dir / relative_path
+            from app.database import UPLOAD_DIR
+            file_path = UPLOAD_DIR / relative_path
         else:
             # Try as absolute path
             file_path = Path(url)
@@ -918,11 +918,12 @@ class ReActAgent(AgentBase):
         import re
 
         try:
-            from app.database import WORKSPACE_ROOT
+            from app.database import WORKSPACE_ROOT, DATA_DIR
         except ImportError:
+            DATA_DIR = Path.home() / ".cloudmind-zome"
             WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
 
-        userdata_dir = Path.home() / ".cloudmind-zome" / "userdata"
+        userdata_dir = DATA_DIR / "userdata"
         agent_dir = WORKSPACE_ROOT / self.agent_id
         parts: list[str] = []
 

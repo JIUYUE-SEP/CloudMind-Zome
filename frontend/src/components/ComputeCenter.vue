@@ -127,9 +127,9 @@
                 <span class="col-ctx">{{ m.context_window?.toLocaleString() ?? '-' }}</span>
                 <span class="col-out">{{ m.max_output_tokens?.toLocaleString() ?? '-' }}</span>
                 <span class="col-caps">
-                  <span v-if="m.supports_reasoning" title="支持深度思考">🧠</span>
-                  <span v-if="m.supports_tool_calling" title="支持工具调用">🔧</span>
-                  <span v-if="m.supports_multimodal" title="支持图文输入">👁️</span>
+                  <span v-if="m.supports_reasoning" class="cap-tag" title="支持深度思考">思</span>
+                  <span v-if="m.supports_tool_calling" class="cap-tag" title="支持工具调用">工</span>
+                  <span v-if="m.supports_multimodal" class="cap-tag" title="支持多模态">图</span>
                 </span>
                 <span class="col-ops">
                   <button class="table-action" @click="startEditModel(m)">编辑</button>
@@ -841,4 +841,18 @@ h2 { flex: 1; font-size: 18px; margin: 0; color: #D8E1EC; }
 .cc-provider-actions { margin-top: 8px; }
 .cc-action-link { padding: 4px 10px; background: transparent; border: 1px solid rgba(0,229,201,0.2); border-radius: 4px; color: #00E5C9; font-size: 11px; cursor: pointer; }
 .cc-action-link:hover { background: rgba(0,229,201,0.08); }
+
+.cap-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #00E5C9;
+  background: rgba(0, 229, 201, 0.1);
+  border: 1px solid rgba(0, 229, 201, 0.25);
+  cursor: help;
+}
 </style>

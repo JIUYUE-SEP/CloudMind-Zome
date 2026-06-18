@@ -152,13 +152,21 @@ async def create_provider(
         description=body.description,
     )
     db.add(prov)
-    await db.commit()
-    await db.refresh(prov)
+    prov_id = prov.id
     try:
+        await db.flush()
+        # Eager-load models so the synchronous YAML helper does not trigger
+        # a lazy query inside an async context.
+        await db.refresh(prov, attribute_names=["models"])
         sync_provider_yaml("upsert", prov)
+        await db.commit()
     except ProviderSyncError as exc:
-        logger.error("Provider create sync failed for %s: %s", prov.id, exc)
+        await db.rollback()
+        logger.error("Provider create sync failed for %s: %s", prov_id, exc)
         raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
+    except Exception:
+        await db.rollback()
+        raise
     return Resp(data={"id": prov.id, "display_name": prov.display_name})
 
 
@@ -283,12 +291,17 @@ async def update_provider(
     if body.description is not None:
         prov.description = body.description
 
-    await db.commit()
     try:
+        await db.flush()
         sync_provider_yaml("upsert", prov)
+        await db.commit()
     except ProviderSyncError as exc:
-        logger.error("Provider update sync failed for %s: %s", prov.id, exc)
+        await db.rollback()
+        logger.error("Provider update sync failed for %s: %s", provider_id, exc)
         raise HTTPException(status_code=500, detail=f"Provider sync failed: {exc}")
+    except Exception:
+        await db.rollback()
+        raise
     return Resp(data={"updated": True})
 
 

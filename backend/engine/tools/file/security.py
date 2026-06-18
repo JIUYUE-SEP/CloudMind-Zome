@@ -116,8 +116,9 @@ _SENSITIVE_PARENTS = {
 # Default whitelist bases
 # ------------------------------------------------------------------
 try:
-    from app.database import WORKSPACE_ROOT  # type: ignore[import-not-found]
+    from app.database import WORKSPACE_ROOT, DATA_DIR  # type: ignore[import-not-found]
 except ImportError:
+    DATA_DIR = Path.home() / ".cloudmind-zome"
     WORKSPACE_ROOT = (
         Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
     )
@@ -127,13 +128,13 @@ _PROJECT_ROOT = (
 )
 
 _DEFAULT_READ_BASES: list[Path] = [
-    Path.home() / ".cloudmind-zome",
+    DATA_DIR,
     WORKSPACE_ROOT,
     _PROJECT_ROOT,  # Allow agents to read their own source code
 ]
 
 _DEFAULT_WRITE_BASES: list[Path] = [
-    Path.home() / ".cloudmind-zome",
+    DATA_DIR,
     WORKSPACE_ROOT,
 ]
 

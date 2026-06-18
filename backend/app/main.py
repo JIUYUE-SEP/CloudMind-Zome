@@ -22,7 +22,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from engine.config.loader import load_config
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
-from .database import engine, Base, AsyncSessionLocal, WORKSPACE_ROOT
+from .database import engine, Base, AsyncSessionLocal, DATA_DIR, UPLOAD_DIR, ZVEC_DIR, WORKSPACE_ROOT
 from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, tools, models as models_api
 from .services.commission_scheduler import get_scheduler
 from .services.bootstrap import ensure_builtin_provider
@@ -68,16 +68,21 @@ async def _run_agent_cleanup_once() -> None:
         await db.commit()
         logger.info("Agent cleanup: cleared provider settings and mind data")
 
-    # 2. Clear agent_messages table
-    db_path = Path.home() / ".cloudmind-zome" / "cloudmind.db"
+    # 2. Clear agent_messages table if it already exists (created later by
+    # SessionStore on new installs; skip on OperationalError to avoid blocking
+    # first-time startup).
+    db_path = DATA_DIR / "cloudmind.db"
     if db_path.exists():
-        async with aiosqlite.connect(str(db_path)) as conn:
-            await conn.execute("DELETE FROM agent_messages")
-            await conn.commit()
-        logger.info("Agent cleanup: cleared agent_messages")
+        try:
+            async with aiosqlite.connect(str(db_path)) as conn:
+                await conn.execute("DELETE FROM agent_messages")
+                await conn.commit()
+            logger.info("Agent cleanup: cleared agent_messages")
+        except aiosqlite.OperationalError:
+            logger.info("Agent cleanup: agent_messages table not present yet, skipping")
 
     # 3. Clear zvec collections
-    zvec_dir = Path.home() / ".cloudmind-zome" / "zvec"
+    zvec_dir = ZVEC_DIR
     if zvec_dir.exists():
         shutil.rmtree(str(zvec_dir), ignore_errors=True)
         logger.info("Agent cleanup: cleared zvec collections")
@@ -105,7 +110,7 @@ async def lifespan(app: FastAPI):
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
     # 0.5 Migrate old agent directories if present
-    old_agents_dir = Path.home() / ".cloudmind-zome" / "agents"
+    old_agents_dir = DATA_DIR / "agents"
     if old_agents_dir.exists() and old_agents_dir.is_dir():
         import shutil
         for agent_dir in old_agents_dir.iterdir():
@@ -388,8 +393,7 @@ app.add_middleware(
 )
 
 # Static files for uploads
-_upload_dir = Path.home() / ".cloudmind-zome" / "uploads"
-app.mount("/uploads", StaticFiles(directory=str(_upload_dir)), name="uploads")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # Routers
 app.include_router(auth.router, prefix="/api/v1")
