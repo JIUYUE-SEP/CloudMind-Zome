@@ -8,11 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Dict
 
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
 from ..models import Agent
@@ -22,6 +20,8 @@ from .event_bus import manager as event_manager
 from engine.agent.react import ReActAgent
 from engine.provider.transport import ChatCompletionsTransport
 from engine.tool.registry import tool_registry
+
+from engine.agent.workspace import MindWorkspace
 
 
 
@@ -72,6 +72,12 @@ class AgentWorker:
                 self._running = False
                 return
 
+            # Ensure per-agent workspace exists (copy template if missing)
+            try:
+                MindWorkspace(self.agent_id).ensure_agent_workspace()
+            except Exception as exc:
+                logger.warning("Failed to ensure workspace for %s: %s", self.agent_id, exc)
+
             # Resolve provider config: prefer new independent fields, fallback to model_config
             prov_id, model_name, prov_type = await self._resolve_model_config()
 
@@ -104,7 +110,6 @@ class AgentWorker:
                     if marker_creds:
                         model_cfg.setdefault("marker", {})
                         model_cfg["marker"]["provider"] = prov_type
-                        model_cfg["marker"]["api_key"] = marker_creds.api_key or ""
                         model_cfg["marker"]["base_url"] = marker_creds.base_url
                         model_cfg["marker"]["model"] = marker_creds.model_id or model_name
                     else:
@@ -331,6 +336,7 @@ class AgentWorker:
         scene_info = self._build_scene_info(job)
 
         full_content = ""
+        tool_names: list[str] = []
         success = True
 
         try:
@@ -372,6 +378,8 @@ class AgentWorker:
                 elif event.type == "tool_call":
                     tool_name = event.data.name if hasattr(event.data, "name") else ""
                     tool_input = event.data.input if hasattr(event.data, "input") else {}
+                    if tool_name:
+                        tool_names.append(tool_name)
                     try:
                         await job.on_chunk(f"\x01TOOL_CALL\x01{tool_name}:{json.dumps(tool_input, ensure_ascii=False)}")
                     except Exception:
@@ -397,6 +405,19 @@ class AgentWorker:
 
         finally:
             # A: Shield status restore from CancelledError during shutdown
+            try:
+                user_preview = job.content[:200].replace("\n", " ") if job else ""
+                reply_preview = full_content[:400].replace("\n", " ") if full_content else ""
+                note_lines = [
+                    f"- source: {job.source} ({job.source_id})",
+                    f"- user: {job.sender_name or '用户'}: {user_preview}",
+                    f"- reply: {reply_preview}",
+                ]
+                if tool_names:
+                    note_lines.append(f"- tools: {', '.join(tool_names)}")
+                MindWorkspace(self.agent_id).append_daily_note("\n".join(note_lines))
+            except Exception as exc:
+                logger.debug("Failed to write daily note for %s: %s", self.agent_id, exc)
             try:
                 await asyncio.shield(self._set_db_status("idle"))
             except Exception:
@@ -560,24 +581,13 @@ async def ensure_worker(agent_id: str) -> AgentWorker:
 
 
 async def dispatch_job(agent_id: str, job: AgentJob) -> None:
-    """Put a Job into the Agent's queue. Worker must already exist (started lazily)."""
+    """Put a Job into the Agent's queue (thread-safe)."""
     worker = await ensure_worker(agent_id)
-    await worker.queue.put(job)
-
-
-async def stop_worker(agent_id: str) -> None:
-    """Gracefully stop a worker."""
-    if agent_id in _workers:
-        _workers[agent_id].stop()
-    if agent_id in _worker_tasks:
-        _worker_tasks[agent_id].cancel()
-        try:
-            await _worker_tasks[agent_id]
-        except asyncio.CancelledError:
-            pass
-        del _worker_tasks[agent_id]
-        del _workers[agent_id]
-    _startup_events.pop(agent_id, None)
+    async with _worker_lock:
+        # Verify the worker is still alive after ensure_worker returned.
+        if agent_id not in _workers or not worker._running:
+            raise RuntimeError(f"AgentWorker for {agent_id} is no longer running")
+        await worker.queue.put(job)
 
 
 def get_current_job(agent_id: str) -> AgentJob | None:

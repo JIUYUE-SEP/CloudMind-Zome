@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import shutil
 import uuid
 from pathlib import Path
 from typing import Any, List, Optional
 
 import aiosqlite
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,9 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import DATA_DIR, UPLOAD_DIR as _UPLOAD_DIR
 from ..dependencies import get_db, require_user
 from ..models import Agent, User
-from app.core.crypto import decrypt_value
+
+from engine.agent.workspace import MindWorkspace
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
 # Upload storage
@@ -27,7 +29,14 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 UPLOAD_DIR = _UPLOAD_DIR
 
 
-def _save_upload(file: UploadFile, subfolder: str) -> str:
+def _save_upload(file: UploadFile, subfolder: str, max_size_mb: int = 50) -> str:
+    # Size check (read up to limit + 1 bytes)
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > max_size_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds {max_size_mb}MB")
+
     ext = Path(file.filename or "file").suffix
     filename = f"{uuid.uuid4().hex}{ext}"
     folder = UPLOAD_DIR / subfolder
@@ -120,13 +129,6 @@ class AgentListItem(BaseModel):
         from_attributes = True
 
 
-class AgentDetail(AgentListItem):
-    memory_count: int = 0
-    capabilities: List[str]
-    llm_config: dict
-    appearance: dict = Field(default_factory=dict)
-
-
 class ListResp(BaseModel):
     code: int = 0
     data: Any = {}
@@ -193,7 +195,7 @@ async def list_providers(
     db: AsyncSession = Depends(get_db),
 ):
     """List available LLM providers with full model details."""
-    from ..models import ComputeProvider, LLMModel
+    from ..models import ComputeProvider
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(
@@ -333,6 +335,12 @@ async def create_agent(
     await db.commit()
     await db.refresh(agent)
 
+    # Initialize per-agent workspace from project template
+    try:
+        MindWorkspace(agent.id).ensure_agent_workspace()
+    except Exception as exc:
+        logger.warning("Failed to initialize workspace for agent %s: %s", agent.id, exc)
+
     return ListResp(data={
         "id": agent.id,
         "name": agent.name,
@@ -385,6 +393,17 @@ async def delete_agent(
         user.poster_agent_id = None
 
     await db.commit()
+
+    # Best-effort cleanup of agent vector memory and topic summaries
+    try:
+        from ..main import _app_state
+        memory_store = _app_state.get("memory_store")
+        if memory_store:
+            memory_store.delete_agent(agent_id)
+            memory_store.delete_agent_topics(agent_id)
+    except Exception as exc:
+        logger.warning("Failed to clean up vector memory for agent %s: %s", agent_id, exc)
+
     return ListResp(data={"deleted": True})
 
 
@@ -463,14 +482,23 @@ async def upload_model(
 
 
 # ------------------------------------------------------------------
-# Mind files (AGENT.md / SOUL.md / PROFILE.md / MEMORY.md)
+# Mind files (AGENTS.md / SOUL.md / PROFILE.md / MEMORY.md)
 # ------------------------------------------------------------------
-_MIND_FILES = {"AGENT", "SOUL", "USER", "MEMORY"}
+_MIND_FILE_MAP = {
+    "AGENTS": "AGENTS.md",
+    "AGENT": "AGENTS.md",
+    "SOUL": "SOUL.md",
+    "IDENTITY": "IDENTITY.md",
+    "PROFILE": "PROFILE.md",
+    "USER": "USER.md",
+    "MEMORY": "MEMORY.md",
+}
+_MIND_FILES = set(_MIND_FILE_MAP.keys())
 
 
 def _mind_path(agent_id: str, file: str) -> Path:
     from ..database import WORKSPACE_ROOT
-    return WORKSPACE_ROOT / agent_id / f"{file}.md"
+    return WORKSPACE_ROOT / agent_id / _MIND_FILE_MAP[file]
 
 
 @router.get("/{agent_id}/mind/{file}")
@@ -578,7 +606,6 @@ async def analyze_agent_personality(
             model_cfg.setdefault("marker", {})
             model_cfg["marker"]["provider"] = creds.provider_type
             model_cfg["marker"]["model"] = creds.model_id or marker_model_id or "deepseek-chat"
-            model_cfg["marker"]["api_key"] = creds.api_key or ""
             model_cfg["marker"]["base_url"] = creds.base_url
     else:
         # Legacy fallback path (kept for backward compat, will be cleaned in batch 4)
@@ -601,20 +628,13 @@ async def analyze_agent_personality(
             prov = prov_result.scalars().first()
         if prov:
             base_url = (prov.config or {}).get("base_url", "")
-            api_key = ""
-            if prov.api_key_encrypted:
-                try:
-                    api_key = decrypt_value(prov.api_key_encrypted)
-                except Exception:
-                    api_key = prov.api_key_encrypted
             model_cfg.setdefault("marker", {})
             model_cfg["marker"]["provider"] = (model_cfg.get("marker") or {}).get("provider") or prov.provider_type
             model_cfg["marker"]["model"] = (model_cfg.get("marker") or {}).get("model") or model_cfg.get("model") or "deepseek-chat"
-            model_cfg["marker"]["api_key"] = api_key
             model_cfg["marker"]["base_url"] = base_url
 
     try:
-        extractor = PersonalityExtractor.from_marker_config(model_cfg)
+        extractor = await PersonalityExtractor.from_agent(db, agent)
         personality = await extractor.analyze(text)
     except Exception as e:
         logger.warning("Personality analysis failed for %s: %s", agent_id, e)
@@ -713,13 +733,8 @@ async def get_agent_memory(
 # ------------------------------------------------------------------
 # Import conversation history
 # ------------------------------------------------------------------
-
-
-class ImportHistoryResp(BaseModel):
-    code: int = 0
-    data: Any = {}
-
-
+# Import conversation history
+# ------------------------------------------------------------------
 @router.post("/{agent_id}/import-history", response_model=ListResp)
 async def import_history(
     agent_id: str,
@@ -744,7 +759,7 @@ async def import_history(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    from engine.importer import get_adapter
+    from engine.importer import get_adapter, list_platforms
 
     adapter = get_adapter(platform)
     if adapter is None:

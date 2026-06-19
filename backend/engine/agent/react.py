@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from ..message.types import (
     AgentEvent,
@@ -24,6 +24,7 @@ from ..message.types import (
 from .base import AgentBase
 from .message_builder import MessageBuilder
 from .stop import SmartStop
+from .workspace import MindWorkspace
 from ..provider.transport import ChatCompletionsTransport
 from ..provider.thinking.base import LLMResponse
 from ..tool.registry import ToolRegistry
@@ -31,7 +32,7 @@ from ..context.embedder import Embedder
 from ..context.vector_store import AgentMemoryStore
 from ..config.models import AppConfig
 from ..session.store import SessionStore
-from ..error.classifier import classify_error, ClassifiedError, FailoverReason
+from ..error.classifier import classify_error
 from ..error.fallback import FallbackChain
 from ..provider.retry import RetryConfig, call_with_retry
 from ..error.fallback import FallbackNode
@@ -347,7 +348,7 @@ class ReActAgent(AgentBase):
             self.smart_stop.increment_turn()
 
             # Step 1: Build messages via Context Pipeline (retrieval + downgrade)
-            mind_context = self._load_mind_files()
+            mind_context = self._load_mind_files(source=source)
 
             # Build personality description for group chat
             personality_desc = ""
@@ -905,88 +906,9 @@ class ReActAgent(AgentBase):
 
         return f"[{date_str} | {gap_str}]"
 
-    def _load_mind_files(self) -> str:
-        """Read mind files every turn so edits on disk are reflected immediately.
-
-        Sources (in priority order):
-          1. userdata/profile.md  — user self-defined profile (read-only to agent)
-          2. workspace/{id}/USER.md  — agent's perception of the user
-          3. workspace/{id}/SOUL.md  — soul core / personality
-          4. workspace/{id}/AGENT.md — working rules / guidelines
-        """
-        from pathlib import Path
-        import re
-
-        try:
-            from app.database import WORKSPACE_ROOT, DATA_DIR
-        except ImportError:
-            DATA_DIR = Path.home() / ".cloudmind-zome"
-            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
-
-        userdata_dir = DATA_DIR / "userdata"
-        agent_dir = WORKSPACE_ROOT / self.agent_id
-        parts: list[str] = []
-
-        def _strip_frontmatter(text: str) -> str:
-            text = text.strip()
-            if text.startswith("---"):
-                split = text.split("---", 2)
-                if len(split) >= 3:
-                    text = split[2].strip()
-            return text
-
-        # 1. userdata/profile.md — user self-defined profile
-        user_profile_path = userdata_dir / "profile.md"
-        if user_profile_path.exists():
-            try:
-                text = _strip_frontmatter(user_profile_path.read_text(encoding="utf-8"))
-                if text:
-                    parts.append(f"【用户档案】\n{text}")
-            except Exception as exc:
-                logger.warning("Failed to read userdata/profile.md: %s", exc)
-
-        # 2. USER.md — agent's perception of the user
-        user_path = agent_dir / "USER.md"
-        if user_path.exists():
-            try:
-                text = _strip_frontmatter(user_path.read_text(encoding="utf-8"))
-                if text:
-                    parts.append(f"【心智眼中的用户】\n{text}")
-            except Exception as exc:
-                logger.warning("Failed to read USER.md for %s: %s", self.agent_id, exc)
-
-        # 3. SOUL.md — soul core
-        soul_path = agent_dir / "SOUL.md"
-        if soul_path.exists():
-            try:
-                text = _strip_frontmatter(soul_path.read_text(encoding="utf-8"))
-                if text:
-                    parts.append(f"【灵魂内核】\n{text}")
-            except Exception as exc:
-                logger.warning("Failed to read SOUL.md for %s: %s", self.agent_id, exc)
-
-        # 4. AGENT.md — working rules / guidelines
-        agent_path = agent_dir / "AGENT.md"
-        if agent_path.exists():
-            try:
-                text = _strip_frontmatter(agent_path.read_text(encoding="utf-8"))
-                # Remove heartbeat / memory marker sections (same as QwenPaw)
-                text = re.sub(
-                    r"<!--\s*(heartbeat|memory):start\s*-->.*?<!--\s*\1:end\s*-->",
-                    "",
-                    text,
-                    flags=re.DOTALL,
-                )
-                text = text.strip()
-                if text:
-                    parts.append(f"【工作规范】\n{text}")
-            except Exception as exc:
-                logger.warning("Failed to read AGENT.md for %s: %s", self.agent_id, exc)
-
-        if not parts:
-            logger.info("No mind files found for agent %s at %s", self.agent_id, agent_dir)
-
-        return "\n\n".join(parts)
+    def _load_mind_files(self, source: str = "private") -> str:
+        """Read mind files every turn so edits on disk are reflected immediately."""
+        return MindWorkspace(self.agent_id).load_mind_context(source=source)
 
     async def _load_history(self, source_id: str = "") -> None:
         """Load scene-isolated history from agent_messages table.

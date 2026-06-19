@@ -15,6 +15,8 @@ from ..message.types import (
     ToolResultBlock,
 )
 
+from .workspace import MindWorkspace
+
 
 class MessageBuilder:
     """Builds LLM message lists with mind files and group-chat sender prefix."""
@@ -115,12 +117,7 @@ class MessageBuilder:
         # Layer 3: Memory hint — Agent manages MEMORY.md by itself
         memory_md_path = self.memory_path
         if not memory_md_path:
-            try:
-                from app.database import WORKSPACE_ROOT
-            except ImportError:
-                from pathlib import Path
-                WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
-            memory_md_path = WORKSPACE_ROOT / self.agent_id / "MEMORY.md"
+            memory_md_path = MindWorkspace(self.agent_id).path("MEMORY.md")
         result.append(
             Message(
                 role="system",
