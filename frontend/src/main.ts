@@ -4,7 +4,8 @@ import router from './router'
 import App from './App.vue'
 import '@/styles/global.css'
 import { useAuthStore } from './stores/auth'
-import { setApiBase, setWsBase } from './api/config'
+import { setApiBase, setWsBase, getApiBase } from './api/config'
+import { getUploadUrl } from './api/client'
 
 async function waitForBackend(url: string, maxWaitMs = 30000) {
   const start = Date.now()
@@ -36,12 +37,17 @@ async function init() {
     }
   }
 
+  if (import.meta.env.DEV) {
+    console.log('[DEV] API base:', getApiBase())
+  }
+
   const app = createApp(App)
+  app.config.globalProperties.$uploadUrl = getUploadUrl
   app.use(createPinia())
 
-  // 全局加载用户信息（所有页面共用）
+  // 全局加载用户信息（所有页面共用）；必须先获取 guest token 才能调用后续 API/WS。
   const auth = useAuthStore()
-  auth.fetchMe()
+  await auth.fetchMe()
 
   app.use(router)
   app.mount('#app')

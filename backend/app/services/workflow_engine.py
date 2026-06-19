@@ -10,13 +10,13 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
-from ..models import Action, ActionRun, Agent, Approval, ChatMessage
+from ..models import Action, ActionRun, Approval
 from ..services.engine_bridge import EngineBridge
 from ..services.event_bus import manager
 
@@ -92,9 +92,6 @@ class WorkflowEngine:
 
         await self._mark_completed()
 
-    def request_stop(self) -> None:
-        _stop_signals[self.run_id] = True
-
     # ------------------------------------------------------------------
     # Node execution
     # ------------------------------------------------------------------
@@ -103,7 +100,6 @@ class WorkflowEngine:
         node_id = node.get("id", f"n{idx}")
         agent_id = node.get("agent_id", "")
         instruction = node.get("instruction", "")
-        timeout = node.get("timeout_seconds", 300)
         requires_approval = node.get("requires_approval", False)
 
         self._set_node_status(idx, "running")
@@ -186,7 +182,7 @@ class WorkflowEngine:
             return approval.id
 
     async def _wait_for_approval(self, approval_id: str, timeout: float = 300) -> bool:
-        """Poll approvals table until resolved or timeout."""
+        """Poll approvals table until resolved, timeout, or run/action is cancelled."""
         start = datetime.now(timezone.utc)
         while True:
             async with AsyncSessionLocal() as db:
@@ -197,6 +193,11 @@ class WorkflowEngine:
                         return True
                     if appr.status in ("rejected", "timeout"):
                         return False
+
+                # Also abort if the run or action has been deleted/stopped.
+                run = await self._get_run(db)
+                if run and run.status in ("stopped", "failed"):
+                    return False
 
             await asyncio.sleep(2)
             elapsed = (datetime.now(timezone.utc) - start).total_seconds()

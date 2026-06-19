@@ -11,13 +11,11 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
-from ..models import Commission, CommissionLog, ChatSession, ChatSessionMember
+from ..models import Commission, CommissionLog
 from .job_queue import AgentJob
 from .agent_worker import dispatch_job
 from .event_bus import manager
@@ -185,9 +183,10 @@ class CommissionScheduler:
             except ImportError:
                 logger.warning("croniter not installed, falling back to hourly")
                 return datetime.now(timezone.utc) + timedelta(hours=1)
-            except Exception:
-                logger.warning("Invalid cron expression '%s', fallback to 1h", expr)
-                return datetime.now(timezone.utc) + timedelta(hours=1)
+            except Exception as exc:
+                logger.error("Invalid cron expression '%s' for commission %s: %s", expr, comm.id, exc)
+                # A permanently invalid cron expression should not keep running.
+                return None
 
         # Manual / one-shot
         return None

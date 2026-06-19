@@ -9,6 +9,10 @@ let messageBuffer: string[] = []
 const MAX_BUFFER = 200
 let reconnectAttempts = 0
 const MAX_RECONNECT = 10
+let intentionalDisconnect = false
+
+// Close codes that should not trigger automatic reconnection
+const NON_RECOVERABLE_CLOSE_CODES = new Set([1000, 1008, 1011])
 
 // ------------------------------------------------------------------
 // System log (global, shared with HomeView)
@@ -42,7 +46,12 @@ export function useWebSocket() {
 
   function connect() {
     if (ws && ws.readyState !== WebSocket.CLOSED) return
-    const token = localStorage.getItem('cloudmind-token') || 'cloudmind-guest-token'
+    const token = localStorage.getItem('cloudmind-token')
+    if (!token) {
+      pushLog({ type: 'error', source: 'WS', message: '缺少认证 token，无法连接' })
+      return
+    }
+    intentionalDisconnect = false
     const url = `${getWsBase()}/api/v1/ws?token=${encodeURIComponent(token)}`
     ws = new WebSocket(url)
 
@@ -65,13 +74,25 @@ export function useWebSocket() {
       }
     }
 
-    ws.onclose = () => {
-      pushLog({ type: 'warn', source: 'WS', message: '连接已断开' })
+    ws.onclose = (event: CloseEvent) => {
+      pushLog({ type: 'warn', source: 'WS', message: `连接已断开 (code: ${event.code})` })
       stopHeartbeat()
+      if (intentionalDisconnect) return
+      if (NON_RECOVERABLE_CLOSE_CODES.has(event.code)) {
+        pushLog({ type: 'error', source: 'WS', message: '连接因策略或服务器错误关闭，停止自动重连' })
+        return
+      }
+      if (reconnectAttempts >= MAX_RECONNECT) {
+        pushLog({ type: 'error', source: 'WS', message: '重连次数已达上限，请手动刷新页面' })
+        return
+      }
       scheduleReconnect()
     }
 
-    ws.onerror = () => ws?.close()
+    ws.onerror = () => {
+      pushLog({ type: 'error', source: 'WS', message: 'WebSocket 发生错误' })
+      // Do not call ws.close() here; let onclose handle cleanup to avoid double scheduling.
+    }
   }
 
   function routeMessage(msg: any) {
@@ -178,16 +199,12 @@ export function useWebSocket() {
     if (heartbeatTimer) clearInterval(heartbeatTimer)
   }
   function scheduleReconnect() {
-    if (reconnectAttempts >= MAX_RECONNECT) {
-      pushLog({ type: 'warn', source: 'WS', message: '达到最大重连次数，进入固定 30s 间隔重试' })
-      reconnectTimer = setTimeout(connect, 30000)
-      return
-    }
     reconnectAttempts++
     const delay = Math.min(5000 * Math.pow(2, reconnectAttempts - 1), 60000)
     reconnectTimer = setTimeout(connect, delay)
   }
   function disconnect() {
+    intentionalDisconnect = true
     if (reconnectTimer) clearTimeout(reconnectTimer)
     stopHeartbeat()
     ws?.close()

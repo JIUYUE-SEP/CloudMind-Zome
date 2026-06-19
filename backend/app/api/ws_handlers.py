@@ -9,8 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import WebSocket
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ..database import AsyncSessionLocal
@@ -38,16 +37,6 @@ _private_agent_tasks: dict[str, asyncio.Task] = {}
 
 # WebSocket instance id -> Lock for safe send_json
 _ws_send_locks: dict[int, asyncio.Lock] = {}
-
-
-async def _safe_send(ws: WebSocket, frame: dict) -> None:
-    """Thread-safe WebSocket send to prevent frame interleaving."""
-    lock = _ws_send_locks.setdefault(id(ws), asyncio.Lock())
-    async with lock:
-        try:
-            await ws.send_json(frame)
-        except Exception as e:
-            logger.debug("ws send failed: %s", e)
 
 
 # ------------------------------------------------------------------
@@ -706,7 +695,8 @@ async def _replay_offline_messages(user_id: str, ws: WebSocket) -> None:
                 try:
                     await ws.send_json(frame)
                 except Exception:
-                    break
+                    # Continue with remaining offline messages even if one fails
+                    continue
 
 
 # ------------------------------------------------------------------

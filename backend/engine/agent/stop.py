@@ -6,7 +6,7 @@ Design reference: §6.10 智能停止
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -110,7 +110,6 @@ class SmartStop:
         # Look at recent tool calls
         recent_calls: list[tuple[str, str]] = []
         for msg in messages[-(self.loop_detect_rounds * 2) :]:
-            from ..message.types import Message
 
             if isinstance(msg.content, list):
                 for block in msg.content:

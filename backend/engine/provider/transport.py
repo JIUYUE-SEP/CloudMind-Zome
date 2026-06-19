@@ -7,12 +7,10 @@ Differences are handled by ThinkingProfile.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator
 
-import httpx
 from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
 
 from ..message.types import (

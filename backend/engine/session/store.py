@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+import shortuuid
 
 from ..message.types import Message, ContentBlock, MessageMeta
-from ..config.models import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -691,7 +691,6 @@ class SessionStore:
     ) -> None:
         """Save a message to the unified agent memory pool."""
         import shortuuid
-        import time as time_mod
         from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
 
         db = await self.connect()

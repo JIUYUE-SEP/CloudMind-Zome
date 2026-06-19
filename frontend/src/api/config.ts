@@ -8,11 +8,16 @@
  * and main.ts rewrites these values to point at the embedded Python backend.
  */
 
-let apiBase = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+function normalizeApiBase(base: string | undefined): string {
+  if (!base || base === '/') return '/api/v1'
+  return base.replace(/\/$/, '')
+}
+
+let apiBase = normalizeApiBase(import.meta.env.VITE_API_BASE_URL)
 let wsBase = ''
 
 export function setApiBase(base: string) {
-  apiBase = base
+  apiBase = normalizeApiBase(base)
 }
 
 export function setWsBase(base: string) {

@@ -1,9 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import AppShell from '@/views/AppShell.vue'
 import HomeView from '@/views/HomeView.vue'
-import ChatView from '@/components/ChatView.vue'
-import GroupChatView from '@/components/GroupChatView.vue'
-import CommunicationHub from '@/components/CommunicationHub.vue'
 
 const ActionCenter = () => import('@/components/ActionCenter.vue')
 const ActionEdit = () => import('@/components/ActionEdit.vue')
@@ -24,8 +21,6 @@ const router = createRouter({
         { path: '', component: HomeView },
       ],
     },
-    { path: '/chat/:sessionId', component: ChatView, props: true },
-    { path: '/group/:groupId', component: GroupChatView, props: true },
     { path: '/actions', component: ActionCenter },
     { path: '/actions/new', component: ActionEdit },
     { path: '/actions/:id/edit', component: ActionEdit, props: true },
@@ -34,7 +29,7 @@ const router = createRouter({
     { path: '/compute', component: ComputeCenter },
     { path: '/commissions', component: CommissionCenter },
     { path: '/approvals', component: ApprovalLog },
-    { path: '/communications', component: CommunicationHub },
+    { path: '/communications', component: () => import('@/components/CommunicationHub.vue') },
     { path: '/self-image', component: SelfImageView },
     { path: '/user-profile', component: UserProfileView },
   ],

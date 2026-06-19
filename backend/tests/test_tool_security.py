@@ -89,6 +89,24 @@ class TestPythonExecuteSecurity:
         assert result.startswith("Error: security check failed")
         assert "io" in result.lower()
 
+    def test_import_os_blocked(self) -> None:
+        code = 'import os; print(os.getcwd())'
+        result = python_execute(code)
+        assert result.startswith("Error: security check failed")
+        assert "os" in result.lower()
+
+    def test_open_builtin_blocked(self) -> None:
+        code = "print(open('README.md').read()[:50])"
+        result = python_execute(code)
+        assert result.startswith("Error: security check failed")
+        assert "open" in result.lower()
+
+    def test_subclasses_bypass_blocked(self) -> None:
+        code = "().__class__.__bases__[0].__subclasses__()[137].__init__.__globals__['__builtins__']['__import__']('os').system('echo pwned')"
+        result = python_execute(code)
+        assert "Error:" in result or "Sandbox error:" in result
+        assert "pwned" not in result
+
 
 class TestShellCommandSecurity:
     def test_git_exec_path_blocked(self) -> None:

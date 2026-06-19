@@ -39,7 +39,7 @@
               :class="{ active: selectedAgentId === a.id && selectedType === 'private', pinned: isPinned(privateSessionMap[a.id]) }"
               @click="selectAgent(a)"
             >
-            <img v-if="a.portrait_url" :src="a.portrait_url" class="comm-avatar" />
+            <img v-if="a.portrait_url" :src="$uploadUrl(a.portrait_url)" class="comm-avatar" />
             <div v-else class="comm-avatar placeholder">{{ a.name?.[0] || '?' }}</div>
             <div class="comm-info">
               <div class="comm-name">{{ a.name }}</div>
@@ -181,7 +181,7 @@
         <div class="rp-section-title">成员 ({{ groupMembers.length }})</div>
         <div class="rp-member-list">
           <div v-for="m in groupMembers" :key="m.member_id" class="rp-member">
-            <img :src="m.avatar || '/uploads/avatars/default.png'" class="rp-member-avatar" />
+            <img :src="$uploadUrl(m.avatar) || '/uploads/avatars/default.png'" class="rp-member-avatar" />
             <span class="rp-member-name">{{ m.name }}</span>
             <span v-if="m.is_conductor" class="rp-member-badge">队长</span>
           </div>
@@ -248,7 +248,7 @@
               :value="a.id"
               v-model="newGroupMembers"
             />
-            <img v-if="a.portrait_url" :src="a.portrait_url" class="cg-agent-avatar" />
+            <img v-if="a.portrait_url" :src="$uploadUrl(a.portrait_url)" class="cg-agent-avatar" />
             <div v-else class="cg-agent-avatar placeholder">{{ a.name?.[0] || '?' }}</div>
             <span class="cg-agent-name">{{ a.name }}</span>
           </label>

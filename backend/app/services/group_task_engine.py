@@ -9,7 +9,6 @@ progress + results back to the group chat.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
@@ -404,23 +403,3 @@ class GroupTaskEngine:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             a = result.scalar_one_or_none()
             return a.name if a else "Agent"
-
-
-# ------------------------------------------------------------------
-# Public launcher
-# ------------------------------------------------------------------
-async def launch_group_task(
-    session_id: str,
-    user_id: str,
-    conductor_id: str,
-    plan_text: str,
-    bridge: EngineBridge,
-) -> None:
-    """Fire-and-forget group task execution."""
-    engine = GroupTaskEngine(
-        session_id=session_id,
-        user_id=user_id,
-        conductor_id=conductor_id,
-        plan_text=plan_text,
-    )
-    asyncio.create_task(engine.execute(bridge))

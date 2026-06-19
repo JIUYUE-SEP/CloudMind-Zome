@@ -1,7 +1,7 @@
 <template>
   <div class="image-uploader">
     <div class="preview-wrap">
-      <img v-if="url" :src="url" class="preview" />
+      <img v-if="url" :src="$uploadUrl(url)" class="preview" />
       <div v-else class="placeholder">暂无图片</div>
     </div>
     <div class="controls">

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..dependencies import get_db, require_user, get_current_user
+from ..dependencies import get_db, require_user
 from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember, User
 
 router = APIRouter(prefix="/chats", tags=["chat"])
@@ -120,6 +120,7 @@ async def list_sessions(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # 1. Load session memberships (no eager messages)
     stmt = (
         select(ChatSession, ChatSessionMember)
         .join(ChatSessionMember, ChatSessionMember.session_id == ChatSession.id)
@@ -133,36 +134,87 @@ async def list_sessions(
         stmt = stmt.where(ChatSession.type == type)
 
     stmt = stmt.order_by(ChatSessionMember.is_pinned.desc(), ChatSession.last_message_at.desc().nullslast())
-    stmt = stmt.options(selectinload(ChatSession.members), selectinload(ChatSession.messages))
+    stmt = stmt.options(selectinload(ChatSession.members))
     result = await db.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        return Resp(data={"items": []})
+
+    session_ids = [sess.id for sess, _ in rows]
+
+    # 2. Load latest message and unread count per session with single queries
+    latest_subq = (
+        select(
+            ChatMessage.session_id,
+            ChatMessage.id.label("msg_id"),
+            ChatMessage.content,
+            ChatMessage.sender_id,
+            ChatMessage.is_deleted,
+            ChatMessage.created_at,
+            func.row_number().over(
+                partition_by=ChatMessage.session_id,
+                order_by=ChatMessage.created_at.desc(),
+            ).label("rn"),
+        )
+        .where(ChatMessage.session_id.in_(session_ids))
+        .subquery()
+    )
+
+    latest_stmt = select(latest_subq).where(latest_subq.c.rn == 1)
+    latest_result = await db.execute(latest_stmt)
+    latest_by_session: dict[str, Any] = {}
+    for row in latest_result.mappings():
+        latest_by_session[row["session_id"]] = row
+
+    unread_stmt = (
+        select(ChatMessage.session_id, func.count().label("cnt"))
+        .where(
+            ChatMessage.session_id.in_(session_ids),
+            ChatMessage.sender_id != user.id,
+            ChatMessage.is_deleted == False,
+        )
+        .group_by(ChatMessage.session_id)
+    )
+    unread_result = await db.execute(unread_stmt)
+    unread_by_session = {row[0]: row[1] for row in unread_result.all()}
+
+    # 3. Bulk load agent names/avatars for private sessions
+    private_agent_ids = {
+        m.member_id
+        for sess, _ in rows
+        if sess.type == "private"
+        for m in sess.members
+        if m.member_id != user.id and m.member_type == "agent"
+    }
+    agents_by_id: dict[str, Agent] = {}
+    if private_agent_ids:
+        agent_result = await db.execute(select(Agent).where(Agent.id.in_(private_agent_ids)))
+        agents_by_id = {a.id: a for a in agent_result.scalars().all()}
+
     items = []
-    for sess, member in result.all():
-        # Find the "other" member for private chats
+    for sess, member in rows:
         other_name = ""
         other_avatar = ""
         if sess.type == "private":
             for m in sess.members:
-                if m.member_id != user.id:
-                    if m.member_type == "agent":
-                        r = await db.execute(select(Agent).where(Agent.id == m.member_id))
-                        a = r.scalar_one_or_none()
-                        if a:
-                            other_name = a.name
-                            other_avatar = a.portrait_url or ""
+                if m.member_id != user.id and m.member_type == "agent":
+                    a = agents_by_id.get(m.member_id)
+                    if a:
+                        other_name = a.name
+                        other_avatar = a.portrait_url or ""
                     break
 
+        latest = latest_by_session.get(sess.id)
         last_msg = None
-        unread = 0
-        if sess.messages:
-            latest = max(sess.messages, key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        if latest:
+            content = latest["content"] or ""
             last_msg = {
-                "content": latest.content[:100] if latest.content else "",
-                "timestamp": latest.created_at.isoformat() if latest.created_at else "",
-                "is_unread": latest.sender_id != user.id and not latest.is_deleted,
+                "content": content[:100],
+                "timestamp": latest["created_at"].isoformat() if latest["created_at"] else "",
+                "is_unread": latest["sender_id"] != user.id and not latest["is_deleted"],
             }
-            unread = sum(1 for m in sess.messages if m.sender_id != user.id and not m.is_deleted)
 
-        # Group avatar from settings
         group_avatar = ""
         group_name = ""
         if sess.type == "group":
@@ -177,7 +229,7 @@ async def list_sessions(
             "target_name": other_name or group_name,
             "target_avatar": other_avatar or group_avatar,
             "last_message": last_msg,
-            "unread_count": unread,
+            "unread_count": unread_by_session.get(sess.id, 0),
             "is_pinned": member.is_pinned,
         })
 

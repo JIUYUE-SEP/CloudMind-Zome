@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from .topic_context import TopicContext, TopicState, SubtopicState
-from ...message.types import Message, MessageMeta
+from ...message.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,10 @@ class CompressionWorker:
                 logger.error("Compression worker error: %s", e)
 
     async def _compress(self, topic: TopicState, subtopic: SubtopicState) -> None:
-        # 1. Snapshot messages belonging to this subtopic
+        # 1. Snapshot the current message list to avoid racing with the Agent loop.
+        messages_snapshot = list(self.messages)
         keep_recent = self.config.get("keep_recent", 3)
-        sub_msgs = [m for m in self.messages if m.meta.id in subtopic.msg_ids]
+        sub_msgs = [m for m in messages_snapshot if m.meta.id in subtopic.msg_ids]
 
         if len(sub_msgs) <= keep_recent:
             return
@@ -89,7 +90,7 @@ class CompressionWorker:
         conversation_text = "\n".join(
             f"{m.role}: {m.get_text()[:500]}"
             for m in to_compress
-            if hasattr(m, "get_text")
+            if hasattr(m, "get_text") and m.get_text() is not None
         )
 
         # 3. LLM summarize
@@ -134,10 +135,11 @@ class CompressionWorker:
         # 7. Memory Bridge: append to MEMORY.md
         await self._memory_bridge(topic, subtopic, summary_json)
 
-        # 8. Update message markers in agent._messages
-        compressed_ids = {msg.meta.id for msg in to_compress}
-        for m in self.messages:
-            if m.meta.id in compressed_ids:
+        # 8. Update message markers directly on the objects we compressed.
+        # These are the same object references held by the Agent, so we can
+        # mutate them without iterating the live message list.
+        for m in to_compress:
+            if m.meta.id:
                 m.meta.compressed = True
 
         logger.info("Compressed topic %s/%s to %s", topic.id, subtopic.name, filepath)

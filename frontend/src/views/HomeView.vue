@@ -108,7 +108,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { api } from '@/api/client'
+import { api, getUploadUrl } from '@/api/client'
 import { systemLogs, pushLog } from '@/composables/useWebSocket'
 import SystemSettingsPanel from '@/components/SystemSettingsPanel.vue'
 
@@ -177,7 +177,7 @@ function fitToCss(f: string): string {
 const bgStyle = computed(() => {
   if (wallpaperUrl.value) {
     return {
-      backgroundImage: `url(${wallpaperUrl.value})`,
+      backgroundImage: `url(${getUploadUrl(wallpaperUrl.value)})`,
       backgroundSize: fitToCss(wallpaperFit.value),
       backgroundPosition: posToCss(wallpaperPos.value),
       backgroundRepeat: wallpaperFit.value === 'center' ? 'repeat' : 'no-repeat',

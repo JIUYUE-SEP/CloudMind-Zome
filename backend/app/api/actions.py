@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -115,14 +114,17 @@ async def get_action(
     if not a:
         raise HTTPException(status_code=404)
 
-    # Resolve agent names for nodes
+    # Resolve agent names for nodes in a single batch query
+    agent_ids = {n.get("agent_id") for n in (a.nodes or []) if n.get("agent_id")}
+    agents_by_id: dict[str, Agent] = {}
+    if agent_ids:
+        r = await db.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        agents_by_id = {ag.id: ag for ag in r.scalars().all()}
+
     enriched_nodes = []
     for n in (a.nodes or []):
-        agent_name = "Unknown"
-        r = await db.execute(select(Agent).where(Agent.id == n.get("agent_id")))
-        ag = r.scalar_one_or_none()
-        if ag:
-            agent_name = ag.name
+        ag = agents_by_id.get(n.get("agent_id"))
+        agent_name = ag.name if ag else "Unknown"
         enriched_nodes.append({**n, "agent_name": agent_name})
 
     return Resp(data={

@@ -2,7 +2,7 @@
   <div class="chat-view" :class="{ 'inline-mode': inline }">
     <header class="chat-header">
       <BackButton @click="close" />
-      <img v-if="session?.target_avatar" :src="session.target_avatar" class="avatar" />
+      <img v-if="session?.target_avatar" :src="$uploadUrl(session.target_avatar)" class="avatar" />
       <div class="header-info">
         <span class="name">{{ session?.target_name || '...' }}</span>
         <div class="status-row" v-if="session?.type === 'private'">
@@ -46,6 +46,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useWebSocket } from '@/composables/useWebSocket'
+import { getUploadUrl } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
 import ChatContainer from '@/components/chat/ChatContainer.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -77,8 +78,8 @@ const statusLabel = computed(() => {
 })
 
 function resolveAvatar(msg: any) {
-  if (msg.is_me) return auth.user?.avatar_url || '/uploads/avatars/default.png'
-  return session.value?.target_avatar || '/uploads/avatars/default.png'
+  if (msg.is_me) return getUploadUrl(auth.user?.avatar_url) || '/uploads/avatars/default.png'
+  return getUploadUrl(session.value?.target_avatar) || '/uploads/avatars/default.png'
 }
 
 async function initSession() {

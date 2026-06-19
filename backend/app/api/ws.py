@@ -16,7 +16,7 @@ from sqlalchemy import update
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.security import GUEST_TOKEN, verify_access_token
+from ..core.security import verify_access_token
 from ..database import AsyncSessionLocal
 from ..models import ChatSessionMember, User
 from ..services.event_bus import manager
@@ -24,6 +24,18 @@ from .ws_handlers import _handle_agent_stop, _handle_chat_send, _handle_typing, 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _handle_task_exception(task: asyncio.Task) -> None:
+    """Log and swallow exceptions from fire-and-forget WS handler tasks."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("WS handler task failed")
 
 
 # ------------------------------------------------------------------
@@ -89,12 +101,13 @@ async def websocket_endpoint(ws: WebSocket, token: str | None = Query(None)):
                 continue
 
             if msg_type == "chat.send":
-                asyncio.create_task(_handle_chat_send(user, payload, ws))
+                task = asyncio.create_task(_handle_chat_send(user, payload, ws))
+                task.add_done_callback(_handle_task_exception)
                 continue
 
     except WebSocketDisconnect:
         pass
-    except Exception as exc:
+    except Exception:
         logger.exception("WS error for user %s", user.id)
     finally:
         # Record disconnect time for offline replay

@@ -37,7 +37,7 @@
         <div v-if="showInfo" class="member-panel">
           <h4>群成员</h4>
           <div v-for="m in members" :key="m.member_id" class="member-item">
-            <img :src="m.avatar || '/uploads/avatars/default.png'" class="m-avatar" />
+            <img :src="$uploadUrl(m.avatar) || '/uploads/avatars/default.png'" class="m-avatar" />
             <div class="m-info">
               <span class="m-name">{{ m.name }}</span>
               <span v-if="m.is_conductor" class="m-badge">队长</span>
@@ -69,7 +69,7 @@
                 class="invite-item"
                 @click="inviteAgent(a.id)"
               >
-                <img :src="a.portrait_url || '/uploads/avatars/default.png'" class="invite-avatar" />
+                <img :src="$uploadUrl(a.portrait_url) || '/uploads/avatars/default.png'" class="invite-avatar" />
                 <span>{{ a.name }}</span>
                 <span v-if="a.codename" class="invite-code">{{ a.codename }}</span>
               </div>
@@ -125,7 +125,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useAgentsStore } from '@/stores/agents'
 import { useWebSocket } from '@/composables/useWebSocket'
-import { api } from '@/api/client'
+import { api, getUploadUrl } from '@/api/client'
 import BackButton from '@/components/BackButton.vue'
 import ChatContainer from '@/components/chat/ChatContainer.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -166,13 +166,13 @@ const mentionMembers = computed<MentionMember[]>(() =>
     .map((m: any) => ({
       id: m.member_id,
       name: m.name,
-      avatar: m.avatar || '/uploads/avatars/default.png',
+      avatar: getUploadUrl(m.avatar) || '/uploads/avatars/default.png',
       badge: m.is_conductor ? '队长' : undefined,
     }))
 )
 
 function resolveAvatar(msg: any) {
-  if (msg.is_me) return auth.user?.avatar_url || '/uploads/avatars/default.png'
+  if (msg.is_me) return getUploadUrl(auth.user?.avatar_url) || '/uploads/avatars/default.png'
   return memberAvatar(msg.sender_id)
 }
 
@@ -328,7 +328,7 @@ async function fetchGroup() {
 
 function memberAvatar(senderId: string) {
   const m = members.value.find(x => x.member_id === senderId)
-  return m?.avatar || '/uploads/avatars/default.png'
+  return getUploadUrl(m?.avatar) || '/uploads/avatars/default.png'
 }
 
 async function onSend(payload: { content: string; content_type: string; reply_to?: string }) {

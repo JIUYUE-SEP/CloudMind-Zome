@@ -20,7 +20,7 @@
     <footer class="bottom-bar">
       <div class="bar-left">
         <button class="bar-avatar" @click="showProfileModal = true" title="个人信息">
-          <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" />
+          <img v-if="auth.user?.avatar_url" :src="$uploadUrl(auth.user.avatar_url)" />
           <span v-else>我</span>
         </button>
         <button class="bar-btn" @click="goProfile">心智侧写</button>

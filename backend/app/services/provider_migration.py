@@ -12,7 +12,6 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -314,7 +313,7 @@ async def sync_yaml_to_db(db) -> MigrationReport:
     for cfg in root.providers:
         yaml_prov_ids.add(cfg.id)
         try:
-            prov = await _upsert_provider(db, cfg, system_user_id, existing_prov_ids)
+            await _upsert_provider(db, cfg, system_user_id, existing_prov_ids)
             report.upserted_providers += 1
         except Exception as exc:
             logger.warning("Upsert provider %s failed: %s", cfg.id, exc)

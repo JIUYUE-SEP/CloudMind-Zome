@@ -154,9 +154,6 @@ def _is_blacklisted(path: Path) -> tuple[bool, str]:
     except Exception as exc:
         return True, f"cannot resolve path: {exc}"
 
-    resolved_str = str(resolved)
-    resolved_lower = resolved_str.lower()
-
     # Prefix match
     for prefix in _FORBIDDEN_PREFIXES:
         prefix_path = Path(prefix).expanduser().resolve()

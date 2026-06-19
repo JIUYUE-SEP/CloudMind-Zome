@@ -8,7 +8,7 @@
 
       <div class="modal-body">
         <div class="avatar-row">
-          <img v-if="form.avatar_url" :src="form.avatar_url" class="avatar" />
+          <img v-if="form.avatar_url" :src="$uploadUrl(form.avatar_url)" class="avatar" />
           <div v-else class="avatar fallback">?</div>
           <button class="upload-avatar" @click="triggerAvatar">更换头像</button>
         </div>

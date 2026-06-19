@@ -14,7 +14,7 @@
           :class="{ active: selectedId === a.id }"
           @click="selectAgent(a.id)"
         >
-          <img v-if="a.portrait_url" :src="a.portrait_url" class="agent-avatar" />
+          <img v-if="a.portrait_url" :src="$uploadUrl(a.portrait_url)" class="agent-avatar" />
           <div
             v-else
             class="agent-avatar fallback"
@@ -37,7 +37,7 @@
         <div class="agent-info">
           <img
             v-if="selectedAgent.portrait_url"
-            :src="selectedAgent.portrait_url"
+            :src="$uploadUrl(selectedAgent.portrait_url)"
             class="editor-avatar"
           />
           <div

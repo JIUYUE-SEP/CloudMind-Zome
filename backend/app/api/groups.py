@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -365,7 +364,14 @@ async def dissolve_group(
 # UPLOAD_DIR is imported from app.database
 
 
-def _save_upload(file: UploadFile, subfolder: str) -> str:
+def _save_upload(file: UploadFile, subfolder: str, max_size_mb: int = 50) -> str:
+    # Size check (read up to limit + 1 bytes)
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > max_size_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds {max_size_mb}MB")
+
     ext = Path(file.filename or "file").suffix
     filename = f"{uuid.uuid4().hex}{ext}"
     folder = UPLOAD_DIR / subfolder

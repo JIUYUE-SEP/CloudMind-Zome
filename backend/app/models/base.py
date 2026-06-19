@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 from ..database import Base
 
+__all__ = ["Base", "_uuid", "_utc_now"]
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())

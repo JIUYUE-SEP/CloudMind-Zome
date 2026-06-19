@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict
+from typing import Awaitable, Callable, Dict
 
 
 # ------------------------------------------------------------------

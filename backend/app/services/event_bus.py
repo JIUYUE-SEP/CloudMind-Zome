@@ -79,10 +79,6 @@ class ConnectionManager:
         for user_id, ws in dead:
             self._connections.get(user_id, set()).discard(ws)
 
-    def get_online_users(self) -> set[str]:
-        """Return set of currently connected user IDs."""
-        return set(self._connections.keys())
-
 
 # Global singleton
 manager = ConnectionManager()

@@ -187,7 +187,7 @@ class GroupChatRouter:
         logger.info("Intent route weak match, casual chat mode for session %s", session.id)
         count = min(2, len(agent_ids))
         selected = random.sample(agent_ids, count)
-        return [RouteTarget(agent_id=aid, reason="random")]
+        return [RouteTarget(agent_id=agent_id, reason="random") for agent_id in selected]
 
     @staticmethod
     def _tokenize(text: str) -> List[str]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -180,12 +180,12 @@ async def get_logs(
         .order_by(CommissionLog.executed_at.desc())
     )
     items = []
-    for l in result.scalars().all():
+    for log in result.scalars().all():
         items.append({
-            "id": l.id,
-            "status": l.status,
-            "result_summary": l.result_summary,
-            "executed_at": l.executed_at.isoformat() if l.executed_at else "",
-            "duration_ms": l.duration_ms,
+            "id": log.id,
+            "status": log.status,
+            "result_summary": log.result_summary,
+            "executed_at": log.executed_at.isoformat() if log.executed_at else "",
+            "duration_ms": log.duration_ms,
         })
     return Resp(data={"items": items})

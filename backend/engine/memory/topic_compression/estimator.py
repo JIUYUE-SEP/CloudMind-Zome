@@ -20,6 +20,3 @@ class EstimatedTokenCounter:
                 en = len(text) - cn
                 total += int(cn * 1.5 + en * 0.25)
         return max(total, 1)
-
-    def count_messages(self, messages: list[Message], model: str = "") -> int:
-        return self.estimate(messages, model)

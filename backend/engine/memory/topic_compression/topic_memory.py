@@ -1,7 +1,6 @@
 """TopicCompressionMemory: full implementation."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -52,10 +51,20 @@ class TopicCompressionMemory(MemorySystem):
         # 1. Load TopicContext from memory.db or _compressed/*.md
         await self._load_state()
 
-        # 2. Initialize marker
-        model_cfg = self.agent.model_config or {}
+        # 2. Initialize marker using DB-resolved credentials (avoids storing
+        # plaintext API keys in model_config).
         try:
-            self.marker = TopicMarker.from_config(model_cfg)
+            from app.database import AsyncSessionLocal
+            from app.models import Agent
+            from sqlalchemy import select
+
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(Agent).where(Agent.id == self.agent_id))
+                agent_row = result.scalar_one_or_none()
+                if agent_row:
+                    self.marker = await TopicMarker.from_agent(db, agent_row)
+                else:
+                    logger.warning("Agent %s not found for marker initialization", self.agent_id)
         except Exception as e:
             logger.warning("Failed to init TopicMarker: %s", e)
 
@@ -284,7 +293,6 @@ class TopicCompressionMemory(MemorySystem):
             token_count,
             threshold,
         )
-        safe_threshold = self.trigger.get_safe_threshold(threshold)
 
         # Tier 1: enqueue done topics for async compression.
         # We do NOT block to wait for the worker; compression happens

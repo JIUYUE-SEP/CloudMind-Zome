@@ -1,6 +1,6 @@
 <template>
   <div class="portrait-viewer">
-    <img v-if="url" :src="url" class="portrait-img" />
+    <img v-if="url" :src="$uploadUrl(url)" class="portrait-img" />
     <div v-else class="portrait-empty">
       <div class="empty-ring"></div>
       <div class="empty-hint">立绘展示区</div>

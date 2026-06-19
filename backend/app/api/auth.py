@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.security import GUEST_TOKEN
 from ..database import DATA_DIR
 from ..dependencies import get_db, require_user
 from ..models import User, Profile
@@ -22,6 +21,11 @@ _USERDATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class AuthMeOut(BaseModel):
+    code: int = 0
+    data: dict
+
+
+class TokenOut(BaseModel):
     code: int = 0
     data: dict
 
@@ -41,6 +45,16 @@ async def _get_or_create_profile(user_id: str, db: AsyncSession) -> Profile:
         await db.commit()
         await db.refresh(profile)
     return profile
+
+
+@router.get("/guest-token", response_model=TokenOut)
+async def guest_token():
+    """Return the deterministic guest token for the single-user mode.
+
+    This endpoint is intentionally unauthenticated so a fresh frontend can
+    obtain the token before making authenticated requests.
+    """
+    return TokenOut(data={"token": GUEST_TOKEN, "type": "Bearer"})
 
 
 @router.get("/me", response_model=AuthMeOut)

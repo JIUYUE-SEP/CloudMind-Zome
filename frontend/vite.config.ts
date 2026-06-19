@@ -56,9 +56,36 @@ export default defineConfig({
       '/api/v1/ws': {
         target: 'ws://127.0.0.1:8848',
         ws: true,
+        changeOrigin: true,
       },
-      '/api': 'http://127.0.0.1:8848',
-      '/uploads': 'http://127.0.0.1:8848',
+      '/api': {
+        target: 'http://127.0.0.1:8848',
+        changeOrigin: true,
+      },
+      '/uploads': {
+        target: 'http://127.0.0.1:8848',
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    port: 4173,
+    strictPort: true,
+    host: '0.0.0.0',
+    proxy: {
+      '/api/v1/ws': {
+        target: 'ws://127.0.0.1:8848',
+        ws: true,
+        changeOrigin: true,
+      },
+      '/api': {
+        target: 'http://127.0.0.1:8848',
+        changeOrigin: true,
+      },
+      '/uploads': {
+        target: 'http://127.0.0.1:8848',
+        changeOrigin: true,
+      },
     },
   },
 })

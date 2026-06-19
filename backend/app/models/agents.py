@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
@@ -14,7 +14,6 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 

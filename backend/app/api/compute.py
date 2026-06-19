@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -16,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_db, require_user
-from ..models import ComputeProvider, ComputeUsage, Setting, User
+from ..models import ComputeProvider, ComputeUsage, User
 from app.core.crypto import encrypt_value, decrypt_value
 from app.services.provider_migration import sync_provider_yaml, ProviderSyncError
 
