@@ -5,14 +5,17 @@ Integrates product-level REST/WebSocket APIs with the Agent engine.
 
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
 # Ensure backend/ is on path so `from engine...` resolves
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -24,14 +27,97 @@ from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
 from .database import engine, Base, AsyncSessionLocal, DATA_DIR, UPLOAD_DIR, ZVEC_DIR, WORKSPACE_ROOT
 from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, tools, models as models_api
+from .core.security import GUEST_TOKEN
 from .services.commission_scheduler import get_scheduler
 from .services.bootstrap import ensure_builtin_provider
 from .services.key_migration import migrate_plaintext_keys
 
 logger = logging.getLogger(__name__)
 
+# Endpoints that are public (no bearer token required).
+_PUBLIC_PATHS = {
+    "/api/v1/auth/guest-token",
+    "/api/v1/system/health",
+}
+
+
+# Paths under /uploads that are public static assets (e.g. default avatars).
+_PUBLIC_UPLOAD_PREFIXES = {
+    "avatars/default.png",
+    "avatars/default.jpg",
+}
+
+
+def _is_public_upload_path(relative_path: str) -> bool:
+    return relative_path.replace("\\", "/") in _PUBLIC_UPLOAD_PREFIXES
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_PATHS
+
+
+def _load_cors_origins() -> list[str]:
+    """Return allowed CORS origins from env or sensible dev defaults."""
+    raw = os.environ.get("CLOUDMIND_CORS_ORIGINS", "")
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return ["http://localhost", "http://localhost:1420", "tauri://localhost"]
+
+
+def _extract_bearer_token(request: Request) -> str | None:
+    """Read bearer token from Authorization header or ?token= query param."""
+    authorization = request.headers.get("authorization", "")
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token:
+            return token
+    return request.query_params.get("token")
+
+
+async def _serve_upload(request: Request) -> JSONResponse:
+    """Serve a file from UPLOAD_DIR after validating the bearer token."""
+    relative_path = request.path_params.get("path", "")
+    normalized = relative_path.replace("\\", "/")
+
+    if not normalized or ".." in normalized:
+        return JSONResponse(status_code=403, content={"code": 403, "message": "Forbidden path"})
+
+    # Allow public default assets without token.
+    if not _is_public_upload_path(normalized):
+        token = _extract_bearer_token(request)
+        if not token or not hmac.compare_digest(token, GUEST_TOKEN):
+            return JSONResponse(
+                status_code=401,
+                content={"code": 401, "message": "Missing or invalid token"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    file_path = UPLOAD_DIR / normalized
+    try:
+        file_path = file_path.resolve()
+        upload_root = UPLOAD_DIR.resolve()
+        if not str(file_path).startswith(str(upload_root)):
+            return JSONResponse(status_code=403, content={"code": 403, "message": "Forbidden path"})
+    except Exception:
+        return JSONResponse(status_code=403, content={"code": 403, "message": "Forbidden path"})
+
+    if not file_path.is_file():
+        return JSONResponse(status_code=404, content={"code": 404, "message": "File not found"})
+
+    from fastapi.responses import FileResponse
+    return FileResponse(str(file_path))
+
 # Module-level state shared with ws.py (avoids circular import via app.state)
 _app_state: dict = {}
+
+_startup_start: float = 0.0
+
+
+def _startup_log(label: str, start: float) -> float:
+    """Log a startup stage and return the current timestamp for the next stage."""
+    now = time.perf_counter()
+    logger.info("[startup] %s: %.3fs (total %.3fs)", label, now - start, now - _startup_start)
+    return now
 
 
 async def _run_agent_cleanup_once() -> None:
@@ -106,8 +192,13 @@ async def _run_agent_cleanup_once() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create tables + init engine infra; Shutdown: dispose."""
+    global _startup_start
+    _startup_start = time.perf_counter()
+    t = _startup_start
+
     # 0. Ensure workspace root exists
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    t = _startup_log("ensure workspace", t)
 
     # 0.5 Migrate old agent directories if present
     old_agents_dir = DATA_DIR / "agents"
@@ -119,6 +210,7 @@ async def lifespan(app: FastAPI):
                 if not target.exists():
                     shutil.copytree(agent_dir, target)
                     logger.info("Migrated agent workspace: %s -> %s", agent_dir, target)
+    t = _startup_log("migrate old dirs", t)
 
     # 1. Platform tables
     async with engine.begin() as conn:
@@ -280,9 +372,11 @@ async def lifespan(app: FastAPI):
             logger.info("Migration: cleaned deprecated settings")
         await conn.run_sync(_migrate)
     logger.info("Platform tables ensured")
+    t = _startup_log("platform tables + migrations", t)
 
     # 1.6 One-time cleanup: clear old agent config / messages / zvec / mind files
     await _run_agent_cleanup_once()
+    t = _startup_log("agent cleanup", t)
 
     # 1.5 Provider YAML migration + sync
     from app.services.provider_migration import (
@@ -305,10 +399,12 @@ async def lifespan(app: FastAPI):
             sync_report.upserted_models,
             len(sync_report.errors),
         )
+    t = _startup_log("provider migration/sync", t)
 
     # 1.7 Bootstrap built-in provider template when no providers exist
     async with AsyncSessionLocal() as db:
         await ensure_builtin_provider(db)
+    t = _startup_log("builtin provider bootstrap", t)
 
     # 1.8 Encrypt any plaintext or legacy base64 API keys in DB / YAML
     async with AsyncSessionLocal() as db:
@@ -319,10 +415,12 @@ async def lifespan(app: FastAPI):
                 key_mig["db_encrypted"],
                 key_mig["yaml_encrypted"],
             )
+    t = _startup_log("api key migration", t)
 
     # 2. Engine infra
     cfg = load_config(_BACKEND_DIR / "engine" / "config.yaml")
     app.state.config = cfg
+    t = _startup_log("load engine config", t)
 
     # Discover tools (inside local engine/)
     tools_dir = _BACKEND_DIR / "engine" / "tools"
@@ -331,6 +429,7 @@ async def lifespan(app: FastAPI):
         logger.info("Discovered %d tool modules", len(discovered))
     else:
         logger.warning("Tools directory not found: %s", tools_dir)
+    t = _startup_log("discover tools", t)
 
     # Inject communication callbacks so engine tools can dispatch
     # without importing platform code.
@@ -344,6 +443,7 @@ async def lifespan(app: FastAPI):
         report_workflow_progress=dispatch_workflow_progress,
     )
     logger.info("Communication callbacks injected into engine")
+    t = _startup_log("inject comms callbacks", t)
 
     # Session store (connects to unified cloudmind.db)
     store = SessionStore()
@@ -355,6 +455,7 @@ async def lifespan(app: FastAPI):
 
     memory_store = AgentMemoryStore()
     logger.info("AgentMemoryStore initialized (per-agent collections)")
+    t = _startup_log("init session/memory stores", t)
 
     # Share with ws module
     _app_state["config"] = cfg
@@ -364,6 +465,10 @@ async def lifespan(app: FastAPI):
     # Start commission scheduler (Agent主动性: cron/interval任务)
     scheduler = get_scheduler()
     await scheduler.start()
+    t = _startup_log("start commission scheduler", t)
+
+    total = time.perf_counter() - _startup_start
+    logger.info("[startup] lifespan complete: %.3fs", total)
 
     yield
 
@@ -384,16 +489,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Enforce bearer-token auth on all routes except public allow-list."""
+    if _is_public_path(request.url.path):
+        return await call_next(request)
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if (
+        scheme.lower() != "bearer"
+        or not token
+        or not hmac.compare_digest(token, GUEST_TOKEN)
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"code": 401, "message": "Missing or invalid Authorization header"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "http://localhost:1420", "tauri://localhost"],
+    allow_origins=_load_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
-# Static files for uploads
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+# Protected upload file serving (token via Authorization header or ?token= query param).
+app.add_api_route("/uploads/{path:path}", _serve_upload, methods=["GET"], include_in_schema=False)
 
 # Routers
 app.include_router(auth.router, prefix="/api/v1")

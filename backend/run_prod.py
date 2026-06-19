@@ -1,5 +1,11 @@
 """Production entry: uvicorn without reload."""
 
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
+
 import uvicorn
 
 if __name__ == "__main__":

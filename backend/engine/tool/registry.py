@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import logging
 import re
+import importlib
+import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
@@ -83,6 +85,128 @@ class ToolRegistry:
 
         return decorator
 
+    @staticmethod
+    def _build_cache_key(tools_path: Path) -> dict[str, Any]:
+        """Build an mtime-based cache key from all .py files under tools_path."""
+        max_mtime = 0.0
+        file_count = 0
+        for py_file in tools_path.rglob("*.py"):
+            try:
+                st = py_file.stat()
+                max_mtime = max(max_mtime, st.st_mtime)
+                file_count += 1
+            except OSError:
+                continue
+        return {"max_mtime": max_mtime, "file_count": file_count}
+
+    def _discover_from_cache(
+        self, tools_path: Path, cache_path: Path, package: str
+    ) -> list[str] | None:
+        """Try to import tool modules from a valid cache file.
+
+        Returns None when the cache is missing, stale, or invalid.
+        """
+        if not cache_path.exists():
+            return None
+
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        cached_key = data.get("key")
+        current_key = self._build_cache_key(tools_path)
+        if cached_key != current_key:
+            return None
+
+        modules: list[str] = data.get("modules", [])
+        imported: list[str] = []
+        for module_name in modules:
+            try:
+                importlib.import_module(module_name)
+                imported.append(module_name)
+                logger.info("Discovered tool module (cached): %s", module_name)
+            except Exception as e:
+                logger.error(
+                    "Cached tool module %s failed to import: %s",
+                    module_name, e, exc_info=True,
+                )
+                return None
+
+        return imported
+
+    def _write_tool_cache(
+        self, tools_path: Path, cache_path: Path, modules: list[str]
+    ) -> None:
+        """Write the discovered module list to disk with an mtime-based key."""
+        data = {
+            "key": self._build_cache_key(tools_path),
+            "modules": modules,
+        }
+        cache_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _discover_full_scan(self, tools_path: Path, package: str) -> list[str]:
+        """Full AST-based tool discovery (fallback when cache misses)."""
+        import ast
+
+        imported: list[str] = []
+
+        def _has_register_decorator(node: ast.AST) -> bool:
+            """Return True if the node has any ``@*.register(...)`` decorator."""
+            decos: list[ast.expr] = getattr(node, "decorator_list", [])
+            for d in decos:
+                if isinstance(d, ast.Call):
+                    func = d.func
+                    if isinstance(func, ast.Attribute) and func.attr == "register":
+                        return True
+                if isinstance(d, ast.Attribute) and d.attr == "register":
+                    return True
+            return False
+
+        def _scan_ast(tree: ast.AST) -> bool:
+            """Walk the AST looking for any function/class with a .register decorator."""
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if _has_register_decorator(node):
+                        return True
+            return False
+
+        for py_file in sorted(tools_path.rglob("*.py")):
+            if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                continue
+
+            rel_path = py_file.relative_to(tools_path)
+            parts = list(rel_path.with_suffix("").parts)
+            module_name = f"{package}.{'.'.join(parts)}"
+
+            try:
+                source = py_file.read_text(encoding="utf-8")
+                try:
+                    tree = ast.parse(source)
+                except SyntaxError as exc:
+                    logger.error(
+                        "Tool file %s has syntax error (line %s, col %s): %s",
+                        py_file, exc.lineno, exc.offset, exc.msg,
+                    )
+                    continue
+
+                if not _scan_ast(tree):
+                    continue
+
+                importlib.import_module(module_name)
+                imported.append(module_name)
+                logger.info("Discovered tool module: %s", module_name)
+            except Exception as e:
+                logger.error(
+                    "Failed to import tool module %s from %s: %s",
+                    module_name, py_file, e, exc_info=True,
+                )
+
+        return imported
+
     def discover(
         self,
         tools_dir: str | Path,
@@ -107,66 +231,26 @@ class ToolRegistry:
         Returns:
             List of discovered module names.
         """
-        import ast
-
         tools_path = Path(tools_dir)
+        cache_path = tools_path / ".tool_registry_cache.json"
         imported: list[str] = []
 
-        def _has_register_decorator(node: ast.AST) -> bool:
-            """Return True if the node has any ``@*.register(...)`` decorator."""
-            decos: list[ast.expr] = getattr(node, "decorator_list", [])
-            for d in decos:
-                # @foo.register(...)
-                if isinstance(d, ast.Call):
-                    func = d.func
-                    if isinstance(func, ast.Attribute) and func.attr == "register":
-                        return True
-                # @foo.register
-                if isinstance(d, ast.Attribute) and d.attr == "register":
-                    return True
-            return False
-
-        def _scan_ast(tree: ast.AST) -> bool:
-            """Walk the AST looking for any function/class with a .register decorator."""
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    if _has_register_decorator(node):
-                        return True
-            return False
-
-        for py_file in sorted(tools_path.rglob("*.py")):
-            if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                continue
-
-            # Compute relative module path: e.g. web/search -> engine.tools.web.search
-            rel_path = py_file.relative_to(tools_path)
-            parts = list(rel_path.with_suffix("").parts)
-            module_name = f"{package}.{'.'.join(parts)}"
-
+        if os.environ.get("CLOUDMIND_TOOL_CACHE", "1") != "0":
             try:
-                source = py_file.read_text(encoding="utf-8")
-                try:
-                    tree = ast.parse(source)
-                except SyntaxError as exc:
-                    logger.error(
-                        "Tool file %s has syntax error (line %s, col %s): %s",
-                        py_file, exc.lineno, exc.offset, exc.msg,
-                    )
-                    continue
+                imported = self._discover_from_cache(tools_path, cache_path, package)
+                if imported is not None:
+                    logger.info("Tool discovery cache hit: %d modules", len(imported))
+                    return imported
+            except Exception:
+                logger.warning("Tool cache read failed, falling back to scan", exc_info=True)
 
-                if not _scan_ast(tree):
-                    continue
+        imported = self._discover_full_scan(tools_path, package)
 
-                import importlib
-
-                importlib.import_module(module_name)
-                imported.append(module_name)
-                logger.info("Discovered tool module: %s", module_name)
-            except Exception as e:
-                logger.error(
-                    "Failed to import tool module %s from %s: %s",
-                    module_name, py_file, e, exc_info=True,
-                )
+        if os.environ.get("CLOUDMIND_TOOL_CACHE", "1") != "0":
+            try:
+                self._write_tool_cache(tools_path, cache_path, imported)
+            except Exception:
+                logger.warning("Failed to write tool discovery cache", exc_info=True)
 
         return imported
 
@@ -346,7 +430,6 @@ class ToolRegistry:
         - Literal["a", "b"]  (enum)
         - dataclass / TypedDict  (recursive object schema)
         """
-        import sys
         import typing
 
         result: dict[str, Any] = {}
@@ -470,3 +553,4 @@ class ToolExecutionError(Exception):
 
 # Initialize global registry
 tool_registry = ToolRegistry()
+

@@ -1,6 +1,11 @@
 """Development entry: uvicorn with auto-reload."""
 
 import argparse
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
 import uvicorn
 
 
