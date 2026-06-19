@@ -1,5 +1,8 @@
 # Context Pipeline 重构任务
 
+> **状态：已落地**（2026-06-19 注）
+> 本文档为重构初期的设计稿，采用 L0-L7 八层方案。最终实现为 **L1-L6 六层**（见 `engine/context/context_pipeline.py:25-32` docstring），降级顺序 **L5→L4→L3**。以下内容为历史规划，仅供参考。
+
 ## 目标
 
 重构 Agent 的上下文管理，实现"Hot Context 按场景隔离 + Zvec 全场景语义检索 + 逐层降级"的 Context Pipeline。

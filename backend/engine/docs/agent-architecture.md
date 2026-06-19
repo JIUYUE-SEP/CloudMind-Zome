@@ -95,7 +95,6 @@ frontend/       # Vue 3 + Vite + TypeScript + Pinia
 ### Status Lifecycle
 ```
 idle -> busy (Job starts) -> idle (Job done/failed/stopped)
-idle -> introspecting (idle >5min + messages>10) -> idle
 ```
 
 ### Context Pipeline (L1-L6)

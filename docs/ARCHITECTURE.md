@@ -1,6 +1,6 @@
 # CloudMind-Zome 架构文档
 
-> Version: 2.0 | Date: 2026-06-02 | Branch: dev
+> Version: 2.1 | Date: 2026-06-19 | Branch: main-test
 
 ---
 
@@ -108,7 +108,7 @@ backend/
 ┌─────────────────────────────────────────────────────────────┐
 │  Agent Engine                                               │
 │  - ReActAgent          (ReAct 循环 + 场景隔离记忆)           │
-│  - ContextPipeline     (L0-L7 组装 + 逐层降级)              │
+│  - ContextPipeline     (L1-L6 组装 + 逐层降级)              │
 │  - ChatCompletionsTransport  (OpenAI API 调用)              │
 │  - ToolRegistry        (工具注册/发现/执行)                  │
 │  - TopicCompressionMemory (话题检测 + 异步压缩)              │
@@ -222,7 +222,8 @@ class Message:
 **MessageBuilder 消息拼装**：
 - 私聊：`user` 消息不加前缀，直接送入历史
 - 群聊：`user` 消息加 `sender_name:` 前缀（如 `小明: 大家好`）
-- **MessageBuilder 负责 L0-L3**：Identity 注入（`你是 {agent_name}`）、Mind 文件加载、硬编码行为指南、记忆路径提示（MEMORY.md 位置）
+- **MessageBuilder 负责组装 L1（Mind 文件）与 L2（群聊 sender 前缀）**：Mind 文件加载（SOUL.md / AGENT.md / USER.md），群聊时注入 sender 前缀
+- 人格描述（`personality_desc`，群聊 stay_silent 行为指令）与 @mention 提醒由 `ContextPipeline.assemble()` 作为独立参数注入，不属于 L 分层体系
 
 **MessageMeta 字段：**
 - `id` — 消息 UUID
@@ -250,23 +251,36 @@ Stage 2: Scorer + Filter
 
 Stage 3: Assembler
   - 按优先级 L1→L6 拼接完整 prompt
-  - L0(Identity) + L1(Mind) + L2(指南) + L3(记忆路径) + L4(Hot) + L5(Semantic) + L6(Topics) + L7(Tools+人格)
+  - L1(Mind 文件+平台能力) + L2(群聊 sender 前缀) + L3(Hot Context) + L4(语义检索) + L5(话题摘要) + L6(工具描述)
 
 Stage 4: Downgrade
-  - 总 token 超限 → L6 合并 → L5 缩减 → L4 截断
-  - L0/L1/L2/L3/L7 永不动
+  - 总 token 超限 → L5 合并 → L4 缩减 → L3 截断
+  - L1/L2/L6 永不动
 ```
+
+**六层定义（对齐源码 `context_pipeline.py:25-32`）：**
+
+| 层级 | 内容 | 降级策略 |
+|------|------|----------|
+| L1 | Mind 文件（SOUL.md / AGENT.md / USER.md）+ 平台能力 | 不降级 |
+| L2 | 群聊 sender 前缀（由 MessageBuilder 处理） | 不降级 |
+| L3 | Hot Context（当前场景最近 N 条消息） | 20→15→10→5 截断 |
+| L4 | 语义检索结果（zvec 跨场景 top-K） | 10→5→3→0 从低分去掉 |
+| L5 | 话题摘要（`_compressed/*.md` 压缩历史，仅 topic_compression 模式） | 多条合并成一条概要 |
+| L6 | 工具描述 | 不降级 |
 
 **场景隔离**：`_messages` 按 `source_id` 隔离，切换场景时清空重载。群聊中其他 Agent 的回复会通过 `ingest_only` Job 写入当前 Agent 的 `agent_messages`，确保群聊上下文同步。
 
-**降级配置项**（`engine/config.yaml`）：
+**降级配置项**（`engine/config.yaml` 的 `context` 段，见 `ContextConfig`）：
 - `context.max_context_tokens` — 模型 context window（默认 128000）
 - `context.semantic_search_top_k` — zvec 初始 top-K（默认 10）
 - `context.semantic_score_threshold` — 最低相关度（默认 0.3）
 - `context.hot_context_initial` — Hot Context 初始条数（默认 20）
 - `context.time_decay_half_life_hours` — 时间衰减半衰期（默认 72h）
+- `context.compact_threshold` — 触发压缩的阈值（默认 0.8）
+- `context.hot_memory_limit` / `context.warm_memory_limit` — Hot / Warm 记忆条数上限
 
-> 注：L0-L3 由 `MessageBuilder.build()` 硬编码注入（`engine/agent/message_builder.py:32-123`）；L4-L7 由 `ContextPipeline.assemble()` 插入（`engine/context/context_pipeline.py:169-220`）。
+> 注：L1、L2 由 `MessageBuilder.build()` 组装；L3-L6 由 `ContextPipeline.assemble()` 组装并执行降级（`engine/context/context_pipeline.py`）。人格描述（群聊 stay_silent 行为指令）与 @mention 提醒作为 `assemble()` 的独立参数注入，不参与降级。
 
 ### 5.5 记忆系统
 
@@ -457,15 +471,13 @@ frontend/src/
 
 ### 8.2 Provider 降级链
 
-配置项：`config.provider.fallback_chain`
+降级链是 **per-Agent 配置**：每个 Agent 的 `fallback_chain` 字段（JSON，`agents` 表 `fallback_chain` 列）定义该 Agent 在主 provider 故障时可切换的备选 provider 列表。可在前端 AgentEdit 或 `~/.cloudmind-zome/providers.yaml` 中配置。
 
 ```
-默认: deepseek → mimo → kimicode → glm
-
 LLM 调用失败时:
   1. 判断错误类型（classify_error）
   2. 可重试 → 指数退避重试
-  3. 不可重试 → 切换 fallback provider
+  3. 不可重试 → 切换该 Agent 的 fallback_chain 中下一个 provider
   4. 全部失败 → 返回错误给前端
 ```
 
@@ -482,21 +494,14 @@ LLM 调用失败时:
 
 ## 9. 配置系统
 
-单一真相源：`backend/engine/config.yaml`
+### 9.1 引擎配置
+
+`backend/engine/config.yaml`（需从 `config.yaml.example` 复制，已被 `.gitignore` 忽略）管理引擎层的**非 Provider** 配置项，支持 `${ENV_VAR}` / `${VAR:-default}` 环境变量替换：
 
 ```yaml
-provider:
-  default: glm
-  fallback_chain: [glm, kimicode]
-  deepseek: { base_url: ..., model: ..., api_key: ... }
-  glm: { base_url: ..., model: ..., api_key: ... }
-
-assistant_model: { base_url: ..., model: ..., api_key: ... }
-embedding_model: { base_url: ..., model: ..., api_key: ... }
-
 agent:
   max_turns: 50
-  memory_system: topic_compression  # simple | topic_compression
+  memory_system: simple  # simple | topic_compression
   smart_stop: { max_turns: 50, max_tokens: 200000, ... }
 
 context:
@@ -507,8 +512,40 @@ context:
   time_decay_half_life_hours: 72.0
 
 tools:
-  toolsets: [web, file, code]
+  toolsets: [web, file, code, shell, comms, group, project]
   max_result_chars: 12000
+
+tavily:
+  api_key: "tvly-..."  # 也支持环境变量 TAVILY_API_KEY
+
+image_gen: { ... }
+```
+
+> 顶层 Schema 定义见 `engine/config/models.py:AppConfig`（Pydantic v2）。`provider` / `assistant_model` / `embedding_model` 已不在 Schema 中——Provider 迁移到数据库 + YAML 双写。
+
+### 9.2 Provider 配置（DB + YAML 双写）
+
+LLM Provider 的主数据源是**数据库 `compute_providers` 表 + `DATA_DIR/providers.yaml`**，双向同步：
+
+- **前端入口**：算力平台界面（`/compute/providers`）创建/编辑 Provider，API 写入 DB 后自动同步到 YAML
+- **YAML 位置**：`~/.cloudmind-zome/providers.yaml`（或 `$CLOUDMIND_DATA_DIR/providers.yaml`）
+- **同步逻辑**：`app/services/provider_migration.py`，写入顺序为 DB flush → YAML 回写 → DB commit（原子替换）
+- **启动加载**：应用启动时 `sync_yaml_to_db()` 幂等 upsert（YAML → DB）
+- **凭据加密**：API Key 通过 `app/core/crypto.py` 加密后存入 DB（`api_key_encrypted`），运行时由 `provider_resolver.py` 解密
+
+### 9.3 数据目录
+
+所有运行时数据落在 **`DATA_DIR`**（`app/database.py`）：
+1. 环境变量 `CLOUDMIND_DATA_DIR`（Tauri 桌面模式设为 `%LOCALAPPDATA%\com.cloudmind-zome.app`）
+2. 未设置时回退到 `~/.cloudmind-zome`
+
+```
+DATA_DIR/
+├── cloudmind.db          # SQLite（WAL 模式）
+├── providers.yaml         # Provider 配置（与 DB 双写）
+├── workspace/{agent_id}/ # Agent 工作区（SOUL/AGENT/USER/MEMORY.md、skills/、_compressed/）
+├── uploads/              # 上传文件
+└── zvec/                 # zvec 向量库
 ```
 
 ---
@@ -565,7 +602,7 @@ User        Frontend    WS        Platform        GroupChatRouter    EngineBridg
 | 群聊多 Agent 并行 | N 个 Agent 同时查 DB、调 LLM | 并发控制 3 个 |
 | 图片 base64 传输 | 大图片导致 WS 帧过大 | 限制 5MB，图片 CDN |
 | 向量检索 | zvec 本地文件，大数据量时 | 迁移 Milvus/Pinecone |
-| 算力配置双轨 | `llmprovider/*.json` 与 `ComputeProvider` 表并存（JSON 已废弃） | 逐步清理 registry.py 的 JSON 依赖 |
+| 算力配置双写 | `compute_providers` 表与 `providers.yaml` 并存，需保持同步 | 持续维护 provider_migration.py 的幂等性 |
 
 ### 11.3 已知限制
 
@@ -579,6 +616,6 @@ User        Frontend    WS        Platform        GroupChatRouter    EngineBridg
 |------|------|------|
 | 文件系统逃逸 | `write_file` 有路径白名单 | 增加 chroot 或沙箱 |
 | 代码执行 | `python_execute` / `shell_command` | 增加确认弹窗或禁用开关 |
-| API Key 泄露 | 存在 config.yaml | 支持环境变量覆盖 `${ENV_VAR}` |
-| WS 无鉴权 | 任意客户端可连接 | 增加简单 token（即使 guest 也验证） |
+| API Key 存储 | 数据库加密存储（`api_key_encrypted`），providers.yaml 为运行时副本 | 支持环境变量覆盖 `${ENV_VAR}` |
+| WS 鉴权 | WebSocket 连接需携带 `?token=...` 参数验证，无效则 `WS_1008_POLICY_VIOLATION` 关闭 | 开发模式自动回退 Guest token |
 | SQLite 并发 | WAL 模式但单进程 | 生产环境迁移 PostgreSQL |

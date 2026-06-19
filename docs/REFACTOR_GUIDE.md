@@ -30,7 +30,7 @@
 | `ws_handlers.py` | 超长函数 `_handle_chat_send` | ✅ 已优化 | Extract Method：拆分为 `save_message()`, `route_private()`, `route_group()` |
 | `ws_handlers.py` | 多个 `_build_ws_frame` 重复构造 | ✅ 已提取 | Extract Class：`WSFrameBuilder` 在 `ws_protocol.py` |
 | `agent_worker.py` | `_build_transport()` 200 行内联 | ⚠️ 已简化 | AgentWorker 不再内联构建 transport，改为 `_build_transport` 方法 + factory 模式 |
-| `react.py` | `_build_messages()` 负责 tag + scene + format | ✅ 已拆分 | ContextPipeline 接管 L4-L7 上下文组装，MessageBuilder 负责 L0-L3（Identity、Mind、行为指南、记忆路径）+ 群聊 sender 前缀 |
+| `react.py` | `_build_messages()` 负责 tag + scene + format | ✅ 已拆分 | ContextPipeline 接管 L3-L6 上下文组装，MessageBuilder 负责 L1-L2（Mind 文件、群聊 sender 前缀） |
 | `session/store.py` | 3 套几乎相同的 load/save 逻辑 | 待处理 | Template Method：统一 `save_blocks()` / `load_blocks()` |
 | `transport.py` | `_normalize_response()` 与 `stream()` 工具调用解析重复 | 待处理 | Extract：统一 `ToolCallParser` |
 
@@ -48,7 +48,7 @@
 **实现**：
 - 新增 `ContextPipeline`（`engine/context/context_pipeline.py`）
 - 4 阶段组装：Retriever → Scorer → Assembler → Downgrade
-- L0-L7 优先级分层，超限时 L6→L5→L4 逐层降级
+- L1-L6 优先级分层，超限时 L5→L4→L3 逐层降级
 - zvec 跨场景语义检索 + 时间衰减打分
 
 **文件变更**：
@@ -271,8 +271,8 @@ class ContextPipeline:
     职责：
       1. 语义检索（zvec 跨场景）
       2. 打分过滤（时间衰减）
-      3. 按优先级组装 L0-L7
-      4. Token 超限降级（L6→L5→L4）
+      3. 按优先级组装 L1-L6
+      4. Token 超限降级（L5→L4→L3）
     """
     async def assemble(...) -> list[Message]: ...
 ```

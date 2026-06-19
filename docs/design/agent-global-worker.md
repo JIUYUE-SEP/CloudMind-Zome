@@ -1,5 +1,8 @@
 # Agent Global Worker Architecture
 
+> **状态：已落地**（2026-06-19 注）
+> 本文档为 Worker 重构初期的设计稿。最终实现中 Context Pipeline 采用 **L1-L6 六层**（非 L0-L7），降级顺序 **L5→L4→L3**（非 L6→L5→L4）。Agent 状态机仅有 `idle → busy → idle`（无 `introspecting` 状态）。以下内容为历史规划，仅供参考。
+
 ## 1. Core Principle
 
 Each Agent is an independent digital life. One soul, one thread, one memory, one FIFO queue for all tasks.
