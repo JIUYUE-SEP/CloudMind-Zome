@@ -26,6 +26,7 @@ from engine.config.loader import load_config
 from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
 from .database import engine, Base, AsyncSessionLocal, DATA_DIR, UPLOAD_DIR, ZVEC_DIR, WORKSPACE_ROOT
+from engine.tools.file.security import is_safe_path
 from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, tools, models as models_api
 from .core.security import GUEST_TOKEN
 from .services.commission_scheduler import get_scheduler
@@ -189,6 +190,31 @@ async def _run_agent_cleanup_once() -> None:
 # ------------------------------------------------------------------
 # Lifespan
 # ------------------------------------------------------------------
+def _tool_permission_checker(permission: str, arguments: dict[str, Any]) -> bool:
+    """Global permission hook for tool execution.
+
+    Enforces file path policy via is_safe_path. Non-file permissions are
+    allowed by default; agent-level toolset gating can be added here later.
+    """
+    if not permission.startswith("file:"):
+        return True
+
+    path = arguments.get("path")
+    if not path or not isinstance(path, str):
+        return False
+
+    mode_map = {
+        "file:read": "read",
+        "file:write": "write",
+        "file:edit": "write",
+        "file:share": "share",
+        "file:delete": "delete",
+    }
+    mode = mode_map.get(permission, "read")
+    ok, _ = is_safe_path(path, mode=mode)
+    return ok
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create tables + init engine infra; Shutdown: dispose."""
@@ -430,6 +456,10 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Tools directory not found: %s", tools_dir)
     t = _startup_log("discover tools", t)
+
+    # Install centralized permission hook (opencode-style toolchain).
+    tool_registry.set_permission_checker(_tool_permission_checker)
+    logger.info("Tool permission checker installed")
 
     # Inject communication callbacks so engine tools can dispatch
     # without importing platform code.

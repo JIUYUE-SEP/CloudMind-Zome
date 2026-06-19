@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
+from pydantic import BaseModel, ValidationError
+
 logger = logging.getLogger(__name__)
 
 # Bounded thread pool for sync tools to prevent unbounded thread leakage
@@ -37,6 +39,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, dict[str, Any]] = {}
+        self._permission_checker: Callable[[str, dict[str, Any]], bool] | None = None
         # _tools maps name -> {
         #   "func": callable,
         #   "toolset": str,
@@ -53,6 +56,8 @@ class ToolRegistry:
         max_result_chars: int = 12000,
         safe_to_parallel: bool = True,
         timeout: int | None = None,
+        input_schema: type[BaseModel] | None = None,
+        permission: str | None = None,
     ) -> Callable:
         """Decorator to register a tool function.
 
@@ -77,6 +82,8 @@ class ToolRegistry:
                 "safe_to_parallel": safe_to_parallel,
                 "timeout": timeout,
                 "is_async": inspect.iscoroutinefunction(func),
+                "input_schema": input_schema,
+                "permission": permission or name,
             }
 
             # Attach schema to function for reference
@@ -307,6 +314,17 @@ class ToolRegistry:
             raise ToolNotFoundError(f"Tool '{name}' not found")
 
         func = tool_info["func"]
+        if self._permission_checker is not None:
+            if not self._permission_checker(tool_info.get("permission", name), arguments):
+                raise ToolExecutionError(f"Tool '{name}' denied by permission policy")
+
+        input_schema = tool_info.get("input_schema")
+        if input_schema is not None:
+            try:
+                validated = input_schema(**arguments)
+                arguments = validated.model_dump()
+            except ValidationError as exc:
+                raise ToolExecutionError(f"Invalid tool input for '{name}': {exc}") from exc
         timeout = tool_info.get("timeout") or 60
 
         try:
@@ -343,6 +361,15 @@ class ToolRegistry:
                 if info["toolset"] == toolset
             ]
         return list(self._tools.keys())
+
+    def set_permission_checker(
+        self, checker: Callable[[str, dict[str, Any]], bool]
+    ) -> None:
+        """Set a global permission checker for all tool executions.
+
+        The checker receives (permission, arguments) and returns True to allow.
+        """
+        self._permission_checker = checker
 
     # ------------------------------------------------------------------
     # Schema auto-generation from function signature + docstring

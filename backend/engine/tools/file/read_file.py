@@ -1,12 +1,25 @@
 """Read file tool."""
 
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from engine.tool.registry import tool_registry
 from .security import is_safe_path
 
 
-@tool_registry.register(toolset="file", max_result_chars=12000, safe_to_parallel=True)
+class ReadFileInput(BaseModel):
+    """Validated input for read_file."""
+    path: str = Field(..., min_length=1, description="File path to read.")
+    encoding: str = Field(default="utf-8", min_length=1, description="Text encoding.")
+
+
+@tool_registry.register(
+    toolset="file",
+    max_result_chars=12000,
+    safe_to_parallel=True,
+    input_schema=ReadFileInput,
+    permission="file:read",
+)
 def read_file(path: str, encoding: str = "utf-8") -> str:
     """读取文本文件内容
 

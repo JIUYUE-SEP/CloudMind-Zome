@@ -8,8 +8,12 @@ and an allow-list of safe commands.  Shell chaining metacharacters
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from ...tool.registry import tool_registry
 
@@ -22,6 +26,10 @@ _ALLOWED_COMMANDS = {
     "find", "grep", "head", "tail", "wc", "date", "whoami",
     "git", "npm", "yarn", "pip", "pip3", "ps", "df", "du",
 }
+
+# Commands that are shell builtins on Windows (cmd.exe). They are not real
+# executables and must be invoked through cmd /c with shell=False.
+_WINDOWS_BUILTINS = {"echo", "dir", "type", "cd", "md", "rd", "cls"}
 
 # Dangerous git arguments / subcommands
 _GIT_FORBIDDEN_ARGS = {
@@ -139,7 +147,20 @@ def _sanitize_command(command: str) -> tuple[bool, str, str, list[str]]:
     return True, "", base, tokens
 
 
-@tool_registry.register(toolset="shell", max_result_chars=12000, safe_to_parallel=False, timeout=30)
+class ShellCommandInput(BaseModel):
+    """Validated input for shell_command."""
+    command: str = Field(..., min_length=1, max_length=4000, description="Shell command to run.")
+    timeout_seconds: int = Field(default=30, ge=1, le=120, description="Max execution time.")
+
+
+@tool_registry.register(
+    toolset="shell",
+    max_result_chars=12000,
+    safe_to_parallel=False,
+    timeout=30,
+    input_schema=ShellCommandInput,
+    permission="shell:execute",
+)
 def shell_command(command: str, timeout_seconds: int = 30) -> str:
     """Run a shell command and return stdout + stderr.
 
@@ -160,22 +181,42 @@ def shell_command(command: str, timeout_seconds: int = 30) -> str:
 
     timeout = max(1, min(timeout_seconds, 120))
 
-    # Build safe command string
-    safe_cmd = command
-    if base == "npm" and "--ignore-scripts" not in tokens:
-        # Inject --ignore-scripts right after 'npm' to prevent postinstall hooks
-        safe_cmd = "npm --ignore-scripts " + command[len("npm"):].lstrip()
+    # Build argv with shell=False.
+    argv = [base]
+    saw_first_cmd = False
+    for tok in tokens:
+        if not saw_first_cmd:
+            if "=" in tok and not tok.startswith("-"):
+                continue
+            saw_first_cmd = True
+            continue
+        argv.append(tok)
+
+    if base == "npm" and "--ignore-scripts" not in argv:
+        argv.insert(1, "--ignore-scripts")
+
+    # Cross-platform execution.
+    is_windows = sys.platform == "win32"
+    executable = shutil.which(base) if not is_windows else None
+    if not executable and is_windows and base in _WINDOWS_BUILTINS:
+        argv = ["cmd", "/c", base, *argv[1:]]
+
+    env = {"HOME": str(Path.home())}
+    if is_windows:
+        env["PATH"] = os.environ.get("PATH", "")
+        env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
+    else:
+        env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
 
     try:
         result = subprocess.run(
-            safe_cmd,
-            shell=True,
+            argv,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout,
-            # Run from a safe cwd and stripped env
             cwd=str(Path.home()),
-            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(Path.home())},
+            env=env,
         )
 
         lines: list[str] = []

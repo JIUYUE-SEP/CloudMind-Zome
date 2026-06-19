@@ -6,6 +6,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from ...tool.registry import tool_registry
 from .security import is_safe_path
@@ -28,7 +29,18 @@ ALLOWED_EXTS = IMAGE_EXTS | TEXT_EXTS
 MAX_SIZE = 10 * 1024 * 1024
 
 
-@tool_registry.register(toolset="file", max_result_chars=1000, safe_to_parallel=True)
+class ShareFileInput(BaseModel):
+    """Validated input for share_file."""
+    path: str = Field(..., min_length=1, description="Path to the file to share.")
+
+
+@tool_registry.register(
+    toolset="file",
+    max_result_chars=1000,
+    safe_to_parallel=True,
+    input_schema=ShareFileInput,
+    permission="file:share",
+)
 def share_file(path: str) -> str:
     """Share a file or image to the chat so the user can see it.
 

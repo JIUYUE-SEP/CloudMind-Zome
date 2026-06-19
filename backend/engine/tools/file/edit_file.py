@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from ...tool.registry import tool_registry
 from .security import is_safe_path
@@ -14,7 +15,20 @@ logger = logging.getLogger(__name__)
 MAX_SIZE = 5 * 1024 * 1024
 
 
-@tool_registry.register(toolset="file", max_result_chars=3000, safe_to_parallel=False)
+class EditFileInput(BaseModel):
+    """Validated input for edit_file."""
+    path: str = Field(..., min_length=1, description="Absolute or relative path of the file to edit.")
+    old_text: str = Field(..., description="Exact text segment to replace.")
+    new_text: str = Field(..., description="Replacement text.")
+
+
+@tool_registry.register(
+    toolset="file",
+    max_result_chars=3000,
+    safe_to_parallel=False,
+    input_schema=EditFileInput,
+    permission="file:edit",
+)
 def edit_file(path: str, old_text: str, new_text: str) -> str:
     """Edit an existing file by replacing a specific text segment.
 

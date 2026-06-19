@@ -7,14 +7,28 @@ from pathlib import Path
 
 from ...tool.registry import tool_registry
 from .security import is_safe_path
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# Max file size to write (5 MB)
-MAX_SIZE = 5 * 1024 * 1024
+
+class WriteFileInput(BaseModel):
+    """Validated input for write_file."""
+    path: str = Field(..., min_length=1, description="Absolute or relative path of the file to write.")
+    content: str = Field(
+        ...,
+        max_length=5 * 1024 * 1024,
+        description="The text content to write into the file.",
+    )
 
 
-@tool_registry.register(toolset="file", max_result_chars=2000, safe_to_parallel=False)
+@tool_registry.register(
+    toolset="file",
+    max_result_chars=2000,
+    safe_to_parallel=False,
+    input_schema=WriteFileInput,
+    permission="file:write",
+)
 def write_file(path: str, content: str) -> str:
     """Create a new file or overwrite an existing file with the given content.
 
@@ -35,9 +49,6 @@ def write_file(path: str, content: str) -> str:
     ok, reason = is_safe_path(path, mode="write")
     if not ok:
         return f"Error: {reason}"
-
-    if len(content) > MAX_SIZE:
-        return f"Error: content too large ({len(content)} bytes, max {MAX_SIZE})"
 
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)

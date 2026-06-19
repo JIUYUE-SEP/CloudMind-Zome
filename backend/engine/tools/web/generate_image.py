@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import uuid
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from ...tool.registry import tool_registry
 
@@ -47,7 +47,21 @@ def _get_image_config() -> dict:
     return _image_gen_cfg
 
 
-@tool_registry.register(toolset="web", max_result_chars=500, safe_to_parallel=False, timeout=120)
+class GenerateImageInput(BaseModel):
+    """Validated input for generate_image."""
+    prompt: str = Field(..., min_length=1, max_length=4000, description="Image generation prompt.")
+    size: str = Field(default="1024x1024", pattern=r"^(\d+x\d+|1K|2K|4K)$", description="Image size.")
+    ref_image: str = Field(default="", description="Optional reference image path or URL.")
+
+
+@tool_registry.register(
+    toolset="web",
+    max_result_chars=500,
+    safe_to_parallel=False,
+    timeout=120,
+    input_schema=GenerateImageInput,
+    permission="web:generate_image",
+)
 async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = "") -> str:
     """Generate an image from a text prompt.
 
@@ -164,18 +178,10 @@ async def generate_image(prompt: str, size: str = "1024x1024", ref_image: str = 
                 },
             )
 
-            # Write debug info to file
-            debug_file = Path("image_gen_debug.log")
-            with open(debug_file, "w", encoding="utf-8") as df:
-                df.write(f"ENDPOINT: {endpoint}\n")
-                df.write(f"REQUEST: {json.dumps(request_body, ensure_ascii=False, indent=2)}\n")
-                df.write(f"STATUS: {resp.status_code}\n")
-                df.write(f"RESPONSE: {resp.text[:2000]}\n")
-
             if resp.status_code != 200:
                 err = resp.text[:300]
                 logger.error("Image generation API error %s: %s", resp.status_code, err)
-                return f"Error: image gen failed (HTTP {resp.status_code}). Check image_gen_debug.log for details."
+                return f"Error: image gen failed (HTTP {resp.status_code})."
 
             data = resp.json()
 

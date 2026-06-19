@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+from pydantic import BaseModel, Field
 
 import httpx
 
@@ -61,7 +62,20 @@ def _format_results(data: dict[str, Any], query: str, max_results: int) -> str:
     return "\n".join(lines)
 
 
-@tool_registry.register(toolset="web", max_result_chars=8000, safe_to_parallel=True, timeout=30)
+class SearchWebInput(BaseModel):
+    """Validated input for search_web."""
+    query: str = Field(..., min_length=1, max_length=1000, description="Search query.")
+    max_results: int = Field(default=5, ge=1, le=10, description="Number of results (1-10).")
+
+
+@tool_registry.register(
+    toolset="web",
+    max_result_chars=8000,
+    safe_to_parallel=True,
+    timeout=30,
+    input_schema=SearchWebInput,
+    permission="web:search",
+)
 async def search_web(query: str, max_results: int = 5) -> str:
     """Search the web using Tavily Search API.
 
