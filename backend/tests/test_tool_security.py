@@ -14,6 +14,8 @@ from engine.tools.file.share_file import share_file
 from engine.tools.file import delete_file
 from engine.tools.code import python_execute
 from engine.tools.shell import shell_command
+from engine.tools.comms.context import set_current_agent_id
+from engine.tools.file.security import WORKSPACE_ROOT
 
 
 class TestReadFileSecurity:
@@ -145,3 +147,45 @@ class TestShellCommandSecurity:
         if "not allowed" in result.lower():
             pytest.skip("git not available on this platform")
         assert not result.startswith("Error:")
+
+
+class TestAgentWorkspaceIsolation:
+    """Agent A must not be able to write into agent B's workspace."""
+
+    def test_write_to_own_workspace_allowed(self) -> None:
+        set_current_agent_id("agent-a")
+        try:
+            path = str(WORKSPACE_ROOT / "agent-a" / "own.txt")
+            result = write_file(path, "hello from a")
+            assert result.startswith("File written:"), result
+        finally:
+            set_current_agent_id("")
+
+    def test_write_to_other_agent_workspace_blocked(self) -> None:
+        set_current_agent_id("agent-a")
+        try:
+            path = str(WORKSPACE_ROOT / "agent-b" / "evil.txt")
+            result = write_file(path, "pwned")
+            assert result.startswith("Error:"), result
+            assert "not allowed" in result.lower()
+        finally:
+            set_current_agent_id("")
+
+    def test_read_other_agent_workspace_blocked(self) -> None:
+        set_current_agent_id("agent-a")
+        try:
+            path = str(WORKSPACE_ROOT / "agent-b" / "notes.txt")
+            result = read_file(path)
+            assert result.startswith("Error:"), result
+        finally:
+            set_current_agent_id("")
+
+    def test_read_project_source_still_allowed(self) -> None:
+        set_current_agent_id("agent-a")
+        try:
+            from engine.tools.file.security import _PROJECT_ROOT
+            path = str(_PROJECT_ROOT / "backend" / "engine" / "config" / "models.py")
+            result = read_file(path)
+            assert not result.startswith("Error:"), result
+        finally:
+            set_current_agent_id("")

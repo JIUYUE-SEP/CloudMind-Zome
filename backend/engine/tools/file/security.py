@@ -23,6 +23,8 @@ import contextvars
 import logging
 from pathlib import Path
 
+from ..comms.context import get_current_agent_id
+
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
@@ -191,10 +193,19 @@ def _build_bases(
     agent_paths: list[str] | None,
 ) -> list[Path]:
     """Build the effective whitelist for the given mode."""
-    if mode == "read":
-        bases = list(_DEFAULT_READ_BASES)
+    agent_id = get_current_agent_id()
+    if agent_id:
+        agent_workspace = WORKSPACE_ROOT / agent_id
+        if mode == "read":
+            bases = [agent_workspace, _PROJECT_ROOT]
+        else:
+            bases = [agent_workspace]
     else:
-        bases = list(_DEFAULT_WRITE_BASES)
+        # Fallback for tests / standalone tool usage without an agent context.
+        if mode == "read":
+            bases = list(_DEFAULT_READ_BASES)
+        else:
+            bases = list(_DEFAULT_WRITE_BASES)
 
     extra = agent_paths if agent_paths is not None else get_agent_allowed_paths()
     for p in extra:
