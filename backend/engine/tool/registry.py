@@ -581,3 +581,10 @@ class ToolExecutionError(Exception):
 # Initialize global registry
 tool_registry = ToolRegistry()
 
+
+def shutdown_tool_executor() -> None:
+    """Gracefully shut down the tool ThreadPoolExecutor."""
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=True, cancel_futures=False)
+

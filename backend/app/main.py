@@ -155,6 +155,11 @@ async def _run_agent_cleanup_once() -> None:
     marker.write_text("done", encoding="utf-8")
     logger.info("Agent cleanup completed")
 
+    # 5. Shutdown tool executor
+    from engine.tool.registry import shutdown_tool_executor
+    shutdown_tool_executor()
+    logger.info("Tool executor shut down")
+
 
 # ------------------------------------------------------------------
 # Lifespan
