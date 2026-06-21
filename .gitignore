@@ -53,3 +53,6 @@ nul
 
 # Tool discovery cache
 .tool_registry_cache.json
+
+# Agent workspace (per-agent writable files, auto-generated)
+/workspace/
