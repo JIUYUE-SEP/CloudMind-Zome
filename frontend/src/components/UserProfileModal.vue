@@ -78,7 +78,7 @@ onMounted(() => {
 async function loadProfileMd() {
   profileMd.value.loading = true
   try {
-    const json = await api.get('/auth/me/profile-md')
+    const json = await api.get('/user/profile-md')
     if (json.code === 0) {
       profileMd.value.content = json.data?.content || ''
     }
@@ -93,7 +93,7 @@ async function save() {
   saveError.value = ''
   try {
     const [profileJson, authJson] = await Promise.all([
-      api.put('/auth/me/profile-md', { content: profileMd.value.content }),
+      api.put('/user/profile-md', { content: profileMd.value.content }),
       auth.updateProfile({
         nickname: form.value.nickname,
       }),

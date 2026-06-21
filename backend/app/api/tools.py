@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from ..dependencies import require_user
 from engine.tool.registry import tool_registry
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -44,7 +43,7 @@ _TOOL_LABELS: dict[str, str] = {
 # Routes
 # ------------------------------------------------------------------
 @router.get("/available")
-async def list_available_tools(user=Depends(require_user)):
+async def list_available_tools():
     """Return all registered tools grouped by toolset.
 
     Used by the frontend AgentEdit page so users can pick which

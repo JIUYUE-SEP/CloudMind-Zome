@@ -3,7 +3,6 @@ import { createPinia } from 'pinia'
 import router from './router'
 import App from './App.vue'
 import '@/styles/global.css'
-import { useAuthStore } from './stores/auth'
 import { setApiBase, setWsBase, getApiBase } from './api/config'
 import { getUploadUrl } from './api/client'
 
@@ -44,11 +43,6 @@ async function init() {
   const app = createApp(App)
   app.config.globalProperties.$uploadUrl = getUploadUrl
   app.use(createPinia())
-
-  // 全局加载用户信息（所有页面共用）；必须先获取 guest token 才能调用后续 API/WS。
-  const auth = useAuthStore()
-  await auth.fetchMe()
-
   app.use(router)
   app.mount('#app')
 }

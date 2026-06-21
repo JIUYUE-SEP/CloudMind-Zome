@@ -10,8 +10,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, require_user
-from ..models import Agent, Approval, User
+from ..dependencies import get_db
+from ..models import Agent, Approval
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -47,10 +47,9 @@ async def list_approvals(
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Approval).join(Agent, Approval.agent_id == Agent.id).where(Agent.user_id == user.id)
+    stmt = select(Approval).join(Agent, Approval.agent_id == Agent.id)
     if status:
         stmt = stmt.where(Approval.status == status)
     stmt = stmt.order_by(Approval.requested_at.desc())
@@ -79,7 +78,6 @@ async def list_approvals(
 async def approve(
     approval_id: str,
     body: ApproveReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Approval).where(Approval.id == approval_id))
@@ -87,13 +85,9 @@ async def approve(
     if not appr:
         raise HTTPException(status_code=404)
 
-    agent_res = await db.execute(select(Agent).where(Agent.id == appr.agent_id, Agent.user_id == user.id))
-    if not agent_res.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Permission denied")
-
     appr.status = "approved"
     appr.resolved_at = datetime.now(timezone.utc)
-    appr.resolver_id = user.id
+    appr.resolver_id = "user"
     appr.reason = body.reason or ""
     await db.commit()
 
@@ -104,7 +98,6 @@ async def approve(
 async def reject(
     approval_id: str,
     body: RejectReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Approval).where(Approval.id == approval_id))
@@ -112,13 +105,9 @@ async def reject(
     if not appr:
         raise HTTPException(status_code=404)
 
-    agent_res = await db.execute(select(Agent).where(Agent.id == appr.agent_id, Agent.user_id == user.id))
-    if not agent_res.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Permission denied")
-
     appr.status = "rejected"
     appr.resolved_at = datetime.now(timezone.utc)
-    appr.resolver_id = user.id
+    appr.resolver_id = "user"
     appr.reason = body.reason or ""
     await db.commit()
 
@@ -126,8 +115,8 @@ async def reject(
 
 
 @router.get("/settings", response_model=ApprovalResp)
-async def get_settings(user: User = Depends(require_user)):
-    # For MVP, return hardcoded defaults; per-user settings can be added later
+async def get_settings():
+    # For MVP, return hardcoded defaults
     return ApprovalResp(data={
         "default_timeout_seconds": 60,
         "timeout_policy": "reject",

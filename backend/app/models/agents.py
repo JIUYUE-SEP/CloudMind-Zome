@@ -24,9 +24,6 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     codename: Mapped[str] = mapped_column(String(64), nullable=False)
     capabilities: Mapped[Optional[list]] = mapped_column(JSON, default=list)
@@ -105,12 +102,6 @@ class Agent(Base):
         DateTime, default=_utc_now, onupdate=_utc_now
     )
 
-    user: Mapped["User"] = relationship(
-        back_populates="agents",
-        foreign_keys=[user_id],
-    )
-
     __table_args__ = (
-        Index("idx_agents_user_id", "user_id"),
         Index("idx_agents_status", "status"),
     )

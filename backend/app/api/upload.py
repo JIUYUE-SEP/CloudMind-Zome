@@ -6,11 +6,10 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from ..database import UPLOAD_DIR
-from ..dependencies import require_user
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -26,7 +25,6 @@ class UploadResp(BaseModel):
 async def upload_file(
     file: UploadFile = File(...),
     folder: str = "attachments",
-    user=Depends(require_user),
 ):
     # Security: sanitize folder name
     safe_folder = "".join(c for c in folder if c.isalnum() or c in "_-").rstrip("/")

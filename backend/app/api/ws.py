@@ -11,19 +11,22 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import update
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.security import verify_access_token
 from ..database import AsyncSessionLocal
-from ..models import ChatSessionMember, User
+from ..models import ChatSessionMember
 from ..services.event_bus import manager
 from .ws_handlers import _handle_agent_stop, _handle_chat_send, _handle_typing, _replay_offline_messages
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Fixed user identifier for single-user local app
+_USER_ID = "user"
 
 
 def _handle_task_exception(task: asyncio.Task) -> None:
@@ -39,41 +42,22 @@ def _handle_task_exception(task: asyncio.Task) -> None:
 
 
 # ------------------------------------------------------------------
-# Helpers (WS-specific, not protocol)
-# ------------------------------------------------------------------
-async def _get_user_from_token(token: str | None, db: AsyncSession) -> User | None:
-    """Resolve a WebSocket token to a User.
-
-    Returns ``None`` when the token is missing or invalid so the endpoint can
-    reject the connection with a policy-violation close code.
-    """
-    if token is None:
-        return None
-    return await verify_access_token(token, db)
-
-
-# ------------------------------------------------------------------
 # Main WebSocket endpoint
 # ------------------------------------------------------------------
 @router.websocket("/api/v1/ws")
-async def websocket_endpoint(ws: WebSocket, token: str | None = Query(None)):
-    async with AsyncSessionLocal() as db:
-        user = await _get_user_from_token(token, db)
-
-    if user is None:
-        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    await manager.connect(user.id, ws)
-    await ws.send_json({"type": "auth.success", "payload": {"user_id": user.id}})
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(_USER_ID, ws)
+    await ws.send_json({"type": "auth.success", "payload": {"user_id": _USER_ID}})
 
     # Replay offline messages
-    await _replay_offline_messages(user.id, ws)
+    await _replay_offline_messages(_USER_ID, ws)
 
-    # Update user last_seen
+    # Update last_seen
     async with AsyncSessionLocal() as db:
         await db.execute(
-            update(User).where(User.id == user.id).values(last_seen_at=datetime.now(timezone.utc))
+            update(ChatSessionMember)
+            .where(ChatSessionMember.member_id == _USER_ID, ChatSessionMember.member_type == "user")
+            .values(last_disconnect_at=None)
         )
         await db.commit()
 
@@ -93,29 +77,29 @@ async def websocket_endpoint(ws: WebSocket, token: str | None = Query(None)):
                 continue
 
             if msg_type == "agent.stop":
-                await _handle_agent_stop(user, payload, ws)
+                await _handle_agent_stop(payload, ws)
                 continue
 
             if msg_type == "chat.typing":
-                await _handle_typing(user, payload, ws)
+                await _handle_typing(payload, ws)
                 continue
 
             if msg_type == "chat.send":
-                task = asyncio.create_task(_handle_chat_send(user, payload, ws))
+                task = asyncio.create_task(_handle_chat_send(payload, ws))
                 task.add_done_callback(_handle_task_exception)
                 continue
 
     except WebSocketDisconnect:
         pass
     except Exception:
-        logger.exception("WS error for user %s", user.id)
+        logger.exception("WS error for user %s", _USER_ID)
     finally:
         # Record disconnect time for offline replay
         async with AsyncSessionLocal() as db:
             await db.execute(
                 update(ChatSessionMember)
-                .where(ChatSessionMember.member_id == user.id, ChatSessionMember.member_type == "user")
+                .where(ChatSessionMember.member_id == _USER_ID, ChatSessionMember.member_type == "user")
                 .values(last_disconnect_at=datetime.now(timezone.utc))
             )
             await db.commit()
-        manager.disconnect(user.id, ws)
+        manager.disconnect(_USER_ID, ws)

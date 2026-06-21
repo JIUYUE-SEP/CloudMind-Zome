@@ -33,10 +33,6 @@ class LLMModel(Base):
         ForeignKey("compute_providers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
 
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -67,5 +63,4 @@ class LLMModel(Base):
 
     __table_args__ = (
         Index("idx_llm_models_provider", "provider_id"),
-        Index("idx_llm_models_user", "user_id"),
     )

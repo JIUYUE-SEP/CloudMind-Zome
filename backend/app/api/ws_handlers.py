@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ..database import AsyncSessionLocal
-from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember, User
+from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember
 from ..services.agent_worker import get_current_job
 from ..services.engine_bridge import EngineBridge
 from ..services.conductor_service import ConductorService
@@ -29,6 +29,10 @@ from .ws_protocol import (
 
 logger = logging.getLogger(__name__)
 
+# Fixed user identifier for single-user local app
+_USER_ID = "user"
+_SENDER_NAME = "用户"
+
 # ------------------------------------------------------------------
 # Session-level task management for private chat (root fix for blocking)
 # ------------------------------------------------------------------
@@ -42,7 +46,7 @@ _ws_send_locks: dict[int, asyncio.Lock] = {}
 # ------------------------------------------------------------------
 # chat.send handler
 # ------------------------------------------------------------------
-async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
+async def _handle_chat_send(payload: dict, ws: WebSocket):
     session_id = payload.get("session_id", "")
     content = payload.get("content", "")
     client_msg_id = payload.get("client_msg_id", "")
@@ -54,7 +58,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
         mem = await db.execute(
             select(ChatSessionMember).where(
                 ChatSessionMember.session_id == session_id,
-                ChatSessionMember.member_id == user.id,
+                ChatSessionMember.member_id == _USER_ID,
             )
         )
         if not mem.scalar_one_or_none():
@@ -93,13 +97,13 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
 
         # Snapshot members into plain objects while session is active
         member_rows = list(session.members)
-        other_members = [m for m in member_rows if m.member_id != user.id]
+        other_members = [m for m in member_rows if m.member_id != _USER_ID]
 
         # Save user message
         user_msg = ChatMessage(
             id=str(uuid.uuid4()),
             session_id=session_id,
-            sender_id=user.id,
+            sender_id=_USER_ID,
             sender_type="user",
             content=content,
             content_type=content_type,
@@ -125,9 +129,9 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
             "session_id": session_id,
             "message": {
                 "id": user_msg.id,
-                "sender_id": user.id,
+                "sender_id": _USER_ID,
                 "sender_type": "user",
-                "sender_name": user.nickname,
+                "sender_name": _SENDER_NAME,
                 "content": content,
                 "content_type": content_type,
                 "timestamp": ts,
@@ -143,7 +147,7 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
             target_id = None
             target_name = ""
             for m in member_rows:
-                if m.member_id != user.id and m.member_type == "agent":
+                if m.member_id != _USER_ID and m.member_type == "agent":
                     target_id = m.member_id
                     a = await db.execute(select(Agent).where(Agent.id == m.member_id))
                     agent = a.scalar_one_or_none()
@@ -157,8 +161,8 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                     agent_name=target_name,
                     user_message=content,
                     ws=ws,
-                    sender_name=user.nickname,
-                    user_id=user.id,
+                    sender_name=_SENDER_NAME,
+                    user_id=_USER_ID,
                     content_type=content_type,
                 )
             return
@@ -178,16 +182,16 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                     user_message=content,
                     source_id=session_id,
                     source_name=session.name or "群聊",
-                    sender_name=user.nickname,
+                    sender_name=_SENDER_NAME,
                 )
 
         broadcast_frame = _build_ws_frame("chat.message", {
             "session_id": session_id,
             "message": {
                 "id": user_msg.id,
-                "sender_id": user.id,
+                "sender_id": _USER_ID,
                 "sender_type": "user",
-                "sender_name": user.nickname,
+                "sender_name": _SENDER_NAME,
                 "content": content,
                 "content_type": content_type,
                 "timestamp": ts,
@@ -228,8 +232,8 @@ async def _handle_chat_send(user: User, payload: dict, ws: WebSocket):
                 broadcast_to=other_members,
                 source="group",
                 source_name=source_name,
-                sender_name=user.nickname,
-                user_id=user.id,
+                sender_name=_SENDER_NAME,
+                user_id=_USER_ID,
                 content_type=content_type,
                 is_mentioned=is_mentioned,
             )))
@@ -380,7 +384,7 @@ async def _dispatch_ingest_to_agent(
 # ------------------------------------------------------------------
 # Agent stop handler (private chat only)
 # ------------------------------------------------------------------
-async def _handle_agent_stop(user: User, payload: dict, ws: WebSocket):
+async def _handle_agent_stop(payload: dict, ws: WebSocket):
     session_id = payload.get("session_id", "")
     agent_id = payload.get("agent_id", "")
     if not session_id or not agent_id:
@@ -401,7 +405,7 @@ async def _handle_agent_stop(user: User, payload: dict, ws: WebSocket):
         mem = await db.execute(
             select(ChatSessionMember).where(
                 ChatSessionMember.session_id == session_id,
-                ChatSessionMember.member_id == user.id,
+                ChatSessionMember.member_id == _USER_ID,
             )
         )
         if not mem.scalar_one_or_none():
@@ -702,7 +706,7 @@ async def _replay_offline_messages(user_id: str, ws: WebSocket) -> None:
 # ------------------------------------------------------------------
 # User typing broadcast
 # ------------------------------------------------------------------
-async def _handle_typing(user: User, payload: dict, ws: WebSocket) -> None:
+async def _handle_typing(payload: dict, ws: WebSocket) -> None:
     session_id = payload.get("session_id", "")
     is_typing = payload.get("is_typing", False)
 
@@ -711,7 +715,7 @@ async def _handle_typing(user: User, payload: dict, ws: WebSocket) -> None:
         mem = await db.execute(
             select(ChatSessionMember).where(
                 ChatSessionMember.session_id == session_id,
-                ChatSessionMember.member_id == user.id,
+                ChatSessionMember.member_id == _USER_ID,
             )
         )
         if not mem.scalar_one_or_none():
@@ -726,11 +730,11 @@ async def _handle_typing(user: User, payload: dict, ws: WebSocket) -> None:
         if not session:
             return
 
-        other_members = [m for m in session.members if m.member_id != user.id]
+        other_members = [m for m in session.members if m.member_id != _USER_ID]
         typing_frame = _build_ws_frame("chat.typing", {
             "session_id": session_id,
-            "user_id": user.id,
-            "user_name": user.nickname,
+            "user_id": _USER_ID,
+            "user_name": _SENDER_NAME,
             "is_typing": is_typing,
         })
         await manager.broadcast_to_session_members(other_members, typing_frame)

@@ -22,9 +22,6 @@ class Action(Base):
     __tablename__ = "actions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     nodes: Mapped[Optional[list]] = mapped_column(JSON, default=list)
@@ -41,7 +38,6 @@ class Action(Base):
     )
 
     __table_args__ = (
-        Index("idx_actions_user_id", "user_id"),
         Index("idx_actions_status", "status"),
     )
 

@@ -12,10 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-
-from ..dependencies import require_user
 
 logger = logging.getLogger(__name__)
 
@@ -118,14 +116,14 @@ class UpdateConfigReq(BaseModel):
 # ------------------------------------------------------------------
 
 @router.get("", response_model=ConfigResp)
-async def get_config(user=Depends(require_user)):
+async def get_config():
     """Return raw config with secrets masked in the HTTP response."""
     raw = _load_raw()
     return ConfigResp(data=_mask_secrets(raw))
 
 
 @router.put("", response_model=ConfigResp)
-async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
+async def update_config(body: UpdateConfigReq):
     """Update allowed sections. Missing sections are left untouched."""
     try:
         old = _load_raw()
@@ -147,7 +145,7 @@ async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
                     updated[section] = value
 
         _save_raw(updated)
-        logger.info("Config updated by user %s", user.id)
+        logger.info("Config updated")
         return ConfigResp(data=_mask_secrets(updated))
     except HTTPException:
         raise
@@ -157,7 +155,7 @@ async def update_config(body: UpdateConfigReq, user=Depends(require_user)):
 
 
 @router.get("/tools", response_model=ToolsResp)
-async def list_tools(user=Depends(require_user)):
+async def list_tools():
     from engine.tool.registry import tool_registry
 
     items = []

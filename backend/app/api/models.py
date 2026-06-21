@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from typing import Optional, Literal
 
-from ..dependencies import get_db, require_user
-from ..models import ComputeProvider, LLMModel, User, Agent
+from ..dependencies import get_db
+from ..models import ComputeProvider, LLMModel, Agent
 from app.services.provider_migration import sync_provider_yaml, ProviderSyncError
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -83,11 +83,10 @@ def _model_to_dict(m: LLMModel) -> dict:
 async def list_models(
     provider_id: Optional[str] = None,
     model_type: Optional[str] = None,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List models. If provider_id given, return only its models."""
-    stmt = select(LLMModel).where(LLMModel.user_id == user.id)
+    stmt = select(LLMModel)
     if provider_id:
         stmt = stmt.where(LLMModel.provider_id == provider_id)
     if model_type:
@@ -100,12 +99,11 @@ async def list_models(
 @router.post("", response_model=Resp)
 async def create_model(
     body: ModelCreate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     # Verify provider exists
     prov = await db.get(ComputeProvider, body.provider_id)
-    if not prov or prov.user_id != user.id:
+    if not prov:
         raise HTTPException(status_code=400, detail="Provider not found")
 
     composite_id = f"{body.provider_id}::{body.id}"
@@ -116,7 +114,6 @@ async def create_model(
     m = LLMModel(
         id=composite_id,
         provider_id=body.provider_id,
-        user_id=user.id,
         display_name=body.display_name,
         model_type=body.model_type,
         context_window=body.context_window,
@@ -156,12 +153,11 @@ async def update_model(
     provider_id: str,
     model_id: str,
     body: ModelUpdate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     composite_id = f"{provider_id}::{model_id}"
     m = await db.get(LLMModel, composite_id)
-    if not m or m.user_id != user.id:
+    if not m:
         raise HTTPException(status_code=404)
 
     if body.display_name is not None:
@@ -212,12 +208,11 @@ async def update_model(
 async def delete_model(
     provider_id: str,
     model_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     composite_id = f"{provider_id}::{model_id}"
     m = await db.get(LLMModel, composite_id)
-    if not m or m.user_id != user.id:
+    if not m:
         raise HTTPException(status_code=404)
 
     # Check if any Agent references this model
@@ -225,7 +220,6 @@ async def delete_model(
     refs = []
     result = await db.execute(
         select(Agent).where(
-            Agent.user_id == user.id,
             Agent.provider_id == provider_id,
             Agent.model_id == model_id,
         )
@@ -241,7 +235,6 @@ async def delete_model(
         prov_col, model_col = col_pair
         result = await db.execute(
             select(Agent).where(
-                Agent.user_id == user.id,
                 getattr(Agent, prov_col) == provider_id,
                 getattr(Agent, model_col) == model_id,
             )
@@ -251,7 +244,6 @@ async def delete_model(
     # Check fallback_chain JSON (simplified: string search)
     result = await db.execute(
         select(Agent).where(
-            Agent.user_id == user.id,
             Agent.fallback_chain.isnot(None),
         )
     )

@@ -5,13 +5,13 @@ Integrates product-level REST/WebSocket APIs with the Agent engine.
 
 from __future__ import annotations
 
-import hmac
 import logging
 import os
 import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,19 +27,12 @@ from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
 from .database import engine, Base, AsyncSessionLocal, DATA_DIR, UPLOAD_DIR, ZVEC_DIR, WORKSPACE_ROOT
 from engine.tools.file.security import is_safe_path
-from .api import auth, agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, tools, models as models_api
-from .core.security import GUEST_TOKEN
+from .api import agents, upload, chat, groups, actions, approvals, compute, commissions, ws, config, tools, models as models_api, user
 from .services.commission_scheduler import get_scheduler
 from .services.bootstrap import ensure_builtin_provider
 from .services.key_migration import migrate_plaintext_keys
 
 logger = logging.getLogger(__name__)
-
-# Endpoints that are public (no bearer token required).
-_PUBLIC_PATHS = {
-    "/api/v1/auth/guest-token",
-    "/api/v1/system/health",
-}
 
 
 # Paths under /uploads that are public static assets (e.g. default avatars).
@@ -53,10 +46,6 @@ def _is_public_upload_path(relative_path: str) -> bool:
     return relative_path.replace("\\", "/") in _PUBLIC_UPLOAD_PREFIXES
 
 
-def _is_public_path(path: str) -> bool:
-    return path in _PUBLIC_PATHS
-
-
 def _load_cors_origins() -> list[str]:
     """Return allowed CORS origins from env or sensible dev defaults."""
     raw = os.environ.get("CLOUDMIND_CORS_ORIGINS", "")
@@ -65,33 +54,13 @@ def _load_cors_origins() -> list[str]:
     return ["http://localhost", "http://localhost:1420", "tauri://localhost"]
 
 
-def _extract_bearer_token(request: Request) -> str | None:
-    """Read bearer token from Authorization header or ?token= query param."""
-    authorization = request.headers.get("authorization", "")
-    if authorization:
-        scheme, _, token = authorization.partition(" ")
-        if scheme.lower() == "bearer" and token:
-            return token
-    return request.query_params.get("token")
-
-
 async def _serve_upload(request: Request) -> JSONResponse:
-    """Serve a file from UPLOAD_DIR after validating the bearer token."""
+    """Serve a file from UPLOAD_DIR with path traversal protection only."""
     relative_path = request.path_params.get("path", "")
     normalized = relative_path.replace("\\", "/")
 
     if not normalized or ".." in normalized:
         return JSONResponse(status_code=403, content={"code": 403, "message": "Forbidden path"})
-
-    # Allow public default assets without token.
-    if not _is_public_upload_path(normalized):
-        token = _extract_bearer_token(request)
-        if not token or not hmac.compare_digest(token, GUEST_TOKEN):
-            return JSONResponse(
-                status_code=401,
-                content={"code": 401, "message": "Missing or invalid token"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
 
     file_path = UPLOAD_DIR / normalized
     try:
@@ -519,25 +488,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    """Enforce bearer-token auth on all routes except public allow-list."""
-    if _is_public_path(request.url.path):
-        return await call_next(request)
-
-    authorization = request.headers.get("authorization", "")
-    scheme, _, token = authorization.partition(" ")
-    if (
-        scheme.lower() != "bearer"
-        or not token
-        or not hmac.compare_digest(token, GUEST_TOKEN)
-    ):
-        return JSONResponse(
-            status_code=401,
-            content={"code": 401, "message": "Missing or invalid Authorization header"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return await call_next(request)
+app = FastAPI(
+    title="CloudMind-Zome",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -547,13 +502,11 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
-# Protected upload file serving (token via Authorization header or ?token= query param).
+# Upload file serving (path traversal protection only, no auth)
 app.add_api_route("/uploads/{path:path}", _serve_upload, methods=["GET"], include_in_schema=False)
 
 # Routers
-app.include_router(auth.router, prefix="/api/v1")
 app.include_router(agents.router, prefix="/api/v1")
-
 app.include_router(upload.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(groups.router, prefix="/api/v1")
@@ -564,6 +517,7 @@ app.include_router(commissions.router, prefix="/api/v1")
 app.include_router(config.router, prefix="/api/v1")
 app.include_router(tools.router, prefix="/api/v1")
 app.include_router(models_api.router, prefix="/api/v1")
+app.include_router(user.router, prefix="/api/v1")
 app.include_router(ws.router)
 
 

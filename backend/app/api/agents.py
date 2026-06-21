@@ -15,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import DATA_DIR, UPLOAD_DIR as _UPLOAD_DIR
-from ..dependencies import get_db, require_user
-from ..models import Agent, User
+from ..dependencies import get_db
+from ..models import Agent
 
 from engine.agent.workspace import MindWorkspace
 
@@ -157,14 +157,13 @@ async def list_agents(
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Agent).where(Agent.user_id == user.id, Agent.deleted_at.is_(None))
+    stmt = select(Agent).where(Agent.deleted_at.is_(None))
     if search:
         stmt = stmt.where(Agent.name.ilike(f"%{search}%"))
 
-    count_result = await db.execute(select(Agent.id).where(Agent.user_id == user.id, Agent.deleted_at.is_(None)))
+    count_result = await db.execute(select(Agent.id).where(Agent.deleted_at.is_(None)))
     total = len(count_result.scalars().all())
 
     result = await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))
@@ -191,7 +190,6 @@ async def list_agents(
 # ------------------------------------------------------------------
 @router.get("/providers", response_model=ListResp)
 async def list_providers(
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List available LLM providers with full model details."""
@@ -201,7 +199,6 @@ async def list_providers(
     result = await db.execute(
         select(ComputeProvider)
         .where(
-            ComputeProvider.user_id == user.id,
             ComputeProvider.status == "active",
         )
         .options(selectinload(ComputeProvider.models))
@@ -237,11 +234,10 @@ async def list_providers(
 @router.get("/{agent_id}", response_model=ListResp)
 async def get_agent(
     agent_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     a = result.scalar_one_or_none()
     if not a:
@@ -290,20 +286,18 @@ async def get_agent(
 @router.post("", response_model=ListResp)
 async def create_agent(
     body: AgentCreate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     # Validate: embedder is required
     if not body.embedder_provider_id or not body.embedder_model_id:
         raise HTTPException(status_code=400, detail="Embedder provider and model are required")
 
-    existing = await db.execute(select(Agent.codename).where(Agent.user_id == user.id))
+    existing = await db.execute(select(Agent.codename))
     codenames = [r for r in existing.scalars().all()]
     codename = _gen_codename(codenames)
 
     agent = Agent(
         id=str(uuid.uuid4()),
-        user_id=user.id,
         name=body.name,
         codename=codename,
         capabilities=body.capabilities,
@@ -353,11 +347,10 @@ async def create_agent(
 async def update_agent(
     agent_id: str,
     body: AgentUpdate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -376,11 +369,10 @@ async def update_agent(
 @router.delete("/{agent_id}", response_model=ListResp)
 async def delete_agent(
     agent_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -388,9 +380,6 @@ async def delete_agent(
 
     from datetime import datetime, timezone
     agent.deleted_at = datetime.now(timezone.utc)
-
-    if user.poster_agent_id == agent_id:
-        user.poster_agent_id = None
 
     await db.commit()
 
@@ -411,11 +400,10 @@ async def delete_agent(
 async def upload_portrait(
     agent_id: str,
     file: UploadFile = File(...),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id)
+        select(Agent).where(Agent.id == agent_id)
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -435,11 +423,10 @@ async def upload_portrait(
 async def upload_live2d(
     agent_id: str,
     file: UploadFile = File(...),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id)
+        select(Agent).where(Agent.id == agent_id)
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -456,11 +443,10 @@ async def upload_live2d(
 async def upload_model(
     agent_id: str,
     file: UploadFile = File(...),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id)
+        select(Agent).where(Agent.id == agent_id)
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -505,12 +491,11 @@ def _mind_path(agent_id: str, file: str) -> Path:
 async def get_mind_file(
     agent_id: str,
     file: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Read a mind file (AGENT/SOUL/PROFILE/MEMORY)."""
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -539,12 +524,11 @@ async def update_mind_file(
     agent_id: str,
     file: str,
     body: MindFileUpdate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Write a mind file (AGENT/SOUL/PROFILE/MEMORY)."""
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -569,7 +553,6 @@ async def update_mind_file(
 @router.post("/{agent_id}/analyze-personality", response_model=ListResp)
 async def analyze_agent_personality(
     agent_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Analyze agent personality from SOUL.md.
@@ -580,7 +563,7 @@ async def analyze_agent_personality(
     logger = logging.getLogger(__name__)
 
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -662,12 +645,11 @@ _DB_PATH = DATA_DIR / "cloudmind.db"
 @router.get("/{agent_id}/memory", response_model=ListResp)
 async def get_agent_memory(
     agent_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return topic summaries and compression stats for an agent."""
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -740,7 +722,6 @@ async def import_history(
     agent_id: str,
     platform: str = Form(...),
     file: UploadFile = File(...),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Import conversation history from an external platform JSONL file.
@@ -753,7 +734,7 @@ async def import_history(
         { imported: N, skipped: M, errors: [...] }
     """
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -893,14 +874,13 @@ async def import_history(
 @router.get("/{agent_id}/import-platforms", response_model=ListResp)
 async def list_import_platforms(
     agent_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return available import platforms."""
     from engine.importer import list_platforms
 
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -917,12 +897,11 @@ from engine.skill.loader import load_skills
 @router.get("/{agent_id}/skills/discovered", response_model=ListResp)
 async def list_discovered_skills(
     agent_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Scan workspace/{agent_id}/skills/ and return all discovered SKILL.md files."""
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -940,7 +919,6 @@ async def list_discovered_skills(
 async def upload_skill(
     agent_id: str,
     file: UploadFile = File(...),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a SKILL.md file into workspace/{agent_id}/skills/{name}/SKILL.md.
@@ -949,7 +927,7 @@ async def upload_skill(
     otherwise falls back to the uploaded filename stem.
     """
     result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -995,9 +973,27 @@ async def upload_skill(
 async def delete_skill(
     agent_id: str,
     skill_name: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Delete a skill directory from workspace/{agent_id}/skills/{skill_name}."""
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not skill_name or ".." in skill_name or "/" in skill_name or "\\" in skill_name:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
+    from ..database import WORKSPACE_ROOT
+    skill_dir = WORKSPACE_ROOT / agent_id / "skills" / skill_name
+    if not skill_dir.exists():
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+    import shutil
+    shutil.rmtree(skill_dir)
+    return ListResp(data={"deleted": True})
+
     """Delete a skill directory under workspace/{agent_id}/skills/{skill_name}."""
     result = await db.execute(
         select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))

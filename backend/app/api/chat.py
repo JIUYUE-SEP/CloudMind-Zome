@@ -12,8 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..dependencies import get_db, require_user
-from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember, User
+from ..dependencies import get_db
+from ..models import Agent, ChatMessage, ChatSession, ChatSessionMember
 
 router = APIRouter(prefix="/chats", tags=["chat"])
 
@@ -37,11 +37,15 @@ class Resp(BaseModel):
     data: dict
 
 
+# Fixed user id for single-user mode
+_USER_ID = "user"
+
+
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
 async def _ensure_private_session(
-    db: AsyncSession, user_id: str, target_id: str, target_type: str
+    db: AsyncSession, target_id: str, target_type: str
 ) -> ChatSession:
     """Find or create a private session between user and target."""
     # Query existing private sessions where user is a member
@@ -50,7 +54,7 @@ async def _ensure_private_session(
         .join(ChatSessionMember, ChatSessionMember.session_id == ChatSession.id)
         .where(
             ChatSession.type == "private",
-            ChatSessionMember.member_id == user_id,
+            ChatSessionMember.member_id == _USER_ID,
             ChatSessionMember.member_type == "user",
         )
         .options(selectinload(ChatSession.members))
@@ -68,13 +72,13 @@ async def _ensure_private_session(
     sess = ChatSession(
         id=str(uuid.uuid4()),
         type="private",
-        owner_id=user_id,
+        owner_id=_USER_ID,
     )
     db.add(sess)
     await db.flush()
 
     # Add members
-    db.add(ChatSessionMember(session_id=sess.id, member_id=user_id, member_type="user"))
+    db.add(ChatSessionMember(session_id=sess.id, member_id=_USER_ID, member_type="user"))
     db.add(ChatSessionMember(session_id=sess.id, member_id=target_id, member_type=target_type))
     await db.commit()
     await db.refresh(sess)
@@ -87,10 +91,9 @@ async def _ensure_private_session(
 @router.post("/sessions/private", response_model=Resp)
 async def create_or_get_private(
     body: CreatePrivateReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    sess = await _ensure_private_session(db, user.id, body.target_id, body.target_type)
+    sess = await _ensure_private_session(db, body.target_id, body.target_type)
 
     # Get target name/avatar
     target_name = "Unknown"
@@ -117,7 +120,6 @@ async def create_or_get_private(
 @router.get("/sessions", response_model=Resp)
 async def list_sessions(
     type: Optional[str] = Query(None),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     # 1. Load session memberships (no eager messages)
@@ -125,7 +127,7 @@ async def list_sessions(
         select(ChatSession, ChatSessionMember)
         .join(ChatSessionMember, ChatSessionMember.session_id == ChatSession.id)
         .where(
-            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_id == _USER_ID,
             ChatSessionMember.member_type == "user",
             ChatSession.status != "dissolved",
         )
@@ -171,7 +173,7 @@ async def list_sessions(
         select(ChatMessage.session_id, func.count().label("cnt"))
         .where(
             ChatMessage.session_id.in_(session_ids),
-            ChatMessage.sender_id != user.id,
+            ChatMessage.sender_id != _USER_ID,
             ChatMessage.is_deleted == False,
         )
         .group_by(ChatMessage.session_id)
@@ -185,7 +187,7 @@ async def list_sessions(
         for sess, _ in rows
         if sess.type == "private"
         for m in sess.members
-        if m.member_id != user.id and m.member_type == "agent"
+        if m.member_id != _USER_ID and m.member_type == "agent"
     }
     agents_by_id: dict[str, Agent] = {}
     if private_agent_ids:
@@ -198,7 +200,7 @@ async def list_sessions(
         other_avatar = ""
         if sess.type == "private":
             for m in sess.members:
-                if m.member_id != user.id and m.member_type == "agent":
+                if m.member_id != _USER_ID and m.member_type == "agent":
                     a = agents_by_id.get(m.member_id)
                     if a:
                         other_name = a.name
@@ -212,7 +214,7 @@ async def list_sessions(
             last_msg = {
                 "content": content[:100],
                 "timestamp": latest["created_at"].isoformat() if latest["created_at"] else "",
-                "is_unread": latest["sender_id"] != user.id and not latest["is_deleted"],
+                "is_unread": latest["sender_id"] != _USER_ID and not latest["is_deleted"],
             }
 
         group_avatar = ""
@@ -224,8 +226,8 @@ async def list_sessions(
         items.append({
             "session_id": sess.id,
             "type": sess.type,
-            "target_id": next((m.member_id for m in sess.members if m.member_id != user.id), None),
-            "target_type": next((m.member_type for m in sess.members if m.member_id != user.id), None),
+            "target_id": next((m.member_id for m in sess.members if m.member_id != _USER_ID), None),
+            "target_type": next((m.member_type for m in sess.members if m.member_id != _USER_ID), None),
             "target_name": other_name or group_name,
             "target_avatar": other_avatar or group_avatar,
             "last_message": last_msg,
@@ -242,14 +244,13 @@ async def get_messages(
     before_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     # Verify membership
     mem = await db.execute(
         select(ChatSessionMember).where(
             ChatSessionMember.session_id == session_id,
-            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_id == _USER_ID,
         )
     )
     if not mem.scalar_one_or_none():
@@ -299,7 +300,7 @@ async def get_messages(
     def _sender_name(msg: ChatMessage) -> str:
         if msg.sender_type == "agent":
             return agent_names.get(msg.sender_id, "Agent")
-        return user.nickname if msg.sender_id == user.id else "User"
+        return "User" if msg.sender_id == _USER_ID else "User"
 
     messages = [
         {
@@ -311,7 +312,7 @@ async def get_messages(
             "content_type": m.content_type,
             "reply_to": reply_map.get(m.reply_to) if m.reply_to else None,
             "timestamp": m.created_at.isoformat() if m.created_at else "",
-            "is_me": m.sender_id == user.id and m.sender_type == "user",
+            "is_me": m.sender_id == _USER_ID and m.sender_type == "user",
             "batch_id": m.batch_id,
             "tool_calls": m.tool_calls or [],
             "reasoning": m.reasoning or "",
@@ -326,13 +327,12 @@ async def get_messages(
 async def send_message_http(
     session_id: str,
     body: SendMessageReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     mem = await db.execute(
         select(ChatSessionMember).where(
             ChatSessionMember.session_id == session_id,
-            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_id == _USER_ID,
         )
     )
     if not mem.scalar_one_or_none():
@@ -341,7 +341,7 @@ async def send_message_http(
     msg = ChatMessage(
         id=str(uuid.uuid4()),
         session_id=session_id,
-        sender_id=user.id,
+        sender_id=_USER_ID,
         sender_type="user",
         content=body.content,
         content_type=body.content_type,
@@ -373,13 +373,12 @@ class PinReq(BaseModel):
 async def pin_session(
     session_id: str,
     body: PinReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(ChatSessionMember).where(
             ChatSessionMember.session_id == session_id,
-            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_id == _USER_ID,
             ChatSessionMember.member_type == "user",
         )
     )
@@ -394,13 +393,12 @@ async def pin_session(
 @router.put("/sessions/{session_id}/read", response_model=Resp)
 async def mark_read(
     session_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(ChatSessionMember).where(
             ChatSessionMember.session_id == session_id,
-            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_id == _USER_ID,
             ChatSessionMember.member_type == "user",
         )
     )

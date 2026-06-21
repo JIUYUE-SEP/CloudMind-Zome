@@ -46,13 +46,8 @@ export function useWebSocket() {
 
   function connect() {
     if (ws && ws.readyState !== WebSocket.CLOSED) return
-    const token = localStorage.getItem('cloudmind-token')
-    if (!token) {
-      pushLog({ type: 'error', source: 'WS', message: '缺少认证 token，无法连接' })
-      return
-    }
     intentionalDisconnect = false
-    const url = `${getWsBase()}/api/v1/ws?token=${encodeURIComponent(token)}`
+    const url = `${getWsBase()}/api/v1/ws`
     ws = new WebSocket(url)
 
     ws.onopen = () => {

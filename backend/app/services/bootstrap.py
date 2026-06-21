@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ComputeProvider, LLMModel, User
+from ..models import ComputeProvider, LLMModel
 
 logger = logging.getLogger(__name__)
 
@@ -21,32 +21,6 @@ DEFAULT_LLM_MODEL_ID = "gpt-4o-mini"
 DEFAULT_LLM_DISPLAY_NAME = "GPT-4o Mini"
 DEFAULT_EMBEDDING_MODEL_ID = "text-embedding-3-small"
 DEFAULT_EMBEDDING_DISPLAY_NAME = "Text Embedding 3 Small"
-
-
-async def _ensure_system_user(db: AsyncSession) -> User:
-    """Return guest user if exists, otherwise create a system user."""
-    result = await db.execute(select(User).where(User.codename == "guest"))
-    user = result.scalar_one_or_none()
-    if user:
-        return user
-
-    result = await db.execute(select(User).limit(1))
-    user = result.scalar_one_or_none()
-    if user:
-        return user
-
-    user = User(
-        id="00000000-0000-0000-0000-000000000000",
-        codename="guest",
-        nickname="访客",
-        password_hash=None,
-        device_id="guest-device",
-        role="guest",
-    )
-    db.add(user)
-    await db.flush()
-    logger.info("Created guest user during bootstrap")
-    return user
 
 
 async def ensure_builtin_provider(db: AsyncSession) -> Optional[ComputeProvider]:
@@ -61,12 +35,10 @@ async def ensure_builtin_provider(db: AsyncSession) -> Optional[ComputeProvider]
             logger.debug("Providers table not empty; skipping built-in bootstrap")
             return None
 
-        user = await _ensure_system_user(db)
         provider_id = str(uuid.uuid4())
 
         provider = ComputeProvider(
             id=provider_id,
-            user_id=user.id,
             provider_type=BUILTIN_PROVIDER_TYPE,
             display_name=BUILTIN_PROVIDER_DISPLAY_NAME,
             api_key_encrypted="",
@@ -87,7 +59,6 @@ async def ensure_builtin_provider(db: AsyncSession) -> Optional[ComputeProvider]
         default_llm = LLMModel(
             id=f"{provider_id}::{DEFAULT_LLM_MODEL_ID}",
             provider_id=provider_id,
-            user_id=user.id,
             display_name=DEFAULT_LLM_DISPLAY_NAME,
             is_builtin=True,
             is_default=True,
@@ -106,7 +77,6 @@ async def ensure_builtin_provider(db: AsyncSession) -> Optional[ComputeProvider]
         default_embedding = LLMModel(
             id=f"{provider_id}::{DEFAULT_EMBEDDING_MODEL_ID}",
             provider_id=provider_id,
-            user_id=user.id,
             display_name=DEFAULT_EMBEDDING_DISPLAY_NAME,
             is_builtin=True,
             is_default=False,

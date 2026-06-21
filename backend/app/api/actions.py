@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, require_user
-from ..models import Action, ActionRun, Agent, User
+from ..dependencies import get_db
+from ..models import Action, ActionRun, Agent
 from ..services.workflow_engine import launch_workflow
 from ..services.group_task_engine import GroupTaskEngine
 
@@ -74,10 +74,9 @@ async def list_actions(
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Action).where(Action.user_id == user.id)
+    stmt = select(Action)
     if status:
         stmt = stmt.where(Action.status == status)
     if search:
@@ -106,10 +105,9 @@ async def list_actions(
 @router.get("/{action_id}", response_model=Resp)
 async def get_action(
     action_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    result = await db.execute(select(Action).where(Action.id == action_id))
     a = result.scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404)
@@ -142,12 +140,10 @@ async def get_action(
 @router.post("", response_model=Resp)
 async def create_action(
     body: ActionCreate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     action = Action(
         id=str(uuid.uuid4()),
-        user_id=user.id,
         name=body.name,
         description=body.description,
         nodes=[n.model_dump() for n in body.nodes],
@@ -164,10 +160,9 @@ async def create_action(
 async def update_action(
     action_id: str,
     body: ActionUpdate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    result = await db.execute(select(Action).where(Action.id == action_id))
     action = result.scalar_one_or_none()
     if not action:
         raise HTTPException(status_code=404)
@@ -190,10 +185,9 @@ async def update_action(
 @router.delete("/{action_id}", response_model=Resp)
 async def delete_action(
     action_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    result = await db.execute(select(Action).where(Action.id == action_id))
     action = result.scalar_one_or_none()
     if not action:
         raise HTTPException(status_code=404)
@@ -216,10 +210,9 @@ async def delete_action(
 @router.post("/{action_id}/run", response_model=Resp)
 async def run_action(
     action_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
+    result = await db.execute(select(Action).where(Action.id == action_id))
     action = result.scalar_one_or_none()
     if not action:
         raise HTTPException(status_code=404)
@@ -240,7 +233,7 @@ async def run_action(
     await db.commit()
 
     # Trigger async execution
-    await launch_workflow(run.id, user.id)
+    await launch_workflow(run.id)
 
     return Resp(data={"run_id": run.id, "status": "pending"})
 
@@ -249,7 +242,6 @@ async def run_action(
 async def get_run(
     action_id: str,
     run_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -258,11 +250,6 @@ async def get_run(
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404)
-
-    # Verify ownership via action
-    action = await db.execute(select(Action).where(Action.id == action_id, Action.user_id == user.id))
-    if not action.scalar_one_or_none():
-        raise HTTPException(status_code=403)
 
     return Resp(data={
         "run_id": run.id,
@@ -278,7 +265,6 @@ async def get_run(
 async def stop_run(
     action_id: str,
     run_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -305,7 +291,6 @@ async def stop_run(
 @router.post("/from-task", response_model=Resp)
 async def save_from_task(
     body: SaveFromTaskBody,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Save the last group-task blueprint to ActionCenter."""
@@ -316,7 +301,6 @@ async def save_from_task(
     blueprint = engine.to_blueprint()
     action = Action(
         id=str(uuid.uuid4()),
-        user_id=user.id,
         name=body.name or blueprint["name"],
         description=blueprint["description"],
         nodes=blueprint["nodes"],

@@ -1,33 +1,14 @@
 import { getApiBase } from './config'
 
-const TOKEN_KEY = 'cloudmind-token'
-
-function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-
 function getHeaders(contentType = true): Record<string, string> {
   const headers: Record<string, string> = {}
-  const token = getToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
   if (contentType) headers['Content-Type'] = 'application/json'
   return headers
 }
 
-export function setAuthToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token)
-}
-
-export function clearAuthToken() {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
 export function getUploadUrl(url: string | undefined): string {
-  if (!url || !url.startsWith('/uploads/')) return url || ''
-  const token = getToken()
-  if (!token) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${encodeURIComponent(token)}`
+  // No token needed for uploads in single-user local app
+  return url || ''
 }
 
 export interface ApiResponse<T = any> {

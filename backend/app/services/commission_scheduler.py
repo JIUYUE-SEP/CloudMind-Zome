@@ -101,7 +101,6 @@ class CommissionScheduler:
         comm_id = comm.id
         comm_name = comm.name
         agent_id = comm.agent_id
-        user_id = comm.user_id
 
         async def on_text_chunk(text: str) -> None:
             nonlocal full_content
@@ -147,7 +146,7 @@ class CommissionScheduler:
                     },
                 }
                 try:
-                    await manager.send_to_user(user_id, frame)
+                    await manager.send_to_user("user", frame)
                 except Exception:
                     pass
 

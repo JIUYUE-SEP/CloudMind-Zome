@@ -32,10 +32,8 @@ class WorkflowEngine:
     def __init__(
         self,
         run_id: str,
-        user_id: str,
     ):
         self.run_id = run_id
-        self.user_id = user_id
         self._logs: List[str] = []
         self._node_states: List[dict] = []
 
@@ -275,7 +273,7 @@ class WorkflowEngine:
                 "total": total,
             }
         }
-        await manager.send_to_user(self.user_id, frame)
+        await manager.send_to_user("user", frame)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -314,7 +312,7 @@ async def _run_workflow_safely(engine: WorkflowEngine) -> None:
         logger.exception("Workflow %s failed", engine.run_id)
 
 
-async def launch_workflow(run_id: str, user_id: str) -> None:
+async def launch_workflow(run_id: str) -> None:
     """Fire-and-forget workflow execution."""
-    engine = WorkflowEngine(run_id=run_id, user_id=user_id)
+    engine = WorkflowEngine(run_id=run_id)
     asyncio.create_task(_run_workflow_safely(engine))

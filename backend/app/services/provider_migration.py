@@ -18,8 +18,7 @@ import yaml
 from app.core.crypto import decrypt_value, encrypt_value, is_encrypted
 from app.core.provider_schema import ModelConfig, ProviderConfig, ProvidersYaml
 from app.database import DATA_DIR
-from app.models import ComputeProvider, LLMModel, User
-from app.models.base import _uuid
+from app.models import ComputeProvider, LLMModel
 
 
 logger = logging.getLogger(__name__)
@@ -144,32 +143,6 @@ def sync_provider_yaml(operation: str, prov: ComputeProvider) -> None:
         raise ProviderSyncError(f"Failed to sync provider {prov.id}: {exc}") from exc
 
 
-
-
-# ------------------------------------------------------------------
-# System user helper
-# ------------------------------------------------------------------
-
-async def _ensure_system_user(db) -> str:
-    """Return the first admin/user id, or create a system user if none exists."""
-    from sqlalchemy import select
-    result = await db.execute(select(User).limit(1))
-    user = result.scalar_one_or_none()
-    if user:
-        return user.id
-
-    system_user = User(
-        id=_uuid(),
-        codename="system",
-        nickname="System",
-        password_hash=None,
-        device_id="system",
-        role="admin",
-    )
-    db.add(system_user)
-    await db.flush()
-    logger.info("Created system user for built-in providers: %s", system_user.id)
-    return system_user.id
 
 
 # ------------------------------------------------------------------
@@ -298,8 +271,6 @@ async def sync_yaml_to_db(db) -> MigrationReport:
 
     from sqlalchemy import select
 
-    system_user_id = await _ensure_system_user(db)
-
     # Gather existing IDs
     prov_result = await db.execute(select(ComputeProvider.id))
     existing_prov_ids = {r for (r,) in prov_result.all()}
@@ -313,7 +284,7 @@ async def sync_yaml_to_db(db) -> MigrationReport:
     for cfg in root.providers:
         yaml_prov_ids.add(cfg.id)
         try:
-            await _upsert_provider(db, cfg, system_user_id, existing_prov_ids)
+            await _upsert_provider(db, cfg, existing_prov_ids)
             report.upserted_providers += 1
         except Exception as exc:
             logger.warning("Upsert provider %s failed: %s", cfg.id, exc)
@@ -324,7 +295,7 @@ async def sync_yaml_to_db(db) -> MigrationReport:
             composite_id = f"{cfg.id}::{mcfg.id}"
             yaml_model_ids.add(composite_id)
             try:
-                await _upsert_model(db, mcfg, cfg.id, system_user_id, composite_id, existing_model_ids)
+                await _upsert_model(db, mcfg, cfg.id, composite_id, existing_model_ids)
                 report.upserted_models += 1
             except Exception as exc:
                 logger.warning("Upsert model %s failed: %s", composite_id, exc)
@@ -365,7 +336,6 @@ async def sync_yaml_to_db(db) -> MigrationReport:
 async def _upsert_provider(
     db,
     cfg: ProviderConfig,
-    user_id: str,
     existing_ids: set[str],
 ) -> ComputeProvider:
     # Defensive: some DB schemas may have api_key_encrypted as NOT NULL.
@@ -391,7 +361,6 @@ async def _upsert_provider(
     else:
         prov = ComputeProvider(
             id=cfg.id,
-            user_id=user_id,
             provider_type=cfg.provider_type,
             display_name=cfg.display_name,
             status=cfg.status,
@@ -416,7 +385,6 @@ async def _upsert_model(
     db,
     cfg: ModelConfig,
     provider_id: str,
-    user_id: str,
     composite_id: str,
     existing_ids: set[str],
 ) -> LLMModel:
@@ -441,7 +409,6 @@ async def _upsert_model(
         m = LLMModel(
             id=composite_id,
             provider_id=provider_id,
-            user_id=user_id,
             display_name=cfg.display_name,
             is_builtin=cfg.is_builtin,
             status=cfg.status,

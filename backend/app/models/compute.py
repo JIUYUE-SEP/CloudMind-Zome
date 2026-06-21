@@ -26,9 +26,6 @@ class ComputeProvider(Base):
     __tablename__ = "compute_providers"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     api_key_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -61,10 +58,6 @@ class ComputeProvider(Base):
         back_populates="provider",
         cascade="all, delete-orphan",
         lazy="selectin",
-    )
-
-    __table_args__ = (
-        Index("idx_compute_user_id", "user_id"),
     )
 
 

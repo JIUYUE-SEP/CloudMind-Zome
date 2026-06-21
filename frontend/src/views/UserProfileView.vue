@@ -56,7 +56,7 @@ function onInput() {
 }
 
 async function load() {
-  const res = await api.get<{ content: string }>('/auth/me/profile-md')
+  const res = await api.get<{ content: string }>('/user/profile-md')
   if (res.code === 0 && res.data) {
     content.value = res.data.content
     original.value = res.data.content
@@ -67,7 +67,7 @@ async function load() {
 async function save() {
   if (!dirty.value) return
   saving.value = true
-  const res = await api.put('/auth/me/profile-md', { content: content.value })
+  const res = await api.put('/user/profile-md', { content: content.value })
   saving.value = false
   if (res.code === 0) {
     original.value = content.value

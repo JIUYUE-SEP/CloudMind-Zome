@@ -1,4 +1,4 @@
-"""Theme model."""
+"""Global theme model (single-user app, no user_id needed)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from typing import Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
-    ForeignKey,
     Index,
     JSON,
     String,
@@ -22,9 +21,6 @@ class Theme(Base):
     __tablename__ = "themes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
-    )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -35,5 +31,5 @@ class Theme(Base):
     )
 
     __table_args__ = (
-        Index("idx_themes_user", "user_id", "is_active"),
+        Index("idx_themes_active", "is_active"),
     )

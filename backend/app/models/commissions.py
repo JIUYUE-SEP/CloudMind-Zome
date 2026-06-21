@@ -23,9 +23,6 @@ class Commission(Base):
     __tablename__ = "commissions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
     agent_id: Mapped[str] = mapped_column(
         ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
     )
@@ -45,7 +42,6 @@ class Commission(Base):
     )
 
     __table_args__ = (
-        Index("idx_commissions_user_id", "user_id"),
         Index("idx_commissions_status", "status"),
         Index("idx_commissions_next_run", "status", "next_run_at"),
     )

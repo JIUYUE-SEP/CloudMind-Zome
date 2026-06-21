@@ -5,7 +5,6 @@ Re-exports all models for backward compatibility.
 
 from .base import Base, _uuid, _utc_now
 
-from .users import User, Profile
 from .agents import Agent
 from .chat import ChatSession, ChatMessage, ChatSessionMember
 from .actions import Action, ActionRun
@@ -21,8 +20,6 @@ __all__ = [
     "Base",
     "_uuid",
     "_utc_now",
-    "User",
-    "Profile",
     "Agent",
     "ChatSession",
     "ChatMessage",

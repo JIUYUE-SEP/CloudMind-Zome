@@ -1,58 +1,39 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api } from '@/api/client'
 
-const TOKEN_KEY = 'cloudmind-token'
-
-interface User {
-  user_id: string
-  codename: string
-  nickname: string
-  role: 'guest' | 'user' | 'admin'
-  level: number
-  exp: number
-  avatar_url: string
+// Single-user local app — no auth needed.
+// Keep a minimal user object so UI components that reference auth.user still work.
+const DEFAULT_USER = {
+  user_id: 'user',
+  codename: 'user',
+  nickname: '用户',
+  role: 'user' as const,
+  level: 1,
+  exp: 0,
+  avatar_url: '',
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref<User | null>(null)
+  const user = ref(DEFAULT_USER)
   const isLoading = ref(false)
-  const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
 
-  const isAuthenticated = computed(() => token.value !== null && user.value !== null)
-  const isGuest = computed(() => user.value?.role === 'guest')
-
-  async function ensureToken() {
-    if (token.value) return token.value
-    const json = await api.get('/auth/guest-token')
-    if (json.code === 0 && json.data?.token) {
-      token.value = json.data.token
-      localStorage.setItem(TOKEN_KEY, json.data.token)
-    }
-    return token.value
-  }
+  const isAuthenticated = computed(() => true)
+  const isGuest = computed(() => false)
 
   async function fetchMe() {
-    await ensureToken()
-    const json = await api.get('/auth/me')
-    if (json.code === 0) {
-      user.value = json.data
-    }
+    // No-op: user is always present in single-user mode
+    user.value = { ...DEFAULT_USER }
   }
 
   async function updateProfile(body: { nickname?: string; avatar_url?: string }) {
-    const json = await api.put('/auth/me', body)
-    if (json.code === 0) {
-      user.value = json.data
-    }
-    return json
+    if (body.nickname) user.value.nickname = body.nickname
+    if (body.avatar_url) user.value.avatar_url = body.avatar_url
+    return { code: 0, data: user.value, message: '' }
   }
 
   function logout() {
-    token.value = null
-    user.value = null
-    localStorage.removeItem(TOKEN_KEY)
+    // No-op: no login/logout in single-user mode
   }
 
-  return { user, isLoading, token, isAuthenticated, isGuest, ensureToken, fetchMe, updateProfile, logout }
+  return { user, isLoading, isAuthenticated, isGuest, fetchMe, updateProfile, logout }
 })

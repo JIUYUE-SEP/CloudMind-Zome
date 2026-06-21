@@ -1,4 +1,4 @@
-"""Notification model."""
+"""Global notification model (single-user app, no user_id needed)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from typing import Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
-    ForeignKey,
     Index,
     String,
     Text,
@@ -22,9 +21,6 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
     category: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     body: Mapped[str] = mapped_column(Text, default="")
@@ -35,6 +31,5 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
 
     __table_args__ = (
-        Index("idx_notifications_user_id", "user_id"),
-        Index("idx_notifications_unread", "user_id", "is_read", "created_at"),
+        Index("idx_notifications_unread", "is_read", "created_at"),
     )

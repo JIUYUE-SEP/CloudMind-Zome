@@ -1,4 +1,4 @@
-"""User settings model."""
+"""Global settings model (single-user app, no user_id needed)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     DateTime,
-    ForeignKey,
     JSON,
     String,
     UniqueConstraint,
@@ -20,9 +19,6 @@ class Setting(Base):
     __tablename__ = "settings"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
     key: Mapped[str] = mapped_column(String(128), nullable=False)
     value: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
@@ -31,5 +27,5 @@ class Setting(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("user_id", "key"),
+        UniqueConstraint("key"),
     )

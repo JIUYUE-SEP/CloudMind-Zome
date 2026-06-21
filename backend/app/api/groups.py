@@ -14,10 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..database import UPLOAD_DIR
-from ..dependencies import get_db, require_user
-from ..models import Agent, ChatSession, ChatSessionMember, User
+from ..dependencies import get_db
+from ..models import Agent, ChatSession, ChatSessionMember
 
 router = APIRouter(prefix="/chats/groups", tags=["groups"])
+
+
+# Fixed user id for single-user mode
+_USER_ID = "user"
 
 
 # ------------------------------------------------------------------
@@ -54,14 +58,12 @@ class Resp(BaseModel):
 @router.post("", response_model=Resp)
 async def create_group(
     body: CreateGroupReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Validate all members are user's agents
+    # Validate all members are existing agents
     result = await db.execute(
         select(Agent).where(
             Agent.id.in_(body.member_ids),
-            Agent.user_id == user.id,
             Agent.deleted_at.is_(None),
         )
     )
@@ -74,7 +76,7 @@ async def create_group(
         id=str(uuid.uuid4()),
         type="group",
         name=body.name or "未命名群组",
-        owner_id=user.id,
+        owner_id=_USER_ID,
         settings={
             "intermind_enabled": False,
             "random_reply_count": 1,
@@ -86,7 +88,7 @@ async def create_group(
     await db.flush()
 
     # Add owner
-    db.add(ChatSessionMember(session_id=sess.id, member_id=user.id, member_type="user", role="owner"))
+    db.add(ChatSessionMember(session_id=sess.id, member_id=_USER_ID, member_type="user", role="owner"))
     # Add agents
     for aid in body.member_ids:
         db.add(ChatSessionMember(session_id=sess.id, member_id=aid, member_type="agent", role="member"))
@@ -104,7 +106,6 @@ async def create_group(
 @router.get("/{group_id}", response_model=Resp)
 async def get_group(
     group_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -121,7 +122,7 @@ async def get_group(
     mem = await db.execute(
         select(ChatSessionMember).where(
             ChatSessionMember.session_id == group_id,
-            ChatSessionMember.member_id == user.id,
+            ChatSessionMember.member_id == _USER_ID,
         )
     )
     if not mem.scalar_one_or_none():
@@ -139,8 +140,8 @@ async def get_group(
                 name = a.name
                 avatar = a.portrait_url or ""
         else:
-            name = user.nickname
-            avatar = user.avatar_url or ""
+            name = "User"
+            avatar = ""
         members.append({
             "member_id": m.member_id,
             "member_type": m.member_type,
@@ -166,7 +167,6 @@ async def get_group(
 async def update_group(
     group_id: str,
     body: UpdateGroupReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -177,7 +177,7 @@ async def update_group(
         raise HTTPException(status_code=404)
 
     # Only owner can update
-    if sess.owner_id != user.id:
+    if sess.owner_id != _USER_ID:
         raise HTTPException(status_code=403)
 
     if body.name is not None:
@@ -197,7 +197,6 @@ async def update_group(
 async def set_conductor(
     group_id: str,
     body: SetConductorReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -206,7 +205,7 @@ async def set_conductor(
     sess = result.scalar_one_or_none()
     if not sess:
         raise HTTPException(status_code=404)
-    if sess.owner_id != user.id:
+    if sess.owner_id != _USER_ID:
         raise HTTPException(status_code=403)
 
     if body.agent_id:
@@ -241,7 +240,6 @@ async def set_conductor(
 async def invite_members(
     group_id: str,
     body: InviteMembersReq,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -250,7 +248,7 @@ async def invite_members(
     sess = result.scalar_one_or_none()
     if not sess:
         raise HTTPException(status_code=404)
-    if sess.owner_id != user.id:
+    if sess.owner_id != _USER_ID:
         raise HTTPException(status_code=403, detail="Only owner can invite members")
     if sess.status == "dissolved":
         raise HTTPException(status_code=400, detail="Group is dissolved")
@@ -302,7 +300,6 @@ async def invite_members(
 async def remove_member(
     group_id: str,
     member_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -311,11 +308,11 @@ async def remove_member(
     sess = result.scalar_one_or_none()
     if not sess:
         raise HTTPException(status_code=404)
-    if sess.owner_id != user.id:
+    if sess.owner_id != _USER_ID:
         raise HTTPException(status_code=403)
 
     # Can't remove self (owner)
-    if member_id == user.id:
+    if member_id == _USER_ID:
         raise HTTPException(status_code=400, detail="Cannot remove owner")
 
     mem = await db.execute(
@@ -338,7 +335,6 @@ async def remove_member(
 @router.delete("/{group_id}", response_model=Resp)
 async def dissolve_group(
     group_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -347,7 +343,7 @@ async def dissolve_group(
     sess = result.scalar_one_or_none()
     if not sess:
         raise HTTPException(status_code=404)
-    if sess.owner_id != user.id:
+    if sess.owner_id != _USER_ID:
         raise HTTPException(status_code=403)
     if sess.status == "dissolved":
         raise HTTPException(status_code=400, detail="Group already dissolved")
@@ -386,7 +382,6 @@ def _save_upload(file: UploadFile, subfolder: str, max_size_mb: int = 50) -> str
 async def upload_group_avatar(
     group_id: str,
     file: UploadFile = File(...),
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -395,7 +390,7 @@ async def upload_group_avatar(
     sess = result.scalar_one_or_none()
     if not sess:
         raise HTTPException(status_code=404)
-    if sess.owner_id != user.id:
+    if sess.owner_id != _USER_ID:
         raise HTTPException(status_code=403)
 
     if file.content_type and not file.content_type.startswith("image/"):

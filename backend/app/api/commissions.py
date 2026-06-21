@@ -11,8 +11,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, require_user
-from ..models import Agent, Commission, CommissionLog, User
+from ..dependencies import get_db
+from ..models import Agent, Commission, CommissionLog
 
 router = APIRouter(prefix="/commissions", tags=["commissions"])
 
@@ -53,10 +53,9 @@ class Resp(BaseModel):
 async def list_commissions(
     status: Optional[str] = None,
     agent_id: Optional[str] = None,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Commission).where(Commission.user_id == user.id)
+    stmt = select(Commission)
     if status:
         stmt = stmt.where(Commission.status == status)
     if agent_id:
@@ -82,12 +81,11 @@ async def list_commissions(
 @router.post("", response_model=Resp)
 async def create_commission(
     body: CommissionCreate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Verify agent belongs to user
+    # Verify agent exists
     agent_row = await db.execute(
-        select(Agent).where(Agent.id == body.agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
+        select(Agent).where(Agent.id == body.agent_id, Agent.deleted_at.is_(None))
     )
     if not agent_row.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -107,7 +105,6 @@ async def create_commission(
 
     comm = Commission(
         id=str(uuid.uuid4()),
-        user_id=user.id,
         agent_id=body.agent_id,
         name=body.name,
         trigger_type=body.trigger_type,
@@ -128,11 +125,10 @@ async def create_commission(
 async def update_commission(
     commission_id: str,
     body: CommissionUpdate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Commission).where(Commission.id == commission_id, Commission.user_id == user.id)
+        select(Commission).where(Commission.id == commission_id)
     )
     comm = result.scalar_one_or_none()
     if not comm:
@@ -148,11 +144,10 @@ async def update_commission(
 @router.delete("/{commission_id}", response_model=Resp)
 async def delete_commission(
     commission_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Commission).where(Commission.id == commission_id, Commission.user_id == user.id)
+        select(Commission).where(Commission.id == commission_id)
     )
     comm = result.scalar_one_or_none()
     if not comm:
@@ -165,15 +160,14 @@ async def delete_commission(
 @router.get("/{commission_id}/logs", response_model=Resp)
 async def get_logs(
     commission_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Verify ownership
+    # Verify commission exists
     r = await db.execute(
-        select(Commission).where(Commission.id == commission_id, Commission.user_id == user.id)
+        select(Commission).where(Commission.id == commission_id)
     )
     if not r.scalar_one_or_none():
-        raise HTTPException(status_code=403)
+        raise HTTPException(status_code=404)
 
     result = await db.execute(
         select(CommissionLog).where(CommissionLog.commission_id == commission_id)

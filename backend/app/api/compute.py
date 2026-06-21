@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, require_user
-from ..models import ComputeProvider, ComputeUsage, User
+from ..dependencies import get_db
+from ..models import ComputeProvider, ComputeUsage
 from app.core.crypto import encrypt_value, decrypt_value
 from app.services.provider_migration import sync_provider_yaml, ProviderSyncError
 
@@ -75,13 +75,11 @@ class Resp(BaseModel):
 # ------------------------------------------------------------------
 @router.get("/providers", response_model=Resp)
 async def list_providers(
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(ComputeProvider)
-        .where(ComputeProvider.user_id == user.id)
         .options(selectinload(ComputeProvider.models))
     )
     items = []
@@ -129,13 +127,11 @@ async def list_providers(
 @router.post("/providers", response_model=Resp)
 async def create_provider(
     body: ProviderCreate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     provider_type = body.provider_type or _detect_provider_type(body.base_url)
     prov = ComputeProvider(
         id=str(uuid.uuid4()),
-        user_id=user.id,
         provider_type=provider_type,
         display_name=body.display_name,
         api_key_encrypted=encrypt_value(body.api_key) if body.api_key else "",
@@ -185,13 +181,11 @@ def infer_model_type(model_id: str) -> str:
 @router.post("/providers/{provider_id}/test", response_model=Resp)
 async def test_provider(
     provider_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(ComputeProvider).where(
             ComputeProvider.id == provider_id,
-            ComputeProvider.user_id == user.id,
         )
     )
     prov = result.scalar_one_or_none()
@@ -243,7 +237,6 @@ async def test_provider(
 async def update_provider(
     provider_id: str,
     body: ProviderUpdate,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
@@ -251,7 +244,6 @@ async def update_provider(
         select(ComputeProvider)
         .where(
             ComputeProvider.id == provider_id,
-            ComputeProvider.user_id == user.id,
         )
         .options(selectinload(ComputeProvider.models))
     )
@@ -307,14 +299,12 @@ async def update_provider(
 @router.delete("/providers/{provider_id}", response_model=Resp)
 async def delete_provider(
     provider_id: str,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     from ..models import Agent
     result = await db.execute(
         select(ComputeProvider).where(
             ComputeProvider.id == provider_id,
-            ComputeProvider.user_id == user.id,
         )
     )
     prov = result.scalar_one_or_none()
@@ -330,7 +320,6 @@ async def delete_provider(
     for col in ["provider_id", "marker_provider_id", "embedder_provider_id", "compressor_provider_id"]:
         r = await db.execute(
             select(Agent).where(
-                Agent.user_id == user.id,
                 getattr(Agent, col) == provider_id,
             )
         )
@@ -341,7 +330,6 @@ async def delete_provider(
     # Check fallback_chain JSON
     r = await db.execute(
         select(Agent).where(
-            Agent.user_id == user.id,
             Agent.fallback_chain.isnot(None),
         )
     )
@@ -382,7 +370,6 @@ class ModelProviderSetting(BaseModel):
 
 @router.get("/embedding-model", response_model=Resp)
 async def get_embedding_model(
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """DEPRECATED: Embedding model is now agent-level. Return empty for backward compat."""
@@ -392,7 +379,6 @@ async def get_embedding_model(
 @router.put("/embedding-model", response_model=Resp)
 async def set_embedding_model(
     body: ModelProviderSetting,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """DEPRECATED: Embedding model is now agent-level."""
@@ -401,7 +387,6 @@ async def set_embedding_model(
 
 @router.get("/image-gen", response_model=Resp)
 async def get_image_gen_model(
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """DEPRECATED: Image generation is now agent-level. Return empty for backward compat."""
@@ -411,7 +396,6 @@ async def get_image_gen_model(
 @router.put("/image-gen", response_model=Resp)
 async def set_image_gen_model(
     body: ModelProviderSetting,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """DEPRECATED: Image generation is now agent-level."""
@@ -422,7 +406,6 @@ async def set_image_gen_model(
 async def get_usage(
     provider_id: Optional[str] = None,
     days: int = 7,
-    user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(ComputeUsage).where(ComputeUsage.provider_id == provider_id) if provider_id else select(ComputeUsage)
