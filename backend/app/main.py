@@ -493,12 +493,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app = FastAPI(
-    title="CloudMind-Zome",
-    version="0.1.0",
-    lifespan=lifespan,
-)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_load_cors_origins(),
