@@ -19,7 +19,7 @@ from .security import is_safe_path
 logger = logging.getLogger(__name__)
 
 
-@tool_registry.register(toolset="file", max_result_chars=4000, safe_to_parallel=False)
+@tool_registry.register(toolset="file", max_result_chars=4000, safe_to_parallel=False, permission="file:delete")
 def delete_file(path: str) -> str:
     """Delete a file by moving it to the system trash / recycle bin.
 
