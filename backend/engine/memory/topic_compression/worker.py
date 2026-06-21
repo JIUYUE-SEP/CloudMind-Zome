@@ -234,7 +234,7 @@ message_ids: {json.dumps(msg_ids, ensure_ascii=False)}
         try:
             from app.database import WORKSPACE_ROOT
         except ImportError:
-            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+            WORKSPACE_ROOT = Path.home() / ".cloudmind-zome" / "workspace"
 
         memory_path = WORKSPACE_ROOT / self.agent_id / "MEMORY.md"
         if not memory_path.exists():

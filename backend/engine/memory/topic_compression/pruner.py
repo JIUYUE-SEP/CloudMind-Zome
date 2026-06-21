@@ -25,7 +25,7 @@ class ToolResultPruner:
         try:
             from app.database import WORKSPACE_ROOT
         except ImportError:
-            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+            WORKSPACE_ROOT = Path.home() / ".cloudmind-zome" / "workspace"
 
         self.cache_dir = WORKSPACE_ROOT / agent_id / "tool_results_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)

@@ -11,11 +11,12 @@ import re
 import shutil
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+# Template ships inside the package (backend/engine/agent/workspace_template/).
+# Resolved relative to this file so it works regardless of CWD.
+_TEMPLATE_DIR = Path(__file__).resolve().parent / "workspace_template"
 
 
 def _strip_frontmatter(text: str) -> str:

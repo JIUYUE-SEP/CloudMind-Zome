@@ -34,7 +34,7 @@ class TopicCompressionMemory(MemorySystem):
         try:
             from app.database import WORKSPACE_ROOT
         except ImportError:
-            WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent / "workspace"
+            WORKSPACE_ROOT = Path.home() / ".cloudmind-zome" / "workspace"
 
         agent_dir = WORKSPACE_ROOT / self.agent_id
         self.compressed_dir = agent_dir / "_compressed"
