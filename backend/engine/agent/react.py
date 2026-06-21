@@ -765,6 +765,7 @@ class ReActAgent(AgentBase):
             )
         finally:
             set_current_agent_id("")
+            set_agent_allowed_paths([])
 
         tool_result = await self.on_after_tool(tool_result)
         return tool_result
