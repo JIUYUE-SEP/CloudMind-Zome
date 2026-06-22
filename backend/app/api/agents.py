@@ -666,11 +666,9 @@ async def import_history(
     Returns:
         { imported: N, skipped: M, errors: [...] }
     """
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     from engine.importer import get_adapter, list_platforms
@@ -839,10 +837,9 @@ async def delete_skill(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a skill directory from workspace/{agent_id}/skills/{skill_name}."""
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     if not skill_name or ".." in skill_name or "/" in skill_name or "\\" in skill_name:
@@ -858,10 +855,9 @@ async def delete_skill(
     return ListResp(data={"deleted": True})
 
     """Delete a skill directory under workspace/{agent_id}/skills/{skill_name}."""
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.user_id == user.id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     if not skill_name or ".." in skill_name or "/" in skill_name or "\\" in skill_name:

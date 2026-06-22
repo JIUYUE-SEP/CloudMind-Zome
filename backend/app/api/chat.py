@@ -466,9 +466,9 @@ async def get_messages(
     agent_ids = {m.sender_id for m in rows if m.sender_type == "agent"}
     agent_names: dict[str, str] = {}
     if agent_ids:
-        from ..models import Agent
-        agent_res = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids)))
-        agent_names = {aid: name for aid, name in agent_res.all()}
+        from ..services.agent_resolver import get_agents_by_ids
+        agent_configs = get_agents_by_ids(list(agent_ids))
+        agent_names = {aid: cfg.get("name", "Agent") for aid, cfg in agent_configs.items()}
 
     # Batch resolve reply_to messages
     reply_ids = {m.reply_to for m in rows if m.reply_to}
