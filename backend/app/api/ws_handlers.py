@@ -259,10 +259,8 @@ async def _handle_chat_send(payload: dict, ws: WebSocket):
             for m in member_rows:
                 if m.member_id != _USER_ID and m.member_type == "agent":
                     target_id = m.member_id
-                    a = await db.execute(select(Agent).where(Agent.id == m.member_id))
-                    agent = a.scalar_one_or_none()
-                    if agent:
-                        target_name = agent.name
+                    from ..services.agent_resolver import get_agent_name
+                    target_name = get_agent_name(m.member_id)
                     break
             if target_id:
                 await _cancel_and_start_private_agent(
@@ -313,10 +311,8 @@ async def _handle_chat_send(payload: dict, ws: WebSocket):
 
         # Step 2: all agents decide autonomously via LLM (stay_silent supported)
         agent_member_ids = [m.member_id for m in member_rows if m.member_type == "agent"]
-        agent_rows_result = await db.execute(
-            select(Agent).where(Agent.id.in_(agent_member_ids))
-        )
-        agent_map = {a.id: a for a in agent_rows_result.scalars().all()}
+        from ..services.agent_resolver import get_agents_by_ids
+        agent_map = get_agents_by_ids(agent_member_ids)
 
         mention_tokens = set(re.findall(r"@(\S+)", content.lower()))
         is_all_mentioned = bool(mention_tokens & {"所有人", "all", "全体成员"})
@@ -336,7 +332,7 @@ async def _handle_chat_send(payload: dict, ws: WebSocket):
             tasks.append(asyncio.create_task(_stream_single_agent(
                 session_id=session_id,
                 agent_id=aid,
-                agent_name=agent.name if agent else "",
+                agent_name=agent.get("name", "") if agent else "",
                 user_message=content,
                 ws=ws,
                 broadcast_to=other_members,
@@ -563,10 +559,8 @@ async def _stream_single_agent(
 
     # Fallback agent name lookup
     if not agent_name:
-        async with AsyncSessionLocal() as db:
-            r = await db.execute(select(Agent).where(Agent.id == agent_id))
-            a = r.scalar_one_or_none()
-            agent_name = a.name if a else "Agent"
+        from ..services.agent_resolver import get_agent_name
+        agent_name = get_agent_name(agent_id)
 
     # Clear stale stop signal
     _clear_stop_signal(signal_key)

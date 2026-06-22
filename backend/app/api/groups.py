@@ -129,16 +129,20 @@ async def get_group(
         raise HTTPException(status_code=403, detail="Not a member")
 
     members = []
+    # Bulk load agent configs for agent members
+    agent_member_ids = [m.member_id for m in sess.members if m.member_type == "agent"]
+    from ..services.agent_resolver import get_agents_by_ids
+    agent_configs = get_agents_by_ids(agent_member_ids)
+    
     for m in sess.members:
         name = ""
         avatar = ""
         is_conductor = sess.conductor_agent_id == m.member_id
         if m.member_type == "agent":
-            r = await db.execute(select(Agent).where(Agent.id == m.member_id))
-            a = r.scalar_one_or_none()
-            if a:
-                name = a.name
-                avatar = a.portrait_url or ""
+            config = agent_configs.get(m.member_id)
+            if config:
+                name = config.get("name", "")
+                avatar = config.get("portrait_url", "")
         else:
             name = "User"
             avatar = ""
@@ -225,9 +229,9 @@ async def set_conductor(
 
     agent_name = None
     if body.agent_id:
-        r = await db.execute(select(Agent).where(Agent.id == body.agent_id))
-        a = r.scalar_one_or_none()
-        agent_name = a.name if a else None
+        from ..services.agent_resolver import get_agent_config
+        config = get_agent_config(body.agent_id)
+        agent_name = config.get("name") if config else None
 
     return Resp(data={
         "group_id": group_id,
@@ -254,13 +258,8 @@ async def invite_members(
         raise HTTPException(status_code=400, detail="Group is dissolved")
 
     # Validate agents exist
-    agent_res = await db.execute(
-        select(Agent).where(
-            Agent.id.in_(body.member_ids),
-            Agent.deleted_at.is_(None),
-        )
-    )
-    valid_agents = {a.id: a for a in agent_res.scalars().all()}
+    from ..services.agent_resolver import get_agents_by_ids, agent_exists
+    valid_agents = get_agents_by_ids(body.member_ids)
     invalid = [mid for mid in body.member_ids if mid not in valid_agents]
     if invalid:
         raise HTTPException(status_code=400, detail=f"Invalid agent ids: {invalid}")

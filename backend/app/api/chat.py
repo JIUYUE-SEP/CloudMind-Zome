@@ -175,11 +175,11 @@ async def create_or_get_private(
     target_name = "Unknown"
     target_avatar = ""
     if body.target_type == "agent":
-        r = await db.execute(select(Agent).where(Agent.id == body.target_id))
-        a = r.scalar_one_or_none()
-        if a:
-            target_name = a.name
-            target_avatar = a.portrait_url or ""
+        from ..services.agent_resolver import get_agent_config
+        config = get_agent_config(body.target_id)
+        if config:
+            target_name = config.get("name", "Unknown")
+            target_avatar = config.get("portrait_url", "")
 
     return Resp(
         data={
@@ -313,10 +313,10 @@ async def list_sessions(
         for m in sess.members
         if m.member_id != _USER_ID and m.member_type == "agent"
     }
-    agents_by_id: dict[str, Agent] = {}
+    agents_by_id: dict[str, dict] = {}
     if private_agent_ids:
-        agent_result = await db.execute(select(Agent).where(Agent.id.in_(private_agent_ids)))
-        agents_by_id = {a.id: a for a in agent_result.scalars().all()}
+        from ..services.agent_resolver import get_agents_by_ids
+        agents_by_id = get_agents_by_ids(list(private_agent_ids))
 
     items = []
     for sess, member in rows:
@@ -327,8 +327,8 @@ async def list_sessions(
                 if m.member_id != _USER_ID and m.member_type == "agent":
                     a = agents_by_id.get(m.member_id)
                     if a:
-                        other_name = a.name
-                        other_avatar = a.portrait_url or ""
+                        other_name = a.get("name", "")
+                        other_avatar = a.get("portrait_url", "")
                     break
 
         latest = latest_by_session.get(sess.id)
