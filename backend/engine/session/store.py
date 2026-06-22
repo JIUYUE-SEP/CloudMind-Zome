@@ -1,7 +1,9 @@
-"""Session persistence: per-agent SQLite + FTS5 full-text search.
+"""Session persistence: per-agent SQLite + JSON Lines document storage.
 
 Design reference: §6.11 会话持久化
 Each agent has its own database under workspace/{agent_id}/agent.db.
+Agent messages (cross-scene memory) are also persisted to human-readable
+JSON Lines via AgentDataStore for physical isolation and transparency.
 """
 
 from __future__ import annotations
@@ -694,11 +696,10 @@ class SessionStore:
         sender_id: str = "",
         sender_name: str = "",
     ) -> None:
-        """Save a message to this agent's memory pool."""
+        """Save a message to this agent's memory pool (SQLite + JSON Lines)."""
         import shortuuid
         from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
-
-        db = await self.connect()
+        from ..agent.data_store import AgentDataStore
 
         content: str | None = None
         tool_calls_json: str | None = None
@@ -734,7 +735,7 @@ class SessionStore:
                 tool_calls_json = json.dumps(tool_use_list)
                 tool_name = tool_use_list[0]["name"]
 
-        # Convert float timestamp to ISO string for compatibility with platform DateTime
+        # Convert float timestamp to ISO string for compatibility
         ts_raw = message.meta.timestamp
         if ts_raw is None:
             import time
@@ -745,6 +746,35 @@ class SessionStore:
         else:
             ts_iso = str(ts_raw)
 
+        # Persist to AgentDataStore (human-readable JSON Lines)
+        try:
+            store = AgentDataStore(self.agent_id)
+            store.ensure_dirs()
+            memory_record = {
+                "agent_id": self.agent_id,
+                "role": message.role,
+                "content": content or "",
+                "tool_calls": tool_calls_json,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "reasoning_content": reasoning_content,
+                "timestamp": ts_iso,
+                "token_count": message.meta.tokens_used,
+                "round": message.meta.round,
+                "compressed": message.meta.compressed,
+                "message_uuid": message.meta.id or shortuuid.uuid(),
+                "source": source,
+                "source_id": source_id,
+                "source_name": source_name,
+                "sender_id": sender_id or "",
+                "sender_name": sender_name or "",
+            }
+            store.append_memory(memory_record)
+        except Exception as exc:
+            logger.warning("Failed to save agent message to document store: %s", exc)
+
+        # Also persist to SQLite (backward compatibility + FTS5)
+        db = await self.connect()
         await db.execute(
             """
             INSERT INTO agent_messages
@@ -781,10 +811,93 @@ class SessionStore:
         source_id: str | None = None,
         limit: int = 1000,
     ) -> list[Message]:
-        """Load messages from this agent's memory pool."""
+        """Load messages from this agent's memory pool (JSON Lines + SQLite fallback)."""
         from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
+        from ..agent.data_store import AgentDataStore
         import time as time_mod
 
+        # Try AgentDataStore first (human-readable JSON Lines)
+        try:
+            store = AgentDataStore(self.agent_id)
+            memories = store.read_memories()
+            # Filter by source/source_id if specified
+            if source:
+                memories = [m for m in memories if m.get("source") == source]
+            if source_id:
+                memories = [m for m in memories if m.get("source_id") == source_id]
+            # Sort by timestamp and take limit
+            memories.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+            memories = memories[:limit]
+            memories.reverse()
+
+            if memories:
+                messages = []
+                for row in memories:
+                    role = row.get("role", "")
+                    content = row.get("content")
+                    tool_calls = row.get("tool_calls")
+                    reasoning_content = row.get("reasoning_content")
+                    tool_call_id = row.get("tool_call_id")
+                    timestamp = row.get("timestamp")
+                    token_count = row.get("token_count")
+                    round_num = row.get("round")
+                    compressed = row.get("compressed", False)
+                    message_uuid = row.get("message_uuid")
+                    source_val = row.get("source", "private")
+                    source_name = row.get("source_name", "")
+                    sender_id = row.get("sender_id", "")
+                    sender_name = row.get("sender_name", "")
+
+                    # Normalize timestamp
+                    ts_val: float
+                    if isinstance(timestamp, str):
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                            ts_val = dt.timestamp()
+                        except Exception:
+                            ts_val = time_mod.time()
+                    else:
+                        ts_val = timestamp or time_mod.time()
+
+                    meta = MessageMeta(
+                        id=message_uuid or shortuuid.uuid(),
+                        session_id=source_id or "",
+                        timestamp=ts_val,
+                        tokens_used=token_count or 0,
+                        round=round_num or 0,
+                        compressed=bool(compressed),
+                        source=source_val or "private",
+                        source_name=source_name or "",
+                        sender_id=sender_id or "",
+                        sender_name=sender_name or "",
+                    )
+
+                    content_blocks: list[ContentBlock] = []
+                    if reasoning_content:
+                        content_blocks.append(ThinkingBlock(thinking=reasoning_content))
+                    if tool_calls:
+                        tc_data = json.loads(tool_calls)
+                        for tc in tc_data:
+                            content_blocks.append(
+                                ToolUseBlock(id=tc["id"], name=tc["name"], input=tc.get("input", {}))
+                            )
+                    elif tool_call_id:
+                        content_blocks.append(
+                            ToolResultBlock(id=tool_call_id, content=content or "", truncated=False)
+                        )
+                    elif content:
+                        if content_blocks:
+                            content_blocks.append(TextBlock(text=content))
+                        else:
+                            content_blocks = content
+
+                    messages.append(Message(role=role, content=content_blocks, meta=meta))
+                return messages
+        except Exception as exc:
+            logger.warning("Failed to load agent messages from document store: %s", exc)
+
+        # Fallback to SQLite
         db = await self.connect()
 
         conditions = ["agent_id = ?"]
@@ -957,6 +1070,29 @@ class SessionStore:
         offset=0 means the most recent message.
         Returns None if no message found at the given offset.
         """
+        # Try AgentDataStore first
+        try:
+            from ..agent.data_store import AgentDataStore
+            store = AgentDataStore(self.agent_id)
+            memories = store.read_memories()
+            if memories:
+                # Sort by timestamp descending
+                memories.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+                if offset < len(memories):
+                    ts_raw = memories[offset].get("timestamp")
+                    if isinstance(ts_raw, str):
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                            return dt.timestamp()
+                        except Exception:
+                            return None
+                    return ts_raw
+                return None
+        except Exception as exc:
+            logger.debug("Failed to get timestamp from document store: %s", exc)
+
+        # Fallback to SQLite
         db = await self.connect()
         async with db.execute(
             """
