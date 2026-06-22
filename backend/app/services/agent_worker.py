@@ -50,7 +50,7 @@ class AgentWorker:
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
         self.queue = ensure_queue(agent_id)
-        self.agent_row: Agent | None = None
+        self.agent_config: dict | None = None
         self._react_agent: ReActAgent | None = None
         self._running = True
         self._current_job: AgentJob | None = None
@@ -61,13 +61,10 @@ class AgentWorker:
     async def start(self) -> None:
         """Load Agent config and build the single ReActAgent instance."""
         try:
-            async with AsyncSessionLocal() as db:
-                result = await db.execute(
-                    select(Agent).where(Agent.id == self.agent_id, Agent.deleted_at.is_(None))
-                )
-                self.agent_row = result.scalar_one_or_none()
+            from .agent_resolver import get_agent_config
+            self.agent_config = get_agent_config(self.agent_id)
 
-            if not self.agent_row:
+            if not self.agent_config:
                 logger.error("AgentWorker cannot start: Agent %s not found", self.agent_id)
                 self._running = False
                 return
@@ -89,16 +86,16 @@ class AgentWorker:
                 return
 
             # Capability kill-switches default to True
-            enable_semantic_search = bool(getattr(self.agent_row, "semantic_search_enabled", True))
-            enable_image_generation = bool(getattr(self.agent_row, "image_generation_enabled", True))
-            enable_topic_compression = bool(getattr(self.agent_row, "topic_compression_enabled", True))
+            enable_semantic_search = bool(self.agent_config.get("semantic_search_enabled", True))
+            enable_image_generation = bool(self.agent_config.get("image_generation_enabled", True))
+            enable_topic_compression = bool(self.agent_config.get("topic_compression_enabled", True))
 
-            model_cfg = dict(self.agent_row.model_config or {})
+            model_cfg = dict(self.agent_config.get("model_config") or {})
 
             # Resolve marker provider credentials (best-effort; failure disables topic compression)
             marker_cfg = model_cfg.get("marker") or {}
-            marker_provider_id = self.agent_row.marker_provider_id or marker_cfg.get("provider_id")
-            marker_model_id = self.agent_row.marker_model_id or marker_cfg.get("model")
+            marker_provider_id = self.agent_config.get("marker_provider_id") or marker_cfg.get("provider_id")
+            marker_model_id = self.agent_config.get("marker_model_id") or marker_cfg.get("model")
 
             if enable_topic_compression and marker_provider_id:
                 try:
@@ -122,7 +119,7 @@ class AgentWorker:
             # Build fallback transports from Agent.fallback_chain (new field) or model_config
             fallback_transports: dict[str, ChatCompletionsTransport] = {}
             fb_chain_raw: list[dict] = (
-                (self.agent_row.fallback_chain or [])
+                (self.agent_config.get("fallback_chain") or [])
                 or model_cfg.get("fallback_chain")
                 or []
             )
@@ -163,19 +160,19 @@ class AgentWorker:
             # ---- Build agent-level embedder ----
             from engine.context.embedder import Embedder
             embedder = None
-            if enable_semantic_search and self.agent_row.embedder_provider_id and self.agent_row.embedder_model_id:
+            if enable_semantic_search and self.agent_config.get("embedder_provider_id") and self.agent_config.get("embedder_model_id"):
                 try:
                     async with AsyncSessionLocal() as db:
                         emb_creds = await resolve_provider_credentials(
-                            db, self.agent_row.embedder_provider_id, self.agent_row.embedder_model_id
+                            db, self.agent_config.get("embedder_provider_id"), self.agent_config.get("embedder_model_id")
                         )
                     if emb_creds and emb_creds.base_url and emb_creds.api_key:
                         embedder = Embedder(
                             base_url=emb_creds.base_url,
                             api_key=emb_creds.api_key,
-                            model=self.agent_row.embedder_model_id,
+                            model=self.agent_config.get("embedder_model_id"),
                         )
-                        logger.info("Agent %s embedder ready (%s)", self.agent_id, self.agent_row.embedder_model_id)
+                        logger.info("Agent %s embedder ready (%s)", self.agent_id, self.agent_config.get("embedder_model_id"))
                     else:
                         logger.warning("Agent %s embedder credentials incomplete; semantic search disabled", self.agent_id)
                         enable_semantic_search = False
@@ -188,20 +185,20 @@ class AgentWorker:
                 enable_semantic_search = False
 
             # ---- Inject agent-level image generation config ----
-            if enable_image_generation and self.agent_row.imagegen_provider_id and self.agent_row.imagegen_model_id:
+            if enable_image_generation and self.agent_config.get("imagegen_provider_id") and self.agent_config.get("imagegen_model_id"):
                 try:
                     async with AsyncSessionLocal() as db:
                         img_creds = await resolve_provider_credentials(
-                            db, self.agent_row.imagegen_provider_id, self.agent_row.imagegen_model_id
+                            db, self.agent_config.get("imagegen_provider_id"), self.agent_config.get("imagegen_model_id")
                         )
                     if img_creds and img_creds.base_url and img_creds.api_key:
                         from engine.tools.web.image_gen_context import set_image_gen_config_for_agent
                         set_image_gen_config_for_agent(self.agent_id, {
                             "base_url": img_creds.base_url,
-                            "model": self.agent_row.imagegen_model_id,
+                            "model": self.agent_config.get("imagegen_model_id"),
                             "api_key": img_creds.api_key,
                         })
-                        logger.info("Agent %s image-gen ready (%s)", self.agent_id, self.agent_row.imagegen_model_id)
+                        logger.info("Agent %s image-gen ready (%s)", self.agent_id, self.agent_config.get("imagegen_model_id"))
                     else:
                         logger.warning("Agent %s image-gen credentials incomplete; image generation disabled", self.agent_id)
                         enable_image_generation = False
@@ -222,7 +219,7 @@ class AgentWorker:
             from ..main import _app_state as _state
             app_config = _state["config"]
             self._react_agent = ReActAgent(
-                name=self.agent_row.name,
+                name=self.agent_config.get("name", ""),
                 model=transport,
                 toolkit=tool_registry,
                 session_store=agent_session_store,
@@ -232,16 +229,16 @@ class AgentWorker:
                 memory_store=_state.get("memory_store"),
                 model_config=model_cfg,
                 fallback_transports=fallback_transports,
-                codename=self.agent_row.codename or self.agent_row.name,
-                allowed_paths=self.agent_row.allowed_paths or [],
-                toolsets=self.agent_row.toolsets or [],
-                enabled_skills=self.agent_row.enabled_skills or [],
+                codename=self.agent_config.get("codename") or self.agent_config.get("name", ""),
+                allowed_paths=self.agent_config.get("allowed_paths") or [],
+                toolsets=self.agent_config.get("toolsets") or [],
+                enabled_skills=self.agent_config.get("enabled_skills") or [],
                 enable_semantic_search=enable_semantic_search,
                 enable_image_generation=enable_image_generation,
                 enable_topic_compression=enable_topic_compression,
             )
 
-            logger.info("AgentWorker started for %s (%s)", self.agent_row.name, self.agent_id)
+            logger.info("AgentWorker started for %s (%s)", self.agent_config.get("name", ""), self.agent_id)
         finally:
             # Notify waiters regardless of success/failure so they don't hang
             event = _startup_events.pop(self.agent_id, None)
@@ -313,7 +310,7 @@ class AgentWorker:
     # ------------------------------------------------------------------
     async def _execute_job(self, job: AgentJob) -> None:
         """Run a single Job through the ReActAgent."""
-        if not self._react_agent or not self.agent_row:
+        if not self._react_agent or not self.agent_config:
             try:
                 await job.on_done("[Agent 未就绪]", False)
             except Exception:
@@ -467,8 +464,8 @@ class AgentWorker:
             )
             await db.commit()
         # Sync in-memory state so safety-net checks are accurate
-        if self.agent_row:
-            self.agent_row.status = status
+        if self.agent_config:
+            self.agent_config["status"] = status
         # Broadcast to all connected clients
         try:
             await event_manager.broadcast({
@@ -488,15 +485,15 @@ class AgentWorker:
         If legacy config only has provider name (not id), resolve id from DB.
         """
         # New fields
-        prov_id = self.agent_row.provider_id or ""
-        model_name = self.agent_row.model_id or ""
+        prov_id = self.agent_config.get("provider_id", "")
+        model_name = self.agent_config.get("model_id", "")
         prov_type = ""
 
         if prov_id and model_name:
             return prov_id, model_name, prov_type
 
         # Legacy fallback
-        model_cfg: dict = self.agent_row.model_config or {}
+        model_cfg: dict = self.agent_config.get("model_config") or {}
         prov_id = model_cfg.get("provider_id", prov_id)
         model_name = model_cfg.get("model", model_name) or "deepseek-v4-pro"
         prov_type = (model_cfg.get("provider") or "deepseek").lower()
@@ -523,7 +520,7 @@ class AgentWorker:
 
     async def _build_transport(self) -> ChatCompletionsTransport | None:
         """Resolve provider credentials and build transport via engine factory."""
-        if not self.agent_row:
+        if not self.agent_config:
             return None
 
         prov_id, model_name, prov_type = await self._resolve_model_config()

@@ -73,7 +73,7 @@ def _patch_app_state():
 
 
 @pytest.fixture
-def mock_agent_row():
+async def mock_agent_row():
     from app.models import Agent
     row = MagicMock(spec=Agent)
     row.id = "agent-1"
@@ -99,13 +99,38 @@ def mock_agent_row():
     return row
 
 
+@pytest.fixture
+async def mock_agent_config(mock_agent_row):
+    """Convert mock agent row to dict config for AgentDataStore."""
+    return {
+        "id": mock_agent_row.id,
+        "name": mock_agent_row.name,
+        "codename": mock_agent_row.codename,
+        "model_config": mock_agent_row.model_config,
+        "provider_id": mock_agent_row.provider_id,
+        "model_id": mock_agent_row.model_id,
+        "marker_provider_id": mock_agent_row.marker_provider_id,
+        "marker_model_id": mock_agent_row.marker_model_id,
+        "embedder_provider_id": mock_agent_row.embedder_provider_id,
+        "embedder_model_id": mock_agent_row.embedder_model_id,
+        "imagegen_provider_id": mock_agent_row.imagegen_provider_id,
+        "imagegen_model_id": mock_agent_row.imagegen_model_id,
+        "fallback_chain": mock_agent_row.fallback_chain,
+        "allowed_paths": mock_agent_row.allowed_paths,
+        "toolsets": mock_agent_row.toolsets,
+        "enabled_skills": mock_agent_row.enabled_skills,
+        "semantic_search_enabled": mock_agent_row.semantic_search_enabled,
+        "image_generation_enabled": mock_agent_row.image_generation_enabled,
+        "topic_compression_enabled": mock_agent_row.topic_compression_enabled,
+    }
+
+
 @pytest.mark.asyncio
-async def test_embedder_failure_disables_semantic_search(mock_agent_row):
+async def test_embedder_failure_disables_semantic_search(mock_agent_row, mock_agent_config):
     """If embedder build raises, semantic search is disabled but ReActAgent starts."""
     from app.services.agent_worker import AgentWorker
 
     worker = AgentWorker("agent-1")
-    worker.agent_row = mock_agent_row
 
     async def fake_resolve(db, prov_id, model_id=None):
         return FakeCreds()
@@ -113,7 +138,8 @@ async def test_embedder_failure_disables_semantic_search(mock_agent_row):
     async def fake_build_transport(*args, **kwargs):
         return _FakeTransport()
 
-    with patch("app.services.agent_worker.AsyncSessionLocal", _make_async_session_local(mock_agent_row)), \
+    with patch("app.services.agent_resolver.get_agent_config", return_value=mock_agent_config), \
+         patch("app.services.agent_worker.AsyncSessionLocal", _make_async_session_local(mock_agent_row)), \
          patch("app.services.provider_resolver.resolve_provider_credentials", side_effect=fake_resolve), \
          patch("engine.provider.factory.build_transport", side_effect=fake_build_transport), \
          patch("engine.context.embedder.Embedder", side_effect=RuntimeError("embedder boom")):
@@ -126,12 +152,11 @@ async def test_embedder_failure_disables_semantic_search(mock_agent_row):
 
 
 @pytest.mark.asyncio
-async def test_imagegen_failure_disables_image_generation(mock_agent_row):
+async def test_imagegen_failure_disables_image_generation(mock_agent_row, mock_agent_config):
     """If imagegen config injection raises, image generation is disabled."""
     from app.services.agent_worker import AgentWorker
 
     worker = AgentWorker("agent-1")
-    worker.agent_row = mock_agent_row
 
     async def fake_resolve(db, prov_id, model_id=None):
         return FakeCreds()
@@ -139,7 +164,8 @@ async def test_imagegen_failure_disables_image_generation(mock_agent_row):
     async def fake_build_transport(*args, **kwargs):
         return _FakeTransport()
 
-    with patch("app.services.agent_worker.AsyncSessionLocal", _make_async_session_local(mock_agent_row)), \
+    with patch("app.services.agent_resolver.get_agent_config", return_value=mock_agent_config), \
+         patch("app.services.agent_worker.AsyncSessionLocal", _make_async_session_local(mock_agent_row)), \
          patch("app.services.provider_resolver.resolve_provider_credentials", side_effect=fake_resolve), \
          patch("engine.provider.factory.build_transport", side_effect=fake_build_transport), \
          patch("engine.tools.web.image_gen_context.set_image_gen_config_for_agent", side_effect=RuntimeError("img boom")):
@@ -151,13 +177,13 @@ async def test_imagegen_failure_disables_image_generation(mock_agent_row):
 
 
 @pytest.mark.asyncio
-async def test_marker_failure_disables_topic_compression(mock_agent_row):
+async def test_marker_failure_disables_topic_compression(mock_agent_row, mock_agent_config):
     """If marker config resolution raises, topic compression is disabled."""
     from app.services.agent_worker import AgentWorker
 
     mock_agent_row.marker_provider_id = "marker-1"
+    mock_agent_config["marker_provider_id"] = "marker-1"
     worker = AgentWorker("agent-1")
-    worker.agent_row = mock_agent_row
 
     async def fake_resolve(db, prov_id, model_id=None):
         if prov_id == "marker-1":
@@ -167,7 +193,8 @@ async def test_marker_failure_disables_topic_compression(mock_agent_row):
     async def fake_build_transport(*args, **kwargs):
         return _FakeTransport()
 
-    with patch("app.services.agent_worker.AsyncSessionLocal", _make_async_session_local(mock_agent_row)), \
+    with patch("app.services.agent_resolver.get_agent_config", return_value=mock_agent_config), \
+         patch("app.services.agent_worker.AsyncSessionLocal", _make_async_session_local(mock_agent_row)), \
          patch("app.services.provider_resolver.resolve_provider_credentials", side_effect=fake_resolve), \
          patch("engine.provider.factory.build_transport", side_effect=fake_build_transport):
         await worker.start()
