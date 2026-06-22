@@ -5,19 +5,19 @@ from __future__ import annotations
 import logging
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
-import aiosqlite
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import DATA_DIR, UPLOAD_DIR as _UPLOAD_DIR
+from ..database import DATA_DIR, UPLOAD_DIR as _UPLOAD_DIR, WORKSPACE_ROOT
 from ..dependencies import get_db
-from ..models import Agent
 
+from engine.agent.data_store import AgentDataStore
 from engine.agent.workspace import MindWorkspace
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -159,30 +159,35 @@ async def list_agents(
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Agent).where(Agent.deleted_at.is_(None))
-    if search:
-        stmt = stmt.where(Agent.name.ilike(f"%{search}%"))
-
-    count_result = await db.execute(select(Agent.id).where(Agent.deleted_at.is_(None)))
-    total = len(count_result.scalars().all())
-
-    result = await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))
-    items = []
-    for a in result.scalars().all():
-        items.append({
-            "id": a.id,
-            "name": a.name,
-            "codename": a.codename,
-            "status": a.status,
-            "portrait_url": a.portrait_url,
-            "live2d_model_url": a.live2d_model_url,
-            "model_url": a.model_url,
-            "tags": a.tags or [],
-            "represent_color": a.represent_color,
-            "created_at": a.created_at.isoformat() if a.created_at else "",
-        })
-
-    return ListResp(data={"items": items, "total": total, "page": page, "page_size": page_size})
+    from ..database import WORKSPACE_ROOT
+    
+    agents = []
+    if WORKSPACE_ROOT.exists():
+        for agent_dir in WORKSPACE_ROOT.iterdir():
+            if agent_dir.is_dir():
+                store = AgentDataStore(agent_dir.name)
+                config = store.read_config()
+                if config and config.get("status") != "deleted":
+                    if search and search.lower() not in config.get("name", "").lower():
+                        continue
+                    agents.append({
+                        "id": config["id"],
+                        "name": config["name"],
+                        "codename": config["codename"],
+                        "status": config.get("status", "active"),
+                        "portrait_url": config.get("portrait_url"),
+                        "live2d_model_url": config.get("live2d_model_url"),
+                        "model_url": config.get("model_url"),
+                        "tags": config.get("tags", []),
+                        "represent_color": config.get("represent_color", "#00E5C9"),
+                        "created_at": config.get("created_at", ""),
+                    })
+    
+    total = len(agents)
+    start = (page - 1) * page_size
+    end = start + page_size
+    
+    return ListResp(data={"items": agents[start:end], "total": total, "page": page, "page_size": page_size})
 
 
 # ------------------------------------------------------------------
@@ -236,51 +241,12 @@ async def get_agent(
     agent_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    a = result.scalar_one_or_none()
-    if not a:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    return ListResp(data={
-        "id": a.id,
-        "name": a.name,
-        "codename": a.codename,
-        "memory_count": 0,
-        "capabilities": a.capabilities or [],
-        "aliases": a.aliases or [],
-        "tags": a.tags or [],
-        "llm_config": a.model_config or {},
-        "allowed_paths": a.allowed_paths or [],
-        "toolsets": a.toolsets or [],
-        "enabled_skills": a.enabled_skills or [],
-        "portrait_url": a.portrait_url,
-        "model_url": a.model_url,
-        "live2d_model_url": a.live2d_model_url,
-        "represent_color": a.represent_color,
-        "status": a.status,
-        "created_at": a.created_at.isoformat() if a.created_at else "",
-        # New independent provider/model fields
-        "provider_id": a.provider_id,
-        "model_id": a.model_id,
-        "temperature": a.temperature,
-        "top_p": a.top_p,
-        "marker_provider_id": a.marker_provider_id,
-        "marker_model_id": a.marker_model_id,
-        "embedder_provider_id": a.embedder_provider_id,
-        "embedder_model_id": a.embedder_model_id,
-        "compressor_provider_id": a.compressor_provider_id,
-        "compressor_model_id": a.compressor_model_id,
-        "imagegen_provider_id": a.imagegen_provider_id,
-        "imagegen_model_id": a.imagegen_model_id,
-        "fallback_chain": a.fallback_chain or [],
-        "personality": a.personality or {},
-        "max_context_tokens": a.max_context_tokens,
-        "semantic_search_enabled": a.semantic_search_enabled,
-        "image_generation_enabled": a.image_generation_enabled,
-        "topic_compression_enabled": a.topic_compression_enabled,
-    })
+    return ListResp(data=config)
 
 
 @router.post("", response_model=ListResp)
@@ -292,67 +258,86 @@ async def create_agent(
     if not body.embedder_provider_id or not body.embedder_model_id:
         raise HTTPException(status_code=400, detail="Embedder provider and model are required")
 
-    existing = await db.execute(select(Agent.codename))
-    codenames = [r for r in existing.scalars().all()]
-    codename = _gen_codename(codenames)
+    # Scan existing agents to generate unique codename
+    from ..database import WORKSPACE_ROOT
+    existing_codenames = []
+    if WORKSPACE_ROOT.exists():
+        for agent_dir in WORKSPACE_ROOT.iterdir():
+            if agent_dir.is_dir():
+                store = AgentDataStore(agent_dir.name)
+                config = store.read_config()
+                if config:
+                    existing_codenames.append(config.get("codename", ""))
+    
+    codename = _gen_codename(existing_codenames)
+    agent_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Create agent config as JSON document
+    config = {
+        "id": agent_id,
+        "name": body.name,
+        "codename": codename,
+        "capabilities": body.capabilities or [],
+        "aliases": body.aliases or [],
+        "tags": body.tags or [],
+        "represent_color": body.represent_color,
+        "allowed_paths": body.allowed_paths or [],
+        "toolsets": body.toolsets or [],
+        "enabled_skills": body.enabled_skills or [],
+        "provider_id": body.provider_id,
+        "model_id": body.model_id,
+        "temperature": body.temperature,
+        "top_p": body.top_p,
+        "marker_provider_id": body.marker_provider_id,
+        "marker_model_id": body.marker_model_id,
+        "embedder_provider_id": body.embedder_provider_id,
+        "embedder_model_id": body.embedder_model_id,
+        "compressor_provider_id": body.compressor_provider_id,
+        "compressor_model_id": body.compressor_model_id,
+        "imagegen_provider_id": body.imagegen_provider_id,
+        "imagegen_model_id": body.imagegen_model_id,
+        "fallback_chain": body.fallback_chain or [],
+        "personality": body.personality or {},
+        "max_context_tokens": body.max_context_tokens,
+        "semantic_search_enabled": body.semantic_search_enabled,
+        "image_generation_enabled": body.image_generation_enabled,
+        "topic_compression_enabled": body.topic_compression_enabled,
+        "status": "active",
+        "role": "member",
+        "created_at": now,
+        "updated_at": now,
+    }
+    
+    # Write to document store
+    store = AgentDataStore(agent_id)
+    store.ensure_dirs()
+    store.write_config(config)
 
-    agent = Agent(
-        id=str(uuid.uuid4()),
-        name=body.name,
-        codename=codename,
-        capabilities=body.capabilities,
-        aliases=body.aliases,
-        tags=body.tags,
-        represent_color=body.represent_color,
-        model_config=body.llm_config,
-        allowed_paths=body.allowed_paths,
-        toolsets=body.toolsets,
-        enabled_skills=body.enabled_skills,
-        # New independent provider/model fields
-        provider_id=body.provider_id,
-        model_id=body.model_id,
-        temperature=body.temperature,
-        top_p=body.top_p,
-        marker_provider_id=body.marker_provider_id,
-        marker_model_id=body.marker_model_id,
-        embedder_provider_id=body.embedder_provider_id,
-        embedder_model_id=body.embedder_model_id,
-        compressor_provider_id=body.compressor_provider_id,
-        compressor_model_id=body.compressor_model_id,
-        imagegen_provider_id=body.imagegen_provider_id,
-        imagegen_model_id=body.imagegen_model_id,
-        fallback_chain=body.fallback_chain,
-        personality=body.personality,
-        max_context_tokens=body.max_context_tokens,
-    )
-    db.add(agent)
-    await db.commit()
-    await db.refresh(agent)
-
-    # Initialize per-agent workspace from project template
+    # Initialize workspace files (markdown)
     try:
-        MindWorkspace(agent.id).ensure_agent_workspace()
+        MindWorkspace(agent_id).ensure_agent_workspace()
     except Exception as exc:
-        logger.warning("Failed to initialize workspace for agent %s: %s", agent.id, exc)
+        logger.warning("Failed to initialize workspace for agent %s: %s", agent_id, exc)
 
     # Copy user profile.md to agent's USER.md as initial content
     try:
         profile_path = DATA_DIR / "userdata" / "profile.md"
         if profile_path.exists():
-            workspace = MindWorkspace(agent.id)
+            workspace = MindWorkspace(agent_id)
             user_md_path = workspace.path("USER.md")
             profile_content = profile_path.read_text(encoding="utf-8")
             if profile_content.strip():
                 user_md_path.write_text(profile_content, encoding="utf-8")
-                logger.info("Copied profile.md to USER.md for agent %s", agent.id)
+                logger.info("Copied profile.md to USER.md for agent %s", agent_id)
     except Exception as exc:
-        logger.warning("Failed to copy profile.md to USER.md for agent %s: %s", agent.id, exc)
+        logger.warning("Failed to copy profile.md to USER.md for agent %s: %s", agent_id, exc)
 
     return ListResp(data={
-        "id": agent.id,
-        "name": agent.name,
-        "codename": agent.codename,
-        "created_at": agent.created_at.isoformat() if agent.created_at else "",
+        "id": agent_id,
+        "name": config["name"],
+        "codename": config["codename"],
+        "created_at": config["created_at"],
     })
 
 
@@ -362,21 +347,17 @@ async def update_agent(
     body: AgentUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
-        if field == "llm_config":
-            field = "model_config"
-        setattr(agent, field, value)
-
-    await db.commit()
-    await db.refresh(agent)
-    return ListResp(data={"id": agent.id, "updated": True})
+    updates = body.model_dump(exclude_unset=True)
+    if "llm_config" in updates:
+        updates["model_config"] = updates.pop("llm_config")
+    
+    store.update_config(updates)
+    return ListResp(data={"id": agent_id, "updated": True})
 
 
 @router.delete("/{agent_id}", response_model=ListResp)
@@ -384,18 +365,14 @@ async def delete_agent(
     agent_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    from datetime import datetime, timezone
-    agent.deleted_at = datetime.now(timezone.utc)
-
-    await db.commit()
-
+    # Mark as deleted in config (soft delete)
+    store.update_config({"status": "deleted", "deleted_at": datetime.now(timezone.utc).isoformat()})
+    
     # Best-effort cleanup of agent vector memory and topic summaries
     try:
         from ..main import _app_state
@@ -415,19 +392,16 @@ async def upload_portrait(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id)
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     if file.content_type and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files allowed")
 
     url = _save_upload(file, "portraits")
-    agent.portrait_url = url
-    await db.commit()
+    store.update_config({"portrait_url": url})
 
     return ListResp(data={"portrait_url": url})
 
@@ -438,16 +412,13 @@ async def upload_live2d(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id)
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     url = _save_upload(file, "live2d")
-    agent.live2d_model_url = url
-    await db.commit()
+    store.update_config({"live2d_model_url": url})
 
     return ListResp(data={"live2d_model_url": url})
 
@@ -458,11 +429,9 @@ async def upload_model(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id)
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     allowed = {".vrm", ".glb", ".gltf", ".fbx", ".obj"}
@@ -474,8 +443,7 @@ async def upload_model(
         )
 
     url = _save_upload(file, "models")
-    agent.model_url = url
-    await db.commit()
+    store.update_config({"model_url": url})
 
     return ListResp(data={"model_url": url})
 
@@ -507,10 +475,9 @@ async def get_mind_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Read a mind file (AGENT/SOUL/PROFILE/MEMORY)."""
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     if file not in _MIND_FILES:
@@ -533,17 +500,16 @@ class MindFileUpdate(BaseModel):
 
 
 @router.put("/{agent_id}/mind/{file}")
-async def update_mind_file(
+async def put_mind_file(
     agent_id: str,
     file: str,
     body: MindFileUpdate,
     db: AsyncSession = Depends(get_db),
 ):
     """Write a mind file (AGENT/SOUL/PROFILE/MEMORY)."""
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     if file not in _MIND_FILES:
@@ -575,24 +541,22 @@ async def analyze_agent_personality(
     import logging
     logger = logging.getLogger(__name__)
 
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     from engine.personality.extractor import PersonalityExtractor, build_personality_text
 
     from ..database import WORKSPACE_ROOT
     agent_dir = WORKSPACE_ROOT / agent_id
-    text = build_personality_text(agent, agent_dir)
+    text = build_personality_text(config, agent_dir)
 
-    model_cfg = dict(agent.model_config or {})
+    model_cfg = dict(config.get("model_config") or {})
 
     # Prefer new independent fields; fallback to legacy model_config
-    marker_provider_id = agent.marker_provider_id or (model_cfg.get("marker") or {}).get("provider_id")
-    marker_model_id = agent.marker_model_id or (model_cfg.get("marker") or {}).get("model")
+    marker_provider_id = config.get("marker_provider_id") or (model_cfg.get("marker") or {}).get("provider_id")
+    marker_model_id = config.get("marker_model_id") or (model_cfg.get("marker") or {}).get("model")
 
     if marker_provider_id:
         # Use provider_resolver (same lookup logic as new code path)
@@ -630,7 +594,7 @@ async def analyze_agent_personality(
             model_cfg["marker"]["base_url"] = base_url
 
     try:
-        extractor = await PersonalityExtractor.from_agent(db, agent)
+        extractor = await PersonalityExtractor.from_agent(db, config)
         personality = await extractor.analyze(text)
     except Exception as e:
         logger.warning("Personality analysis failed for %s: %s", agent_id, e)
@@ -661,66 +625,22 @@ async def get_agent_memory(
     db: AsyncSession = Depends(get_db),
 ):
     """Return topic summaries and compression stats for an agent."""
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     topics: list[dict] = []
     stats = {"total_messages": 0, "compressed_messages": 0, "compression_rate": 0.0}
 
-    async with aiosqlite.connect(str(_DB_PATH)) as engine_db:
-        # Topics: try agent_id as session_id first, then pattern match
-        try:
-            async with engine_db.execute(
-                """
-                SELECT id, name, subtopic_name, importance, summary,
-                       start_round, end_round, updated_at
-                FROM llm_topics
-                WHERE session_id = ? OR session_id LIKE ?
-                ORDER BY updated_at DESC
-                LIMIT 50
-                """,
-                (agent_id, f"%:{agent_id}"),
-            ) as cur:
-                rows = await cur.fetchall()
-                for row in rows:
-                    topics.append({
-                        "id": row[0],
-                        "name": row[1],
-                        "subtopic_name": row[2],
-                        "importance": row[3],
-                        "summary": row[4],
-                        "start_round": row[5],
-                        "end_round": row[6],
-                        "updated_at": row[7],
-                    })
-        except aiosqlite.OperationalError:
-            # llm_topics may not exist yet (lazy creation)
-            pass
-
-        # Stats from agent_messages
-        try:
-            async with engine_db.execute(
-                """
-                SELECT COUNT(*), SUM(CASE WHEN compressed = 1 THEN 1 ELSE 0 END)
-                FROM agent_messages WHERE agent_id = ?
-                """,
-                (agent_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                if row:
-                    stats["total_messages"] = row[0] or 0
-                    stats["compressed_messages"] = row[1] or 0
-                    if stats["total_messages"] > 0:
-                        stats["compression_rate"] = round(
-                            stats["compressed_messages"] / stats["total_messages"] * 100, 1
-                        )
-        except aiosqlite.OperationalError:
-            # agent_messages may not exist yet (engine not initialized)
-            pass
+    # Read from document store instead of SQLite
+    memories = store.read_memories()
+    stats["total_messages"] = len(memories)
+    stats["compressed_messages"] = sum(1 for m in memories if m.get("compressed"))
+    if stats["total_messages"] > 0:
+        stats["compression_rate"] = round(
+            stats["compressed_messages"] / stats["total_messages"] * 100, 1
+        )
 
     return ListResp(data={"topics": topics, "stats": stats})
 
@@ -775,109 +695,42 @@ async def import_history(
     db_path = DATA_DIR / "cloudmind.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     imported = 0
     skipped = 0
     errors: list[str] = []
 
-    async with aiosqlite.connect(str(db_path)) as conn:
-        # Ensure table exists (same schema as SessionStore)
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS agent_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT,
-                tool_calls TEXT,
-                tool_call_id TEXT,
-                tool_name TEXT,
-                reasoning_content TEXT,
-                timestamp REAL NOT NULL,
-                token_count INTEGER,
-                round INTEGER,
-                compressed INTEGER DEFAULT 0,
-                message_uuid TEXT,
-                source TEXT NOT NULL DEFAULT 'private',
-                source_id TEXT,
-                source_name TEXT,
-                sender_id TEXT,
-                sender_name TEXT
-            )
-            """
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_agent_msgs_agent ON agent_messages(agent_id)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_agent_msgs_source ON agent_messages(source, agent_id)"
-        )
-
-        # Fetch existing UUIDs for deduplication
-        cursor = await conn.execute(
-            "SELECT message_uuid FROM agent_messages WHERE agent_id = ? AND message_uuid IS NOT NULL",
-            (agent_id,),
-        )
-        existing_uuids = {row[0] for row in await cursor.fetchall()}
-
-        # Build insert batch
-        insert_rows = []
-        for idx, msg in enumerate(messages):
-            msg_uuid = msg.get("message_uuid", "")
-            if not msg_uuid or msg_uuid in existing_uuids:
-                skipped += 1
-                continue
-            existing_uuids.add(msg_uuid)
-
-            ts_raw = msg.get("timestamp")
-            try:
-                from datetime import datetime, timezone
-                if isinstance(ts_raw, str):
-                    ts_str = ts_raw.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(ts_str)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    ts_val = dt.timestamp()
-                else:
-                    ts_val = float(ts_raw or 0)
-            except Exception:
-                ts_val = 0.0
-
-            insert_rows.append(
-                (
-                    agent_id,
-                    msg.get("role", "user"),
-                    msg.get("content", ""),
-                    msg.get("tool_calls"),
-                    msg.get("tool_name"),
-                    msg.get("reasoning_content"),
-                    ts_val,
-                    msg.get("token_count"),
-                    msg.get("round", 0),
-                    1 if msg.get("compressed") else 0,
-                    msg_uuid,
-                    msg.get("tool_call_id"),
-                    "imported",          # source
-                    "imported",          # source_id
-                    "",                  # source_name
-                    "",                  # sender_id
-                    msg.get("sender_name", ""),
-                )
-            )
-
-        # Batch insert
-        if insert_rows:
-            await conn.executemany(
-                """
-                INSERT INTO agent_messages
-                (agent_id, role, content, tool_calls, tool_name, reasoning_content,
-                 timestamp, token_count, round, compressed, message_uuid, tool_call_id,
-                 source, source_id, source_name, sender_id, sender_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                insert_rows,
-            )
-            await conn.commit()
-            imported = len(insert_rows)
+    # Write to document store instead of SQLite
+    for idx, msg in enumerate(messages):
+        msg_uuid = msg.get("message_uuid", "")
+        if not msg_uuid:
+            skipped += 1
+            continue
+        
+        store.append_memory({
+            "agent_id": agent_id,
+            "role": msg.get("role", "user"),
+            "content": msg.get("content", ""),
+            "tool_calls": msg.get("tool_calls"),
+            "tool_name": msg.get("tool_name"),
+            "reasoning_content": msg.get("reasoning_content"),
+            "timestamp": msg.get("timestamp"),
+            "token_count": msg.get("token_count"),
+            "round": msg.get("round", 0),
+            "compressed": msg.get("compressed", False),
+            "message_uuid": msg_uuid,
+            "tool_call_id": msg.get("tool_call_id"),
+            "source": "imported",
+            "source_id": "imported",
+            "source_name": "",
+            "sender_id": "",
+            "sender_name": msg.get("sender_name", ""),
+        })
+        imported += 1
 
     return ListResp(
         data={"imported": imported, "skipped": skipped, "errors": errors}
@@ -892,10 +745,9 @@ async def list_import_platforms(
     """Return available import platforms."""
     from engine.importer import list_platforms
 
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     return ListResp(data={"platforms": list_platforms()})
@@ -913,10 +765,9 @@ async def list_discovered_skills(
     db: AsyncSession = Depends(get_db),
 ):
     """Scan workspace/{agent_id}/skills/ and return all discovered SKILL.md files."""
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     skills = load_skills(agent_id)
@@ -939,10 +790,9 @@ async def upload_skill(
     The skill name is extracted from the YAML frontmatter if present,
     otherwise falls back to the uploaded filename stem.
     """
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-    )
-    if not result.scalar_one_or_none():
+    store = AgentDataStore(agent_id)
+    config = store.read_config()
+    if not config or config.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Agent not found")
 
     if file.filename and not file.filename.lower().endswith(".md"):
