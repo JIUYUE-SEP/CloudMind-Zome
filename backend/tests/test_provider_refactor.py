@@ -229,14 +229,13 @@ class TestAgentModelConfigFallback:
         """When provider_id and model_id are set, they are used directly."""
         from app.services.agent_worker import AgentWorker
 
-        mock_agent = MagicMock()
-        mock_agent.provider_id = "openai-compatible"
-        mock_agent.model_id = "gpt-4o"
-        mock_agent.model_config = {"provider": "deepseek", "model": "deepseek-chat"}
-
         with patch("app.services.agent_worker.ensure_queue", return_value=asyncio.Queue()):
             worker = AgentWorker("agent-1")
-        worker.agent_row = mock_agent
+        worker.agent_config = {
+            "provider_id": "openai-compatible",
+            "model_id": "gpt-4o",
+            "model_config": {"provider": "deepseek", "model": "deepseek-chat"},
+        }
         prov_id, model_name, prov_type = await worker._resolve_model_config()
         assert prov_id == "openai-compatible"
         assert model_name == "gpt-4o"
@@ -246,18 +245,17 @@ class TestAgentModelConfigFallback:
         """When new fields are empty, fallback to legacy model_config JSON."""
         from app.services.agent_worker import AgentWorker
 
-        mock_agent = MagicMock()
-        mock_agent.provider_id = None
-        mock_agent.model_id = None
-        mock_agent.model_config = {
-            "provider": "deepseek",
-            "model": "deepseek-chat",
-            "provider_id": "deepseek-official",
-        }
-
         with patch("app.services.agent_worker.ensure_queue", return_value=asyncio.Queue()):
             worker = AgentWorker("agent-1")
-        worker.agent_row = mock_agent
+        worker.agent_config = {
+            "provider_id": None,
+            "model_id": None,
+            "model_config": {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "provider_id": "deepseek-official",
+            },
+        }
         prov_id, model_name, prov_type = await worker._resolve_model_config()
         assert prov_id == "deepseek-official"
         assert model_name == "deepseek-chat"
@@ -267,11 +265,6 @@ class TestAgentModelConfigFallback:
     async def test_empty_config_uses_defaults(self):
         """When everything is empty, uses hardcoded defaults."""
         from app.services.agent_worker import AgentWorker
-
-        mock_agent = MagicMock()
-        mock_agent.provider_id = None
-        mock_agent.model_id = None
-        mock_agent.model_config = {}
 
         # Mock DB lookup so we don't need a real database
         mock_result = MagicMock()
@@ -284,7 +277,11 @@ class TestAgentModelConfigFallback:
 
         with patch("app.services.agent_worker.ensure_queue", return_value=asyncio.Queue()):
             worker = AgentWorker("agent-1")
-        worker.agent_row = mock_agent
+        worker.agent_config = {
+            "provider_id": None,
+            "model_id": None,
+            "model_config": {},
+        }
 
         with patch("app.services.agent_worker.AsyncSessionLocal", return_value=mock_session):
             prov_id, model_name, prov_type = await worker._resolve_model_config()

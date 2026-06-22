@@ -62,10 +62,18 @@ class SessionStore:
             self._db = None
 
     async def _create_tables(self) -> None:
-        """Create tables and indexes."""
+        """Create tables and indexes.
+
+        Four-phase execution to handle old-database migration safely:
+        1. Create all tables (with latest schema)
+        2. Migrate missing columns in old tables
+        3. Create indexes (after columns are guaranteed to exist)
+        4. Create FTS5 virtual tables and triggers (after columns exist)
+        """
         async with self._lock:
             db = await self.connect()
 
+            # Phase 1: Create all tables
             # Sessions table (engine layer)
             await db.execute(
                 """
@@ -114,31 +122,10 @@ class SessionStore:
                 """
             )
 
-            # Indexes
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_messages_session ON llm_messages(session_id)"
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_messages_topic ON llm_messages(topic_id)"
-            )
-
-            # FTS5 virtual tables (engine layer)
-            await db.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS llm_messages_fts USING fts5(
-                    content, tool_name, reasoning_content,
-                    content=llm_messages, content_rowid=id
-                )
-                """
-            )
-
             # llm_topics and llm_topics_fts are deprecated — replaced by
             # _compressed/*.md + zvec agent_topics collection.
             # We intentionally do NOT create them on new installs.
             # Existing tables are left untouched for migration safety.
-
-            # Ensure message_uuid column exists in old databases (llm_messages)
-            await self._ensure_columns(db)
 
             # Agent unified memory pool (this agent's own messages)
             await db.execute(
@@ -165,11 +152,36 @@ class SessionStore:
                 )
                 """
             )
+
+            # Phase 2: Migrate missing columns in old tables
+            # Ensure message_uuid column exists in old databases (llm_messages)
+            await self._ensure_columns(db)
+            # Ensure all columns exist in agent_messages
+            await self._ensure_agent_columns(db)
+
+            # Phase 3: Create indexes (after columns are guaranteed to exist)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_messages_session ON llm_messages(session_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_messages_topic ON llm_messages(topic_id)"
+            )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_msgs_agent ON agent_messages(agent_id)"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_msgs_source ON agent_messages(source, agent_id)"
+            )
+
+            # Phase 4: Create FTS5 virtual tables and triggers
+            # FTS5 virtual tables (engine layer)
+            await db.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS llm_messages_fts USING fts5(
+                    content, tool_name, reasoning_content,
+                    content=llm_messages, content_rowid=id
+                )
+                """
             )
 
             # FTS5 for agent_messages (cross-scene memory search)
@@ -206,9 +218,6 @@ class SessionStore:
                     VALUES (new.id, new.content, new.tool_name, new.reasoning_content);
                 END
             """)
-
-            # Ensure all columns exist
-            await self._ensure_agent_columns(db)
 
             await db.commit()
             logger.info("Session database initialized for agent %s: %s", self.agent_id, self.db_path)

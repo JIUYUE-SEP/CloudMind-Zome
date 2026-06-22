@@ -162,20 +162,19 @@ def test_sync_provider_yaml_success(temp_providers_yaml, mock_compute_provider):
 # API routes return 500 on sync failure
 # ------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_create_provider_returns_500_on_sync_error(mock_user, mock_db_for_create):
+async def test_create_provider_returns_500_on_sync_error(mock_db_for_create):
     body = ProviderCreate(display_name="Test")
     with patch("app.api.compute.sync_provider_yaml", side_effect=ProviderSyncError("boom")):
         with pytest.raises(HTTPException) as exc_info:
-            await create_provider(body, user=mock_user, db=mock_db_for_create)
+            await create_provider(body, db=mock_db_for_create)
     assert exc_info.value.status_code == 500
     assert "Provider sync failed" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
-async def test_update_provider_returns_500_on_sync_error(mock_user):
+async def test_update_provider_returns_500_on_sync_error():
     prov = MagicMock()
     prov.id = "p1"
-    prov.user_id = mock_user.id
 
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=prov)
@@ -186,15 +185,14 @@ async def test_update_provider_returns_500_on_sync_error(mock_user):
     body = ProviderUpdate(display_name="New Name")
     with patch("app.api.compute.sync_provider_yaml", side_effect=ProviderSyncError("boom")):
         with pytest.raises(HTTPException) as exc_info:
-            await update_provider("p1", body, user=mock_user, db=db)
+            await update_provider("p1", body, db=db)
     assert exc_info.value.status_code == 500
 
 
 @pytest.mark.asyncio
-async def test_delete_provider_returns_500_on_sync_error(mock_user):
+async def test_delete_provider_returns_500_on_sync_error():
     prov = MagicMock()
     prov.id = "p1"
-    prov.user_id = mock_user.id
     prov.is_builtin = False
 
     result = MagicMock()
@@ -204,17 +202,16 @@ async def test_delete_provider_returns_500_on_sync_error(mock_user):
 
     with patch("app.api.compute.sync_provider_yaml", side_effect=ProviderSyncError("boom")):
         with pytest.raises(HTTPException) as exc_info:
-            await delete_provider("p1", user=mock_user, db=db)
+            await delete_provider("p1", db=db)
     assert exc_info.value.status_code == 500
     # DB delete must not happen when YAML sync fails
     db.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_create_model_returns_500_on_sync_error(mock_user):
+async def test_create_model_returns_500_on_sync_error():
     prov = MagicMock()
     prov.id = "p1"
-    prov.user_id = mock_user.id
     prov.models = []
 
     async def _fake_get(cls, key):
@@ -232,7 +229,7 @@ async def test_create_model_returns_500_on_sync_error(mock_user):
     body = ModelCreate(provider_id="p1", id="m1", display_name="Model One")
     with patch("app.api.models.sync_provider_yaml", side_effect=ProviderSyncError("boom")):
         with pytest.raises(HTTPException) as exc_info:
-            await create_model(body, user=mock_user, db=db)
+            await create_model(body, db=db)
     assert exc_info.value.status_code == 500
 
 
