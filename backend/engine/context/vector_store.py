@@ -1,7 +1,7 @@
 """Zvec vector store for semantic memory search.
 
 Replaces ChromaDB with Alibaba's zvec (C++ backend, Python bindings).
-Per-agent collections so each Agent can use a different embedding dimension.
+Per-agent collections stored under workspace/{agent_id}/zvec/.
 """
 
 from __future__ import annotations
@@ -15,10 +15,17 @@ import zvec
 
 logger = logging.getLogger(__name__)
 
-try:
-    from app.database import ZVEC_DIR
-except ImportError:
-    ZVEC_DIR = Path.home() / ".cloudmind-zome" / "zvec"
+
+def _get_agent_zvec_dir(agent_id: str) -> Path:
+    """Return the per-agent zvec directory."""
+    try:
+        from app.database import WORKSPACE_ROOT
+    except ImportError:
+        WORKSPACE_ROOT = Path.home() / ".cloudmind-zome" / "workspace"
+    agent_dir = WORKSPACE_ROOT / agent_id
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir / "zvec"
+
 
 # Default HNSW parameters (tuned for ~1K-100K docs per desktop deployment)
 _HNSW_M = 16
@@ -37,13 +44,11 @@ def _check_schema_has_field(coll: zvec.Collection, field_name: str) -> bool:
 class AgentMemoryStore:
     """Semantic memory backed by zvec.
 
-    One collection per agent so different agents can use different embedding dimensions.
-    ``agent_id`` is a scalar field used for filtering within the collection as well.
+    One collection per agent stored under workspace/{agent_id}/zvec/.
     Embedding dimension is determined lazily on first ``add()`` call.
     """
 
     def __init__(self) -> None:
-        ZVEC_DIR.mkdir(parents=True, exist_ok=True)
         self._colls: dict[str, zvec.Collection] = {}
         self._topics_colls: dict[str, zvec.Collection] = {}
         self._dims: dict[str, int] = {}
@@ -57,7 +62,8 @@ class AgentMemoryStore:
         if agent_id in self._colls:
             return self._colls[agent_id]
 
-        path = ZVEC_DIR / f"agent_memory_{agent_id}"
+        path = _get_agent_zvec_dir(agent_id) / "agent_memory"
+        path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             coll = zvec.open(str(path))
             if not _check_schema_has_field(coll, "source_id") or not _check_schema_has_field(coll, "timestamp"):
@@ -255,7 +261,8 @@ class AgentMemoryStore:
         if agent_id in self._topics_colls:
             return self._topics_colls[agent_id]
 
-        path = ZVEC_DIR / f"agent_topics_{agent_id}"
+        path = _get_agent_zvec_dir(agent_id) / "agent_topics"
+        path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             coll = zvec.open(str(path))
             if not _check_schema_has_field(coll, "source_id"):

@@ -1,7 +1,7 @@
-"""Session persistence: SQLite + FTS5 full-text search.
+"""Session persistence: per-agent SQLite + FTS5 full-text search.
 
 Design reference: §6.11 会话持久化
-Tables use llm_ prefix to coexist with platform tables in cloudmind.db.
+Each agent has its own database under workspace/{agent_id}/agent.db.
 """
 
 from __future__ import annotations
@@ -20,20 +20,27 @@ from ..message.types import Message, ContentBlock, MessageMeta
 logger = logging.getLogger(__name__)
 
 
+def _get_agent_db_path(agent_id: str) -> Path:
+    """Return the per-agent database path."""
+    try:
+        from app.database import WORKSPACE_ROOT
+    except ImportError:
+        WORKSPACE_ROOT = Path.home() / ".cloudmind-zome" / "workspace"
+    agent_dir = WORKSPACE_ROOT / agent_id
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir / "agent.db"
+
+
 class SessionStore:
     """SQLite-backed session store with FTS5 full-text search.
 
-    Design reference: §6.11.2 数据表设计
-    Tables use llm_ prefix to coexist with platform tables in cloudmind.db.
+    Each agent has its own database file under workspace/{agent_id}/agent.db.
     """
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, agent_id: str, db_path: str | Path | None = None):
+        self.agent_id = agent_id
         if db_path is None:
-            try:
-                from app.database import DATA_DIR
-            except ImportError:
-                DATA_DIR = Path.home() / ".cloudmind-zome"
-            db_path = DATA_DIR / "cloudmind.db"
+            db_path = _get_agent_db_path(agent_id)
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db: aiosqlite.Connection | None = None
@@ -57,7 +64,7 @@ class SessionStore:
         async with self._lock:
             db = await self.connect()
 
-            # Sessions table (engine layer, renamed to avoid conflict with platform)
+            # Sessions table (engine layer)
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS llm_sessions (
@@ -131,8 +138,7 @@ class SessionStore:
             # Ensure message_uuid column exists in old databases (llm_messages)
             await self._ensure_columns(db)
 
-            # Agent unified memory pool (shared with platform layer)
-            # Platform may have created this first with fewer columns.
+            # Agent unified memory pool (this agent's own messages)
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_messages (
@@ -199,11 +205,11 @@ class SessionStore:
                 END
             """)
 
-            # Ensure all columns exist (platform layer may have created table first)
+            # Ensure all columns exist
             await self._ensure_agent_columns(db)
 
             await db.commit()
-            logger.info("Session database initialized: %s", self.db_path)
+            logger.info("Session database initialized for agent %s: %s", self.agent_id, self.db_path)
 
     async def _ensure_columns(self, db: aiosqlite.Connection) -> None:
         """Add missing columns to existing tables."""
@@ -682,14 +688,13 @@ class SessionStore:
     async def save_agent_message(
         self,
         message: Message,
-        agent_id: str,
         source: str = "private",
         source_id: str = "",
         source_name: str = "",
         sender_id: str = "",
         sender_name: str = "",
     ) -> None:
-        """Save a message to the unified agent memory pool."""
+        """Save a message to this agent's memory pool."""
         import shortuuid
         from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
 
@@ -749,7 +754,7 @@ class SessionStore:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                agent_id,
+                self.agent_id,
                 message.role,
                 content,
                 tool_calls_json,
@@ -772,19 +777,18 @@ class SessionStore:
 
     async def load_agent_messages(
         self,
-        agent_id: str,
         source: str | None = None,
         source_id: str | None = None,
         limit: int = 1000,
     ) -> list[Message]:
-        """Load messages from the unified agent memory pool."""
+        """Load messages from this agent's memory pool."""
         from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
         import time as time_mod
 
         db = await self.connect()
 
         conditions = ["agent_id = ?"]
-        params: list[Any] = [agent_id]
+        params: list[Any] = [self.agent_id]
         if source:
             conditions.append("source = ?")
             params.append(source)
@@ -866,7 +870,7 @@ class SessionStore:
         return messages
 
     async def load_agent_messages_by_uuids(
-        self, agent_id: str, uuids: list[str]
+        self, uuids: list[str]
     ) -> list[Message]:
         """Load specific messages by their message_uuid values."""
         from ..message.types import ThinkingBlock, ToolUseBlock, ToolResultBlock, TextBlock
@@ -886,7 +890,7 @@ class SessionStore:
             WHERE agent_id = ? AND message_uuid IN ({placeholders})
             ORDER BY id ASC
             """,
-            [agent_id, *uuids],
+            [self.agent_id, *uuids],
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -946,9 +950,9 @@ class SessionStore:
         return messages
 
     async def get_agent_last_message_timestamp(
-        self, agent_id: str, offset: int = 0
+        self, offset: int = 0
     ) -> float | None:
-        """Get timestamp of the N-th most recent message for an agent.
+        """Get timestamp of the N-th most recent message for this agent.
 
         offset=0 means the most recent message.
         Returns None if no message found at the given offset.
@@ -961,7 +965,7 @@ class SessionStore:
             ORDER BY id DESC
             LIMIT 1 OFFSET ?
             """,
-            (agent_id, offset),
+            (self.agent_id, offset),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -979,7 +983,7 @@ class SessionStore:
         return ts_raw
 
     async def delete_agent_messages_by_uuids(
-        self, agent_id: str, uuids: list[str]
+        self, uuids: list[str]
     ) -> int:
         """Delete messages from agent_messages by their message_uuid values.
 
@@ -992,7 +996,7 @@ class SessionStore:
         placeholders = ",".join("?" for _ in uuids)
         cursor = await db.execute(
             f"DELETE FROM agent_messages WHERE agent_id = ? AND message_uuid IN ({placeholders})",
-            [agent_id, *uuids],
+            [self.agent_id, *uuids],
         )
         await db.commit()
         return cursor.rowcount

@@ -21,7 +21,7 @@
 
         <label class="field-label">用户档案 (profile.md)</label>
         <div class="profile-md-hint" style="font-size: 11px; color: #5A6A7A; margin-bottom: 4px;">
-          所有 Agent 共享这份档案，内容会在每次对话时注入 system prompt
+          创建新心智时，这份档案会作为心智对你的初始了解写入 USER.md
         </div>
         <textarea
           v-model="profileMd.content"

@@ -213,6 +213,11 @@ class AgentWorker:
                     logger.info("Agent %s has no image-gen configured; image generation disabled", self.agent_id)
                 enable_image_generation = False
 
+            # Create per-agent session store (isolated to agent workspace)
+            from engine.session.store import SessionStore
+            agent_session_store = SessionStore(agent_id=self.agent_id)
+            await agent_session_store.connect()
+
             # Create the single ReActAgent instance
             from ..main import _app_state as _state
             app_config = _state["config"]
@@ -220,7 +225,7 @@ class AgentWorker:
                 name=self.agent_row.name,
                 model=transport,
                 toolkit=tool_registry,
-                session_store=_state["session_store"],
+                session_store=agent_session_store,
                 agent_id=self.agent_id,
                 config=app_config,
                 embedder=embedder,
@@ -295,6 +300,13 @@ class AgentWorker:
             remove_image_gen_config_for_agent(self.agent_id)
         except Exception:
             pass
+        # Close per-agent session store
+        if self._react_agent and self._react_agent.session_store:
+            try:
+                import asyncio
+                asyncio.create_task(self._react_agent.session_store.close())
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Job execution

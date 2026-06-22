@@ -885,7 +885,7 @@ class ReActAgent(AgentBase):
             try:
                 # offset=1 skips the message just saved in this turn
                 last_ts = await self.session_store.get_agent_last_message_timestamp(
-                    self.agent_id, offset=1
+                    offset=1
                 )
             except Exception as exc:
                 logger.debug("Failed to get last message timestamp: %s", exc)
@@ -922,7 +922,7 @@ class ReActAgent(AgentBase):
             return
         try:
             raw = await self.session_store.load_agent_messages(
-                self.agent_id, source_id=source_id, limit=1000
+                source_id=source_id, limit=1000
             )
             # Drop system messages EXCEPT compressed topic summaries
             self._messages = [
@@ -951,13 +951,12 @@ class ReActAgent(AgentBase):
         source_name: str = "",
         sender_name: str = "",
     ) -> None:
-        """Save a message to the unified agent memory pool + vector store."""
+        """Save a message to this agent's memory pool + vector store."""
         if not self.session_store or not self.agent_id:
             return
         try:
             await self.session_store.save_agent_message(
                 message,
-                agent_id=self.agent_id,
                 source=source,
                 source_id=source_id,
                 source_name=source_name,

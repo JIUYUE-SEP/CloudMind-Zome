@@ -250,7 +250,6 @@ async def _handle_chat_send(payload: dict, ws: WebSocket):
 
             state = _engine_state()
             bridge = EngineBridge(
-                session_store=state["session_store"],
                 app_config=state["config"],
             )
             cond_svc = ConductorService(bridge=bridge)
@@ -442,7 +441,6 @@ async def _stream_single_agent(
 ) -> tuple[str, str]:
     state = _engine_state()
     bridge = EngineBridge(
-        session_store=state["session_store"],
         app_config=state["config"],
     )
 

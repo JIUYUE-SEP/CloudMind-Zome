@@ -237,14 +237,11 @@ async def main():
         # Init engine infra (same as lifespan)
         from app.main import _app_state
         from engine.config.loader import load_config
-        from engine.session.store import SessionStore
         from engine.tool.registry import tool_registry
 
         cfg = load_config(_BACKEND_DIR / "engine" / "config.yaml")
-        store = SessionStore()
-        await store.connect()
+        # SessionStore is now per-agent, created by AgentWorker
         _app_state["config"] = cfg
-        _app_state["session_store"] = store
 
         user_id, agent_id, sess_id, group_id = await _setup_db()
         print(f"Setup complete: user={user_id}, agent={agent_id}")

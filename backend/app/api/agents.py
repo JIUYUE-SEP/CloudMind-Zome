@@ -335,6 +335,19 @@ async def create_agent(
     except Exception as exc:
         logger.warning("Failed to initialize workspace for agent %s: %s", agent.id, exc)
 
+    # Copy user profile.md to agent's USER.md as initial content
+    try:
+        profile_path = DATA_DIR / "userdata" / "profile.md"
+        if profile_path.exists():
+            workspace = MindWorkspace(agent.id)
+            user_md_path = workspace.path("USER.md")
+            profile_content = profile_path.read_text(encoding="utf-8")
+            if profile_content.strip():
+                user_md_path.write_text(profile_content, encoding="utf-8")
+                logger.info("Copied profile.md to USER.md for agent %s", agent.id)
+    except Exception as exc:
+        logger.warning("Failed to copy profile.md to USER.md for agent %s: %s", agent.id, exc)
+
     return ListResp(data={
         "id": agent.id,
         "name": agent.name,

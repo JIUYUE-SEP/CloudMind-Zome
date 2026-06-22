@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator
 
 from sqlalchemy import select
 from engine.provider.transport import ChatCompletionsTransport
-from engine.session.store import SessionStore
 from engine.config.loader import load_config
 from engine.config.models import AppConfig
 
@@ -37,10 +36,8 @@ class EngineBridge:
 
     def __init__(
         self,
-        session_store: SessionStore,
         app_config: AppConfig | None = None,
     ):
-        self.session_store = session_store
         if app_config is None:
             import pathlib
             _cfg_path = pathlib.Path(__file__).resolve().parent.parent.parent / "engine" / "config.yaml"

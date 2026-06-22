@@ -125,7 +125,6 @@ class WorkflowEngine:
         # Run agent (blocking via AgentWorker queue)
         state = self._engine_state()
         bridge = EngineBridge(
-            session_store=state["session_store"],
             app_config=state["config"],
         )
 

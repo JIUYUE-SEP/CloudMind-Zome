@@ -19,8 +19,8 @@
       <span class="hint-icon">◈</span>
       <span class="hint-text">
         这是<b>你</b>的自设档案，保存在 ~/.cloudmind-zome/userdata/profile.md。
-        所有心智都可以读取这份档案来了解你，但它们<b>无权修改</b>。
-        心智对用户的理解和印象保存在各自的心智文件夹下的 USER.md 中。
+        创建新心智时，这份档案会作为心智对你的<b>初始了解</b>写入各自的心智文件夹下的 USER.md 中。
+        之后每个心智会基于这份初始了解，在交流中自行更新 USER.md，形成对你的独特理解。
       </span>
     </div>
 

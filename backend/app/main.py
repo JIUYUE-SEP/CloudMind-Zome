@@ -23,7 +23,6 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from engine.config.loader import load_config
-from engine.session.store import SessionStore
 from engine.tool.registry import tool_registry
 from .database import engine, Base, AsyncSessionLocal, DATA_DIR, UPLOAD_DIR, ZVEC_DIR, WORKSPACE_ROOT
 from engine.tools.file.security import is_safe_path
@@ -124,24 +123,27 @@ async def _run_agent_cleanup_once() -> None:
         await db.commit()
         logger.info("Agent cleanup: cleared provider settings and mind data")
 
-    # 2. Clear agent_messages table if it already exists (created later by
-    # SessionStore on new installs; skip on OperationalError to avoid blocking
-    # first-time startup).
+    # 2. Clear agent_messages from legacy unified DB if migrating
     db_path = DATA_DIR / "cloudmind.db"
     if db_path.exists():
         try:
             async with aiosqlite.connect(str(db_path)) as conn:
-                await conn.execute("DELETE FROM agent_messages")
-                await conn.commit()
-            logger.info("Agent cleanup: cleared agent_messages")
+                # Check if agent_messages exists in old unified DB
+                cursor = await conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_messages'"
+                )
+                if await cursor.fetchone():
+                    await conn.execute("DELETE FROM agent_messages")
+                    await conn.commit()
+                    logger.info("Agent cleanup: cleared legacy agent_messages from unified DB")
         except aiosqlite.OperationalError:
-            logger.info("Agent cleanup: agent_messages table not present yet, skipping")
+            logger.info("Agent cleanup: legacy agent_messages not present, skipping")
 
-    # 3. Clear zvec collections
+    # 3. Clear zvec collections (will be rebuilt per-agent under workspace)
     zvec_dir = ZVEC_DIR
     if zvec_dir.exists():
         shutil.rmtree(str(zvec_dir), ignore_errors=True)
-        logger.info("Agent cleanup: cleared zvec collections")
+        logger.info("Agent cleanup: cleared zvec collections (will rebuild per-agent)")
 
     # 4. Clear workspace mind files (keep directory structure)
     for agent_dir in WORKSPACE_ROOT.iterdir():
@@ -449,21 +451,20 @@ async def lifespan(app: FastAPI):
     logger.info("Communication callbacks injected into engine")
     t = _startup_log("inject comms callbacks", t)
 
-    # Session store (connects to unified cloudmind.db)
-    store = SessionStore()
-    await store.connect()
-    logger.info("SessionStore connected to unified DB")
-    app.state.session_store = store
+    # Session store is now per-agent, managed by AgentWorker
+    # Global session store removed — each agent gets its own SessionStore
+    # under workspace/{agent_id}/agent.db
+    logger.info("SessionStore is now per-agent (managed by AgentWorker)")
+    t = _startup_log("session store config (per-agent)", t)
 
     from engine.context.vector_store import AgentMemoryStore
 
     memory_store = AgentMemoryStore()
     logger.info("AgentMemoryStore initialized (per-agent collections)")
-    t = _startup_log("init session/memory stores", t)
+    t = _startup_log("init memory store", t)
 
     # Share with ws module
     _app_state["config"] = cfg
-    _app_state["session_store"] = store
     _app_state["memory_store"] = memory_store
 
     # Start commission scheduler (Agent主动性: cron/interval任务)
@@ -479,7 +480,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     scheduler = get_scheduler()
     await scheduler.stop()
-    await store.close()
+    # Note: per-agent session stores are closed by AgentWorker.stop()
     await engine.dispose()
     logger.info("Shutdown complete")
 
