@@ -317,26 +317,23 @@ async def delete_provider(
 
     # Check agent references
     refs = []
-    for col in ["provider_id", "marker_provider_id", "embedder_provider_id", "compressor_provider_id"]:
-        r = await db.execute(
-            select(Agent).where(
-                getattr(Agent, col) == provider_id,
-            )
-        )
-        for a in r.scalars().all():
-            if a not in refs:
-                refs.append(a)
+    from ..services.agent_resolver import list_active_agents
+    agents = list_active_agents()
+    for agent in agents:
+        for col in ["provider_id", "marker_provider_id", "embedder_provider_id", "compressor_provider_id"]:
+            if agent.get(col) == provider_id:
+                if agent not in refs:
+                    refs.append(agent)
+                break
 
     # Check fallback_chain JSON
-    r = await db.execute(
-        select(Agent).where(
-            Agent.fallback_chain.isnot(None),
-        )
-    )
-    for a in r.scalars().all():
-        chain = a.fallback_chain or []
+    for agent in agents:
+        chain = agent.get("fallback_chain") or []
         for item in chain:
             if item.get("provider_id") == provider_id:
+                if agent not in refs:
+                    refs.append(agent)
+                break
                 if a not in refs:
                     refs.append(a)
                 break

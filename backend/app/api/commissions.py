@@ -84,10 +84,8 @@ async def create_commission(
     db: AsyncSession = Depends(get_db),
 ):
     # Verify agent exists
-    agent_row = await db.execute(
-        select(Agent).where(Agent.id == body.agent_id, Agent.deleted_at.is_(None))
-    )
-    if not agent_row.scalar_one_or_none():
+    from ..services.agent_resolver import agent_exists
+    if not agent_exists(body.agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Compute initial next_run_at

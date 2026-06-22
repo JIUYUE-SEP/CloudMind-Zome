@@ -61,13 +61,8 @@ async def create_group(
     db: AsyncSession = Depends(get_db),
 ):
     # Validate all members are existing agents
-    result = await db.execute(
-        select(Agent).where(
-            Agent.id.in_(body.member_ids),
-            Agent.deleted_at.is_(None),
-        )
-    )
-    found = {a.id: a for a in result.scalars().all()}
+    from ..services.agent_resolver import get_agents_by_ids
+    found = get_agents_by_ids(body.member_ids)
     missing = [aid for aid in body.member_ids if aid not in found]
     if missing:
         raise HTTPException(status_code=400, detail=f"Invalid agent ids: {missing}")

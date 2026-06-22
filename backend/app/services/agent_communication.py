@@ -33,21 +33,13 @@ async def dispatch_private_message(
     """
     async with AsyncSessionLocal() as db:
         # Verify target agent exists
-        result = await db.execute(
-            select(Agent).where(
-                Agent.id == to_agent_id,
-                Agent.deleted_at.is_(None),
-            )
-        )
-        target = result.scalar_one_or_none()
+        from .agent_resolver import get_agent_config
+        target = get_agent_config(to_agent_id)
         if not target:
             return f"Error: target agent {to_agent_id} not found."
 
-        result_from = await db.execute(
-            select(Agent).where(Agent.id == from_agent_id)
-        )
-        from_agent = result_from.scalar_one_or_none()
-        from_name = from_agent.name if from_agent else "Unknown"
+        from_agent = get_agent_config(from_agent_id)
+        from_name = from_agent.get("name") if from_agent else "Unknown"
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[str] = loop.create_future()

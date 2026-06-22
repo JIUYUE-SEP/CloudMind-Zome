@@ -218,13 +218,11 @@ async def delete_model(
     # Check if any Agent references this model
     # Check main model
     refs = []
-    result = await db.execute(
-        select(Agent).where(
-            Agent.provider_id == provider_id,
-            Agent.model_id == model_id,
-        )
-    )
-    refs.extend(result.scalars().all())
+    from ..services.agent_resolver import list_active_agents
+    agents = list_active_agents()
+    for agent in agents:
+        if agent.get("provider_id") == provider_id and agent.get("model_id") == model_id:
+            refs.append(agent)
 
     # Check marker / embedder / compressor
     for col_pair in [
@@ -233,22 +231,14 @@ async def delete_model(
         ("compressor_provider_id", "compressor_model_id"),
     ]:
         prov_col, model_col = col_pair
-        result = await db.execute(
-            select(Agent).where(
-                getattr(Agent, prov_col) == provider_id,
-                getattr(Agent, model_col) == model_id,
-            )
-        )
-        refs.extend(result.scalars().all())
+        for agent in agents:
+            if agent.get(prov_col) == provider_id and agent.get(model_col) == model_id:
+                if agent not in refs:
+                    refs.append(agent)
 
     # Check fallback_chain JSON (simplified: string search)
-    result = await db.execute(
-        select(Agent).where(
-            Agent.fallback_chain.isnot(None),
-        )
-    )
-    for agent in result.scalars().all():
-        chain = agent.fallback_chain or []
+    for agent in agents:
+        chain = agent.get("fallback_chain") or []
         for item in chain:
             if item.get("provider_id") == provider_id and item.get("model_id") == model_id:
                 if agent not in refs:
