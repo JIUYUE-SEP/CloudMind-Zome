@@ -161,26 +161,22 @@ class EngineBridge:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    async def _get_agent(self, agent_id: str) -> Agent | None:
-        from ..database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
-            )
-            return result.scalar_one_or_none()
+    async def _get_agent(self, agent_id: str) -> dict | None:
+        from .agent_resolver import get_agent_config
+        return get_agent_config(agent_id)
 
-    async def _build_transport(self, agent_row: Agent) -> ChatCompletionsTransport | None:
+    async def _build_transport(self, agent_config: dict) -> ChatCompletionsTransport | None:
         """Kept for compatibility; Worker builds its own transport."""
         from ..database import AsyncSessionLocal
         from .provider_resolver import resolve_provider_credentials
 
         # Prefer new fields, fallback to legacy model_config
-        prov_id = agent_row.provider_id or ""
-        model_name = agent_row.model_id or ""
+        prov_id = agent_config.get("provider_id", "")
+        model_name = agent_config.get("model_id", "")
         prov_type = ""
 
         if not prov_id or not model_name:
-            model_cfg: dict = agent_row.model_config or {}
+            model_cfg: dict = agent_config.get("model_config") or {}
             prov_id = model_cfg.get("provider_id", prov_id)
             model_name = model_cfg.get("model", model_name) or "deepseek-v4-pro"
             prov_type = (model_cfg.get("provider") or "deepseek").lower()
@@ -189,7 +185,7 @@ class EngineBridge:
             creds = await resolve_provider_credentials(db, prov_id, model_name)
 
         if not creds:
-            logger.error("No active ComputeProvider for agent %s (provider_id=%s)", agent_row.id, prov_id)
+            logger.error("No active ComputeProvider for agent %s (provider_id=%s)", agent_config.get("id"), prov_id)
             return None
 
         effective_type = creds.provider_type or prov_type

@@ -193,15 +193,15 @@ class GroupTaskEngine:
             members = result.scalars().all()
             agent_map: dict = {}
             name_map: dict = {}
+            from .agent_resolver import get_agent_config
             for m in members:
-                agent = await db.execute(select(Agent).where(Agent.id == m.member_id))
-                a = agent.scalar_one_or_none()
-                if a:
-                    agent_map[a.name] = a.id
-                    agent_map[a.codename] = a.id
-                    for alias in a.aliases or []:
-                        agent_map[alias] = a.id
-                    name_map[a.id] = a.name
+                config = get_agent_config(m.member_id)
+                if config:
+                    agent_map[config.get("name", "")] = m.member_id
+                    agent_map[config.get("codename", "")] = m.member_id
+                    for alias in config.get("aliases") or []:
+                        agent_map[alias] = m.member_id
+                    name_map[m.member_id] = config.get("name", "")
             return agent_map, name_map
 
     # ------------------------------------------------------------------
@@ -399,7 +399,5 @@ class GroupTaskEngine:
     async def _agent_name(self, agent_id: str) -> str:
         if hasattr(self, "_agent_name_map") and agent_id in self._agent_name_map:
             return self._agent_name_map[agent_id]
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
-            a = result.scalar_one_or_none()
-            return a.name if a else "Agent"
+        from .agent_resolver import get_agent_name
+        return get_agent_name(agent_id)

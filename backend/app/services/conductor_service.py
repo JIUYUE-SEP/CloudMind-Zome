@@ -101,13 +101,13 @@ class ConductorService:
                 )
             )
             candidates = []
+            from .agent_resolver import get_agent_name
             for m in result.scalars().all():
                 if m.member_id == from_agent_id:
                     continue
-                agent_row = await db.execute(select(Agent).where(Agent.id == m.member_id))
-                a = agent_row.scalar_one_or_none()
-                if a:
-                    candidates.append((m.member_id, a.name))
+                name = get_agent_name(m.member_id)
+                if name:
+                    candidates.append((m.member_id, name))
 
         if not candidates:
             return
