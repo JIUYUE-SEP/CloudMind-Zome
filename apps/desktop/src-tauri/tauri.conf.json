@@ -4,7 +4,7 @@
   "identifier": "com.mindcloud.zome",
   "build": {
     "beforeDevCommand": "pnpm --filter @mindcloud/web dev",
-    "beforeBuildCommand": "",
+    "beforeBuildCommand": "node scripts/ensure-web-dist.mjs",
     "devUrl": "http://localhost:3000",
     "frontendDist": "../../web/dist"
   },
