@@ -1,0 +1,26 @@
+syntax = "proto3";
+package zome;
+
+service ZomeSidecar {
+  rpc Upsert(UpsertRequest) returns (UpsertResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc CountTokens(TokenCountRequest) returns (TokenCountResponse);
+  rpc Encrypt(EncryptRequest) returns (EncryptResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message UpsertRequest { string agent_id = 1; string doc_id = 2; repeated float embedding = 3; }
+message UpsertResponse {}
+
+message SearchRequest { string agent_id = 1; repeated float query = 2; uint32 top_k = 3; }
+message SearchResponse { repeated SearchResult results = 1; }
+message SearchResult { string doc_id = 1; float score = 2; }
+
+message TokenCountRequest { string text = 1; string model = 2; }
+message TokenCountResponse { uint32 count = 1; }
+
+message EncryptRequest { string plaintext = 1; }
+message EncryptResponse { string ciphertext = 1; }
+
+message HealthRequest {}
+message HealthResponse { string status = 1; }
