@@ -2,6 +2,9 @@
   "name": "@mindcloud/desktop",
   "version": "0.1.0",
   "type": "module",
+  "dependencies": {
+    "@mindcloud/web": "workspace:*"
+  },
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",

@@ -13,6 +13,10 @@ importers:
         version: 2.10.0
 
   apps/desktop:
+    dependencies:
+      '@mindcloud/web':
+        specifier: workspace:*
+        version: link:../web
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.5.0
