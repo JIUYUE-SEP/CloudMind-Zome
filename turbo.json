@@ -4,7 +4,7 @@
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**", ".nuxt/**", "target/**", "src-tauri/target/**"] },
     "dev": { "cache": false, "persistent": true },
-    "test": { "dependsOn": ["build"] },
+    "test": { "dependsOn": ["^build"], "outputs": ["coverage/**"] },
     "lint": {},
     "typecheck": { "dependsOn": ["^build"] }
   }

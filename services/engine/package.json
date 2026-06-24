@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/bootstrap.ts",
     "build": "tsc",
-    "start": "node dist/bootstrap.js",
+    "start": "node dist/src/bootstrap.js",
     "test": "vitest run",
     "lint": "eslint src tests",
     "typecheck": "tsc --noEmit"
