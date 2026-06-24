@@ -1,0 +1,29 @@
+{
+  "productName": "MindCloud Zome",
+  "version": "2.0.0",
+  "identifier": "com.mindcloud.zome",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @mindcloud/web dev",
+    "beforeBuildCommand": "pnpm --filter @mindcloud/web build",
+    "devUrl": "http://localhost:3000",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MindCloud Zome",
+        "width": 1400,
+        "height": 900,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+  }
+}
