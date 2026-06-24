@@ -2,8 +2,9 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 use crate::crypto;
+use crate::supervisor;
 use crate::tokenizer;
-use crate::vector::VectorIndex;
+use crate::vector;
 use crate::zome::zome_sidecar_server::{ZomeSidecar, ZomeSidecarServer};
 use crate::zome::{
     EncryptRequest, EncryptResponse, HealthRequest, HealthResponse, SearchRequest, SearchResponse,
@@ -20,8 +21,12 @@ impl ZomeSidecar for ZomeSidecarService {
         request: Request<UpsertRequest>,
     ) -> Result<Response<UpsertResponse>, Status> {
         let req = request.into_inner();
-        let mut index = VectorIndex::new(&req.agent_id);
-        index.upsert(&req.doc_id, &req.embedding);
+        let agent_id = crate::sanitize_agent_id(&req.agent_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let state = vector::get_or_load(&agent_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        state.write().await.upsert(&req.doc_id, &req.embedding);
         Ok(Response::new(UpsertResponse {}))
     }
 
@@ -30,8 +35,14 @@ impl ZomeSidecar for ZomeSidecarService {
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
-        let index = VectorIndex::new(&req.agent_id);
-        let results = index
+        let agent_id = crate::sanitize_agent_id(&req.agent_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let state = vector::get_or_load(&agent_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let results = state
+            .read()
+            .await
             .search(&req.query, req.top_k as usize)
             .into_iter()
             .map(|(doc_id, score)| SearchResult { doc_id, score })
@@ -63,9 +74,13 @@ impl ZomeSidecar for ZomeSidecarService {
         &self,
         _request: Request<HealthRequest>,
     ) -> Result<Response<HealthResponse>, Status> {
-        Ok(Response::new(HealthResponse {
-            status: "ok".to_string(),
-        }))
+        let status = if supervisor::is_node_healthy().await {
+            "ok"
+        } else {
+            "degraded"
+        }
+        .to_string();
+        Ok(Response::new(HealthResponse { status }))
     }
 }
 

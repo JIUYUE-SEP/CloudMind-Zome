@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
@@ -84,7 +85,37 @@ fn master_key() -> anyhow::Result<Vec<u8>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, STANDARD.encode(&key))?;
+    let encoded = STANDARD.encode(&key);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(encoded.as_bytes())?;
+        fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .custom_flags(FILE_ATTRIBUTE_HIDDEN)
+            .open(&path)?;
+        file.write_all(encoded.as_bytes())?;
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&path, perms)?;
+    }
+
     Ok(key)
 }
 

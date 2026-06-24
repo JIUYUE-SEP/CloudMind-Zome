@@ -2175,6 +2175,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs",
  "instant-distance",
+ "lazy_static",
  "prost",
  "reqwest",
  "ring",

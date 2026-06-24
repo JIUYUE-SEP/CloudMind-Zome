@@ -7,6 +7,13 @@ use tracing::{error, info, warn};
 
 use crate::project_root;
 
+const HEALTH_URL: &str = "http://127.0.0.1:8848/health";
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(30);
+const STARTUP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const UNHEALTHY_FAILURE_THRESHOLD: u32 = 3;
+const MAX_RESTART_RETRIES: u32 = 5;
+
 static SUPERVISOR: std::sync::LazyLock<Mutex<Option<Supervisor>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
@@ -28,35 +35,90 @@ pub async fn spawn_node_engine() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn is_node_healthy() -> bool {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap_or_default();
+    matches!(
+        client.get(HEALTH_URL).send().await,
+        Ok(resp) if resp.status().is_success()
+    )
+}
+
 pub async fn watch_node_health() {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .unwrap_or_default();
+
+    let deadline = tokio::time::Instant::now() + STARTUP_GRACE_PERIOD;
+    let mut started = false;
+    while tokio::time::Instant::now() < deadline {
+        if check_health(&client).await {
+            started = true;
+            break;
+        }
+        tokio::time::sleep(STARTUP_CHECK_INTERVAL).await;
+    }
+
+    if !started {
+        error!("node engine did not become healthy within startup grace period");
+        return;
+    }
+    info!("node engine passed startup health check");
+
     let mut failures = 0u32;
-
+    let mut restart_retries = 0u32;
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
 
-        match client.get("http://127.0.0.1:8848/health").send().await {
-            Ok(resp) if resp.status().is_success() => {
-                failures = 0;
-                info!("node engine health ok");
-            }
-            Ok(resp) => {
-                warn!("node engine health returned {}", resp.status());
-                failures += 1;
-            }
-            Err(e) => {
-                warn!("node engine health check failed: {}", e);
-                failures += 1;
-            }
+        if check_health(&client).await {
+            failures = 0;
+            restart_retries = 0;
+            info!("node engine health ok");
+            continue;
         }
 
-        if failures >= 3 {
-            error!("node engine unhealthy, restarting");
-            restart().await;
-            failures = 0;
+        failures += 1;
+        warn!(
+            "node engine health check failed ({}/{})",
+            failures, UNHEALTHY_FAILURE_THRESHOLD
+        );
+
+        if failures < UNHEALTHY_FAILURE_THRESHOLD {
+            continue;
+        }
+
+        if restart_retries >= MAX_RESTART_RETRIES {
+            error!("node engine restart retries exceeded; giving up to avoid restart storm");
+            break;
+        }
+
+        let backoff = Duration::from_secs(2u64.pow(restart_retries));
+        error!(
+            "node engine unhealthy; restarting after {:?} backoff (attempt {}/{})",
+            backoff,
+            restart_retries + 1,
+            MAX_RESTART_RETRIES
+        );
+        tokio::time::sleep(backoff).await;
+        restart().await;
+        restart_retries += 1;
+        failures = 0;
+    }
+}
+
+async fn check_health(client: &reqwest::Client) -> bool {
+    match client.get(HEALTH_URL).send().await {
+        Ok(resp) if resp.status().is_success() => true,
+        Ok(resp) => {
+            warn!("node engine health returned {}", resp.status());
+            false
+        }
+        Err(e) => {
+            warn!("node engine health check failed: {}", e);
+            false
         }
     }
 }

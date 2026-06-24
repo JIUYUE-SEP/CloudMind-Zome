@@ -11,6 +11,22 @@ pub mod zome {
 
 use std::path::PathBuf;
 
+use anyhow::bail;
+
+pub fn sanitize_agent_id(agent_id: &str) -> anyhow::Result<String> {
+    if agent_id.is_empty() || agent_id.len() > 64 {
+        bail!("invalid agent_id length");
+    }
+    if agent_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        Ok(agent_id.to_string())
+    } else {
+        bail!("agent_id contains invalid characters")
+    }
+}
+
 pub fn project_root() -> anyhow::Result<PathBuf> {
     let mut dir = std::env::current_dir()?;
     loop {
@@ -25,7 +41,10 @@ pub fn project_root() -> anyhow::Result<PathBuf> {
 }
 
 pub fn data_dir() -> PathBuf {
-    std::env::var("CLOUDMIND_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().expect("home dir").join(".cloudmind-zome"))
+    if let Ok(dir) = std::env::var("CLOUDMIND_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("cloudmind-zome")
 }
