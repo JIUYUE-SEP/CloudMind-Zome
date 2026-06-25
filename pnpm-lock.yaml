@@ -64,6 +64,9 @@ importers:
       '@grpc/proto-loader':
         specifier: ^0.8.0
         version: 0.8.1
+      '@mindcloud/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       cron-parser:
         specifier: ^5.0.0
         version: 5.6.0
