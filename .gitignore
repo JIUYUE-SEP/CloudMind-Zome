@@ -67,3 +67,8 @@ nul
 
 # Agent workspace (per-agent writable files, auto-generated)
 /workspace/
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/

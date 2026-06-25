@@ -44,7 +44,7 @@ async function main() {
   }
 
   async function createProvider(agentConfig: AgentConfig) {
-    if (!agentConfig.providerId) {
+    if (process.env.NODE_ENV === "e2e" || !agentConfig.providerId) {
       return new MockLLMProvider();
     }
     const config = await configRepo.load();

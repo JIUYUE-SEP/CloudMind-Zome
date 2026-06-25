@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
+import cors from "@fastify/cors";
 import type { ApiContext } from "./context.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerChatRoutes } from "./routes/chat.js";
@@ -16,6 +17,10 @@ import { registerSessionWebSocket } from "./ws/session-handler.js";
 
 export async function createServer(context: ApiContext) {
   const app = Fastify({ logger: true });
+  await app.register(cors, {
+    origin: process.env.NODE_ENV === "e2e" ? true : ["http://localhost:3000", "http://127.0.0.1:3000"],
+    credentials: true,
+  });
   await app.register(websocket);
 
   app.get("/health", async () => ({ status: "ok" }));

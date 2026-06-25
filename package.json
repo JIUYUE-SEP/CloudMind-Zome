@@ -8,9 +8,14 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "devDependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@playwright/test": "^1.61.1",
+    "playwright": "^1.61.1",
     "turbo": "^2.5.0"
   }
 }
