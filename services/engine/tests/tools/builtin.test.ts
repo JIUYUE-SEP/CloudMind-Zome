@@ -93,6 +93,35 @@ describe("bashTool", () => {
     expect(result.error).toContain("not allowed");
   });
 
+  it("rejects backslash bypass", async () => {
+    const result = await bashTool.execute(ctx, { command: "..\\external.exe" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not allowed");
+  });
+
+  it("rejects &", async () => {
+    const result = await bashTool.execute(ctx, { command: "echo a & echo b" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not allowed");
+  });
+
+  it("rejects newlines", async () => {
+    const result = await bashTool.execute(ctx, { command: "echo a\necho b" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not allowed");
+  });
+
+  it("rejects commands outside allowlist", async () => {
+    const result = await bashTool.execute(ctx, { command: "curl example.com" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not in allowlist");
+  });
+
+  it("allows relative executable paths starting with ./", async () => {
+    const result = await bashTool.execute(ctx, { command: "./scripts/build.sh" });
+    expect(result.error).not.toContain("Command rejected");
+  });
+
   it("rejects absolute paths", async () => {
     const absoluteCommand = path.join(os.tmpdir(), "evil.exe");
     const result = await bashTool.execute(ctx, { command: absoluteCommand });

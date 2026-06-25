@@ -81,6 +81,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
           text: typeof r.output === "string" ? r.output : JSON.stringify(r.output),
         },
       ],
+      toolCallId: r.toolCallId,
       createdAt: new Date().toISOString(),
     }));
     return { stopReason: "tool_use", assistantMessage, toolMessages };

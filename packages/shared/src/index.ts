@@ -18,5 +18,6 @@ export interface ChatMessage {
   role: "user" | "assistant" | "tool";
   content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
   toolCalls?: ToolCall[];
+  toolCallId?: string;
   createdAt: string;
 }

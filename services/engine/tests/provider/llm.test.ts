@@ -119,4 +119,46 @@ describe("OpenAIProvider", () => {
 
     expect(events.at(-1)).toEqual({ type: "step.end", finishReason: "length" });
   });
+
+  it("includes tool_call_id for tool messages", async () => {
+    const provider = new OpenAIProvider("test-key");
+
+    let capturedMessages: unknown[] = [];
+    async function* mockStream() {
+      yield makeChunk({ content: "Done" });
+    }
+
+    const create = async (req: { messages: unknown[] }) => {
+      capturedMessages = req.messages;
+      return mockStream();
+    };
+    (provider as unknown as { client: { chat: { completions: { create: typeof create } } } }).client = {
+      chat: {
+        completions: {
+          create,
+        },
+      },
+    };
+
+    const messages = [
+      {
+        id: "msg_1",
+        role: "tool" as const,
+        content: [{ type: "text" as const, text: "result" }],
+        toolCallId: "call_abc",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    for await (const event of provider.chat({ model: "gpt-4", messages })) {
+      void event;
+    }
+
+    expect(capturedMessages).toHaveLength(1);
+    expect(capturedMessages[0]).toMatchObject({
+      role: "tool",
+      content: "result",
+      tool_call_id: "call_abc",
+    });
+  });
 });

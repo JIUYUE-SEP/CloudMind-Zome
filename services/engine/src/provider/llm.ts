@@ -29,7 +29,7 @@ export class OpenAIProvider implements LLMProvider {
             role: m.role,
             content: m.content.filter((c) => c.type === "text").map((c) => c.text).join(""),
           } as OpenAI.ChatCompletionMessageParam;
-          if (m.role === "assistant" && m.toolCalls) {
+          if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
             return {
               ...base,
               tool_calls: m.toolCalls.map((tc) => ({
@@ -37,6 +37,12 @@ export class OpenAIProvider implements LLMProvider {
                 type: "function" as const,
                 function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
               })),
+            } as OpenAI.ChatCompletionMessageParam;
+          }
+          if (m.role === "tool" && m.toolCallId) {
+            return {
+              ...base,
+              tool_call_id: m.toolCallId,
             } as OpenAI.ChatCompletionMessageParam;
           }
           return base;
