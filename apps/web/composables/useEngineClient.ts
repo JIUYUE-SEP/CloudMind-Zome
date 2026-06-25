@@ -1,4 +1,6 @@
 import type { AgentConfig } from "@mindcloud/shared";
+import { invoke } from "@tauri-apps/api/core";
+import { ref, onMounted } from "vue";
 
 export interface ChatMessageRecord {
   id: string;
@@ -31,16 +33,28 @@ export interface Connection {
 
 export function useEngineClient(options?: EngineClientOptions) {
   const config = useRuntimeConfig();
-  const baseUrl = options?.baseUrl || (config.public.engineUrl as string) || "http://127.0.0.1:8848";
+  const baseUrl = ref<string>(
+    options?.baseUrl || (config.public.engineUrl as string) || "http://127.0.0.1:8848"
+  );
+
+  onMounted(async () => {
+    if (typeof window !== "undefined" && (window as any).__TAURI__) {
+      try {
+        baseUrl.value = await invoke<string>("get_backend_url");
+      } catch {
+        // fallback to default
+      }
+    }
+  });
 
   async function listAgents(): Promise<AgentConfig[]> {
-    const res = await fetch(`${baseUrl}/agents`);
+    const res = await fetch(`${baseUrl.value}/agents`);
     if (!res.ok) throw new Error(`Failed to list agents: ${res.status}`);
     return res.json();
   }
 
   async function createAgent(agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl}/agents`, {
+    const res = await fetch(`${baseUrl.value}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -50,13 +64,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getAgent(id: string): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl}/agents/${id}`);
+    const res = await fetch(`${baseUrl.value}/agents/${id}`);
     if (!res.ok) throw new Error(`Failed to get agent: ${res.status}`);
     return res.json();
   }
 
   async function updateAgent(id: string, agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl}/agents/${id}`, {
+    const res = await fetch(`${baseUrl.value}/agents/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -66,7 +80,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteAgent(id: string): Promise<void> {
-    const res = await fetch(`${baseUrl}/agents/${id}`, { method: "DELETE" });
+    const res = await fetch(`${baseUrl.value}/agents/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete agent: ${res.status}`);
   }
 
@@ -74,13 +88,13 @@ export function useEngineClient(options?: EngineClientOptions) {
     const params = new URLSearchParams();
     params.set("sessionId", sessionId);
     if (limit) params.set("limit", String(limit));
-    const res = await fetch(`${baseUrl}/chat/${agentId}/messages?${params.toString()}`);
+    const res = await fetch(`${baseUrl.value}/chat/${agentId}/messages?${params.toString()}`);
     if (!res.ok) throw new Error(`Failed to get messages: ${res.status}`);
     return res.json();
   }
 
   function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
-    const wsUrl = baseUrl.replace(/^http/, "ws");
+    const wsUrl = baseUrl.value.replace(/^http/, "ws");
     const socket = new WebSocket(`${wsUrl}/ws/${agentId}?sessionId=${encodeURIComponent(sessionId)}`);
 
     socket.onopen = () => {

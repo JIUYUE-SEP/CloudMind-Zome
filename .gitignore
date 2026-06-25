@@ -52,6 +52,7 @@ backend/uploads/
 # Tauri build
 frontend/src-tauri/target/
 frontend/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
 
 # Lock files (optional, keeping package-lock.json for reproducibility)
 # package-lock.json
