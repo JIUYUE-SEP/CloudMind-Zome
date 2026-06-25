@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { ImageGenProvider } from "./types.js";
+import { ProviderError } from "./errors.js";
 
 export class OpenAIImageGenProvider implements ImageGenProvider {
   name = "openai";
@@ -14,12 +15,16 @@ export class OpenAIImageGenProvider implements ImageGenProvider {
   }
 
   async generate(prompt: string, options?: { size?: string }) {
-    const response = await this.client.images.generate({
-      model: "dall-e-3",
-      prompt,
-      size: options?.size as OpenAI.Images.ImageGenerateParams["size"] | undefined,
-    });
-    return { url: response.data?.[0]?.url };
+    try {
+      const response = await this.client.images.generate({
+        model: "dall-e-3",
+        prompt,
+        size: options?.size as OpenAI.Images.ImageGenerateParams["size"] | undefined,
+      });
+      return { url: response.data?.[0]?.url };
+    } catch (err) {
+      throw new ProviderError("openai", err);
+    }
   }
 }
 

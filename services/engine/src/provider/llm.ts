@@ -1,5 +1,12 @@
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "./types.js";
+import { ProviderError } from "./errors.js";
+
+interface ToolCallDelta {
+  index?: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
 
 export class OpenAIProvider implements LLMProvider {
   name = "openai";
@@ -14,35 +21,67 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
-    const response = await this.client.chat.completions.create({
-      model: params.model,
-      messages: params.messages as unknown as OpenAI.ChatCompletionMessageParam[],
-      tools: params.tools as OpenAI.ChatCompletionTool[] | undefined,
-      temperature: params.temperature,
-      max_tokens: params.maxTokens,
-      stream: true,
-    });
+    try {
+      const response = await this.client.chat.completions.create({
+        model: params.model,
+        messages: params.messages as unknown as OpenAI.ChatCompletionMessageParam[],
+        tools: params.tools as OpenAI.ChatCompletionTool[] | undefined,
+        temperature: params.temperature,
+        max_tokens: params.maxTokens,
+        stream: true,
+      });
 
-    for await (const chunk of response) {
-      const delta = chunk.choices[0]?.delta;
-      if (delta?.content) {
-        yield { type: "text.delta", delta: delta.content };
+      const toolCallBuffers = new Map<number, { id: string; name: string; args: string }>();
+
+      for await (const chunk of response) {
+        const delta = chunk.choices[0]?.delta as
+          | (OpenAI.ChatCompletionChunk.Choice.Delta & {
+              reasoning_content?: string;
+              tool_calls?: ToolCallDelta[];
+            })
+          | undefined;
+
+        if (delta?.content) {
+          yield { type: "text.delta", delta: delta.content };
+        }
+        if (delta?.reasoning_content) {
+          yield { type: "thinking.delta", delta: delta.reasoning_content };
+        }
+
+        const tcs = delta?.tool_calls;
+        if (tcs) {
+          for (const tc of tcs) {
+            const index = tc.index ?? 0;
+            let buf = toolCallBuffers.get(index);
+            if (!buf) {
+              buf = { id: tc.id || `tc_${index}`, name: "", args: "" };
+              toolCallBuffers.set(index, buf);
+            }
+            if (tc.id) buf.id = tc.id;
+            if (tc.function?.name) buf.name += tc.function.name;
+            if (tc.function?.arguments) buf.args += tc.function.arguments;
+          }
+        }
       }
-      if (delta && "reasoning_content" in delta && delta.reasoning_content) {
-        yield { type: "thinking.delta", delta: delta.reasoning_content as string };
+
+      const sortedBuffers = [...toolCallBuffers.entries()].sort((a, b) => a[0] - b[0]);
+      for (const [, buf] of sortedBuffers) {
+        if (!buf.name) continue;
+        let args: unknown = {};
+        try {
+          args = buf.args ? JSON.parse(buf.args) : {};
+        } catch (err) {
+          console.error(`Failed to parse tool call arguments for ${buf.name}: ${buf.args}`, err);
+        }
+        yield { type: "tool.call", toolCallId: buf.id, name: buf.name, arguments: args };
       }
-      const toolCalls = delta?.tool_calls;
-      if (toolCalls && toolCalls.length > 0) {
-        const tc = toolCalls[0];
-        yield {
-          type: "tool.call",
-          toolCallId: tc.id || "tc_0",
-          name: tc.function?.name || "",
-          arguments: tc.function?.arguments ? JSON.parse(tc.function.arguments) : {},
-        };
-      }
+
+      yield { type: "step.end" };
+    } catch (err) {
+      yield { type: "text.delta", delta: `\nProvider error: ${String(err)}` };
+      yield { type: "step.end" };
+      throw new ProviderError("openai", err);
     }
-    yield { type: "step.end" };
   }
 }
 

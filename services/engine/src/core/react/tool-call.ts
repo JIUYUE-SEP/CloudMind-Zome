@@ -37,23 +37,23 @@ export async function runToolCallBatch(
   const results: ToolCallResult[] = [];
 
   // Preflight
+  const validatedCalls: typeof calls = [];
   for (const call of calls) {
     const parse = call.tool.parameters.safeParse(call.args);
     if (!parse.success) {
       const result = { toolCallId: call.toolCallId, output: { error: parse.error.message } };
       ctx.emit({ type: "tool.result", ...result });
       results.push(result);
-      return results;
+      continue;
     }
+    validatedCalls.push(call);
   }
 
-  const batches = scheduler.schedule(calls);
+  const batches = scheduler.schedule(validatedCalls);
 
   for (const batch of batches) {
     const batchResults = await Promise.all(
       batch.map(async (call) => {
-        ctx.emit({ type: "tool.call", toolCallId: call.toolCallId, name: call.tool.name, arguments: call.args });
-
         const approved = await ctx.requiresApproval(call.tool.name, call.args);
         if (!approved) {
           const result = { toolCallId: call.toolCallId, output: { error: "Approval denied" } };

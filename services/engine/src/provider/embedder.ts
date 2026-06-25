@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { EmbedderProvider } from "./types.js";
+import { ProviderError } from "./errors.js";
 
 export class OpenAIEmbedderProvider implements EmbedderProvider {
   name = "openai";
@@ -14,11 +15,15 @@ export class OpenAIEmbedderProvider implements EmbedderProvider {
   }
 
   async embed(texts: string[]): Promise<number[][]> {
-    const response = await this.client.embeddings.create({
-      model: "text-embedding-3-small",
-      input: texts,
-    });
-    return response.data.map((d) => d.embedding);
+    try {
+      const response = await this.client.embeddings.create({
+        model: "text-embedding-3-small",
+        input: texts,
+      });
+      return response.data.map((d) => d.embedding);
+    } catch (err) {
+      throw new ProviderError("openai", err);
+    }
   }
 }
 

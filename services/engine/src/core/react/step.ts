@@ -28,6 +28,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
   let textBuffer = "";
   let thinkBuffer = "";
   const toolCalls = new Map<string, ToolCallRequest>();
+  let finishReason: string | undefined;
 
   for await (const event of input.provider.chat(params)) {
     emit(event);
@@ -78,5 +79,6 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
     return { stopReason: "tool_use", assistantMessage, toolMessages };
   }
 
-  return { stopReason: "stop", assistantMessage };
+  const stopReason = finishReason === "length" ? "max_tokens" : "stop";
+  return { stopReason, assistantMessage };
 }

@@ -1,54 +1,83 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { z } from "zod";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
+const COMMAND_TIMEOUT_MS = 30000;
+const KILL_GRACE_MS = 5000;
+
+function isDangerousCommand(command: string): boolean {
+  // Reject common shell metacharacters that enable chaining, redirection,
+  // substitution, or path traversal. Only simple commands with plain arguments
+  // are allowed.
+  return /[;&|`$()<>{}\\[\]\*?#~!\r\n]/.test(command);
+}
+
 export const bashTool: Tool = {
   name: "bash",
-  description: "Execute a shell command in the workspace (requires approval)",
+  description: "Execute a bash command in the workspace (requires approval)",
   parameters: z.object({
-    command: z.string(),
-    timeout: z.number().optional(),
+    command: z.string().max(4096),
   }),
   accesses: [{ resource: "process", action: "execute" }],
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
+    const { command } = args as { command: string };
+
     const approved = await ctx.requiresApproval("bash", args);
     if (!approved) {
       return { success: false, error: "User rejected the bash command" };
     }
 
-    const { command, timeout = 30000 } = args as {
-      command: string;
-      timeout?: number;
-    };
+    if (!command.trim()) {
+      return { success: false, error: "Empty command" };
+    }
+
+    if (path.isAbsolute(command.trim())) {
+      return { success: false, error: "Absolute paths are not allowed" };
+    }
+
+    if (isDangerousCommand(command)) {
+      return { success: false, error: "Complex shell constructs are not allowed" };
+    }
 
     return new Promise((resolve) => {
-      const child = spawn(command, { shell: true, cwd: ctx.workspaceDir });
+      const child = spawn(command, [], { shell: true, cwd: ctx.workspaceDir });
       let stdout = "";
       let stderr = "";
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        resolve({ success: false, error: `Timeout after ${timeout}ms` });
-      }, timeout);
+      let settled = false;
 
-      child.stdout.on("data", (data: Buffer) => {
+      const settle = (result: ToolResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
+        resolve(result);
+      };
+
+      const termTimer = setTimeout(() => {
+        child.kill("SIGTERM");
+        killTimer = setTimeout(() => {
+          child.kill("SIGKILL");
+          settle({ success: false, error: `Timeout after ${COMMAND_TIMEOUT_MS}ms` });
+        }, KILL_GRACE_MS);
+      }, COMMAND_TIMEOUT_MS);
+
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+      child.stdout?.on("data", (data: Buffer) => {
         stdout += data.toString("utf-8");
       });
-      child.stderr.on("data", (data: Buffer) => {
+      child.stderr?.on("data", (data: Buffer) => {
         stderr += data.toString("utf-8");
       });
       child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({ success: false, error: String(err) });
+        settle({ success: false, error: String(err) });
       });
       child.on("close", (code) => {
-        clearTimeout(timer);
         if (code === 0) {
-          resolve({ success: true, output: stdout });
+          settle({ success: true, output: stdout || stderr });
         } else {
-          resolve({
-            success: false,
-            error: `Exit code ${code}: ${stderr || stdout}`,
-          });
+          settle({ success: false, error: stderr || `exit code ${code}` });
         }
       });
     });
