@@ -11,6 +11,45 @@ export interface ChatMessageRecord {
   createdAt: string;
 }
 
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+  modelType: "llm" | "embedding" | "image" | "stt";
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsReasoning?: boolean;
+  supportsToolCalling?: boolean;
+  supportsMultimodal?: boolean;
+}
+
+export interface Provider {
+  id: string;
+  displayName: string;
+  providerType: "openai";
+  baseUrl: string;
+  apiKey?: string;
+  hasApiKey?: boolean;
+  models: ModelInfo[];
+}
+
+export interface MemorySettings {
+  compactThreshold: number;
+  keepRecent: number;
+  hotMemoryLimit: number;
+  warmMemoryLimit: number;
+}
+
+export interface AppSettings {
+  tavilyApiKey?: string;
+  memory: MemorySettings;
+}
+
+export interface ToolInfo {
+  name: string;
+  toolset: string;
+  safeToParallel: boolean;
+}
+
 export interface EngineClientOptions {
   baseUrl?: string;
 }
@@ -93,6 +132,91 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
+  // Compute
+  async function listProviders(): Promise<Provider[]> {
+    const res = await fetch(`${baseUrl.value}/compute/providers`);
+    if (!res.ok) throw new Error(`Failed to list providers: ${res.status}`);
+    return res.json();
+  }
+
+  async function createProvider(body: Omit<Provider, "id">): Promise<Provider> {
+    const res = await fetch(`${baseUrl.value}/compute/providers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Failed to create provider: ${res.status}`);
+    return res.json();
+  }
+
+  async function updateProvider(id: string, body: Partial<Provider>): Promise<Provider> {
+    const res = await fetch(`${baseUrl.value}/compute/providers/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Failed to update provider: ${res.status}`);
+    return res.json();
+  }
+
+  async function deleteProvider(id: string): Promise<void> {
+    const res = await fetch(`${baseUrl.value}/compute/providers/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`Failed to delete provider: ${res.status}`);
+  }
+
+  async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
+    const res = await fetch(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" });
+    return res.json();
+  }
+
+  async function addModel(providerId: string, body: ModelInfo): Promise<ModelInfo> {
+    const res = await fetch(`${baseUrl.value}/compute/providers/${providerId}/models`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Failed to add model: ${res.status}`);
+    return res.json();
+  }
+
+  async function updateModel(providerId: string, modelId: string, body: Partial<ModelInfo>): Promise<ModelInfo> {
+    const res = await fetch(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Failed to update model: ${res.status}`);
+    return res.json();
+  }
+
+  async function deleteModel(providerId: string, modelId: string): Promise<void> {
+    const res = await fetch(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`Failed to delete model: ${res.status}`);
+  }
+
+  // Settings
+  async function getConfig(): Promise<AppSettings & { providers: Provider[] }> {
+    const res = await fetch(`${baseUrl.value}/config`);
+    if (!res.ok) throw new Error(`Failed to get config: ${res.status}`);
+    return res.json();
+  }
+
+  async function updateConfig(body: Partial<AppSettings>): Promise<AppSettings> {
+    const res = await fetch(`${baseUrl.value}/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Failed to update config: ${res.status}`);
+    return res.json();
+  }
+
+  async function getTools(): Promise<ToolInfo[]> {
+    const res = await fetch(`${baseUrl.value}/config/tools`);
+    if (!res.ok) throw new Error(`Failed to get tools: ${res.status}`);
+    return res.json();
+  }
+
   function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
     const socket = new WebSocket(`${wsUrl}/ws/${agentId}?sessionId=${encodeURIComponent(sessionId)}`);
@@ -144,5 +268,24 @@ export function useEngineClient(options?: EngineClientOptions) {
     };
   }
 
-  return { listAgents, createAgent, getAgent, updateAgent, deleteAgent, getMessages, connect };
+  return {
+    listAgents,
+    createAgent,
+    getAgent,
+    updateAgent,
+    deleteAgent,
+    getMessages,
+    listProviders,
+    createProvider,
+    updateProvider,
+    deleteProvider,
+    testProvider,
+    addModel,
+    updateModel,
+    deleteModel,
+    getConfig,
+    updateConfig,
+    getTools,
+    connect,
+  };
 }

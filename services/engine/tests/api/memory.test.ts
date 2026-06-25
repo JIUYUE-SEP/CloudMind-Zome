@@ -9,6 +9,7 @@ import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { MemoryRepository } from "../../src/memory/repositories/memory.js";
 import { ActionRepository } from "../../src/memory/repositories/action.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
+import { ConfigRepository } from "../../src/config/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 
@@ -33,7 +34,8 @@ async function buildContext(agentId: string): Promise<{ context: ApiContext; cle
     getMemoryRepository: (id: string) => new MemoryRepository(id),
     getActionRepository: (id: string) => new ActionRepository(id),
     getLLMCallRepository: (id: string) => new LLMCallRepository(id),
-    getAgentWorker: () => undefined,
+    configRepository: new ConfigRepository(),
+    getAgentWorker: async () => undefined,
   };
 
   return {

@@ -11,7 +11,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
     async (socket: WebSocket, req: FastifyRequest) => {
       const { agentId } = req.params as { agentId: string };
       const sessionId = (req.query as { sessionId?: string }).sessionId || "default";
-      const worker = context.getAgentWorker(agentId);
+      const worker = await context.getAgentWorker(agentId);
       if (!worker) {
         socket.close(4001, "Agent not found");
         return;

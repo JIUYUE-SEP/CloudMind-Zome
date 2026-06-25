@@ -9,8 +9,35 @@
       <input v-model="form.name" required />
     </label>
     <label>
-      模型
-      <input v-model="form.model" required />
+      Provider
+      <select v-model="form.providerId">
+        <option value="">Mock Provider</option>
+        <option v-for="p in compute.providers" :key="p.id" :value="p.id">{{ p.displayName }}</option>
+      </select>
+    </label>
+    <label>
+      主模型
+      <ModelSelector
+        v-model:provider-id="form.providerId"
+        v-model:model-id="form.modelId"
+        model-type="llm"
+      />
+    </label>
+    <label>
+      Embedding 模型
+      <ModelSelector
+        v-model:provider-id="form.embeddingProviderId"
+        v-model:model-id="form.embeddingModelId"
+        model-type="embedding"
+      />
+    </label>
+    <label>
+      ImageGen 模型
+      <ModelSelector
+        v-model:provider-id="form.imageProviderId"
+        v-model:model-id="form.imageModelId"
+        model-type="image"
+      />
     </label>
     <label>
       人设
@@ -24,8 +51,10 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed } from "vue";
+import { reactive, computed, onMounted } from "vue";
 import type { AgentConfig } from "@mindcloud/shared";
+import { useComputeStore } from "@/stores/compute";
+import ModelSelector from "./ModelSelector.vue";
 
 const props = defineProps<{
   agent?: AgentConfig;
@@ -36,18 +65,39 @@ const emit = defineEmits<{
   (e: "cancel"): void;
 }>();
 
+const compute = useComputeStore();
+
+onMounted(() => {
+  compute.load();
+});
+
 const isEdit = computed(() => !!props.agent);
-const form = reactive<AgentConfig>({
+const form = reactive({
   id: props.agent?.id || "",
   name: props.agent?.name || "",
   persona: props.agent?.persona || "",
-  model: props.agent?.model || "",
+  providerId: props.agent?.providerId || "",
+  modelId: props.agent?.modelId || props.agent?.model || "",
+  embeddingProviderId: "",
+  embeddingModelId: "",
+  imageProviderId: "",
+  imageModelId: "",
   skills: props.agent?.skills || [],
   tools: props.agent?.tools || [],
 });
 
 function submit() {
-  emit("save", { ...form });
+  const agent: AgentConfig = {
+    id: form.id,
+    name: form.name,
+    persona: form.persona,
+    providerId: form.providerId || undefined,
+    modelId: form.modelId || undefined,
+    model: form.modelId || undefined,
+    skills: form.skills,
+    tools: form.tools,
+  };
+  emit("save", agent);
 }
 </script>
 
@@ -66,7 +116,8 @@ function submit() {
   font-size: 13px;
 }
 .agent-form input,
-.agent-form textarea {
+.agent-form textarea,
+.agent-form select {
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);

@@ -6,6 +6,7 @@ import type {
   ILLMCallRepository,
 } from "../memory/repositories/types.js";
 import type { AgentWorker } from "../core/agent-worker.js";
+import type { ConfigRepository } from "../config/repository.js";
 
 export interface ApiContext {
   agentRepository: IAgentRepository;
@@ -13,5 +14,6 @@ export interface ApiContext {
   getMemoryRepository(agentId: string): IMemoryRepository;
   getActionRepository(agentId: string): IActionRepository;
   getLLMCallRepository(agentId: string): ILLMCallRepository;
-  getAgentWorker(agentId: string): AgentWorker | undefined;
+  configRepository: ConfigRepository;
+  getAgentWorker(agentId: string): Promise<AgentWorker | undefined>;
 }

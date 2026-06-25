@@ -13,6 +13,10 @@
           {{ agent.name }}
         </li>
       </ul>
+      <nav class="nav-links">
+        <NuxtLink to="/compute">算力中枢</NuxtLink>
+        <NuxtLink to="/settings">系统设置</NuxtLink>
+      </nav>
     </aside>
     <main class="main">
       <div v-if="showForm" class="form-panel">
@@ -83,6 +87,17 @@ async function onSave(agent: AgentConfig) {
 .sidebar li.active,
 .sidebar li:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+.nav-links {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nav-links a {
+  color: #00e5c9;
+  text-decoration: none;
+  font-size: 14px;
 }
 .main {
   flex: 1;

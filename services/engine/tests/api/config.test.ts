@@ -1,0 +1,89 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import request from "supertest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createServer } from "../../src/api/server.js";
+import { AgentRepository } from "../../src/memory/repositories/agent.js";
+import { MessageRepository } from "../../src/memory/repositories/message.js";
+import { MemoryRepository } from "../../src/memory/repositories/memory.js";
+import { ActionRepository } from "../../src/memory/repositories/action.js";
+import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
+import { ConfigRepository } from "../../src/config/repository.js";
+import type { ApiContext } from "../../src/api/context.js";
+import type { FastifyInstance } from "fastify";
+
+async function buildContext(): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "config-api-test-"));
+  const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+  process.env.CLOUDMIND_DATA_DIR = tmpDir;
+
+  const context: ApiContext = {
+    agentRepository: new AgentRepository(),
+    getMessageRepository: (agentId: string) => new MessageRepository(agentId),
+    getMemoryRepository: (agentId: string) => new MemoryRepository(agentId),
+    getActionRepository: (agentId: string) => new ActionRepository(agentId),
+    getLLMCallRepository: (agentId: string) => new LLMCallRepository(agentId),
+    configRepository: new ConfigRepository(),
+    getAgentWorker: async () => undefined,
+  };
+
+  return {
+    context,
+    cleanup: async () => {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    },
+  };
+}
+
+describe("Config API", () => {
+  let context: ApiContext;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    const built = await buildContext();
+    context = built.context;
+    cleanup = built.cleanup;
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  async function makeApp(): Promise<FastifyInstance> {
+    const app = await createServer(context);
+    await app.ready();
+    return app;
+  }
+
+  it("returns default config with tools", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).get("/config");
+    expect(res.status).toBe(200);
+    expect(res.body.memory).toBeDefined();
+    expect(res.body.providers).toEqual([]);
+
+    const toolsRes = await request(app.server).get("/config/tools");
+    expect(toolsRes.status).toBe(200);
+    expect(toolsRes.body.length).toBeGreaterThan(0);
+    expect(toolsRes.body[0]).toHaveProperty("toolset", "builtin");
+    await app.close();
+  });
+
+  it("updates memory settings and tavily key", async () => {
+    const app = await makeApp();
+    const updateRes = await request(app.server).put("/config").send({
+      memory: { keepRecent: 5 },
+      tavilyApiKey: "tvly-test",
+    });
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.memory.keepRecent).toBe(5);
+    expect(updateRes.body.tavilyApiKey).toBe("tvly-test");
+
+    const getRes = await request(app.server).get("/config");
+    expect(getRes.body.memory.keepRecent).toBe(5);
+    expect(getRes.body.tavilyApiKey).toBe("tvly-test");
+    await app.close();
+  });
+});

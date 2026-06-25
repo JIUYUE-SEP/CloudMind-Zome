@@ -8,6 +8,7 @@ import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { MemoryRepository } from "../../src/memory/repositories/memory.js";
 import { ActionRepository } from "../../src/memory/repositories/action.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
+import { ConfigRepository } from "../../src/config/repository.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
@@ -43,7 +44,8 @@ async function buildWsContext(agentId: string): Promise<{ context: ApiContext; c
     getMemoryRepository: (id: string) => new MemoryRepository(id),
     getActionRepository: (id: string) => new ActionRepository(id),
     getLLMCallRepository: (id: string) => new LLMCallRepository(id),
-    getAgentWorker: (id: string) => (id === agentId ? worker : undefined),
+    configRepository: new ConfigRepository(),
+    getAgentWorker: async (id: string) => (id === agentId ? worker : undefined),
   };
 
   return {

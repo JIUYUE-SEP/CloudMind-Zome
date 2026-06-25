@@ -2,7 +2,9 @@ export interface AgentConfig {
   id: string;
   name: string;
   persona: string;
-  model: string;
+  providerId?: string;
+  modelId?: string;
+  model?: string; // fallback for old configs
   skills: string[];
   tools: string[];
 }
