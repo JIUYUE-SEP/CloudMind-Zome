@@ -11,6 +11,7 @@ import { getBuiltinTools } from "./tools/builtin/index.js";
 import type { ApiContext } from "./api/context.js";
 import type { AgentConfig } from "@mindcloud/shared";
 import { getAgentDir } from "./config/paths.js";
+import { Scheduler } from "./scheduler/scheduler.js";
 
 async function main() {
   const configRepo = new ConfigRepository();
@@ -61,6 +62,9 @@ async function main() {
     configRepository: configRepo,
     getAgentWorker: getOrCreateWorker,
   };
+
+  const scheduler = new Scheduler(context, { pollIntervalMs: 5000 });
+  scheduler.start();
 
   const app = await createServer(context);
   await app.listen({ port: Number(process.env.PORT || 8848), host: "127.0.0.1" });

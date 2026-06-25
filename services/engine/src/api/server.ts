@@ -8,6 +8,7 @@ import { registerActionRoutes } from "./routes/actions.js";
 import { registerSkillRoutes } from "./routes/skills.js";
 import { registerComputeRoutes } from "./routes/compute.js";
 import { registerConfigRoutes } from "./routes/config.js";
+import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 
 export async function createServer(context: ApiContext) {
@@ -23,6 +24,7 @@ export async function createServer(context: ApiContext) {
   await registerSkillRoutes(app, context);
   await registerComputeRoutes(app, context);
   await registerConfigRoutes(app, context);
+  await registerSchedulerRoutes(app, context);
   await registerWebSocketHandler(app, context);
 
   return app;

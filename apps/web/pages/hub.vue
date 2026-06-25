@@ -15,6 +15,7 @@
       </ul>
       <nav class="nav-links">
         <NuxtLink to="/compute">算力中枢</NuxtLink>
+        <NuxtLink to="/scheduler">定时任务</NuxtLink>
         <NuxtLink to="/settings">系统设置</NuxtLink>
       </nav>
     </aside>

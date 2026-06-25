@@ -50,6 +50,17 @@ export interface ToolInfo {
   safeToParallel: boolean;
 }
 
+interface ScheduledTask {
+  id: string;
+  agentId: string;
+  description: string;
+  prompt: string;
+  cron: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  nextRunAt?: string;
+}
+
 export interface EngineClientOptions {
   baseUrl?: string;
 }
@@ -217,6 +228,45 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
+  // Scheduler
+  async function getScheduledTasks(agentId: string): Promise<ScheduledTask[]> {
+    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}`);
+    if (!res.ok) throw new Error(`Failed to list scheduled tasks: ${res.status}`);
+    return res.json();
+  }
+
+  async function createScheduledTask(
+    agentId: string,
+    task: Omit<ScheduledTask, "id" | "agentId">
+  ): Promise<ScheduledTask> {
+    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(task),
+    });
+    if (!res.ok) throw new Error(`Failed to create scheduled task: ${res.status}`);
+    return res.json();
+  }
+
+  async function updateScheduledTask(
+    agentId: string,
+    taskId: string,
+    patch: Partial<Omit<ScheduledTask, "id" | "agentId">>
+  ): Promise<ScheduledTask> {
+    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}/${taskId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`Failed to update scheduled task: ${res.status}`);
+    return res.json();
+  }
+
+  async function deleteScheduledTask(agentId: string, taskId: string): Promise<void> {
+    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}/${taskId}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`Failed to delete scheduled task: ${res.status}`);
+  }
+
   function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
     const socket = new WebSocket(`${wsUrl}/ws/${agentId}?sessionId=${encodeURIComponent(sessionId)}`);
@@ -286,6 +336,10 @@ export function useEngineClient(options?: EngineClientOptions) {
     getConfig,
     updateConfig,
     getTools,
+    getScheduledTasks,
+    createScheduledTask,
+    updateScheduledTask,
+    deleteScheduledTask,
     connect,
   };
 }
