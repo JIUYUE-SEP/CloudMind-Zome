@@ -1,0 +1,46 @@
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { WebSocket } from "ws";
+import type { ApiContext } from "../context.js";
+import type { ChatMessage } from "@mindcloud/shared";
+import { randomUUID } from "node:crypto";
+
+export async function registerWebSocketHandler(app: FastifyInstance, context: ApiContext) {
+  app.get(
+    "/ws/:agentId",
+    { websocket: true },
+    async (socket: WebSocket, req: FastifyRequest) => {
+      const { agentId } = req.params as { agentId: string };
+      const sessionId = (req.query as { sessionId?: string }).sessionId || "default";
+      const worker = context.getAgentWorker(agentId);
+      if (!worker) {
+        socket.close(4001, "Agent not found");
+        return;
+      }
+
+      socket.on("message", (raw: unknown) => {
+        try {
+          const data = JSON.parse(String(raw));
+          const userMessage: ChatMessage = {
+            id: randomUUID(),
+            role: "user",
+            content: [{ type: "text", text: String(data.text || "") }],
+            createdAt: new Date().toISOString(),
+          };
+
+          // Persist user message
+          context.getMessageRepository(agentId).append({ ...userMessage, sessionId }).catch(() => {});
+
+          worker.enqueue({
+            id: randomUUID(),
+            messages: [userMessage],
+            onEvent: (event) => {
+              socket.send(JSON.stringify(event));
+            },
+          });
+        } catch {
+          socket.send(JSON.stringify({ type: "error", error: "Invalid message" }));
+        }
+      });
+    }
+  );
+}
