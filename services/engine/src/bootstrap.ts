@@ -5,6 +5,7 @@ import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
 import { LLMCallRepository } from "./memory/repositories/llm-call.js";
 import { ConfigRepository } from "./config/repository.js";
+import { SessionRepository } from "./conductor/repository.js";
 import { OpenAIProvider, MockLLMProvider } from "./provider/llm.js";
 import { AgentWorker } from "./core/agent-worker.js";
 import { getBuiltinTools } from "./tools/builtin/index.js";
@@ -60,6 +61,7 @@ async function main() {
     getActionRepository: (agentId: string) => new ActionRepository(agentId),
     getLLMCallRepository: (agentId: string) => new LLMCallRepository(agentId),
     configRepository: configRepo,
+    sessionRepository: new SessionRepository(),
     getAgentWorker: getOrCreateWorker,
   };
 

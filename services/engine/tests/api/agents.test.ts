@@ -10,6 +10,7 @@ import { MemoryRepository } from "../../src/memory/repositories/memory.js";
 import { ActionRepository } from "../../src/memory/repositories/action.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { ConfigRepository } from "../../src/config/repository.js";
+import { SessionRepository } from "../../src/conductor/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 
@@ -25,6 +26,7 @@ async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () =>
     getActionRepository: (agentId: string) => new ActionRepository(agentId),
     getLLMCallRepository: (agentId: string) => new LLMCallRepository(agentId),
     configRepository: new ConfigRepository(),
+    sessionRepository: new SessionRepository(),
     getAgentWorker: async () => undefined,
   };
 

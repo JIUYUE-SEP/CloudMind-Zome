@@ -61,6 +61,15 @@ interface ScheduledTask {
   nextRunAt?: string;
 }
 
+export interface Session {
+  id: string;
+  name: string;
+  agentIds: string[];
+  type: "group" | "intermind";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EngineClientOptions {
   baseUrl?: string;
 }
@@ -140,6 +149,46 @@ export function useEngineClient(options?: EngineClientOptions) {
     if (limit) params.set("limit", String(limit));
     const res = await fetch(`${baseUrl.value}/chat/${agentId}/messages?${params.toString()}`);
     if (!res.ok) throw new Error(`Failed to get messages: ${res.status}`);
+    return res.json();
+  }
+
+  // Sessions
+  async function listSessions(): Promise<Session[]> {
+    const res = await fetch(`${baseUrl.value}/sessions`);
+    if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
+    return res.json();
+  }
+
+  async function createSession(session: Omit<Session, "id" | "createdAt" | "updatedAt">): Promise<Session> {
+    const res = await fetch(`${baseUrl.value}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(session),
+    });
+    if (!res.ok) throw new Error(`Failed to create session: ${res.status}`);
+    return res.json();
+  }
+
+  async function updateSession(id: string, patch: Partial<Session>): Promise<Session> {
+    const res = await fetch(`${baseUrl.value}/sessions/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`Failed to update session: ${res.status}`);
+    return res.json();
+  }
+
+  async function deleteSession(id: string): Promise<void> {
+    const res = await fetch(`${baseUrl.value}/sessions/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`);
+  }
+
+  async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
+    const params = new URLSearchParams();
+    if (limit) params.set("limit", String(limit));
+    const res = await fetch(`${baseUrl.value}/sessions/${sessionId}/messages?${params.toString()}`);
+    if (!res.ok) throw new Error(`Failed to get session messages: ${res.status}`);
     return res.json();
   }
 
@@ -318,6 +367,57 @@ export function useEngineClient(options?: EngineClientOptions) {
     };
   }
 
+  function connectSession(sessionId: string, handlers: WebSocketHandlers): Connection {
+    const wsUrl = baseUrl.value.replace(/^http/, "ws");
+    const socket = new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`);
+
+    socket.onopen = () => {
+      handlers.onOpen?.();
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        switch (data.type) {
+          case "text.delta":
+            handlers.onTextDelta?.(data.delta);
+            break;
+          case "think.delta":
+            handlers.onThinkingDelta?.(data.delta);
+            break;
+          case "tool.call":
+            handlers.onToolCall?.(data);
+            break;
+          case "tool.result":
+            handlers.onToolResult?.(data);
+            break;
+          case "step.end":
+            handlers.onStepEnd?.(data.finishReason);
+            break;
+          case "error":
+            handlers.onError?.(data.error);
+            break;
+        }
+      } catch {
+        handlers.onError?.("Invalid message from server");
+      }
+    };
+
+    socket.onerror = () => handlers.onError?.("WebSocket error");
+    socket.onclose = () => handlers.onClose?.();
+
+    return {
+      send(text: string) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ text }));
+        }
+      },
+      close() {
+        socket.close();
+      },
+    };
+  }
+
   return {
     listAgents,
     createAgent,
@@ -325,6 +425,11 @@ export function useEngineClient(options?: EngineClientOptions) {
     updateAgent,
     deleteAgent,
     getMessages,
+    listSessions,
+    createSession,
+    updateSession,
+    deleteSession,
+    getSessionMessages,
     listProviders,
     createProvider,
     updateProvider,
@@ -341,5 +446,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     updateScheduledTask,
     deleteScheduledTask,
     connect,
+    connectSession,
   };
 }
