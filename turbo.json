@@ -5,6 +5,7 @@
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**", ".nuxt/**", "target/**", "src-tauri/target/**"] },
     "dev": { "cache": false, "persistent": true },
     "test": { "dependsOn": ["^build"] },
+    "bench": { "dependsOn": ["^build"], "outputs": [] },
     "lint": {},
     "typecheck": { "dependsOn": ["^build"] },
     "@mindcloud/desktop#test": { "dependsOn": [] },
