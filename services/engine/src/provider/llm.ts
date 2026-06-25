@@ -32,9 +32,15 @@ export class OpenAIProvider implements LLMProvider {
       });
 
       const toolCallBuffers = new Map<number, { id: string; name: string; args: string }>();
+      let finalFinishReason: string | undefined;
 
       for await (const chunk of response) {
-        const delta = chunk.choices[0]?.delta as
+        const choice = chunk.choices[0];
+        if (choice?.finish_reason) {
+          finalFinishReason = choice.finish_reason;
+        }
+
+        const delta = choice?.delta as
           | (OpenAI.ChatCompletionChunk.Choice.Delta & {
               reasoning_content?: string;
               tool_calls?: ToolCallDelta[];
@@ -76,7 +82,7 @@ export class OpenAIProvider implements LLMProvider {
         yield { type: "tool.call", toolCallId: buf.id, name: buf.name, arguments: args };
       }
 
-      yield { type: "step.end" };
+      yield { type: "step.end", finishReason: finalFinishReason };
     } catch (err) {
       yield { type: "text.delta", delta: `\nProvider error: ${String(err)}` };
       yield { type: "step.end" };

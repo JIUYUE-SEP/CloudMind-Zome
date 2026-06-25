@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { MockLLMProvider, OpenAIProvider } from "../../src/provider/llm.js";
 import type { LLMEvent } from "../../src/provider/types.js";
 
-function makeChunk(delta: unknown) {
-  return { choices: [{ delta }] };
+function makeChunk(delta: unknown, finishReason?: string) {
+  return { choices: [{ delta, finish_reason: finishReason }] };
 }
 
 describe("MockLLMProvider", () => {
@@ -76,6 +76,30 @@ describe("OpenAIProvider", () => {
       name: "get_time",
       arguments: { tz: "UTC" },
     });
-    expect(events.at(-1)).toEqual({ type: "step.end" });
+    expect(events.at(-1)).toEqual({ type: "step.end", finishReason: undefined });
+  });
+
+  it("propagates finish_reason from the final chunk", async () => {
+    const provider = new OpenAIProvider("test-key");
+
+    async function* mockStream() {
+      yield makeChunk({ content: "Hello" });
+      yield makeChunk({}, "length");
+    }
+
+    (provider as unknown as { client: { chat: { completions: { create: typeof mockStream } } } }).client = {
+      chat: {
+        completions: {
+          create: mockStream,
+        },
+      },
+    };
+
+    const events: LLMEvent[] = [];
+    for await (const event of provider.chat({ model: "gpt-4", messages: [] })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toEqual({ type: "step.end", finishReason: "length" });
   });
 });

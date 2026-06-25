@@ -25,6 +25,7 @@ export interface ToolResultEvent {
 
 export interface StepEndEvent {
   type: "step.end";
+  finishReason?: string;
 }
 
 export type LLMEvent =

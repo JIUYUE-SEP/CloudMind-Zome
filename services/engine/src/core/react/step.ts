@@ -32,6 +32,10 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
 
   for await (const event of input.provider.chat(params)) {
     emit(event);
+    if (event.type === "step.end") {
+      finishReason = event.finishReason;
+      continue;
+    }
     switch (event.type) {
       case "text.delta":
         textBuffer += event.delta;
@@ -47,8 +51,6 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
         });
         break;
       }
-      case "step.end":
-        break;
     }
   }
 
