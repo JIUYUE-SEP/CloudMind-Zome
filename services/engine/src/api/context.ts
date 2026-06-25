@@ -8,6 +8,7 @@ import type {
 import type { AgentWorker } from "../core/agent-worker.js";
 import type { ConfigRepository } from "../config/repository.js";
 import type { SessionRepository } from "../conductor/repository.js";
+import type { BlueprintRepository } from "../blueprint/repository.js";
 
 export interface ApiContext {
   agentRepository: IAgentRepository;
@@ -17,5 +18,6 @@ export interface ApiContext {
   getLLMCallRepository(agentId: string): ILLMCallRepository;
   configRepository: ConfigRepository;
   sessionRepository: SessionRepository;
+  blueprintRepository: BlueprintRepository;
   getAgentWorker(agentId: string): Promise<AgentWorker | undefined>;
 }

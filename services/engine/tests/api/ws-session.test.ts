@@ -10,6 +10,7 @@ import { ActionRepository } from "../../src/memory/repositories/action.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
+import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
@@ -59,6 +60,7 @@ async function buildSessionWsContext(agentIds: string[]): Promise<{ context: Api
     getLLMCallRepository: (id: string) => new LLMCallRepository(id),
     configRepository: new ConfigRepository(),
     sessionRepository,
+    blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async (id: string) => workers.get(id),
   };
 

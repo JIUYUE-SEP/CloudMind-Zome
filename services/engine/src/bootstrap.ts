@@ -13,6 +13,7 @@ import type { ApiContext } from "./api/context.js";
 import type { AgentConfig } from "@mindcloud/shared";
 import { getAgentDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
+import { BlueprintRepository } from "./blueprint/repository.js";
 
 async function main() {
   const configRepo = new ConfigRepository();
@@ -62,6 +63,7 @@ async function main() {
     getLLMCallRepository: (agentId: string) => new LLMCallRepository(agentId),
     configRepository: configRepo,
     sessionRepository: new SessionRepository(),
+    blueprintRepository: new BlueprintRepository(),
     getAgentWorker: getOrCreateWorker,
   };
 

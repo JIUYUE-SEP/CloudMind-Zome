@@ -70,6 +70,38 @@ export interface Session {
   updatedAt: string;
 }
 
+export interface BlueprintNode {
+  id: string;
+  type: "start" | "llm" | "tool" | "end";
+  x: number;
+  y: number;
+  config?: Record<string, unknown>;
+}
+
+export interface BlueprintEdge {
+  source: string;
+  target: string;
+}
+
+export interface Blueprint {
+  id: string;
+  name: string;
+  nodes: BlueprintNode[];
+  edges: BlueprintEdge[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BlueprintExecution {
+  id: string;
+  blueprintId: string;
+  status: "pending" | "running" | "completed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  outputs: Record<string, unknown>;
+  logs: string[];
+}
+
 export interface EngineClientOptions {
   baseUrl?: string;
 }
@@ -367,6 +399,54 @@ export function useEngineClient(options?: EngineClientOptions) {
     };
   }
 
+  // Blueprints
+  async function listBlueprints(): Promise<Blueprint[]> {
+    const res = await fetch(`${baseUrl.value}/blueprints`);
+    if (!res.ok) throw new Error(`Failed to list blueprints: ${res.status}`);
+    return res.json();
+  }
+
+  async function createBlueprint(blueprint: Omit<Blueprint, "id" | "createdAt" | "updatedAt">): Promise<Blueprint> {
+    const res = await fetch(`${baseUrl.value}/blueprints`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(blueprint),
+    });
+    if (!res.ok) throw new Error(`Failed to create blueprint: ${res.status}`);
+    return res.json();
+  }
+
+  async function getBlueprint(id: string): Promise<Blueprint> {
+    const res = await fetch(`${baseUrl.value}/blueprints/${id}`);
+    if (!res.ok) throw new Error(`Failed to get blueprint: ${res.status}`);
+    return res.json();
+  }
+
+  async function updateBlueprint(id: string, patch: Partial<Blueprint>): Promise<Blueprint> {
+    const res = await fetch(`${baseUrl.value}/blueprints/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`Failed to update blueprint: ${res.status}`);
+    return res.json();
+  }
+
+  async function deleteBlueprint(id: string): Promise<void> {
+    const res = await fetch(`${baseUrl.value}/blueprints/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`Failed to delete blueprint: ${res.status}`);
+  }
+
+  async function executeBlueprint(id: string, initialInput?: string): Promise<BlueprintExecution> {
+    const res = await fetch(`${baseUrl.value}/blueprints/${id}/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initialInput }),
+    });
+    if (!res.ok) throw new Error(`Failed to execute blueprint: ${res.status}`);
+    return res.json();
+  }
+
   function connectSession(sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
     const socket = new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`);
@@ -447,5 +527,11 @@ export function useEngineClient(options?: EngineClientOptions) {
     deleteScheduledTask,
     connect,
     connectSession,
+    listBlueprints,
+    createBlueprint,
+    getBlueprint,
+    updateBlueprint,
+    deleteBlueprint,
+    executeBlueprint,
   };
 }

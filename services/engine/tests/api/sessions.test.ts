@@ -11,6 +11,7 @@ import { ActionRepository } from "../../src/memory/repositories/action.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
+import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
@@ -28,6 +29,7 @@ async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () =>
     getLLMCallRepository: (agentId: string) => new LLMCallRepository(agentId),
     configRepository: new ConfigRepository(),
     sessionRepository: new SessionRepository(),
+    blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async () => undefined,
   };
 
