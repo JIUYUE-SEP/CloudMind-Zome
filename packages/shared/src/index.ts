@@ -7,9 +7,16 @@ export interface AgentConfig {
   tools: string[];
 }
 
+export interface ToolCall {
+  toolCallId: string;
+  name: string;
+  arguments: unknown;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "tool";
   content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
+  toolCalls?: ToolCall[];
   createdAt: string;
 }

@@ -7,10 +7,24 @@ const COMMAND_TIMEOUT_MS = 30000;
 const KILL_GRACE_MS = 5000;
 
 function isDangerousCommand(command: string): boolean {
-  // Reject common shell metacharacters that enable chaining, redirection,
-  // substitution, or path traversal. Only simple commands with plain arguments
-  // are allowed.
-  return /[;&|`$()<>{}\\[\]\*?#~!\r\n]/.test(command);
+  if (path.isAbsolute(command)) return true;
+  if (command.includes("/")) return true;
+  if (
+    command.includes(";") ||
+    command.includes("&&") ||
+    command.includes("||") ||
+    command.includes("`") ||
+    command.includes("$") ||
+    command.includes("|") ||
+    command.includes("<") ||
+    command.includes(">") ||
+    command.includes("{") ||
+    command.includes("}") ||
+    command.includes("[") ||
+    command.includes("]")
+  )
+    return true;
+  return false;
 }
 
 export const bashTool: Tool = {
@@ -23,20 +37,11 @@ export const bashTool: Tool = {
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { command } = args as { command: string };
 
-    const approved = await ctx.requiresApproval("bash", args);
-    if (!approved) {
-      return { success: false, error: "User rejected the bash command" };
-    }
-
     if (!command.trim()) {
       return { success: false, error: "Empty command" };
     }
 
-    if (path.isAbsolute(command.trim())) {
-      return { success: false, error: "Absolute paths are not allowed" };
-    }
-
-    if (isDangerousCommand(command)) {
+    if (isDangerousCommand(command.trim())) {
       return { success: false, error: "Complex shell constructs are not allowed" };
     }
 

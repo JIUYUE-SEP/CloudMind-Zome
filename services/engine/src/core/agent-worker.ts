@@ -81,8 +81,10 @@ export class AgentWorker {
       job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });
     } finally {
       this.runningJob = null;
-      this.status = "idle";
-      this.processQueue();
+      if ((this.status as AgentWorkerStatus) !== "paused") {
+        this.status = "idle";
+        this.processQueue();
+      }
     }
   }
 }

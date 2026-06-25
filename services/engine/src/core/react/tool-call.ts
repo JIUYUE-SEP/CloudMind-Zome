@@ -26,13 +26,15 @@ export async function runToolCallBatch(
   ctx: ToolExecutionContext
 ): Promise<ToolCallResult[]> {
   const scheduler = new ToolScheduler();
-  const calls = requests
-    .map((req) => {
-      const tool = ctx.tools.get(req.name);
-      if (!tool) return undefined;
-      return { tool, toolCallId: req.toolCallId, args: req.arguments };
-    })
-    .filter((x): x is NonNullable<typeof x> => x !== undefined);
+  const calls: { tool: Tool; toolCallId: string; args: unknown }[] = [];
+  for (const req of requests) {
+    const tool = ctx.tools.get(req.name);
+    if (!tool) {
+      ctx.emit({ type: "tool.result", toolCallId: req.toolCallId, output: { error: `Unknown tool: ${req.name}` } });
+      continue;
+    }
+    calls.push({ tool, toolCallId: req.toolCallId, args: req.arguments });
+  }
 
   const results: ToolCallResult[] = [];
 

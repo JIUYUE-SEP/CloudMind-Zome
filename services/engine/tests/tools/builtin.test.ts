@@ -97,7 +97,13 @@ describe("bashTool", () => {
     const absoluteCommand = path.join(os.tmpdir(), "evil.exe");
     const result = await bashTool.execute(ctx, { command: absoluteCommand });
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Absolute paths");
+    expect(result.error).toContain("not allowed");
+  });
+
+  it("rejects commands containing /", async () => {
+    const result = await bashTool.execute(ctx, { command: "cat /etc/passwd" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not allowed");
   });
 
   it("allows simple commands", async () => {

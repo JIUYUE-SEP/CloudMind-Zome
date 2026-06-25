@@ -66,6 +66,11 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
   };
 
   if (toolCalls.size > 0) {
+    assistantMessage.toolCalls = Array.from(toolCalls.values()).map((req) => ({
+      toolCallId: req.toolCallId,
+      name: req.name,
+      arguments: req.arguments,
+    }));
     const toolResults = await runToolCallBatch(Array.from(toolCalls.values()), input.toolCtx);
     const toolMessages: ChatMessage[] = toolResults.map((r) => ({
       id: `msg_tool_${r.toolCallId}_${Date.now()}`,

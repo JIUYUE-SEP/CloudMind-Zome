@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import { executeLoopStep } from "../../../src/core/react/step.js";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../../src/provider/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
-import type { Tool } from "../../../src/tools/types.js";
+import type { Tool, ToolContext, ToolResult } from "../../../src/tools/types.js";
 
 function userMessage(text: string): ChatMessage {
   return {
@@ -37,6 +38,30 @@ class StopProvider implements LLMProvider {
   }
 }
 
+class MultiToolProvider implements LLMProvider {
+  name = "multi-tool";
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    void params;
+    yield { type: "tool.call", toolCallId: "tc_1", name: "dummy", arguments: { value: "a" } };
+    yield { type: "tool.call", toolCallId: "tc_2", name: "dummy", arguments: { value: "b" } };
+    yield { type: "step.end" };
+  }
+}
+
+const dummyTool: Tool = {
+  name: "dummy",
+  description: "A dummy tool for testing",
+  parameters: z.object({ value: z.string() }),
+  accesses: [{ resource: "file", action: "read" }],
+  async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
+    void ctx;
+    return { success: true, output: `got ${(args as { value: string }).value}` };
+  },
+};
+
 function makeToolCtx(): {
   agentId: string;
   workspaceDir: string;
@@ -47,7 +72,7 @@ function makeToolCtx(): {
   return {
     agentId: "a",
     workspaceDir: "/tmp",
-    tools: new Map(),
+    tools: new Map([[dummyTool.name, dummyTool]]),
     requiresApproval: async () => true,
     emit: () => {},
   };
@@ -82,5 +107,25 @@ describe("executeLoopStep", () => {
     );
 
     expect(result.stopReason).toBe("stop");
+  });
+
+  it("records toolCalls on assistant message when tools are called", async () => {
+    const result = await executeLoopStep(
+      {
+        provider: new MultiToolProvider(),
+        model: "multi-tool",
+        messages: [userMessage("call tools")],
+        tools: [],
+        toolCtx: makeToolCtx(),
+      },
+      () => {}
+    );
+
+    expect(result.stopReason).toBe("tool_use");
+    expect(result.assistantMessage.toolCalls).toHaveLength(2);
+    expect(result.assistantMessage.toolCalls).toEqual([
+      { toolCallId: "tc_1", name: "dummy", arguments: { value: "a" } },
+      { toolCallId: "tc_2", name: "dummy", arguments: { value: "b" } },
+    ]);
   });
 });

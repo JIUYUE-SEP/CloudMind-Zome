@@ -23,6 +23,23 @@ describe("MockLLMProvider", () => {
     const provider = new MockLLMProvider();
     expect(provider.supportsModel("anything")).toBe(true);
   });
+
+  it("yields multiple tool calls when configured", async () => {
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([
+      { toolCallId: "tc_1", name: "a", arguments: { x: 1 } },
+      { toolCallId: "tc_2", name: "b", arguments: { y: 2 } },
+    ]);
+    const events: LLMEvent[] = [];
+    for await (const event of provider.chat({ model: "mock", messages: [] })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(3);
+    expect(events[0]).toEqual({ type: "tool.call", toolCallId: "tc_1", name: "a", arguments: { x: 1 } });
+    expect(events[1]).toEqual({ type: "tool.call", toolCallId: "tc_2", name: "b", arguments: { y: 2 } });
+    expect(events[2]).toEqual({ type: "step.end" });
+  });
 });
 
 describe("OpenAIProvider", () => {

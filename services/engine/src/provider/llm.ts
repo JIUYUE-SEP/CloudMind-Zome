@@ -24,7 +24,23 @@ export class OpenAIProvider implements LLMProvider {
     try {
       const response = await this.client.chat.completions.create({
         model: params.model,
-        messages: params.messages as unknown as OpenAI.ChatCompletionMessageParam[],
+        messages: params.messages.map((m) => {
+          const base: OpenAI.ChatCompletionMessageParam = {
+            role: m.role,
+            content: m.content.filter((c) => c.type === "text").map((c) => c.text).join(""),
+          } as OpenAI.ChatCompletionMessageParam;
+          if (m.role === "assistant" && m.toolCalls) {
+            return {
+              ...base,
+              tool_calls: m.toolCalls.map((tc) => ({
+                id: tc.toolCallId,
+                type: "function" as const,
+                function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+              })),
+            } as OpenAI.ChatCompletionMessageParam;
+          }
+          return base;
+        }) as unknown as OpenAI.ChatCompletionMessageParam[],
         tools: params.tools as OpenAI.ChatCompletionTool[] | undefined,
         temperature: params.temperature,
         max_tokens: params.maxTokens,
@@ -93,13 +109,27 @@ export class OpenAIProvider implements LLMProvider {
 
 export class MockLLMProvider implements LLMProvider {
   name = "mock";
+  private nextToolCalls: Array<{ toolCallId: string; name: string; arguments: unknown }> = [];
+
   supportsModel(model: string) {
     void model;
     return true;
   }
+
+  setNextToolCalls(toolCalls: Array<{ toolCallId: string; name: string; arguments: unknown }>): void {
+    this.nextToolCalls = toolCalls;
+  }
+
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
     void params;
-    yield { type: "text.delta", delta: "Hello from mock" };
+    if (this.nextToolCalls.length > 0) {
+      for (const tc of this.nextToolCalls) {
+        yield { type: "tool.call", ...tc };
+      }
+      this.nextToolCalls = [];
+    } else {
+      yield { type: "text.delta", delta: "Hello from mock" };
+    }
     yield { type: "step.end" };
   }
 }
