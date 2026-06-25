@@ -73,7 +73,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
     }));
     const toolResults = await runToolCallBatch(Array.from(toolCalls.values()), input.toolCtx);
     const toolMessages: ChatMessage[] = toolResults.map((r) => ({
-      id: `msg_tool_${r.toolCallId}_${Date.now()}`,
+      id: `tool_${r.toolCallId}`,
       role: "tool",
       content: [
         {

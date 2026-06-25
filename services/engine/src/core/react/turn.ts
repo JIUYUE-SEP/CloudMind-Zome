@@ -33,7 +33,7 @@ export async function runTurn(
     const result = await executeLoopStep(stepInput, emit);
     messages.push(result.assistantMessage);
 
-    if (result.toolMessages && result.toolMessages.length > 0) {
+    if (result.toolMessages) {
       messages.push(...result.toolMessages);
     }
 

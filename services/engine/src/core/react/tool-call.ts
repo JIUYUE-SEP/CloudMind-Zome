@@ -26,17 +26,18 @@ export async function runToolCallBatch(
   ctx: ToolExecutionContext
 ): Promise<ToolCallResult[]> {
   const scheduler = new ToolScheduler();
+  const results: ToolCallResult[] = [];
   const calls: { tool: Tool; toolCallId: string; args: unknown }[] = [];
   for (const req of requests) {
     const tool = ctx.tools.get(req.name);
     if (!tool) {
-      ctx.emit({ type: "tool.result", toolCallId: req.toolCallId, output: { error: `Unknown tool: ${req.name}` } });
+      const result: ToolCallResult = { toolCallId: req.toolCallId, output: { error: `Unknown tool: ${req.name}` } };
+      ctx.emit({ type: "tool.result", ...result });
+      results.push(result);
       continue;
     }
     calls.push({ tool, toolCallId: req.toolCallId, args: req.arguments });
   }
-
-  const results: ToolCallResult[] = [];
 
   // Preflight
   const validatedCalls: typeof calls = [];

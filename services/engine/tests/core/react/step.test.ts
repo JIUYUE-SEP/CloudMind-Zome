@@ -51,6 +51,18 @@ class MultiToolProvider implements LLMProvider {
   }
 }
 
+class UnknownToolProvider implements LLMProvider {
+  name = "unknown-tool";
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    void params;
+    yield { type: "tool.call", toolCallId: "tc_unknown", name: "missing", arguments: {} };
+    yield { type: "step.end" };
+  }
+}
+
 const dummyTool: Tool = {
   name: "dummy",
   description: "A dummy tool for testing",
@@ -126,6 +138,26 @@ describe("executeLoopStep", () => {
     expect(result.assistantMessage.toolCalls).toEqual([
       { toolCallId: "tc_1", name: "dummy", arguments: { value: "a" } },
       { toolCallId: "tc_2", name: "dummy", arguments: { value: "b" } },
+    ]);
+  });
+
+  it("includes unknown tool errors in toolMessages so they enter conversation context", async () => {
+    const result = await executeLoopStep(
+      {
+        provider: new UnknownToolProvider(),
+        model: "unknown-tool",
+        messages: [userMessage("call unknown")],
+        tools: [],
+        toolCtx: makeToolCtx(),
+      },
+      () => {}
+    );
+
+    expect(result.stopReason).toBe("tool_use");
+    expect(result.toolMessages).toHaveLength(1);
+    expect(result.toolMessages?.[0].role).toBe("tool");
+    expect(result.toolMessages?.[0].content).toEqual([
+      { type: "text", text: JSON.stringify({ error: "Unknown tool: missing" }) },
     ]);
   });
 });
