@@ -2,11 +2,15 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 
 export async function registerSessionRoutes(app: FastifyInstance, context: ApiContext) {
-  app.get("/sessions", async () => {
+  app.get("/sessions", {
+    schema: { summary: "List all sessions", tags: ["sessions"] },
+  }, async () => {
     return context.sessionRepository.list();
   });
 
-  app.post("/sessions", async (request, reply) => {
+  app.post("/sessions", {
+    schema: { summary: "Create a new session", tags: ["sessions"] },
+  }, async (request, reply) => {
     const body = request.body as { name: string; agentIds: string[]; type?: "group" | "intermind" };
     if (!body.name || !body.agentIds?.length) {
       return reply.status(400).send({ error: "name and agentIds required" });
@@ -18,14 +22,18 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     });
   });
 
-  app.get("/sessions/:id", async (request, reply) => {
+  app.get("/sessions/:id", {
+    schema: { summary: "Get a session by id", tags: ["sessions"] },
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const session = await context.sessionRepository.get(id);
     if (!session) return reply.status(404).send({ error: "Session not found" });
     return session;
   });
 
-  app.put("/sessions/:id", async (request, reply) => {
+  app.put("/sessions/:id", {
+    schema: { summary: "Update a session", tags: ["sessions"] },
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { name?: string; agentIds?: string[] };
     const session = await context.sessionRepository.get(id);
@@ -36,13 +44,21 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     return session;
   });
 
-  app.delete("/sessions/:id", async (request, reply) => {
+  app.delete("/sessions/:id", {
+    schema: { summary: "Delete a session", tags: ["sessions"] },
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     await context.sessionRepository.delete(id);
     return reply.status(204).send();
   });
 
-  app.get("/sessions/:id/messages", async (request, reply) => {
+  app.get("/sessions/:id/messages", {
+    schema: {
+      summary: "Get session messages",
+      tags: ["sessions"],
+      querystring: { type: "object", properties: { limit: { type: "string" } } },
+    },
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const { limit } = request.query as { limit?: string };
     const session = await context.sessionRepository.get(id);

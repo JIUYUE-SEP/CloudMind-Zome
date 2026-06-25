@@ -3,11 +3,15 @@ import type { ApiContext } from "../context.js";
 import type { AgentConfig } from "@mindcloud/shared";
 
 export async function registerAgentRoutes(app: FastifyInstance, context: ApiContext) {
-  app.get("/agents", async () => {
+  app.get("/agents", {
+    schema: { summary: "List all agents", tags: ["agents"] },
+  }, async () => {
     return context.agentRepository.list();
   });
 
-  app.post("/agents", async (request, reply) => {
+  app.post("/agents", {
+    schema: { summary: "Create a new agent", tags: ["agents"] },
+  }, async (request, reply) => {
     const config = request.body as AgentConfig;
     if (!config.id) {
       return reply.status(400).send({ error: "id is required" });
@@ -16,21 +20,27 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     return config;
   });
 
-  app.get("/agents/:id", async (request, reply) => {
+  app.get("/agents/:id", {
+    schema: { summary: "Get an agent by id", tags: ["agents"] },
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const config = await context.agentRepository.get(id);
     if (!config) return reply.status(404).send({ error: "Agent not found" });
     return config;
   });
 
-  app.put("/agents/:id", async (request) => {
+  app.put("/agents/:id", {
+    schema: { summary: "Update an agent", tags: ["agents"] },
+  }, async (request) => {
     const { id } = request.params as { id: string };
     const config = request.body as AgentConfig;
     await context.agentRepository.save(id, config);
     return config;
   });
 
-  app.delete("/agents/:id", async (request, reply) => {
+  app.delete("/agents/:id", {
+    schema: { summary: "Delete an agent", tags: ["agents"] },
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     await context.agentRepository.delete(id);
     return reply.status(204).send();

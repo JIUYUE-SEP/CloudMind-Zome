@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import cors from "@fastify/cors";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 import type { ApiContext } from "./context.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerChatRoutes } from "./routes/chat.js";
@@ -22,6 +24,22 @@ export async function createServer(context: ApiContext) {
     credentials: true,
   });
   await app.register(websocket);
+
+  await app.register(swagger, {
+    openapi: {
+      info: {
+        title: "CloudMind Zome Engine API",
+        description: "REST and WebSocket API for the CloudMind Zome engine",
+        version: "2.0.0",
+      },
+      servers: [{ url: "http://127.0.0.1:8848" }],
+    },
+  });
+
+  await app.register(swaggerUi, {
+    routePrefix: "/docs",
+    uiConfig: { docExpansion: "list", deepLinking: false },
+  });
 
   app.get("/health", async () => ({ status: "ok" }));
 

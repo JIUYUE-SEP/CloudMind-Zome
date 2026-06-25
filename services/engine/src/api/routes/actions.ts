@@ -2,7 +2,13 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 
 export async function registerActionRoutes(app: FastifyInstance, context: ApiContext) {
-  app.get("/actions/:agentId", async (request) => {
+  app.get("/actions/:agentId", {
+    schema: {
+      summary: "List actions for an agent",
+      tags: ["actions"],
+      querystring: { type: "object", properties: { limit: { type: "string" }, offset: { type: "string" } } },
+    },
+  }, async (request) => {
     const { agentId } = request.params as { agentId: string };
     const { limit, offset } = request.query as { limit?: string; offset?: string };
     return context.getActionRepository(agentId).list({

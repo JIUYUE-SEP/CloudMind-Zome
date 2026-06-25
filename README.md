@@ -135,8 +135,10 @@ pnpm --filter @mindcloud/desktop dev
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/架构文档.md`](docs/架构文档.md) | 分层架构、核心机制、数据流、配置系统、安全模型 |
 | [`docs/开发指南.md`](docs/开发指南.md) | 本地开发、调试技巧、常见任务、提交前检查清单 |
+| [`docs/API.md`](docs/API.md) | Engine REST 与 WebSocket API 说明 |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | 桌面与 Web 部署指南 |
+| [`docs/架构文档.md`](docs/架构文档.md) | 分层架构、核心机制、数据流、配置系统、安全模型 |
 | [`docs/路线图.md`](docs/路线图.md) | 功能状态：已实现 / 部分实现 / 规划中 / 已废弃 |
 
 ---

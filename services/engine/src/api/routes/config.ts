@@ -3,7 +3,9 @@ import type { ApiContext } from "../context.js";
 import { getBuiltinTools } from "../../tools/builtin/index.js";
 
 export async function registerConfigRoutes(app: FastifyInstance, context: ApiContext) {
-  app.get("/config", async () => {
+  app.get("/config", {
+    schema: { summary: "Get system configuration", tags: ["config"] },
+  }, async () => {
     const config = await context.configRepository.load();
     return {
       ...config.settings,
@@ -11,7 +13,9 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
     };
   });
 
-  app.put("/config", async (request) => {
+  app.put("/config", {
+    schema: { summary: "Update system configuration", tags: ["config"] },
+  }, async (request) => {
     const body = request.body as {
       memory?: Record<string, unknown>;
       tavilyApiKey?: string;
@@ -23,7 +27,9 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
     return config.settings;
   });
 
-  app.get("/config/tools", async () => {
+  app.get("/config/tools", {
+    schema: { summary: "List built-in tools", tags: ["config"] },
+  }, async () => {
     return getBuiltinTools().map((t) => ({
       name: t.name,
       toolset: "builtin",

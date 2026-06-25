@@ -5,13 +5,17 @@ import { computeNextRun } from "../../scheduler/engine.js";
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function registerSchedulerRoutes(app: FastifyInstance, context: ApiContext) {
-  app.get("/scheduler/:agentId", async (request) => {
+  app.get("/scheduler/:agentId", {
+    schema: { summary: "List scheduled tasks for an agent", tags: ["scheduler"] },
+  }, async (request) => {
     const { agentId } = request.params as { agentId: string };
     const repo = new SchedulerRepository(agentId);
     return repo.list();
   });
 
-  app.post("/scheduler/:agentId", async (request, reply) => {
+  app.post("/scheduler/:agentId", {
+    schema: { summary: "Create a scheduled task for an agent", tags: ["scheduler"] },
+  }, async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
     const body = request.body as { description: string; prompt: string; cron: string; enabled?: boolean };
     if (!body.description || !body.prompt || !body.cron) {
@@ -33,7 +37,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     return task;
   });
 
-  app.put("/scheduler/:agentId/:taskId", async (request, reply) => {
+  app.put("/scheduler/:agentId/:taskId", {
+    schema: { summary: "Update a scheduled task", tags: ["scheduler"] },
+  }, async (request, reply) => {
     const { agentId, taskId } = request.params as { agentId: string; taskId: string };
     const body = request.body as Partial<{ description: string; prompt: string; cron: string; enabled: boolean }>;
     const repo = new SchedulerRepository(agentId);
@@ -59,7 +65,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     return task;
   });
 
-  app.delete("/scheduler/:agentId/:taskId", async (request, reply) => {
+  app.delete("/scheduler/:agentId/:taskId", {
+    schema: { summary: "Delete a scheduled task", tags: ["scheduler"] },
+  }, async (request, reply) => {
     const { agentId, taskId } = request.params as { agentId: string; taskId: string };
     const repo = new SchedulerRepository(agentId);
     await repo.delete(taskId);
