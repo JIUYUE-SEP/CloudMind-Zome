@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AgentConfig } from "@mindcloud/shared";
 import { DocumentStore } from "../document-store.js";
@@ -12,6 +13,14 @@ export class AgentRepository implements IAgentRepository {
 
   private store(agentId: string): DocumentStore<AgentConfig> {
     return new DocumentStore<AgentConfig>(path.join(getAgentDir(sanitizeAgentId(agentId)), "agent.json"));
+  }
+
+  private invalidate(agentId: string): void {
+    const entry = this.cache.get(agentId);
+    if (entry) {
+      entry.watcher.close();
+      this.cache.delete(agentId);
+    }
   }
 
   private async loadAndWatch(agentId: string): Promise<AgentConfig | undefined> {
@@ -29,12 +38,26 @@ export class AgentRepository implements IAgentRepository {
       }
     }
 
-    const watcher = fs.watch(store.filePath, () => {
-      const entry = this.cache.get(agentId);
-      if (entry) {
-        entry.watcher.close();
-        this.cache.delete(agentId);
-      }
+    let watcher: fs.FSWatcher;
+    try {
+      watcher = fs.watch(store.filePath, (eventType) => {
+        if (eventType === "rename") {
+          // file may have been deleted; always invalidate
+          this.invalidate(agentId);
+        }
+        // for "change", invalidate only if content actually changed
+        this.invalidate(agentId);
+      });
+    } catch (err) {
+      console.error(`Failed to watch agent config ${store.filePath}:`, err);
+      // cache without watcher
+      this.cache.set(agentId, { config, watcher: { close: () => {} } as unknown as fs.FSWatcher });
+      return config;
+    }
+
+    watcher.on("error", (err) => {
+      console.error(`Watcher error for ${store.filePath}:`, err);
+      this.invalidate(agentId);
     });
 
     this.cache.set(agentId, { config, watcher });
@@ -73,22 +96,25 @@ export class AgentRepository implements IAgentRepository {
       this.cache.delete(id);
     }
     const dir = getAgentDir(id);
-    await fs.promises.rm(dir, { recursive: true, force: true });
+    await fsp.rm(dir, { recursive: true, force: true });
   }
 
   async list(): Promise<AgentConfig[]> {
     const dataDir = getDataDir();
     try {
       const agentsDir = path.join(dataDir, "agents");
-      const entries = await fs.promises.readdir(agentsDir, { withFileTypes: true });
+      const entries = await fsp.readdir(agentsDir, { withFileTypes: true });
       const configs: AgentConfig[] = [];
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const filePath = path.join(agentsDir, entry.name, "agent.json");
-        const content = await fs.promises.readFile(filePath, "utf-8").catch(() => undefined);
-        if (!content) continue;
-        const config = JSON.parse(content) as AgentConfig;
-        configs.push(config);
+        try {
+          const content = await fsp.readFile(filePath, "utf-8");
+          const config = JSON.parse(content) as AgentConfig;
+          configs.push(config);
+        } catch (err) {
+          console.error(`Failed to load agent config from ${filePath}:`, err);
+        }
       }
       return configs;
     } catch {

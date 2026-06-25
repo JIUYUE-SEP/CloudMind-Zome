@@ -46,6 +46,17 @@ describe("AgentRepository", () => {
     expect(list.map((c) => c.id).sort()).toEqual(["a", "b"]);
   });
 
+  it("lists agents skipping corrupted agent.json files", async () => {
+    await repo.save("good", makeConfig("good", "Good"));
+    const badDir = path.join(dataDir, "agents", "bad");
+    await fs.mkdir(badDir, { recursive: true });
+    await fs.writeFile(path.join(badDir, "agent.json"), "not valid json");
+
+    const list = await repo.list();
+    expect(list).toHaveLength(1);
+    expect(list[0].id).toBe("good");
+  });
+
   it("deletes agent", async () => {
     await repo.save("del", makeConfig("del", "Del"));
     await repo.delete("del");
