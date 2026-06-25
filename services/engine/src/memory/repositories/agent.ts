@@ -5,70 +5,73 @@ import { DocumentStore } from "../document-store.js";
 import { getAgentDir, getDataDir, sanitizeAgentId } from "../../config/paths.js";
 import type { IAgentRepository } from "./types.js";
 
-interface CacheEntry {
-  config: AgentConfig;
-  watcher?: fs.FSWatcher;
-}
+const MAX_CACHE_SIZE = 64;
 
 export class AgentRepository implements IAgentRepository {
-  private cache = new Map<string, CacheEntry>();
+  private cache = new Map<string, { config: AgentConfig; watcher: fs.FSWatcher }>();
 
   private store(agentId: string): DocumentStore<AgentConfig> {
     return new DocumentStore<AgentConfig>(path.join(getAgentDir(sanitizeAgentId(agentId)), "agent.json"));
   }
 
-  private invalidate(agentId: string): void {
-    const entry = this.cache.get(agentId);
-    if (entry?.watcher) {
-      entry.watcher.close();
-    }
-    this.cache.delete(agentId);
-  }
+  private async loadAndWatch(agentId: string): Promise<AgentConfig | undefined> {
+    const store = this.store(agentId);
+    const config = await store.readJson();
+    if (!config) return undefined;
 
-  private setupWatcher(agentId: string, filePath: string): void {
-    try {
-      const watcher = fs.watch(filePath, () => {
-        this.invalidate(agentId);
-      });
+    // Simple LRU eviction
+    if (this.cache.size >= MAX_CACHE_SIZE && !this.cache.has(agentId)) {
+      const firstKey = this.cache.keys().next().value as string | undefined;
+      if (firstKey) {
+        const entry = this.cache.get(firstKey);
+        entry?.watcher.close();
+        this.cache.delete(firstKey);
+      }
+    }
+
+    const watcher = fs.watch(store.filePath, () => {
       const entry = this.cache.get(agentId);
       if (entry) {
-        entry.watcher = watcher;
-      } else {
-        watcher.close();
+        entry.watcher.close();
+        this.cache.delete(agentId);
       }
-    } catch {
-      // Ignore watch setup failures; cache will fall back to file reads.
-    }
+    });
+
+    this.cache.set(agentId, { config, watcher });
+    return config;
   }
 
   async get(agentId: string): Promise<AgentConfig | undefined> {
-    const id = sanitizeAgentId(agentId);
-    const cached = this.cache.get(id);
+    sanitizeAgentId(agentId);
+    const cached = this.cache.get(agentId);
     if (cached) {
+      // Move to the end to keep LRU order.
+      this.cache.delete(agentId);
+      this.cache.set(agentId, cached);
       return cached.config;
     }
-
-    const store = this.store(id);
-    const config = await store.readJson();
-    if (config) {
-      this.cache.set(id, { config });
-      this.setupWatcher(id, path.join(getAgentDir(id), "agent.json"));
-    }
-    return config;
+    return this.loadAndWatch(agentId);
   }
 
   async save(agentId: string, config: AgentConfig): Promise<void> {
     const id = sanitizeAgentId(agentId);
-    this.invalidate(id);
+    const existing = this.cache.get(id);
+    if (existing) {
+      existing.watcher.close();
+      this.cache.delete(id);
+    }
     const store = this.store(id);
     await store.writeJson(config);
-    this.cache.set(id, { config });
-    this.setupWatcher(id, path.join(getAgentDir(id), "agent.json"));
+    await this.loadAndWatch(id);
   }
 
   async delete(agentId: string): Promise<void> {
     const id = sanitizeAgentId(agentId);
-    this.invalidate(id);
+    const existing = this.cache.get(id);
+    if (existing) {
+      existing.watcher.close();
+      this.cache.delete(id);
+    }
     const dir = getAgentDir(id);
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
@@ -81,12 +84,22 @@ export class AgentRepository implements IAgentRepository {
       const configs: AgentConfig[] = [];
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        const config = await this.get(entry.name).catch(() => undefined);
-        if (config) configs.push(config);
+        const filePath = path.join(agentsDir, entry.name, "agent.json");
+        const content = await fs.promises.readFile(filePath, "utf-8").catch(() => undefined);
+        if (!content) continue;
+        const config = JSON.parse(content) as AgentConfig;
+        configs.push(config);
       }
       return configs;
     } catch {
       return [];
     }
+  }
+
+  dispose(): void {
+    for (const entry of this.cache.values()) {
+      entry.watcher.close();
+    }
+    this.cache.clear();
   }
 }
