@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
-const ALLOWED_COMMANDS = new Set(["ls", "cat", "echo", "pwd", "mkdir", "touch", "cp", "mv", "rm"]);
+const ALLOWED_COMMANDS = new Set(["ls", "cat", "echo", "pwd", "mkdir", "touch"]);
 
 function isDangerousCommand(command: string): { dangerous: boolean; reason?: string } {
   if (/[\r\n]/.test(command)) return { dangerous: true, reason: "newlines are not allowed" };
