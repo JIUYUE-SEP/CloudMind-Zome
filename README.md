@@ -96,7 +96,8 @@ pnpm --filter @mindcloud/desktop dev
 ### 单用户本地模式
 
 - 无登录注册，开箱即用
-- 所有数据存储在本地 `workspace/`
+- 所有数据存储在本地默认目录 `~/.cloudmind-zome`
+- 可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖默认路径
 - 可作为 Web 应用或 Tauri 桌面应用运行
 
 ---
@@ -165,10 +166,13 @@ MindCloud-Zome/
 
 ## 数据存储
 
-所有运行时数据本地存储，默认路径：`workspace/`
+所有运行时数据本地存储，默认路径：`~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）
+
+可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
 
 ```
-workspace/
+~/.cloudmind-zome/
+├── agents/            # Agent 配置与消息记录
 ├── memory/            # Agent 记忆文档
 ├── skills/            # Skill 配置
 ├── tools/             # 工具配置

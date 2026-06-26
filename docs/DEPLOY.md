@@ -44,11 +44,10 @@ pnpm --filter @mindcloud/web start
 
 ## 数据目录
 
-默认数据目录：
+默认数据目录：`~/.cloudmind-zome`
 
-- Windows: `%LOCALAPPDATA%/cloudmind-zome`
-- macOS: `~/Library/Application Support/cloudmind-zome`
-- Linux: `~/.local/share/cloudmind-zome`
+- Windows: `%USERPROFILE%\.cloudmind-zome`
+- macOS / Linux: `~/.cloudmind-zome`
 
 可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
 
