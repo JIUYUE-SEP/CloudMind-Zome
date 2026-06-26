@@ -10,6 +10,7 @@ export interface SchedulerOptions {
 export class Scheduler {
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private runningTick = false;
 
   constructor(private context: ApiContext, private options: SchedulerOptions = {}) {}
 
@@ -29,16 +30,22 @@ export class Scheduler {
   }
 
   private async tick(): Promise<void> {
-    const agents = await this.context.agentRepository.list();
-    for (const agent of agents) {
-      const repo = new SchedulerRepository(agent.id);
-      const tasks = await repo.list();
-      for (const task of tasks) {
-        if (!task.enabled) continue;
-        if (!task.nextRunAt || isDue(task.nextRunAt)) {
-          await this.runTask(task, agent.id);
+    if (this.runningTick) return;
+    this.runningTick = true;
+    try {
+      const agents = await this.context.agentRepository.list();
+      for (const agent of agents) {
+        const repo = new SchedulerRepository(agent.id);
+        const tasks = await repo.list();
+        for (const task of tasks) {
+          if (!task.enabled) continue;
+          if (!task.nextRunAt || isDue(task.nextRunAt)) {
+            await this.runTask(task, agent.id);
+          }
         }
       }
+    } finally {
+      this.runningTick = false;
     }
   }
 
