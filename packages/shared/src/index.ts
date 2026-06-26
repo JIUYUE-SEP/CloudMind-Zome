@@ -1,10 +1,20 @@
 export interface AgentConfig {
   id: string;
   name: string;
+  codename?: string;
+  description?: string;
   persona: string;
+  tags?: string[];
+  representColor?: string;
   providerId?: string;
   modelId?: string;
   model?: string; // fallback for old configs
+  embedderProviderId?: string;
+  embedderModelId?: string;
+  imageProviderId?: string;
+  imageModelId?: string;
+  temperature?: number;
+  topP?: number;
   skills: string[];
   tools: string[];
 }

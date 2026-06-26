@@ -26,8 +26,8 @@
     <label>
       Embedding 模型
       <ModelSelector
-        v-model:provider-id="form.embeddingProviderId"
-        v-model:model-id="form.embeddingModelId"
+        v-model:provider-id="form.embedderProviderId"
+        v-model:model-id="form.embedderModelId"
         model-type="embedding"
       />
     </label>
@@ -78,22 +78,27 @@ const form = reactive({
   persona: props.agent?.persona || "",
   providerId: props.agent?.providerId || "",
   modelId: props.agent?.modelId || props.agent?.model || "",
-  embeddingProviderId: "",
-  embeddingModelId: "",
-  imageProviderId: "",
-  imageModelId: "",
-  skills: props.agent?.skills || [],
-  tools: props.agent?.tools || [],
+  embedderProviderId: props.agent?.embedderProviderId || "",
+  embedderModelId: props.agent?.embedderModelId || "",
+  imageProviderId: props.agent?.imageProviderId || "",
+  imageModelId: props.agent?.imageModelId || "",
+  skills: props.agent?.skills ? [...props.agent.skills] : [],
+  tools: props.agent?.tools ? [...props.agent.tools] : [],
 });
 
 function submit() {
   const agent: AgentConfig = {
+    ...(props.agent || {}),
     id: form.id,
     name: form.name,
     persona: form.persona,
     providerId: form.providerId || undefined,
     modelId: form.modelId || undefined,
     model: form.modelId || undefined,
+    embedderProviderId: form.embedderProviderId || undefined,
+    embedderModelId: form.embedderModelId || undefined,
+    imageProviderId: form.imageProviderId || undefined,
+    imageModelId: form.imageModelId || undefined,
     skills: form.skills,
     tools: form.tools,
   };

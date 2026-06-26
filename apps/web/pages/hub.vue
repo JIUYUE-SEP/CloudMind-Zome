@@ -28,8 +28,15 @@
             <div class="comm-avatar placeholder">{{ agent.name?.[0] || "?" }}</div>
             <div class="comm-info">
               <div class="comm-name">{{ agent.name }}</div>
-              <div class="comm-preview">{{ (agent as any).codename || "点击开始对话" }}</div>
+              <div class="comm-preview">{{ agent.codename || "点击开始对话" }}</div>
             </div>
+            <button
+              class="edit-agent-btn"
+              title="编辑"
+              @click.stop="navigateTo('/agents/' + agent.id)"
+            >
+              ✎
+            </button>
           </div>
           <div v-if="!agents.list.length" class="comm-empty">暂无心智</div>
         </template>
@@ -373,6 +380,32 @@ function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
 .comm-info {
   flex: 1;
   min-width: 0;
+}
+
+.edit-agent-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--mc-text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.15s;
+}
+
+.comm-item:hover .edit-agent-btn {
+  opacity: 1;
+}
+
+.edit-agent-btn:hover {
+  background: rgba(0, 229, 201, 0.1);
+  border-color: rgba(0, 229, 201, 0.2);
+  color: var(--mc-accent);
 }
 
 .comm-name {
