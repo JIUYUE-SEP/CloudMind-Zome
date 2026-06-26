@@ -20,6 +20,14 @@ async function main() {
   const agentRepository = new AgentRepository();
   const workers = new Map<string, AgentWorker>();
 
+  agentRepository.onChange = (agentId: string) => {
+    const worker = workers.get(agentId);
+    if (worker) {
+      worker.pause();
+      workers.delete(agentId);
+    }
+  };
+
   async function getOrCreateWorker(agentId: string): Promise<AgentWorker | undefined> {
     const existing = workers.get(agentId);
     if (existing) return existing;

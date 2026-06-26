@@ -10,6 +10,7 @@ const MAX_CACHE_SIZE = 64;
 
 export class AgentRepository implements IAgentRepository {
   private cache = new Map<string, { config: AgentConfig; watcher: fs.FSWatcher }>();
+  onChange?: (agentId: string) => void;
 
   private store(agentId: string): DocumentStore<AgentConfig> {
     return new DocumentStore<AgentConfig>(path.join(getAgentDir(sanitizeAgentId(agentId)), "agent.json"));
@@ -85,6 +86,7 @@ export class AgentRepository implements IAgentRepository {
     }
     const store = this.store(id);
     await store.writeJson(config);
+    this.onChange?.(id);
     await this.loadAndWatch(id);
   }
 
@@ -97,6 +99,7 @@ export class AgentRepository implements IAgentRepository {
     }
     const dir = getAgentDir(id);
     await fsp.rm(dir, { recursive: true, force: true });
+    this.onChange?.(id);
   }
 
   async list(): Promise<AgentConfig[]> {
