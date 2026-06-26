@@ -3,6 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { LLMProvider, LLMEvent } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool } from "../tools/types.js";
+import type { IMessageRepository } from "../memory/repositories/types.js";
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -12,12 +13,14 @@ export interface AgentWorkerConfig {
   provider: LLMProvider;
   tools: Tool[];
   workspaceDir: string;
+  messageRepository: IMessageRepository;
   requiresApproval: (toolName: string, args: unknown) => boolean | Promise<boolean>;
 }
 
 export interface Job {
   id: string;
   messages: ChatMessage[];
+  sessionId?: string;
   onEvent: (event: LLMEvent) => void;
 }
 
@@ -76,7 +79,13 @@ export class AgentWorker {
         maxSteps: 5,
       };
 
-      await runTurn(turnInput, job.onEvent);
+      const result = await runTurn(turnInput, job.onEvent);
+
+      const sessionId = job.sessionId || this.config.agentId;
+      await this.config.messageRepository.append({ ...result.assistantMessage, sessionId });
+      for (const toolMsg of result.toolMessages) {
+        await this.config.messageRepository.append({ ...toolMsg, sessionId });
+      }
     } catch (err) {
       job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });
     } finally {

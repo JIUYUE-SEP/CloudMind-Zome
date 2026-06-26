@@ -13,12 +13,20 @@ export interface TurnInput {
   maxTokens?: number;
 }
 
+export interface TurnResult {
+  messages: ChatMessage[];
+  assistantMessage: ChatMessage;
+  toolMessages: ChatMessage[];
+}
+
 export async function runTurn(
   input: TurnInput,
   emit: (event: LLMEvent) => void
-): Promise<ChatMessage[]> {
+): Promise<TurnResult> {
   const messages: ChatMessage[] = [...input.messages];
   const maxSteps = input.maxSteps ?? 10;
+  let assistantMessage: ChatMessage | undefined;
+  const toolMessages: ChatMessage[] = [];
 
   for (let step = 0; step < maxSteps; step++) {
     const stepInput: StepInput = {
@@ -31,10 +39,12 @@ export async function runTurn(
     };
 
     const result = await executeLoopStep(stepInput, emit);
+    assistantMessage = result.assistantMessage;
     messages.push(result.assistantMessage);
 
     if (result.toolMessages) {
       messages.push(...result.toolMessages);
+      toolMessages.push(...result.toolMessages);
     }
 
     if (result.stopReason !== "tool_use") {
@@ -42,5 +52,9 @@ export async function runTurn(
     }
   }
 
-  return messages;
+  return {
+    messages,
+    assistantMessage: assistantMessage!,
+    toolMessages,
+  };
 }

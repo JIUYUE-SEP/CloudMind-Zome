@@ -40,6 +40,7 @@ async function buildSessionWsContext(agentIds: string[]): Promise<{ context: Api
         provider: new MockLLMProvider(),
         tools: [],
         workspaceDir: tmpDir,
+        messageRepository: { append: async () => {}, listBySession: async () => [] },
         requiresApproval: () => false,
       })
     );

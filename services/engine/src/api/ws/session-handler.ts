@@ -4,6 +4,7 @@ import type { ApiContext } from "../context.js";
 import { routeMessage } from "../../conductor/conductor.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import { randomUUID } from "node:crypto";
+import { isValidId, sanitizeInput } from "./validation.js";
 
 export async function registerSessionWebSocket(app: FastifyInstance, context: ApiContext) {
   app.get(
@@ -11,6 +12,12 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
     { websocket: true },
     async (socket: WebSocket, req: FastifyRequest) => {
       const { sessionId } = req.params as { sessionId: string };
+
+      if (!isValidId(sessionId)) {
+        socket.close(4004, "Invalid session id");
+        return;
+      }
+
       const pendingMessages: unknown[] = [];
       let session: Awaited<ReturnType<typeof context.sessionRepository.get>> = undefined;
       let ready = false;
@@ -38,12 +45,16 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
         try {
           if (!session) return;
           const data = JSON.parse(String(raw));
-          const text = String(data.text || "");
+          const input = sanitizeInput(data.text);
+          if (!input.ok) {
+            socket.send(JSON.stringify({ type: "error", error: input.error }));
+            return;
+          }
 
           const userMessage: ChatMessage = {
             id: randomUUID(),
             role: "user",
-            content: [{ type: "text", text }],
+            content: [{ type: "text", text: input.text }],
             createdAt: new Date().toISOString(),
           };
 
@@ -56,7 +67,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           // Determine routing
           const agents = await Promise.all(session.agentIds.map((id) => context.agentRepository.get(id)));
           const validAgents = agents.filter((a): a is NonNullable<typeof a> => !!a);
-          const routing = routeMessage(text, session, validAgents);
+          const routing = routeMessage(input.text, session, validAgents);
 
           // Notify each target agent
           for (const agentId of routing.targetAgentIds) {
@@ -70,6 +81,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             worker.enqueue({
               id: randomUUID(),
               messages: history,
+              sessionId,
               onEvent: (event) => {
                 socket.send(JSON.stringify({ agentId, ...event }));
               },

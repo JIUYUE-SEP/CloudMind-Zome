@@ -37,6 +37,7 @@ async function main() {
       provider,
       tools,
       workspaceDir,
+      messageRepository: new MessageRepository(agentId),
       requiresApproval: () => false,
     });
     workers.set(agentId, worker);

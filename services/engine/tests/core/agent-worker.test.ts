@@ -23,6 +23,7 @@ function makeConfig(provider = new MockLLMProvider()): {
   provider: typeof provider;
   tools: Tool[];
   workspaceDir: string;
+  messageRepository: { append: () => Promise<void>; listBySession: () => Promise<[]> };
   requiresApproval: () => Promise<true>;
 } {
   return {
@@ -31,6 +32,7 @@ function makeConfig(provider = new MockLLMProvider()): {
     provider,
     tools: [dummyTool],
     workspaceDir: "/tmp",
+    messageRepository: { append: async () => {}, listBySession: async () => [] },
     requiresApproval: async () => true,
   };
 }
