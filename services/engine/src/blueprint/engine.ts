@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import fs from "node:fs/promises";
 import type { ApiContext } from "../api/context.js";
 import { getBuiltinTools } from "../tools/builtin/index.js";
+import { getDataDir } from "../config/paths.js";
 import type { Blueprint, BlueprintExecution, BlueprintNode } from "./types.js";
 import type { LLMEvent } from "../provider/types.js";
 
@@ -145,13 +148,15 @@ function getNextNode(nodeId: string, blueprint: Blueprint): BlueprintNode | unde
 }
 
 async function executeTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  const workspaceDir = path.join(getDataDir(), "blueprint-workspace");
+  await fs.mkdir(workspaceDir, { recursive: true });
   const tools = getBuiltinTools();
   const tool = tools.find((t) => t.name === toolName);
   if (!tool) return `tool not found: ${toolName}`;
   try {
     const toolCtx = {
       agentId: "blueprint",
-      workspaceDir: "",
+      workspaceDir,
       requiresApproval: () => false,
     };
     const result = await tool.execute(toolCtx, args);
