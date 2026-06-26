@@ -1,19 +1,28 @@
 <template>
   <div class="agent-edit-page">
-    <NuxtLink to="/hub">← 返回</NuxtLink>
-    <h1>编辑 Agent</h1>
-    <AgentEditForm v-if="agent" :agent="agent" @save="onSave" @cancel="navigateTo('/hub')" />
-    <div v-else class="empty">Agent 不存在</div>
+    <header class="header">
+      <BackButton />
+      <h1>编辑 Agent</h1>
+    </header>
+    <main class="main">
+      <AgentEditForm v-if="agent" :agent="agent" @save="onSave" @cancel="navigateTo('/hub')" />
+      <div v-else class="empty">Agent 不存在</div>
+    </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { useAgentsStore } from "@/stores/agents";
 import type { AgentConfig } from "@mindcloud/shared";
 
 const route = useRoute();
 const agents = useAgentsStore();
+
+onMounted(() => {
+  agents.load();
+});
+
 const agent = computed(() => agents.list.find((a) => a.id === route.params.id));
 
 async function onSave(updated: AgentConfig) {
@@ -24,16 +33,42 @@ async function onSave(updated: AgentConfig) {
 
 <style scoped>
 .agent-edit-page {
-  padding: 24px;
-  color: #d8e1ec;
-  background: #0b0f17;
-  min-height: 100vh;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 180px;
+  bottom: 56px;
+  display: flex;
+  flex-direction: column;
+  background: var(--mc-bg);
+  color: var(--mc-text);
+  overflow: hidden;
 }
-.agent-edit-page a {
-  color: #00e5c9;
+
+.header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
 }
+
+.header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
 .empty {
   margin-top: 24px;
-  color: #8899aa;
+  color: var(--mc-text-secondary);
 }
 </style>

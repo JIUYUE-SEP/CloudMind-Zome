@@ -1,7 +1,7 @@
 <template>
   <div class="scheduler">
     <header class="header">
-      <NuxtLink to="/hub" class="back">← Hub</NuxtLink>
+      <BackButton />
       <h1>定时任务</h1>
     </header>
     <main class="main">
@@ -123,31 +123,34 @@ function formatTime(iso: string) {
 
 <style scoped>
 .scheduler {
-  min-height: 100vh;
-  background: #0b0f17;
-  color: #d8e1ec;
-  padding: 24px;
+  position: absolute;
+  inset: 0;
+  background: var(--mc-bg);
+  color: var(--mc-text);
+  padding: 24px 196px 80px 24px;
+  overflow-y: auto;
 }
+
 .header {
   display: flex;
   align-items: center;
   gap: 16px;
   margin-bottom: 24px;
 }
-.back {
-  color: #00e5c9;
-  text-decoration: none;
-}
-h1 {
+
+.header h1 {
   margin: 0;
   font-size: 24px;
 }
+
 .main {
   max-width: 960px;
 }
+
 .controls {
   margin-bottom: 24px;
 }
+
 label {
   display: flex;
   flex-direction: column;
@@ -155,6 +158,7 @@ label {
   margin-bottom: 16px;
   font-size: 14px;
 }
+
 select,
 input,
 textarea {
@@ -162,23 +166,27 @@ textarea {
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: #111827;
-  color: #d8e1ec;
+  color: var(--mc-text);
   font-size: 14px;
 }
+
 .panel {
   background: #111827;
   border-radius: 12px;
   padding: 20px;
 }
+
 .empty {
-  color: #8899aa;
+  color: var(--mc-text-secondary);
   padding: 24px 0;
 }
+
 .task-list {
   list-style: none;
   padding: 0;
   margin: 0 0 24px;
 }
+
 .task-item {
   display: flex;
   justify-content: space-between;
@@ -186,37 +194,44 @@ textarea {
   padding: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
+
 .task-desc {
   font-weight: 500;
 }
+
 .task-meta {
   display: flex;
   gap: 12px;
   margin-top: 6px;
   font-size: 12px;
-  color: #8899aa;
+  color: var(--mc-text-secondary);
 }
+
 .task-actions {
   display: flex;
   gap: 8px;
 }
+
 button {
   padding: 8px 12px;
   border-radius: 6px;
   border: none;
-  background: #00e5c9;
-  color: #0b0f17;
+  background: var(--mc-accent);
+  color: var(--mc-bg);
   cursor: pointer;
   font-size: 14px;
 }
+
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
 button.danger {
   background: #ff5c5c;
   color: white;
 }
+
 .form {
   margin-top: 16px;
 }

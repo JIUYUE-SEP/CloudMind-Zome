@@ -1,6 +1,7 @@
 <template>
   <div class="sessions-page">
     <header>
+      <BackButton />
       <h1>群聊</h1>
       <button @click="startCreate">新建群聊</button>
     </header>
@@ -82,16 +83,27 @@ function agentName(id: string): string {
 
 <style scoped>
 .sessions-page {
-  padding: 16px;
-  max-width: 720px;
-  margin: 0 auto;
+  position: absolute;
+  inset: 0;
+  padding: 24px 196px 80px 24px;
+  color: var(--mc-text);
+  background: var(--mc-bg);
+  overflow-y: auto;
 }
+
 header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 16px;
   margin-bottom: 16px;
 }
+
+header h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 24px;
+}
+
 .form-panel {
   display: flex;
   flex-direction: column;
@@ -100,20 +112,24 @@ header {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   margin-bottom: 16px;
+  max-width: 720px;
 }
+
 .form-panel input,
 .form-panel select {
   padding: 8px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.05);
-  color: #d8e1ec;
+  color: var(--mc-text);
 }
+
 .selected-agents {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -123,20 +139,35 @@ header {
   background: rgba(0, 229, 201, 0.15);
   font-size: 12px;
 }
+
 .actions {
   display: flex;
   gap: 8px;
 }
+
 .session-list {
   list-style: none;
   padding: 0;
+  max-width: 720px;
 }
+
 .session-list li {
   padding: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
+
 .session-list a {
-  color: #00e5c9;
+  color: var(--mc-accent);
   text-decoration: none;
+}
+
+button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  background: var(--mc-accent);
+  color: var(--mc-bg);
+  cursor: pointer;
+  font-size: 14px;
 }
 </style>

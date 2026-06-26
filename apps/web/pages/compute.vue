@@ -1,6 +1,7 @@
 <template>
   <div class="compute-page">
     <header>
+      <BackButton />
       <h1>算力中枢</h1>
       <button @click="openProviderModal()">添加 Provider</button>
     </header>
@@ -143,36 +144,50 @@ async function deleteModel(modelId: string) {
 
 <style scoped>
 .compute-page {
-  padding: 24px;
-  color: #d8e1ec;
-  background: #0b0f17;
-  min-height: 100vh;
+  position: absolute;
+  inset: 0;
+  padding: 24px 196px 80px 24px;
+  color: var(--mc-text);
+  background: var(--mc-bg);
+  overflow-y: auto;
 }
+
 header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 16px;
   margin-bottom: 24px;
 }
+
+header h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 24px;
+}
+
 .providers {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
 }
+
 .provider-card {
   padding: 16px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.05);
   cursor: pointer;
 }
+
 .provider-card:hover {
   background: rgba(255, 255, 255, 0.08);
 }
+
 .actions {
   display: flex;
   gap: 8px;
   margin-top: 12px;
 }
+
 .modal {
   position: fixed;
   inset: 0;
@@ -180,64 +195,90 @@ header {
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.6);
+  z-index: 200;
 }
+
 .modal-content {
   width: 400px;
   padding: 24px;
   border-radius: 8px;
-  background: #0b0f17;
+  background: var(--mc-bg);
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
+
 .modal-content label {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
+
 .modal-content input,
 .modal-content select {
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.05);
-  color: #d8e1ec;
+  color: var(--mc-text);
 }
+
 .modal-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
 }
+
 .models-section {
   margin-top: 32px;
 }
+
 .models-section ul {
   list-style: none;
   padding: 0;
 }
+
 .models-section li {
   display: flex;
   justify-content: space-between;
   padding: 8px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
+
 .add-model {
   display: flex;
   gap: 8px;
   margin-top: 16px;
 }
+
 .add-model input,
 .add-model select {
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.05);
-  color: #d8e1ec;
+  color: var(--mc-text);
 }
+
 .test-result {
   margin-top: 16px;
   padding: 12px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.05);
+}
+
+button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  background: var(--mc-accent);
+  color: var(--mc-bg);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

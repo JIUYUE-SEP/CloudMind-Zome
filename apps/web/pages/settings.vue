@@ -1,6 +1,9 @@
 <template>
   <div class="settings-page">
-    <h1>系统设置</h1>
+    <header class="header">
+      <BackButton />
+      <h1>系统设置</h1>
+    </header>
 
     <section v-if="store.settings">
       <h2>工具列表</h2>
@@ -54,54 +57,75 @@ onMounted(() => {
 
 <style scoped>
 .settings-page {
-  padding: 24px;
-  color: #d8e1ec;
-  background: #0b0f17;
-  min-height: 100vh;
+  position: absolute;
+  inset: 0;
+  padding: 24px 196px 80px 24px;
+  color: var(--mc-text);
+  background: var(--mc-bg);
+  overflow-y: auto;
 }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
 section {
   display: flex;
   flex-direction: column;
   gap: 16px;
   max-width: 600px;
 }
+
 label {
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
 }
+
 input {
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.05);
-  color: #d8e1ec;
+  color: var(--mc-text);
 }
+
 .tools {
   list-style: none;
   padding: 0;
 }
+
 .tools li {
   display: flex;
   justify-content: space-between;
   padding: 8px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
+
 .tag {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 4px;
   background: rgba(0, 229, 201, 0.15);
-  color: #00e5c9;
+  color: var(--mc-accent);
 }
+
 .save {
   align-self: flex-start;
   padding: 8px 16px;
   border-radius: 6px;
   border: none;
-  background: #00e5c9;
-  color: #0b0f17;
+  background: var(--mc-accent);
+  color: var(--mc-bg);
   cursor: pointer;
 }
 </style>

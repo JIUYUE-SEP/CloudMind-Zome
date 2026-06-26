@@ -1,118 +1,456 @@
 <template>
-  <div class="hub">
-    <aside class="sidebar">
-      <h2>Agents</h2>
-      <button @click="startCreate">新建 Agent</button>
-      <ul>
-        <li
-          v-for="agent in agents.list"
-          :key="agent.id"
-          :class="{ active: agents.currentId === agent.id }"
-          @click="select(agent.id)"
-        >
-          {{ agent.name }}
-        </li>
-      </ul>
-      <nav class="nav-links">
-        <NuxtLink to="/sessions">群聊</NuxtLink>
-        <NuxtLink to="/compute">算力中枢</NuxtLink>
-        <NuxtLink to="/scheduler">定时任务</NuxtLink>
-        <NuxtLink to="/blueprints">蓝图</NuxtLink>
-        <NuxtLink to="/settings">系统设置</NuxtLink>
-      </nav>
-    </aside>
-    <main class="main">
-      <div v-if="showForm" class="form-panel">
-        <AgentEditForm :agent="editingAgent" @save="onSave" @cancel="showForm = false" />
+  <div class="comm-hub">
+    <aside class="comm-sidebar">
+      <div class="comm-sidebar-header">
+        <BackButton />
+        <span class="comm-sidebar-title">通讯中枢</span>
+        <button class="new-agent-btn" title="新建 Agent" @click="navigateTo('/agents/new')">+</button>
       </div>
-      <ChatView v-else-if="agents.currentId" :agent-id="agents.currentId" />
-      <div v-else class="empty">请选择一个 Agent</div>
+
+      <div class="comm-mode-switch">
+        <button :class="['comm-mode-btn', { active: tab === 'private' }]" @click="tab = 'private'">私聊</button>
+        <button :class="['comm-mode-btn', { active: tab === 'group' }]" @click="tab = 'group'">群聊</button>
+      </div>
+
+      <div class="comm-list">
+        <div v-if="tab === 'group'" class="comm-create-group">
+          <button class="create-group-btn" @click="navigateTo('/sessions')">+ 创建群聊</button>
+        </div>
+
+        <template v-if="tab === 'private'">
+          <div
+            v-for="agent in agents.list"
+            :key="agent.id"
+            class="comm-item"
+            :class="{ active: selectedType === 'private' && selectedAgentId === agent.id }"
+            @click="selectAgent(agent)"
+          >
+            <div class="comm-avatar placeholder">{{ agent.name?.[0] || "?" }}</div>
+            <div class="comm-info">
+              <div class="comm-name">{{ agent.name }}</div>
+              <div class="comm-preview">{{ (agent as any).codename || "点击开始对话" }}</div>
+            </div>
+          </div>
+          <div v-if="!agents.list.length" class="comm-empty">暂无心智</div>
+        </template>
+
+        <template v-if="tab === 'group'">
+          <div
+            v-for="session in groupSessions"
+            :key="session.id"
+            class="comm-item"
+            :class="{ active: selectedType === 'group' && selectedId === session.id }"
+            @click="selectGroup(session)"
+          >
+            <div class="comm-avatar placeholder group">#</div>
+            <div class="comm-info">
+              <div class="comm-name">{{ session.name }}</div>
+              <div class="comm-preview">{{ session.agentIds.length }} 位成员</div>
+            </div>
+          </div>
+          <div v-if="!groupSessions.length" class="comm-empty">暂无群聊</div>
+        </template>
+      </div>
+    </aside>
+
+    <main class="comm-main">
+      <ChatView
+        v-if="selectedType === 'private' && selectedAgentId"
+        :key="selectedAgentId"
+        :agent-id="selectedAgentId"
+      />
+      <GroupChatView
+        v-else-if="selectedType === 'group' && selectedSession"
+        :key="selectedId"
+        :session="selectedSession"
+        :messages="groupMessages"
+        :agents="agents.list"
+        :is-connected="groupIsConnected"
+        :is-streaming="groupIsStreaming"
+        @send="onGroupSend"
+      />
+      <div v-else class="comm-welcome">
+        <div class="comm-welcome-icon">//</div>
+        <div class="comm-welcome-title">选择一个会话开始交流</div>
+        <div class="comm-welcome-sub">私聊与 Agent 一对一沟通，群聊与多个 Agent 协作讨论</div>
+      </div>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useAgentsStore } from "@/stores/agents";
-import type { AgentConfig } from "@mindcloud/shared";
+import { useSessionsStore } from "@/stores/sessions";
+import { useEngineClient, type ChatMessageRecord, type Session } from "@/composables/useEngineClient";
+import BackButton from "@/components/BackButton.vue";
+import ChatView from "@/components/ChatView.vue";
+import GroupChatView from "@/components/GroupChatView.vue";
+import type { DisplayMessage } from "@/components/GroupChatView.vue";
 
 const agents = useAgentsStore();
-const showForm = ref(false);
-const editingAgent = ref<AgentConfig | undefined>(undefined);
+const sessions = useSessionsStore();
+const client = useEngineClient();
+
+const tab = ref<"private" | "group">("private");
+const selectedId = ref<string>("");
+const selectedAgentId = ref<string>("");
+const selectedType = ref<"private" | "group" | "">("");
+
+const selectedSession = ref<Session | undefined>(undefined);
+const groupMessages = ref<DisplayMessage[]>([]);
+const groupIsConnected = ref(false);
+const groupIsStreaming = ref(false);
+let groupConnection: ReturnType<typeof client.connectSession> | null = null;
+
+const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
 
 onMounted(() => {
   agents.load();
+  sessions.load();
 });
 
-function select(id: string) {
-  showForm.value = false;
-  agents.select(id);
+onUnmounted(() => {
+  groupConnection?.close();
+});
+
+function selectAgent(agent: { id: string }) {
+  selectedAgentId.value = agent.id;
+  selectedType.value = "private";
+  selectedId.value = "";
+  selectedSession.value = undefined;
+  closeGroupConnection();
 }
 
-function startCreate() {
-  editingAgent.value = undefined;
-  showForm.value = true;
+async function selectGroup(session: Session) {
+  selectedId.value = session.id;
+  selectedType.value = "group";
+  selectedAgentId.value = "";
+  selectedSession.value = session;
+  await loadGroupMessages(session.id);
+  connectGroup(session.id);
 }
 
-async function onSave(agent: AgentConfig) {
-  if (editingAgent.value) {
-    await agents.update(agent.id, agent);
-  } else {
-    await agents.create(agent);
+async function loadGroupMessages(sessionId: string) {
+  try {
+    const records = await client.getSessionMessages(sessionId, 100);
+    groupMessages.value = recordsToDisplay(records);
+  } catch {
+    groupMessages.value = [];
   }
-  showForm.value = false;
-  agents.select(agent.id);
+}
+
+function connectGroup(sessionId: string) {
+  closeGroupConnection();
+  groupIsConnected.value = false;
+  groupIsStreaming.value = false;
+
+  groupConnection = client.connectSession(sessionId, {
+    onOpen: () => {
+      groupIsConnected.value = true;
+    },
+    onTextDelta: (delta) => {
+      const last = groupMessages.value[groupMessages.value.length - 1];
+      if (last && last.role === "assistant" && last.isStreaming) {
+        last.text += delta;
+      } else {
+        groupMessages.value.push({
+          id: `stream_${Date.now()}`,
+          role: "assistant",
+          text: delta,
+          thinking: "",
+          toolCalls: [],
+          isStreaming: true,
+        });
+      }
+    },
+    onThinkingDelta: (delta) => {
+      const last = groupMessages.value[groupMessages.value.length - 1];
+      if (last && last.role === "assistant" && last.isStreaming) {
+        last.thinking += delta;
+      }
+    },
+    onToolCall: (toolCall) => {
+      const last = groupMessages.value[groupMessages.value.length - 1];
+      if (last && last.role === "assistant") {
+        last.toolCalls.push(toolCall);
+      }
+    },
+    onStepEnd: () => {
+      const last = groupMessages.value[groupMessages.value.length - 1];
+      if (last && last.role === "assistant") {
+        last.isStreaming = false;
+      }
+      groupIsStreaming.value = false;
+    },
+    onError: (error) => {
+      groupIsStreaming.value = false;
+      groupMessages.value.push({
+        id: `err_${Date.now()}`,
+        role: "assistant",
+        text: `Error: ${error}`,
+        thinking: "",
+        toolCalls: [],
+        isStreaming: false,
+      });
+    },
+    onClose: () => {
+      groupIsConnected.value = false;
+      groupIsStreaming.value = false;
+    },
+  });
+}
+
+function closeGroupConnection() {
+  groupConnection?.close();
+  groupConnection = null;
+  groupIsConnected.value = false;
+  groupIsStreaming.value = false;
+}
+
+function onGroupSend(text: string) {
+  if (!groupConnection) return;
+  groupMessages.value.push({
+    id: `u_${Date.now()}`,
+    role: "user",
+    text,
+    thinking: "",
+    toolCalls: [],
+    isStreaming: false,
+  });
+  groupIsStreaming.value = true;
+  groupConnection.send(text);
+}
+
+function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
+  return records.map((r) => ({
+    id: r.id,
+    role: r.role,
+    text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
+    thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
+    toolCalls: r.toolCalls || [],
+    isStreaming: false,
+  }));
 }
 </script>
 
 <style scoped>
-.hub {
+.comm-hub {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 180px;
+  bottom: 56px;
+  background: var(--mc-bg);
   display: flex;
-  height: 100vh;
-  background: #0b0f17;
-  color: #d8e1ec;
+  z-index: 10;
 }
-.sidebar {
-  width: 240px;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 16px;
-}
-.sidebar ul {
-  list-style: none;
-  padding: 0;
-  margin: 12px 0 0;
-}
-.sidebar li {
-  padding: 10px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.sidebar li.active,
-.sidebar li:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-.nav-links {
-  margin-top: 24px;
+
+.comm-sidebar {
+  width: 260px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  background: rgba(11, 15, 23, 0.95);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
-.nav-links a {
-  color: #00e5c9;
-  text-decoration: none;
+
+.comm-sidebar-header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.comm-sidebar-title {
+  flex: 1;
   font-size: 14px;
+  color: var(--mc-text);
+  font-weight: 500;
 }
-.main {
+
+.new-agent-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(0, 229, 201, 0.1);
+  border: 1px solid rgba(0, 229, 201, 0.2);
+  color: var(--mc-accent);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.new-agent-btn:hover {
+  background: rgba(0, 229, 201, 0.2);
+}
+
+.comm-mode-switch {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px;
+  flex-shrink: 0;
+}
+
+.comm-mode-btn {
+  flex: 1;
+  padding: 7px 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.comm-mode-btn.active {
+  background: rgba(0, 229, 201, 0.12);
+  border-color: rgba(0, 229, 201, 0.3);
+  color: var(--mc-accent);
+}
+
+.comm-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.comm-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.comm-item:hover {
+  background: rgba(0, 229, 201, 0.08);
+  border-color: rgba(0, 229, 201, 0.2);
+}
+
+.comm-item.active {
+  background: rgba(0, 229, 201, 0.12);
+  border-color: rgba(0, 229, 201, 0.3);
+}
+
+.comm-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.comm-avatar.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.comm-avatar.placeholder.group {
+  background: rgba(0, 229, 201, 0.15);
+  color: var(--mc-accent);
+}
+
+.comm-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.comm-name {
+  font-size: 13px;
+  color: var(--mc-text);
+  font-weight: 500;
+}
+
+.comm-preview {
+  font-size: 11px;
+  color: var(--mc-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.comm-empty {
+  color: var(--mc-text-tertiary);
+  text-align: center;
+  padding: 30px 0;
+  font-size: 12px;
+}
+
+.comm-create-group {
+  padding: 0 10px 6px;
+}
+
+.create-group-btn {
+  width: 100%;
+  padding: 7px;
+  background: rgba(0, 229, 201, 0.08);
+  border: 1px solid rgba(0, 229, 201, 0.2);
+  border-radius: 6px;
+  color: var(--mc-accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.create-group-btn:hover {
+  background: rgba(0, 229, 201, 0.15);
+}
+
+.comm-main {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
 }
-.empty {
+
+.comm-welcome {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #8899aa;
+  text-align: center;
+  color: var(--mc-text-secondary);
+}
+
+.comm-welcome-icon {
+  font-size: 32px;
+  color: var(--mc-accent);
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.comm-welcome-title {
+  font-size: 16px;
+  color: var(--mc-text);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.comm-welcome-sub {
+  font-size: 12px;
+  color: var(--mc-text-tertiary);
 }
 </style>

@@ -18,15 +18,7 @@ import { useSessionsStore } from "@/stores/sessions";
 import { useAgentsStore } from "@/stores/agents";
 import { useEngineClient, type ChatMessageRecord } from "@/composables/useEngineClient";
 import type { Session } from "@/composables/useEngineClient";
-
-interface DisplayMessage {
-  id: string;
-  role: "user" | "assistant" | "tool";
-  text: string;
-  thinking: string;
-  toolCalls: { toolCallId: string; name: string; arguments: unknown }[];
-  isStreaming: boolean;
-}
+import type { DisplayMessage } from "@/components/GroupChatView.vue";
 
 const route = useRoute();
 const sessions = useSessionsStore();
@@ -145,10 +137,14 @@ function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
 
 <style scoped>
 .session-detail-page {
-  height: 100vh;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 180px;
+  bottom: 56px;
   display: flex;
   flex-direction: column;
-  background: #0b0f17;
-  color: #d8e1ec;
+  background: var(--mc-bg);
+  color: var(--mc-text);
 }
 </style>
