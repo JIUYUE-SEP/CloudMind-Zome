@@ -74,7 +74,7 @@ describe("Compute API", () => {
     const createRes = await request(app.server).post("/compute/providers").send(provider);
     expect(createRes.status).toBe(200);
     expect(createRes.body.displayName).toBe("OpenAI");
-    expect(createRes.body.apiKey).toBe("sk-test");
+    expect(createRes.body.apiKey).toBe("***");
 
     const listRes = await request(app.server).get("/compute/providers");
     expect(listRes.status).toBe(200);

@@ -2,6 +2,10 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import OpenAI from "openai";
 
+function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
+  return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
+}
+
 export async function registerComputeRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/compute/providers", {
     schema: { summary: "List compute providers", tags: ["compute"] },
@@ -32,7 +36,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     };
     config.providers.push(provider);
     await context.configRepository.save(config);
-    return provider;
+    return sanitizeProvider(provider);
   });
 
   app.put("/compute/providers/:id", {
@@ -55,7 +59,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       apiKey: body.apiKey ?? existing.apiKey,
     };
     await context.configRepository.save(config);
-    return config.providers[idx];
+    return sanitizeProvider(config.providers[idx]);
   });
 
   app.delete("/compute/providers/:id", {
