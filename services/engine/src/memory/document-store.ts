@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 
 export class DocumentStore<T extends object> {
   constructor(public filePath: string) {}
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   async readJson(): Promise<T | undefined> {
     try {
@@ -27,17 +28,23 @@ export class DocumentStore<T extends object> {
   }
 
   async appendLine(record: T): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const line = JSON.stringify(record) + "\n";
-    await fs.appendFile(this.filePath, line, "utf-8");
+    this.writeQueue = this.writeQueue.then(async () => {
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+      await fs.appendFile(this.filePath, line, "utf-8");
+    });
+    await this.writeQueue;
   }
 
   async writeLines(records: T[]): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
     const content = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
-    await fs.writeFile(tmpPath, content);
-    await fs.rename(tmpPath, this.filePath);
+    this.writeQueue = this.writeQueue.then(async () => {
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+      const tmpPath = `${this.filePath}.tmp`;
+      await fs.writeFile(tmpPath, content);
+      await fs.rename(tmpPath, this.filePath);
+    });
+    await this.writeQueue;
   }
 
   async readLines(options?: { limit?: number; offset?: number }): Promise<T[]> {
