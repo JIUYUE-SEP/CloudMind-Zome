@@ -7,7 +7,7 @@
     <nav class="right-nav">
       <NuxtLink
         v-for="item in navItems"
-        :key="item.label"
+        :key="item.label + item.to"
         :to="item.to"
         class="nav-item"
         :class="{ placeholder: item.placeholder }"
@@ -19,7 +19,7 @@
 
     <footer class="bottom-bar">
       <div class="bar-left">
-        <button class="bar-avatar" title="个人信息" @click="showProfileModal = true">
+        <button class="bar-avatar" title="个人信息">
           <span>我</span>
         </button>
         <button class="bar-btn" @click="navigateTo('/self-image')">心智侧写</button>
@@ -45,8 +45,6 @@ const navItems: NavItem[] = [
   { label: "通讯中枢", to: "/hub" },
   { label: "广播站", to: "", placeholder: true },
 ];
-
-const showProfileModal = ref(false);
 
 function handleNav(e: Event, item: NavItem) {
   if (item.placeholder) {
