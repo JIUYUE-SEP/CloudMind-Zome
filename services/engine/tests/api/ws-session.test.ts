@@ -68,6 +68,7 @@ async function buildSessionWsContext(agentIds: string[]): Promise<{ context: Api
   return {
     context,
     cleanup: async () => {
+      agentRepository.dispose();
       await fs.rm(tmpDir, { recursive: true, force: true });
       process.env.CLOUDMIND_DATA_DIR = originalDataDir;
     },

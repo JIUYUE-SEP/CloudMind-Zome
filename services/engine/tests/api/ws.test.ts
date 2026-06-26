@@ -56,6 +56,7 @@ async function buildWsContext(agentId: string): Promise<{ context: ApiContext; c
   return {
     context,
     cleanup: async () => {
+      agentRepository.dispose();
       await fs.rm(tmpDir, { recursive: true, force: true });
       process.env.CLOUDMIND_DATA_DIR = originalDataDir;
     },
