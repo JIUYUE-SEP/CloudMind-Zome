@@ -2,7 +2,7 @@
   <div class="edit-section">
     <label>
       ID
-      <input :value="agent.id" disabled />
+      <input :value="agent.id" :disabled="!isNew" @input="update('id', $event)" />
     </label>
     <label>
       名称
@@ -49,7 +49,8 @@ import type { AgentConfig } from "@mindcloud/shared";
 
 const props = defineProps<{
   agent: AgentConfig;
-}>();
+  isNew?: boolean;
+}>()
 
 const emit = defineEmits<{
   (e: "update", patch: Partial<AgentConfig>): void;

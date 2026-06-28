@@ -56,9 +56,9 @@
       <div class="settings-panel">
         <div class="panel-header">{{ currentTab?.label }}</div>
         <div class="panel-scroll">
-          <Component :is="currentComponent" :agent="agentForm" @update="onUpdate" />
+          <Component :is="currentComponent" :agent="agentForm" :is-new="isNew" @update="onUpdate" />
           <div class="panel-actions">
-            <button class="danger-btn" @click="deleteAgent">删除心智</button>
+            <button v-if="!isNew" class="danger-btn" @click="deleteAgent">删除心智</button>
             <button class="save-btn" :disabled="saving" @click="save">
               {{ saving ? '保存中...' : '保存' }}
             </button>
@@ -99,8 +99,11 @@ const currentTab = computed(() => tabs.find((t) => t.key === activeTab.value));
 const currentComponent = computed(() => currentTab.value?.comp);
 
 const selectedId = computed(() => (route.params.id as string) || "");
+const isNew = computed(() => selectedId.value === "new");
 
-const sourceAgent = computed(() => agents.list.find((a) => a.id === selectedId.value));
+const sourceAgent = computed(() =>
+  isNew.value ? undefined : agents.list.find((a) => a.id === selectedId.value),
+);
 
 const agentForm = ref<AgentConfig>(buildEmptyAgent());
 
@@ -144,17 +147,23 @@ function onUpdate(patch: Partial<AgentConfig>) {
 }
 
 async function save() {
-  if (!selectedId.value) return;
   saving.value = true;
   try {
-    await agents.update(selectedId.value, agentForm.value);
+    if (isNew.value) {
+      if (!agentForm.value.id || !agentForm.value.name) return;
+      const created = await agents.create(agentForm.value);
+      navigateTo(`/agents/${created.id}`);
+    } else {
+      if (!selectedId.value) return;
+      await agents.update(selectedId.value, agentForm.value);
+    }
   } finally {
     saving.value = false;
   }
 }
 
 async function deleteAgent() {
-  if (!selectedId.value) return;
+  if (isNew.value || !selectedId.value) return;
   if (!confirm("确定要删除这个心智吗？")) return;
   await agents.remove(selectedId.value);
   navigateTo("/hub");
