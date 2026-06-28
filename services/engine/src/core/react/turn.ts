@@ -11,6 +11,8 @@ export interface TurnInput {
   toolCtx: ToolExecutionContext;
   maxSteps?: number;
   maxTokens?: number;
+  temperature?: number;
+  topP?: number;
 }
 
 export interface TurnResult {
@@ -36,6 +38,8 @@ export async function runTurn(
       tools: input.tools,
       toolCtx: input.toolCtx,
       maxTokens: input.maxTokens,
+      temperature: input.temperature,
+      topP: input.topP,
     };
 
     const result = await executeLoopStep(stepInput, emit);

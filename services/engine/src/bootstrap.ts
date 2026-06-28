@@ -7,6 +7,8 @@ import { LLMCallRepository } from "./memory/repositories/llm-call.js";
 import { ConfigRepository } from "./config/repository.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { OpenAIProvider, MockLLMProvider } from "./provider/llm.js";
+import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedder.js";
+import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-gen.js";
 import { AgentWorker } from "./core/agent-worker.js";
 import { getBuiltinTools } from "./tools/builtin/index.js";
 import type { ApiContext } from "./api/context.js";
@@ -35,7 +37,9 @@ async function main() {
     const agentConfig = await agentRepository.get(agentId);
     if (!agentConfig) return undefined;
 
-    const provider = await createProvider(agentConfig);
+    const provider = await createLLMProvider(agentConfig);
+    const embedder = await createEmbedderProvider(agentConfig);
+    const imageProvider = await createImageProvider(agentConfig);
     const tools = getBuiltinTools().filter((t) => agentConfig.tools.includes(t.name));
     const workspaceDir = getAgentDir(agentId);
 
@@ -47,12 +51,16 @@ async function main() {
       workspaceDir,
       messageRepository: new MessageRepository(agentId),
       requiresApproval: () => false,
+      temperature: agentConfig.temperature,
+      topP: agentConfig.topP,
+      embedder,
+      imageProvider,
     });
     workers.set(agentId, worker);
     return worker;
   }
 
-  async function createProvider(agentConfig: AgentConfig) {
+  async function createLLMProvider(agentConfig: AgentConfig) {
     if (process.env.NODE_ENV === "e2e" || !agentConfig.providerId) {
       return new MockLLMProvider();
     }
@@ -62,6 +70,30 @@ async function main() {
       return new MockLLMProvider();
     }
     return new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl);
+  }
+
+  async function createEmbedderProvider(agentConfig: AgentConfig) {
+    if (process.env.NODE_ENV === "e2e" || !agentConfig.embedderProviderId) {
+      return new MockEmbedderProvider();
+    }
+    const config = await configRepo.load();
+    const providerConfig = config.providers.find((p) => p.id === agentConfig.embedderProviderId);
+    if (!providerConfig) {
+      return new MockEmbedderProvider();
+    }
+    return new OpenAIEmbedderProvider(providerConfig.apiKey, providerConfig.baseUrl);
+  }
+
+  async function createImageProvider(agentConfig: AgentConfig) {
+    if (process.env.NODE_ENV === "e2e" || !agentConfig.imageProviderId) {
+      return new MockImageGenProvider();
+    }
+    const config = await configRepo.load();
+    const providerConfig = config.providers.find((p) => p.id === agentConfig.imageProviderId);
+    if (!providerConfig) {
+      return new MockImageGenProvider();
+    }
+    return new OpenAIImageGenProvider(providerConfig.apiKey, providerConfig.baseUrl);
   }
 
   const context: ApiContext = {

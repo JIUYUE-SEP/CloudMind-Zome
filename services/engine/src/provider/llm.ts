@@ -49,6 +49,7 @@ export class OpenAIProvider implements LLMProvider {
         }) as unknown as OpenAI.ChatCompletionMessageParam[],
         tools: params.tools as OpenAI.ChatCompletionTool[] | undefined,
         temperature: params.temperature,
+        top_p: params.topP,
         max_tokens: params.maxTokens,
         stream: true,
       });

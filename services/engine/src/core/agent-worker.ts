@@ -15,6 +15,10 @@ export interface AgentWorkerConfig {
   workspaceDir: string;
   messageRepository: IMessageRepository;
   requiresApproval: (toolName: string, args: unknown) => boolean | Promise<boolean>;
+  temperature?: number;
+  topP?: number;
+  embedder?: import("../provider/types.js").EmbedderProvider;
+  imageProvider?: import("../provider/types.js").ImageGenProvider;
 }
 
 export interface Job {
@@ -77,6 +81,8 @@ export class AgentWorker {
           emit: job.onEvent,
         },
         maxSteps: 5,
+        temperature: this.config.temperature,
+        topP: this.config.topP,
       };
 
       const result = await runTurn(turnInput, job.onEvent);

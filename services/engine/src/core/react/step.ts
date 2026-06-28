@@ -9,6 +9,8 @@ export interface StepInput {
   tools: unknown[];
   toolCtx: ToolExecutionContext;
   maxTokens?: number;
+  temperature?: number;
+  topP?: number;
 }
 
 export interface StepResult {
@@ -23,6 +25,8 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
     messages: input.messages,
     tools: input.tools.length > 0 ? input.tools : undefined,
     maxTokens: input.maxTokens,
+    temperature: input.temperature,
+    topP: input.topP,
   };
 
   let textBuffer = "";

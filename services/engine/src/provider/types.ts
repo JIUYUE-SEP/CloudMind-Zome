@@ -40,6 +40,7 @@ export interface LLMChatParams {
   messages: ChatMessage[];
   tools?: unknown[];
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
 }
 
