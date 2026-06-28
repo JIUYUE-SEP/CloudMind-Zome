@@ -61,7 +61,12 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           // Save user message to all agents in session (so each agent sees it in their context)
           for (const agentId of session.agentIds) {
             const repo = context.getMessageRepository(agentId);
-            await repo.append({ ...userMessage, sessionId });
+            try {
+              await repo.append({ ...userMessage, sessionId });
+            } catch (err) {
+              console.error("failed to persist user message", err);
+              socket.send(JSON.stringify({ type: "error", error: "Failed to persist message" }));
+            }
           }
 
           // Determine routing

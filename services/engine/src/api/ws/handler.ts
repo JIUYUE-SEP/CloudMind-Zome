@@ -45,7 +45,13 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
           };
 
           // Persist user message
-          context.getMessageRepository(agentId).append({ ...userMessage, sessionId }).catch(() => {});
+          context
+            .getMessageRepository(agentId)
+            .append({ ...userMessage, sessionId })
+            .catch((err) => {
+              console.error("failed to persist user message", err);
+              socket.send(JSON.stringify({ type: "error", error: "Failed to persist message" }));
+            });
 
           worker.enqueue({
             id: randomUUID(),
