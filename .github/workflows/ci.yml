@@ -37,8 +37,10 @@ jobs:
       - name: Test with coverage
         run: pnpm test:coverage
 
-      - name: Build packages
-        run: pnpm build
+      - name: Build engine and web
+        run: |
+          pnpm --filter @mindcloud/engine build
+          pnpm --filter @mindcloud/web build
 
       - name: Rust checks
         run: |
