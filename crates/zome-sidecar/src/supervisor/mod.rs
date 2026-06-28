@@ -17,6 +17,7 @@ const MAX_RESTART_RETRIES: u32 = 5;
 static SUPERVISOR: std::sync::LazyLock<Mutex<Option<Supervisor>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
+#[derive(Clone)]
 pub struct Supervisor {
     child: Arc<Mutex<Option<Child>>>,
 }
@@ -124,13 +125,21 @@ async fn check_health(client: &reqwest::Client) -> bool {
 }
 
 pub async fn shutdown() {
-    if let Some(sup) = SUPERVISOR.lock().await.as_ref() {
+    let sup = {
+        let guard = SUPERVISOR.lock().await;
+        guard.clone()
+    };
+    if let Some(sup) = sup {
         sup.shutdown().await;
     }
 }
 
 async fn restart() {
-    if let Some(sup) = SUPERVISOR.lock().await.as_ref() {
+    let sup = {
+        let guard = SUPERVISOR.lock().await;
+        guard.clone()
+    };
+    if let Some(sup) = sup {
         sup.restart().await;
     }
 }
@@ -153,14 +162,19 @@ impl Supervisor {
     }
 
     pub async fn shutdown(&self) {
-        if let Some(mut child) = self.child.lock().await.take() {
+        let child = {
+            let mut guard = self.child.lock().await;
+            guard.take()
+        };
+        if let Some(mut child) = child {
             #[cfg(windows)]
             {
                 if let Some(id) = child.id() {
-                    let _ = Command::new("taskkill")
+                    Command::new("taskkill")
                         .args(["/PID", &id.to_string(), "/T"])
                         .output()
-                        .await;
+                        .await
+                        .ok();
 
                     let mut waited = 0u32;
                     while waited < 3000 {
@@ -172,19 +186,20 @@ impl Supervisor {
                     }
 
                     if child.try_wait().unwrap_or(None).is_none() {
-                        let _ = Command::new("taskkill")
+                        Command::new("taskkill")
                             .args(["/PID", &id.to_string(), "/T", "/F"])
                             .output()
-                            .await;
+                            .await
+                            .ok();
                     }
                 }
             }
             #[cfg(not(windows))]
             {
-                let _ = child.start_kill();
+                child.start_kill().ok();
             }
 
-            let _ = child.wait().await;
+            child.wait().await.ok();
             info!("node engine stopped");
         }
     }

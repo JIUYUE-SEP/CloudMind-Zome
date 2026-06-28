@@ -2391,7 +2391,6 @@ dependencies = [
  "criterion",
  "dirs",
  "instant-distance",
- "lazy_static",
  "prost",
  "reqwest",
  "ring",

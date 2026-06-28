@@ -24,7 +24,7 @@ async fn test_vector_search() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "doc1");
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]
@@ -40,7 +40,7 @@ async fn test_vector_search_top_k() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].0, "doc1");
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]
@@ -54,7 +54,7 @@ async fn test_vector_single_doc_linear_search() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "only");
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]
@@ -85,7 +85,7 @@ async fn test_concurrent_upsert_does_not_lose_data() {
     let reloaded_results = reloaded.read().await.search(&[1.0, 0.0, 0.0], 1000);
     assert_eq!(reloaded_results.len(), 100);
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]

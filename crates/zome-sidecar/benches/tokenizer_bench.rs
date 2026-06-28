@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use zome_sidecar::tokenizer::count_tokens;
 
 fn tokenizer_benchmark(c: &mut Criterion) {

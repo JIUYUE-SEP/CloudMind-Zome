@@ -37,7 +37,7 @@ async fn test_grpc_health_reflects_supervisor_state() {
     assert_eq!(response.status, "degraded");
 
     server.abort();
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]
@@ -59,7 +59,7 @@ async fn test_grpc_rejects_invalid_agent_id() {
     assert_eq!(status.code(), Code::InvalidArgument);
 
     server.abort();
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]
@@ -104,5 +104,5 @@ async fn test_grpc_concurrent_upsert_preserves_data() {
     assert_eq!(response.results.len(), 50);
 
     server.abort();
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }

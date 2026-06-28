@@ -19,7 +19,7 @@ fn test_crypto_roundtrip() {
     let ciphertext = encrypt(plaintext).expect("encrypt");
     let decrypted = decrypt(&ciphertext).expect("decrypt");
     assert_eq!(decrypted, plaintext);
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[test]
@@ -30,5 +30,5 @@ fn test_crypto_utf8() {
     let ciphertext = encrypt(plaintext).expect("encrypt");
     let decrypted = decrypt(&ciphertext).expect("decrypt");
     assert_eq!(decrypted, plaintext);
-    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::remove_dir_all(&tmp).ok();
 }

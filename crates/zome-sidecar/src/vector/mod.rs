@@ -101,7 +101,7 @@ impl VectorIndexState {
         if file.sync_all().is_err() {
             return;
         }
-        let _ = fs::rename(tmp, path);
+        fs::rename(tmp, path).ok();
     }
 }
 
@@ -111,10 +111,8 @@ struct Record {
     embedding: Vec<f32>,
 }
 
-lazy_static::lazy_static! {
-    static ref INDEX_CACHE: RwLock<HashMap<String, Arc<RwLock<VectorIndexState>>>> =
-        RwLock::new(HashMap::new());
-}
+static INDEX_CACHE: std::sync::LazyLock<RwLock<HashMap<String, Arc<RwLock<VectorIndexState>>>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexState>>> {
     let agent_id = sanitize_agent_id(agent_id)?;
@@ -136,7 +134,7 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
         .join(&agent_id)
         .join("indices")
         .join("hnsw");
-    let _ = fs::create_dir_all(&dir);
+    fs::create_dir_all(&dir).ok();
 
     let path = dir.join("embeddings.jsonl");
     let mut docs = HashMap::new();
