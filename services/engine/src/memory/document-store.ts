@@ -21,10 +21,13 @@ export class DocumentStore<T extends object> {
   }
 
   async writeJson(data: T): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
-    await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
-    await fs.rename(tmpPath, this.filePath);
+    this.writeQueue = this.writeQueue.then(async () => {
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+      const tmpPath = `${this.filePath}.tmp`;
+      await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
+      await fs.rename(tmpPath, this.filePath);
+    });
+    await this.writeQueue;
   }
 
   async appendLine(record: T): Promise<void> {
