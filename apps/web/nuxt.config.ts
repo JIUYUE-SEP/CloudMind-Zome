@@ -9,6 +9,10 @@ export default defineNuxtConfig({
   },
   nitro: {
     preset: process.env.TAURI_ENV_PLATFORM ? "static" : undefined,
+    prerender: {
+      auto: false,
+      routes: [],
+    },
     output: {
       publicDir: "dist"
     }
