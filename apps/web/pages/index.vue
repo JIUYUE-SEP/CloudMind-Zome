@@ -9,6 +9,8 @@
       <button class="settings-btn" title="系统设置" @click="showSettings = !showSettings">设置</button>
       <button class="log-btn" title="系统日志" @click="showLog = !showLog">日志</button>
       <button class="wallpaper-btn" title="设置壁纸" @click="showPanel = !showPanel">壁纸</button>
+      <button class="self-image-btn" title="心智侧写" @click="navigateTo('/self-image')">侧写</button>
+      <button class="user-profile-btn" title="用户档案" @click="navigateTo('/user-profile')">档案</button>
 
       <SystemSettingsPanel :visible="showSettings" @close="showSettings = false" />
       <LogPanel ref="logPanelRef" :visible="showLog" @close="showLog = false" />
@@ -224,5 +226,39 @@ void anchorList;
 
 .wallpaper-btn {
   right: 20px;
+}
+
+.self-image-btn,
+.user-profile-btn {
+  position: absolute;
+  bottom: 72px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(20, 27, 36, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--mc-text);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s;
+  z-index: 110;
+}
+
+.self-image-btn:hover,
+.user-profile-btn:hover {
+  background: rgba(0, 229, 201, 0.15);
+  border-color: rgba(0, 229, 201, 0.3);
+}
+
+.self-image-btn {
+  left: 20px;
+}
+
+.user-profile-btn {
+  left: 68px;
 }
 </style>

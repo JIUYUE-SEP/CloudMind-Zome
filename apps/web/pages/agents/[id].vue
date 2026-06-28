@@ -80,6 +80,7 @@ import AgentEditPersona from "@/components/agent-edit/AgentEditPersona.vue";
 import AgentEditModel from "@/components/agent-edit/AgentEditModel.vue";
 import AgentEditSkills from "@/components/agent-edit/AgentEditSkills.vue";
 import AgentEditTools from "@/components/agent-edit/AgentEditTools.vue";
+import AgentEditAppearance from "@/components/agent-edit/AgentEditAppearance.vue";
 
 const route = useRoute();
 const agents = useAgentsStore();
@@ -93,6 +94,7 @@ const tabs = [
   { key: "model", label: "模型", icon: "⚡", comp: AgentEditModel },
   { key: "skills", label: "技能", icon: "✦", comp: AgentEditSkills },
   { key: "tools", label: "工具", icon: "⚙", comp: AgentEditTools },
+  { key: "appearance", label: "外观", icon: "◐", comp: AgentEditAppearance },
 ];
 
 const currentTab = computed(() => tabs.find((t) => t.key === activeTab.value));
