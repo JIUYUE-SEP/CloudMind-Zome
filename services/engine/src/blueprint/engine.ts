@@ -136,7 +136,7 @@ async function executeToolNode(
 ): Promise<unknown> {
   const toolName = String(node.config?.toolName || "");
   const args = (node.config?.arguments as Record<string, unknown>) || {};
-  const result = await executeTool(toolName, args);
+  const result = await executeTool(toolName, args, execution.id);
   execution.logs.push(`executed tool node ${node.id}`);
   return result;
 }
@@ -147,8 +147,12 @@ function getNextNode(nodeId: string, blueprint: Blueprint): BlueprintNode | unde
   return blueprint.nodes.find((n) => n.id === edge.target);
 }
 
-async function executeTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
-  const workspaceDir = path.join(getDataDir(), "blueprint-workspace");
+async function executeTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  executionId: string,
+): Promise<unknown> {
+  const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
   await fs.mkdir(workspaceDir, { recursive: true });
   const tools = getBuiltinTools();
   const tool = tools.find((t) => t.name === toolName);
