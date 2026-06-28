@@ -112,10 +112,21 @@ function update(key: keyof AgentConfig, event: Event) {
   emit("update", { [key]: value } as Partial<AgentConfig>);
 }
 
+function clampNumber(value: unknown, min: number, max: number): number | undefined {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return undefined;
+  return Math.max(min, Math.min(max, num));
+}
+
 function updateNumber(key: "temperature" | "topP", event: Event) {
   const target = event.target as HTMLInputElement;
-  const value = target.value === "" ? undefined : Number(target.value);
-  emit("update", { [key]: value } as Partial<AgentConfig>);
+  const raw = target.value;
+  if (raw === "") {
+    emit("update", { [key]: undefined } as Partial<AgentConfig>);
+    return;
+  }
+  const clamped = clampNumber(raw, key === "temperature" ? 0 : 0, key === "temperature" ? 2 : 1);
+  emit("update", { [key]: clamped } as Partial<AgentConfig>);
 }
 
 const proxyProviderId = computed({
