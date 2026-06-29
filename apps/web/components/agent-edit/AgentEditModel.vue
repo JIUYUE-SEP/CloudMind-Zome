@@ -89,7 +89,7 @@ function updateNumber(key: "temperature" | "topP", event: Event) {
     emit("update", { [key]: undefined } as Partial<AgentConfig>);
     return;
   }
-  const clamped = clampNumber(raw, key === "temperature" ? 0 : 0, key === "temperature" ? 2 : 1);
+  const clamped = clampNumber(raw, 0, key === "temperature" ? 2 : 1);
   emit("update", { [key]: clamped } as Partial<AgentConfig>);
 }
 

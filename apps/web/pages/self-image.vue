@@ -6,7 +6,7 @@
         <h1>我的心智侧写</h1>
       </div>
       <div class="save-status">
-        <span class="status-saved">已保存</span>
+        <span class="status-saved">{{ saveStatus }}</span>
       </div>
     </header>
 
@@ -64,18 +64,23 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { useSelfImageStore } from "@/stores/self-image";
 import BackButton from "@/components/BackButton.vue";
 
 const store = useSelfImageStore();
+const saveStatus = ref("已保存");
 
 let timeout: ReturnType<typeof setTimeout> | null = null;
 watch(
   () => store.selfImage,
   () => {
+    saveStatus.value = "保存中…";
     if (timeout) clearTimeout(timeout);
-    timeout = setTimeout(() => store.save(), 300);
+    timeout = setTimeout(() => {
+      store.save();
+      saveStatus.value = "已保存";
+    }, 300);
   },
   { deep: true }
 );

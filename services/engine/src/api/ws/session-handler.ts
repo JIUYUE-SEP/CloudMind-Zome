@@ -6,6 +6,8 @@ import type { ChatMessage } from "@mindcloud/shared";
 import { randomUUID } from "node:crypto";
 import { isValidId, sanitizeInput } from "./validation.js";
 
+const MAX_PENDING_MESSAGES = 100;
+
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
     const payload = typeof data === "string" ? data : JSON.stringify(data);
@@ -33,6 +35,11 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
 
       socket.on("message", (raw: unknown) => {
         if (!ready) {
+          if (pendingMessages.length >= MAX_PENDING_MESSAGES) {
+            safeSend(socket, { type: "error", error: "Too many pending messages" });
+            socket.close();
+            return;
+          }
           pendingMessages.push(raw);
           return;
         }
