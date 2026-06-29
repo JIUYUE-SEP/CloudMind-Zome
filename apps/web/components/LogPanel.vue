@@ -36,7 +36,6 @@ export interface LogEntry {
 }
 
 const props = defineProps<{ visible: boolean }>();
-const emit = defineEmits<{ (e: "close"): void }>();
 
 const STORAGE_KEY = "mc-system-logs";
 

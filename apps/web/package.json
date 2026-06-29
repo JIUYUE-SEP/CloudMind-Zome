@@ -9,7 +9,7 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "typecheck": "nuxt typecheck",
-    "lint": "echo 'No lint rules configured'",
+    "lint": "eslint .",
     "test": "vitest run",
     "test:dev": "vitest"
   },

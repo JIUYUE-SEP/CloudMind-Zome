@@ -15,7 +15,7 @@
 <script setup lang="ts">
 import type { AgentConfig } from "@mindcloud/shared";
 
-const props = defineProps<{
+defineProps<{
   agent: AgentConfig;
 }>();
 

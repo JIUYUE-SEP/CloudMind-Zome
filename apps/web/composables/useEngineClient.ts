@@ -129,6 +129,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   );
 
   onMounted(async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof window !== "undefined" && (window as any).__TAURI__) {
       try {
         baseUrl.value = await invoke<string>("get_backend_url");
