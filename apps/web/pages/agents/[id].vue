@@ -16,7 +16,7 @@
         >
           <div
             class="agent-avatar fallback"
-            :style="{ backgroundColor: agentForm.representColor || DEFAULT_ACCENT_COLOR }"
+            :style="{ backgroundColor: a.representColor || DEFAULT_ACCENT_COLOR }"
           >
             {{ a.name?.charAt(0) || '?' }}
           </div>
