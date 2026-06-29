@@ -59,10 +59,10 @@ impl VectorIndexState {
                 if embedding.len() != query.len() {
                     return None;
                 }
-                Some((doc_id.clone(), cosine_similarity(query, embedding)))
+                Some((doc_id.clone(), 1.0 - cosine_similarity(query, embedding)))
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.into_iter().take(top_k).collect()
     }
 

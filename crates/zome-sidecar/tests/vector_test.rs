@@ -39,6 +39,8 @@ async fn test_vector_search_top_k() {
     let results = state.read().await.search(&[1.0, 0.0, 0.0], 2);
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].0, "doc1");
+    assert!((results[0].1 - 0.0).abs() < f32::EPSILON);
+    assert!((results[1].1 - 1.0).abs() < f32::EPSILON);
 
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -53,6 +55,7 @@ async fn test_vector_single_doc_linear_search() {
     let results = state.read().await.search(&[1.0, 0.0, 0.0], 1);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "only");
+    assert!((results[0].1 - 0.0).abs() < f32::EPSILON);
 
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -79,6 +82,11 @@ async fn test_concurrent_upsert_does_not_lose_data() {
 
     let results = state.read().await.search(&[1.0, 0.0, 0.0], 1000);
     assert_eq!(results.len(), 100);
+    assert_eq!(results[0].0, "doc0");
+    assert!((results[0].1 - 0.0).abs() < f32::EPSILON);
+    for i in 1..results.len() {
+        assert!(results[i - 1].1 <= results[i].1);
+    }
 
     // Reload from disk and verify persistence.
     let reloaded = get_or_load("concurrent-agent").await.unwrap();
