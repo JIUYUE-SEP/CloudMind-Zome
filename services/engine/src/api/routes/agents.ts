@@ -31,6 +31,9 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     schema: { summary: "Get an agent by id", tags: ["agents"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    if (!isValidAgentId(id)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const config = await context.agentRepository.get(id);
     if (!config) return reply.status(404).send({ error: "Agent not found" });
     return config;
@@ -40,10 +43,16 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     schema: { summary: "Update an agent", tags: ["agents"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const config = request.body as AgentConfig;
     if (!isValidAgentId(id)) {
       return reply.status(400).send({ error: "Invalid agent id" });
     }
-    const config = request.body as AgentConfig;
+    if (config.id !== undefined && config.id !== id) {
+      return reply.status(400).send({ error: "Agent id in body does not match route parameter" });
+    }
+    if (config.id !== undefined && !isValidAgentId(config.id)) {
+      return reply.status(400).send({ error: "Invalid agent id in body" });
+    }
     await context.agentRepository.save(id, config);
     return config;
   });
@@ -52,6 +61,9 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     schema: { summary: "Delete an agent", tags: ["agents"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    if (!isValidAgentId(id)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     await context.agentRepository.delete(id);
     return reply.status(204).send();
   });

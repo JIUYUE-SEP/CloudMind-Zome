@@ -125,6 +125,44 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  it("rejects invalid agent id on get", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).get("/agents/bad id");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+    await app.close();
+  });
+
+  it("rejects invalid agent id on delete", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).delete("/agents/bad id");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+    await app.close();
+  });
+
+  it("rejects body id that does not match route id on update", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    await request(app.server).post("/agents").send(agent);
+
+    const res = await request(app.server).put("/agents/a1").send({ ...agent, id: "a2" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Agent id in body does not match route parameter");
+    await app.close();
+  });
+
+  it("accepts body id that matches route id on update", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    await request(app.server).post("/agents").send(agent);
+
+    const res = await request(app.server).put("/agents/a1").send({ ...agent, name: "Updated", id: "a1" });
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("Updated");
+    await app.close();
+  });
+
   it("persists all extended agent config fields", async () => {
     const app = await makeApp();
     const agent = {
