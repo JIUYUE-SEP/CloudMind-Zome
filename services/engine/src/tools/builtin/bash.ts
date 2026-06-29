@@ -7,7 +7,7 @@ const ALLOWED_COMMANDS = new Set(["ls", "cat", "echo", "pwd", "mkdir", "touch"])
 
 function isDangerousCommand(command: string): { dangerous: boolean; reason?: string } {
   if (/[\r\n]/.test(command)) return { dangerous: true, reason: "newlines are not allowed" };
-  if (/[|;`$()<>{}\[\]*?#~!&\\]/.test(command)) {
+  if (/[|;`$()<>{\}\[\]*?#~!&\\%]/.test(command)) {
     return { dangerous: true, reason: "shell metacharacters are not allowed" };
   }
   const parts = command.trim().split(/\s+/);

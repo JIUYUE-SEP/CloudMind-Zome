@@ -168,4 +168,16 @@ describe("bashTool", () => {
     expect(result.success).toBe(true);
     expect((result.output as string).trim()).toBe("hello");
   });
+
+  it("rejects Windows environment variable expansion %PATH%", async () => {
+    const result = await bashTool.execute(ctx, { command: "echo %PATH%" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not allowed");
+  });
+
+  it("rejects Windows environment variable expansion %OPENAI_API_KEY%", async () => {
+    const result = await bashTool.execute(ctx, { command: "echo %OPENAI_API_KEY%" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("not allowed");
+  });
 });
