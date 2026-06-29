@@ -86,10 +86,9 @@ impl VectorIndexState {
         }
 
         let content = lines.join("\n");
-        if let Some(parent) = tmp.parent() {
-            if fs::create_dir_all(parent).is_err() {
-                return;
-            }
+        let Some(parent) = tmp.parent() else { return; };
+        if fs::create_dir_all(parent).is_err() {
+            return;
         }
         let mut file = match fs::File::create(&tmp) {
             Ok(f) => f,
