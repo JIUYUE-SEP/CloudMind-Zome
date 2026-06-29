@@ -26,7 +26,11 @@ impl ZomeSidecar for ZomeSidecarService {
         let state = vector::get_or_load(&agent_id)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        state.write().await.upsert(&req.doc_id, &req.embedding);
+        state
+            .write()
+            .await
+            .upsert(&req.doc_id, &req.embedding)
+            .await;
         Ok(Response::new(UpsertResponse {}))
     }
 

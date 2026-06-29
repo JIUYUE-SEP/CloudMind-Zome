@@ -17,8 +17,8 @@ async fn test_vector_search() {
     let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("test-agent").await.unwrap();
-    state.write().await.upsert("doc1", &[1.0, 0.0, 0.0]);
-    state.write().await.upsert("doc2", &[0.0, 1.0, 0.0]);
+    state.write().await.upsert("doc1", &[1.0, 0.0, 0.0]).await;
+    state.write().await.upsert("doc2", &[0.0, 1.0, 0.0]).await;
 
     let results = state.read().await.search(&[1.0, 0.0, 0.0], 1);
     assert_eq!(results.len(), 1);
@@ -32,9 +32,9 @@ async fn test_vector_search_top_k() {
     let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("test-agent-topk").await.unwrap();
-    state.write().await.upsert("doc1", &[1.0, 0.0, 0.0]);
-    state.write().await.upsert("doc2", &[0.0, 1.0, 0.0]);
-    state.write().await.upsert("doc3", &[0.0, 0.0, 1.0]);
+    state.write().await.upsert("doc1", &[1.0, 0.0, 0.0]).await;
+    state.write().await.upsert("doc2", &[0.0, 1.0, 0.0]).await;
+    state.write().await.upsert("doc3", &[0.0, 0.0, 1.0]).await;
 
     let results = state.read().await.search(&[1.0, 0.0, 0.0], 2);
     assert_eq!(results.len(), 2);
@@ -48,7 +48,7 @@ async fn test_vector_single_doc_linear_search() {
     let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("single-doc-agent").await.unwrap();
-    state.write().await.upsert("only", &[1.0, 0.0, 0.0]);
+    state.write().await.upsert("only", &[1.0, 0.0, 0.0]).await;
 
     let results = state.read().await.search(&[1.0, 0.0, 0.0], 1);
     assert_eq!(results.len(), 1);
@@ -67,10 +67,10 @@ async fn test_concurrent_upsert_does_not_lose_data() {
     for i in 0..100 {
         let state = Arc::clone(&state);
         handles.push(tokio::spawn(async move {
-            state
-                .write()
-                .await
-                .upsert(&format!("doc{}", i), &[i as f32, 0.0, 0.0]);
+            let mut guard = state.write().await;
+            guard
+                .upsert(&format!("doc{}", i), &[1.0, i as f32, 0.0])
+                .await;
         }));
     }
     for handle in handles {

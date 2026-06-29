@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use instant_distance::{Builder, HnswMap, Point, Search};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 use crate::data_dir;
@@ -15,12 +15,7 @@ struct Embedding(Vec<f32>);
 
 impl Point for Embedding {
     fn distance(&self, other: &Self) -> f32 {
-        self.0
-            .iter()
-            .zip(other.0.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
+        1.0 - cosine_similarity(&self.0, &other.0)
     }
 }
 
@@ -31,10 +26,10 @@ pub struct VectorIndexState {
 }
 
 impl VectorIndexState {
-    pub fn upsert(&mut self, doc_id: &str, embedding: &[f32]) {
+    pub async fn upsert(&mut self, doc_id: &str, embedding: &[f32]) {
         self.docs.insert(doc_id.to_string(), embedding.to_vec());
         self.index = build_map(&self.docs);
-        self.persist();
+        self.persist().await;
     }
 
     pub fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
@@ -71,7 +66,7 @@ impl VectorIndexState {
         scored.into_iter().take(top_k).collect()
     }
 
-    fn persist(&self) {
+    async fn persist(&self) {
         let path = self.dir.join("embeddings.jsonl");
         let tmp = self.dir.join("embeddings.jsonl.tmp");
 
@@ -89,20 +84,20 @@ impl VectorIndexState {
         let Some(parent) = tmp.parent() else {
             return;
         };
-        if fs::create_dir_all(parent).is_err() {
+        if fs::create_dir_all(parent).await.is_err() {
             return;
         }
-        let mut file = match fs::File::create(&tmp) {
+        let mut file = match fs::File::create(&tmp).await {
             Ok(f) => f,
             Err(_) => return,
         };
-        if file.write_all(content.as_bytes()).is_err() {
+        if file.write_all(content.as_bytes()).await.is_err() {
             return;
         }
-        if file.sync_all().is_err() {
+        if file.sync_all().await.is_err() {
             return;
         }
-        fs::rename(tmp, path).ok();
+        fs::rename(tmp, path).await.ok();
     }
 }
 
@@ -135,11 +130,11 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
         .join(&agent_id)
         .join("indices")
         .join("hnsw");
-    fs::create_dir_all(&dir).ok();
+    fs::create_dir_all(&dir).await.ok();
 
     let path = dir.join("embeddings.jsonl");
     let mut docs = HashMap::new();
-    if let Ok(content) = fs::read_to_string(&path) {
+    if let Ok(content) = fs::read_to_string(&path).await {
         for line in content.lines() {
             if let Ok(record) = serde_json::from_str::<Record>(line) {
                 docs.insert(record.doc_id, record.embedding);
