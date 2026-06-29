@@ -86,7 +86,9 @@ impl VectorIndexState {
         }
 
         let content = lines.join("\n");
-        let Some(parent) = tmp.parent() else { return; };
+        let Some(parent) = tmp.parent() else {
+            return;
+        };
         if fs::create_dir_all(parent).is_err() {
             return;
         }

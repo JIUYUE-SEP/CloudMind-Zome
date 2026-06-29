@@ -46,9 +46,9 @@ jobs:
         run: |
           cd crates/zome-sidecar
           cargo fmt --check
-          cargo clippy -- -D warnings
-          cargo test
-          cargo build --release
+          cargo clippy -vv -- -D warnings
+          cargo test -vv
+          cargo build --release -vv
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
