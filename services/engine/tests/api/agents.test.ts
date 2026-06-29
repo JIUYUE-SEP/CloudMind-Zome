@@ -106,4 +106,64 @@ describe("Agent API", () => {
     expect(getRes.status).toBe(404);
     await app.close();
   });
+
+  it("rejects invalid agent id on create", async () => {
+    const app = await makeApp();
+    const agent = { id: "bad id", name: "Bad", persona: "", model: "mock", skills: [], tools: [] };
+    const res = await request(app.server).post("/agents").send(agent);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+    await app.close();
+  });
+
+  it("rejects invalid agent id on update", async () => {
+    const app = await makeApp();
+    const agent = { id: "bad id", name: "Bad", persona: "", model: "mock", skills: [], tools: [] };
+    const res = await request(app.server).put("/agents/bad id").send(agent);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+    await app.close();
+  });
+
+  it("persists all extended agent config fields", async () => {
+    const app = await makeApp();
+    const agent = {
+      id: "extended-agent",
+      name: "Extended Agent",
+      codename: "EA",
+      description: "Test agent",
+      persona: "Helpful assistant",
+      tags: ["test", "extended"],
+      representColor: "#ff0000",
+      providerId: "openai",
+      modelId: "gpt-4o",
+      embedderProviderId: "openai",
+      embedderModelId: "text-embedding-3-small",
+      imageProviderId: "openai",
+      imageModelId: "dall-e-3",
+      temperature: 0.7,
+      topP: 0.9,
+      skills: ["web-search"],
+      tools: ["bash"],
+    };
+
+    const postRes = await request(app.server).post("/agents").send(agent);
+    expect(postRes.status).toBe(200);
+
+    const getRes = await request(app.server).get("/agents/extended-agent");
+    expect(getRes.status).toBe(200);
+    const saved = getRes.body;
+    expect(saved.providerId).toBe("openai");
+    expect(saved.modelId).toBe("gpt-4o");
+    expect(saved.embedderProviderId).toBe("openai");
+    expect(saved.embedderModelId).toBe("text-embedding-3-small");
+    expect(saved.imageProviderId).toBe("openai");
+    expect(saved.imageModelId).toBe("dall-e-3");
+    expect(saved.temperature).toBe(0.7);
+    expect(saved.topP).toBe(0.9);
+    expect(saved.codename).toBe("EA");
+    expect(saved.representColor).toBe("#ff0000");
+    expect(saved.tags).toEqual(["test", "extended"]);
+    await app.close();
+  });
 });
