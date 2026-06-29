@@ -122,6 +122,34 @@ describe("bashTool", () => {
     expect(result.error).not.toContain("Command rejected");
   });
 
+  it("rejects relative script path traversal ./../evil.sh", async () => {
+    const result = await bashTool.execute(ctx, { command: "./../evil.sh" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command rejected");
+  });
+
+  it("rejects relative script path traversal ./scripts/../../../evil.sh", async () => {
+    const result = await bashTool.execute(ctx, { command: "./scripts/../../../evil.sh" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command rejected");
+  });
+
+  it("rejects relative script with backslash .\\evil.sh", async () => {
+    const result = await bashTool.execute(ctx, { command: ".\\evil.sh" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command rejected");
+  });
+
+  it("allows simple relative script ./valid.sh", async () => {
+    const result = await bashTool.execute(ctx, { command: "./valid.sh" });
+    expect(result.error).not.toContain("Command rejected");
+  });
+
+  it("allows relative script with safe arguments ./script.sh arg1", async () => {
+    const result = await bashTool.execute(ctx, { command: "./script.sh arg1" });
+    expect(result.error).not.toContain("Command rejected");
+  });
+
   it("rejects absolute paths", async () => {
     const absoluteCommand = path.join(os.tmpdir(), "evil.exe");
     const result = await bashTool.execute(ctx, { command: absoluteCommand });

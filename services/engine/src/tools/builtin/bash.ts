@@ -14,7 +14,11 @@ function isDangerousCommand(command: string): { dangerous: boolean; reason?: str
   if (parts.length === 0) return { dangerous: true, reason: "empty command" };
   const first = parts[0];
   if (first.startsWith("./")) {
-    // allow relative executable paths like ./scripts/build.sh, but still validate arguments
+    // allow relative executable paths like ./scripts/build.sh, but validate the
+    // script path itself as well as each argument
+    if (path.isAbsolute(first) || first.includes("..") || first.includes("\\")) {
+      return { dangerous: true, reason: "invalid relative script path" };
+    }
     for (let i = 1; i < parts.length; i++) {
       const arg = parts[i];
       if (path.isAbsolute(arg)) return { dangerous: true, reason: "absolute paths are not allowed" };
