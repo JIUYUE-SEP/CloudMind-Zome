@@ -39,6 +39,7 @@ jobs:
 
       - name: Build engine and web
         run: |
+          pnpm --filter @mindcloud/shared build
           pnpm --filter @mindcloud/engine build
           pnpm --filter @mindcloud/web build
 
