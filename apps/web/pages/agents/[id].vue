@@ -16,7 +16,7 @@
         >
           <div
             class="agent-avatar fallback"
-            :style="{ backgroundColor: agentForm.representColor || '#00e5c9' }"
+            :style="{ backgroundColor: agentForm.representColor || DEFAULT_ACCENT_COLOR }"
           >
             {{ a.name?.charAt(0) || '?' }}
           </div>
@@ -31,7 +31,7 @@
 
     <main class="ae-center">
       <div class="center-info">
-        <div class="info-avatar" :style="{ backgroundColor: agentForm.representColor || '#00e5c9' }">
+        <div class="info-avatar" :style="{ backgroundColor: agentForm.representColor || DEFAULT_ACCENT_COLOR }">
           {{ agentForm.name?.charAt(0) || '?' }}
         </div>
         <div class="info-name">{{ agentForm.name || '未命名心智' }}</div>
@@ -74,6 +74,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import { useRoute } from "vue-router";
 import type { AgentConfig } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
+import { DEFAULT_ACCENT_COLOR } from "@/utils/theme";
 import BackButton from "@/components/BackButton.vue";
 import AgentEditBasic from "@/components/agent-edit/AgentEditBasic.vue";
 import AgentEditPersona from "@/components/agent-edit/AgentEditPersona.vue";

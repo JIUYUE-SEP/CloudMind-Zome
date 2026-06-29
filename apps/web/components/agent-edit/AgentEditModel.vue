@@ -2,59 +2,29 @@
   <div class="edit-section">
     <section class="model-group">
       <div class="group-title">主模型</div>
-      <label>
-        Provider
-        <select :value="agent.providerId" @change="update('providerId', $event)">
-          <option value="">请选择 Provider</option>
-          <option v-for="p in compute.providers" :key="p.id" :value="p.id">{{ p.displayName }}</option>
-        </select>
-      </label>
-      <label>
-        模型
-        <ModelSelector
-          v-model:provider-id="proxyProviderId"
-          v-model:model-id="proxyModelId"
-          model-type="llm"
-        />
-      </label>
+      <ModelSelector
+        v-model:provider-id="proxyProviderId"
+        v-model:model-id="proxyModelId"
+        model-type="llm"
+      />
     </section>
 
     <section class="model-group">
       <div class="group-title">Embedding 模型</div>
-      <label>
-        Provider
-        <select :value="agent.embedderProviderId" @change="update('embedderProviderId', $event)">
-          <option value="">请选择 Provider</option>
-          <option v-for="p in compute.providers" :key="p.id" :value="p.id">{{ p.displayName }}</option>
-        </select>
-      </label>
-      <label>
-        模型
-        <ModelSelector
-          v-model:provider-id="proxyEmbedderProviderId"
-          v-model:model-id="proxyEmbedderModelId"
-          model-type="embedding"
-        />
-      </label>
+      <ModelSelector
+        v-model:provider-id="proxyEmbedderProviderId"
+        v-model:model-id="proxyEmbedderModelId"
+        model-type="embedding"
+      />
     </section>
 
     <section class="model-group">
       <div class="group-title">ImageGen 模型</div>
-      <label>
-        Provider
-        <select :value="agent.imageProviderId" @change="update('imageProviderId', $event)">
-          <option value="">请选择 Provider</option>
-          <option v-for="p in compute.providers" :key="p.id" :value="p.id">{{ p.displayName }}</option>
-        </select>
-      </label>
-      <label>
-        模型
-        <ModelSelector
-          v-model:provider-id="proxyImageProviderId"
-          v-model:model-id="proxyImageModelId"
-          model-type="image"
-        />
-      </label>
+      <ModelSelector
+        v-model:provider-id="proxyImageProviderId"
+        v-model:model-id="proxyImageModelId"
+        model-type="image"
+      />
     </section>
 
     <section class="model-group params">
@@ -106,12 +76,6 @@ onMounted(() => {
   compute.load();
 });
 
-function update(key: keyof AgentConfig, event: Event) {
-  const target = event.target as HTMLSelectElement;
-  const value = target.value || undefined;
-  emit("update", { [key]: value } as Partial<AgentConfig>);
-}
-
 function clampNumber(value: unknown, min: number, max: number): number | undefined {
   const num = Number(value);
   if (!Number.isFinite(num)) return undefined;
@@ -136,7 +100,7 @@ const proxyProviderId = computed({
 
 const proxyModelId = computed({
   get: () => props.agent.modelId || props.agent.model || "",
-  set: (value: string) => emit("update", { modelId: value || undefined, model: value || undefined }),
+  set: (value: string) => emit("update", { modelId: value || undefined }),
 });
 
 const proxyEmbedderProviderId = computed({

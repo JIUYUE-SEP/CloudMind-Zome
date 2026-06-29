@@ -16,15 +16,6 @@
       描述
       <textarea :value="agent.description" rows="3" @input="update('description', $event)" />
     </label>
-    <label class="color-field">
-      代表色
-      <input
-        type="color"
-        :value="agent.representColor || '#00e5c9'"
-        @input="update('representColor', $event)"
-      />
-      <span class="color-value">{{ agent.representColor || '#00e5c9' }}</span>
-    </label>
     <div class="tags-field">
       <div class="tags-label">标签</div>
       <div class="tags-list">
@@ -108,25 +99,6 @@ function removeTag(tag: string) {
 .edit-section input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.color-field {
-  flex-direction: row !important;
-  align-items: center;
-  gap: 12px !important;
-}
-
-.color-field input[type="color"] {
-  width: 40px;
-  height: 40px;
-  padding: 2px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.color-value {
-  font-family: monospace;
-  color: var(--mc-text);
 }
 
 .tags-field {

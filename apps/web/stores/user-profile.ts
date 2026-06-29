@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { DEFAULT_ACCENT_COLOR } from "@/utils/theme";
 
 export interface UserProfile {
   nickname: string;
@@ -24,7 +25,7 @@ export const useUserProfileStore = defineStore("user-profile", () => {
   const profile = ref<UserProfile>({
     nickname: "我",
     bio: "",
-    representColor: "#00e5c9",
+    representColor: DEFAULT_ACCENT_COLOR,
   });
 
   function load() {

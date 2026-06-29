@@ -3,13 +3,13 @@
     <div class="appearance-preview">
       <div
         class="appearance-avatar"
-        :style="{ backgroundColor: props.agent.representColor || '#00e5c9' }"
+        :style="{ backgroundColor: props.agent.representColor || DEFAULT_ACCENT_COLOR }"
       >
         {{ avatarInitial }}
       </div>
       <div class="appearance-meta">
         <div class="appearance-name">{{ props.agent.name || "未命名心智" }}</div>
-        <div class="appearance-color">{{ props.agent.representColor || "#00e5c9" }}</div>
+        <div class="appearance-color">{{ props.agent.representColor || DEFAULT_ACCENT_COLOR }}</div>
       </div>
     </div>
 
@@ -17,27 +17,19 @@
       代表色
       <input
         type="color"
-        :value="props.agent.representColor || '#00e5c9'"
+        :value="props.agent.representColor || DEFAULT_ACCENT_COLOR"
         @input="update('representColor', $event)"
       />
-      <span class="color-value">{{ props.agent.representColor || "#00e5c9" }}</span>
+      <span class="color-value">{{ props.agent.representColor || DEFAULT_ACCENT_COLOR }}</span>
     </label>
 
-    <label>
-      签名 / 一句话描述
-      <input
-        :value="props.agent.description || ''"
-        type="text"
-        placeholder="让它更容易被识别"
-        @input="update('description', $event)"
-      />
-    </label>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentConfig } from "@mindcloud/shared";
+import { DEFAULT_ACCENT_COLOR } from "@/utils/theme";
 
 const props = defineProps<{
   agent: AgentConfig;
@@ -110,15 +102,6 @@ function update<K extends keyof AgentConfig>(key: K, event: Event) {
   gap: 6px;
   font-size: 13px;
   color: var(--mc-text-secondary);
-}
-
-.edit-section input[type="text"] {
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--mc-border);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--mc-text);
-  font-size: 13px;
 }
 
 .color-field {

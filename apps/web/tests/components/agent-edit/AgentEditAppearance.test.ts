@@ -25,14 +25,4 @@ describe("AgentEditAppearance", () => {
     expect(last.representColor).toBe("#ff0000");
   });
 
-  it("emits update when description changes", async () => {
-    const wrapper = mount(AgentEditAppearance, {
-      props: { agent: { id: "a1", name: "A", persona: "", skills: [], tools: [] } },
-    });
-    const textInput = wrapper.find("input[type='text']");
-    await textInput.setValue("hello");
-    await textInput.trigger("input");
-    const last = wrapper.emitted("update")!.at(-1)![0] as { description: string };
-    expect(last.description).toBe("hello");
-  });
 });
