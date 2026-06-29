@@ -22,7 +22,6 @@
             v-model="store.selfImage.summary"
             rows="4"
             placeholder="用一段话概括你对自己的理解..."
-            @input="store.save()"
           />
         </section>
 
@@ -32,7 +31,6 @@
             v-model="store.selfImage.style"
             rows="4"
             placeholder="描述你的沟通方式、表达习惯……"
-            @input="store.save()"
           />
           <p class="card-placeholder">自动分析占位：后续可接入真实数据</p>
         </section>
@@ -58,7 +56,6 @@
             v-model="store.selfImage.preferences"
             rows="4"
             placeholder="记录你的使用偏好、目标或禁忌……"
-            @input="store.save()"
           />
         </section>
       </div>
@@ -67,11 +64,21 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, watch } from "vue";
 import { useSelfImageStore } from "@/stores/self-image";
 import BackButton from "@/components/BackButton.vue";
 
 const store = useSelfImageStore();
+
+let timeout: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => store.selfImage,
+  () => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => store.save(), 300);
+  },
+  { deep: true }
+);
 
 onMounted(() => {
   store.load();

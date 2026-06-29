@@ -5,6 +5,15 @@ import type { ChatMessage } from "@mindcloud/shared";
 import { randomUUID } from "node:crypto";
 import { isValidId, sanitizeInput } from "./validation.js";
 
+function safeSend(socket: WebSocket, data: string | object): void {
+  try {
+    const payload = typeof data === "string" ? data : JSON.stringify(data);
+    socket.send(payload);
+  } catch (err) {
+    console.error("failed to send websocket message", err);
+  }
+}
+
 export async function registerWebSocketHandler(app: FastifyInstance, context: ApiContext) {
   app.get(
     "/ws/:agentId",
@@ -33,7 +42,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
           const data = JSON.parse(String(raw));
           const input = sanitizeInput(data.text);
           if (!input.ok) {
-            socket.send(JSON.stringify({ type: "error", error: input.error }));
+            safeSend(socket, { type: "error", error: input.error });
             return;
           }
 
@@ -50,7 +59,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             .append({ ...userMessage, sessionId })
             .catch((err) => {
               console.error("failed to persist user message", err);
-              socket.send(JSON.stringify({ type: "error", error: "Failed to persist message" }));
+              safeSend(socket, { type: "error", error: "Failed to persist message" });
             });
 
           worker.enqueue({
@@ -58,11 +67,11 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             messages: [userMessage],
             sessionId,
             onEvent: (event) => {
-              socket.send(JSON.stringify(event));
+              safeSend(socket, event);
             },
           });
         } catch {
-          socket.send(JSON.stringify({ type: "error", error: "Invalid message" }));
+          safeSend(socket, { type: "error", error: "Invalid message" });
         }
       });
     }
