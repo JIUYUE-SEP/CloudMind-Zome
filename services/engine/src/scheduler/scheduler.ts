@@ -11,6 +11,7 @@ export class Scheduler {
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
   private runningTick = false;
+  private runningTasks = new Set<string>();
 
   constructor(private context: ApiContext, private options: SchedulerOptions = {}) {}
 
@@ -40,35 +41,50 @@ export class Scheduler {
         for (const task of tasks) {
           if (!task.enabled) continue;
           if (!task.nextRunAt || isDue(task.nextRunAt)) {
-            await this.runTask(task, agent.id);
+            // Fire and forget: a slow task must not block the global tick.
+            this.runTask(task, agent.id).catch((err) => {
+              console.error(`scheduled task ${task.id} failed`, err);
+            });
           }
         }
       }
+    } catch (err) {
+      console.error("scheduler tick failed", err);
     } finally {
       this.runningTick = false;
     }
   }
 
   private async runTask(task: ScheduledTask, agentId: string): Promise<void> {
-    const worker = await this.context.getAgentWorker(agentId);
-    if (!worker) return;
+    if (this.runningTasks.has(task.id)) return;
+    this.runningTasks.add(task.id);
+    try {
+      const repo = new SchedulerRepository(agentId);
+      // Advance schedule before execution so a long-running job does not pile
+      // up duplicate triggers while it is still in progress.
+      task.lastRunAt = new Date().toISOString();
+      task.nextRunAt = computeNextRun(task.cron);
+      await repo.update(task);
 
-    worker.enqueue({
-      id: task.id,
-      messages: [
-        {
-          id: `sched_${Date.now()}`,
-          role: "user",
-          content: [{ type: "text", text: task.prompt }],
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      onEvent: () => {},
-    });
+      const worker = await this.context.getAgentWorker(agentId);
+      if (!worker) return;
 
-    const repo = new SchedulerRepository(agentId);
-    task.lastRunAt = new Date().toISOString();
-    task.nextRunAt = computeNextRun(task.cron);
-    await repo.update(task);
+      worker.enqueue({
+        id: task.id,
+        messages: [
+          {
+            id: `sched_${Date.now()}`,
+            role: "user",
+            content: [{ type: "text", text: task.prompt }],
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        onEvent: () => {},
+      });
+    } catch (err) {
+      console.error(`failed to run scheduled task ${task.id}`, err);
+    } finally {
+      this.runningTasks.delete(task.id);
+    }
   }
 }
