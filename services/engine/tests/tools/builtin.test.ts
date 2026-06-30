@@ -70,13 +70,31 @@ describe("writeTool", () => {
   it("rejects path traversal", async () => {
     const result = await writeTool.execute(ctx, { path: "../outside.txt", content: "x" });
     expect(result.success).toBe(false);
-    expect(result.error).toContain("path traversal detected");
+    expect(result.error).toContain("path is outside allowed workspace");
   });
 
-  it("writes files inside the workspace", async () => {
-    const result = await writeTool.execute(ctx, { path: "inside.txt", content: "hello" });
+  it("rejects traversal to protected agent.json", async () => {
+    const result = await writeTool.execute(ctx, { path: "../agent.json", content: "x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("cannot write protected file");
+  });
+
+  it("rejects protected messages.jsonl", async () => {
+    const result = await writeTool.execute(ctx, { path: "messages.jsonl", content: "x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("cannot write protected file");
+  });
+
+  it("rejects deep path traversal", async () => {
+    const result = await writeTool.execute(ctx, { path: "../../etc/passwd", content: "x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("path is outside allowed workspace");
+  });
+
+  it("writes files inside the workspace files subdirectory", async () => {
+    const result = await writeTool.execute(ctx, { path: "files/notes.md", content: "hello" });
     expect(result.success).toBe(true);
-    expect(fs.readFileSync(path.join(workspaceDir, "inside.txt"), "utf-8")).toBe("hello");
+    expect(fs.readFileSync(path.join(workspaceDir, "files", "files", "notes.md"), "utf-8")).toBe("hello");
   });
 });
 

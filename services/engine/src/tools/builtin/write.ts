@@ -3,16 +3,42 @@ import path from "node:path";
 import { z } from "zod";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
-function resolveWorkspacePath(workspaceDir: string, filePath: string): string {
+const PROTECTED_FILES = new Set([
+  "agent.json",
+  "messages.jsonl",
+  "scheduler.jsonl",
+  "memories.jsonl",
+  "actions.jsonl",
+  "config.json",
+  ".master-key",
+]);
+
+function resolveAllowedWritePath(
+  workspaceDir: string,
+  filePath: string,
+): { fullPath: string; relativePath: string } {
   if (path.isAbsolute(filePath)) {
     throw new Error("absolute paths are not allowed");
   }
-  const fullPath = path.resolve(workspaceDir, filePath);
-  const rel = path.relative(workspaceDir, fullPath);
-  if (rel.startsWith("..") || rel === "..") {
-    throw new Error("path traversal detected");
+
+  const normalized = path.normalize(filePath);
+  const basename = path.basename(normalized).toLowerCase();
+  if (PROTECTED_FILES.has(basename)) {
+    throw new Error(`cannot write protected file: ${filePath}`);
   }
-  return fullPath;
+
+  const filesDir = path.join(workspaceDir, "files");
+  const fullPath = path.resolve(filesDir, normalized);
+  const resolvedFilesDir = path.resolve(filesDir);
+
+  if (
+    fullPath !== resolvedFilesDir &&
+    !fullPath.startsWith(resolvedFilesDir + path.sep)
+  ) {
+    throw new Error("path is outside allowed workspace");
+  }
+
+  return { fullPath, relativePath: normalized };
 }
 
 export const writeTool: Tool = {
@@ -26,10 +52,13 @@ export const writeTool: Tool = {
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath, content } = args as { path: string; content: string };
     try {
-      const fullPath = resolveWorkspacePath(ctx.workspaceDir, filePath);
+      const { fullPath, relativePath } = resolveAllowedWritePath(
+        ctx.workspaceDir,
+        filePath,
+      );
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, content, "utf-8");
-      return { success: true, output: `Wrote ${fullPath}` };
+      return { success: true, output: `Wrote files/${relativePath}` };
     } catch (err) {
       return { success: false, error: String(err) };
     }
