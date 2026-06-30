@@ -87,4 +87,12 @@ describe("Chat API", () => {
     expect(res.status).toBe(400);
     await app.close();
   });
+
+  it("returns 400 for invalid agent id", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).get("/chat/invalid!/messages?sessionId=s1");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+    await app.close();
+  });
 });

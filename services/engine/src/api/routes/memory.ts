@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 
+function isValidAgentId(id: unknown): id is string {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
 export async function registerMemoryRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/memory/:agentId", {
     schema: {
@@ -8,8 +12,11 @@ export async function registerMemoryRoutes(app: FastifyInstance, context: ApiCon
       tags: ["memory"],
       querystring: { type: "object", properties: { limit: { type: "string" }, offset: { type: "string" } } },
     },
-  }, async (request) => {
+  }, async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const { limit, offset } = request.query as { limit?: string; offset?: string };
     return context.getMemoryRepository(agentId).list({
       limit: limit ? Number(limit) : undefined,
@@ -21,6 +28,9 @@ export async function registerMemoryRoutes(app: FastifyInstance, context: ApiCon
     schema: { summary: "Get a memory by id", tags: ["memory"] },
   }, async (request, reply) => {
     const { agentId, id } = request.params as { agentId: string; id: string };
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const record = await context.getMemoryRepository(agentId).get(id);
     if (!record) return reply.status(404).send({ error: "Memory not found" });
     return record;

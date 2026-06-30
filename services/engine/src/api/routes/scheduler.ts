@@ -3,12 +3,19 @@ import type { ApiContext } from "../context.js";
 import { SchedulerRepository } from "../../scheduler/repository.js";
 import { computeNextRun } from "../../scheduler/engine.js";
 
+function isValidAgentId(id: unknown): id is string {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function registerSchedulerRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/scheduler/:agentId", {
     schema: { summary: "List scheduled tasks for an agent", tags: ["scheduler"] },
-  }, async (request) => {
+  }, async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const repo = new SchedulerRepository(agentId);
     return repo.list();
   });
@@ -17,6 +24,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     schema: { summary: "Create a scheduled task for an agent", tags: ["scheduler"] },
   }, async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const body = request.body as { description: string; prompt: string; cron: string; enabled?: boolean };
     if (!body.description || !body.prompt || !body.cron) {
       return reply.status(400).send({ error: "description, prompt, cron required" });
@@ -41,6 +51,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     schema: { summary: "Update a scheduled task", tags: ["scheduler"] },
   }, async (request, reply) => {
     const { agentId, taskId } = request.params as { agentId: string; taskId: string };
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const body = request.body as Partial<{ description: string; prompt: string; cron: string; enabled: boolean }>;
     const repo = new SchedulerRepository(agentId);
     const task = await repo.get(taskId);
@@ -69,6 +82,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     schema: { summary: "Delete a scheduled task", tags: ["scheduler"] },
   }, async (request, reply) => {
     const { agentId, taskId } = request.params as { agentId: string; taskId: string };
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const repo = new SchedulerRepository(agentId);
     await repo.delete(taskId);
     return reply.status(204).send();

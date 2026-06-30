@@ -78,4 +78,12 @@ describe("Action API", () => {
     expect(Array.isArray(res.body)).toBe(true);
     await app.close();
   });
+
+  it("returns 400 for invalid agent id", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).get("/actions/invalid!");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+    await app.close();
+  });
 });
