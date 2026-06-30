@@ -51,6 +51,10 @@ export class DocumentStore<T extends object> {
   }
 
   async readLines(options?: { limit?: number; offset?: number }): Promise<T[]> {
+    const stat = await fs.stat(this.filePath).catch(() => null);
+    if (stat && stat.size > 100 * 1024 * 1024) {
+      throw new Error(`File too large: ${this.filePath}`);
+    }
     const results: T[] = [];
     const offset = options?.offset ?? 0;
     const limit = options?.limit ?? Infinity;

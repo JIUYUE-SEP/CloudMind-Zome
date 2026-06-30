@@ -53,7 +53,11 @@ const tags = computed(() => props.agent.tags || []);
 
 function update<K extends keyof AgentConfig>(key: K, event: Event) {
   const target = event.target as HTMLInputElement | HTMLTextAreaElement;
-  emit("update", { [key]: target.value } as Partial<AgentConfig>);
+  let value = target.value;
+  if (key === "name" || key === "codename") {
+    value = value.trim();
+  }
+  emit("update", { [key]: value } as Partial<AgentConfig>);
 }
 
 function addTag() {

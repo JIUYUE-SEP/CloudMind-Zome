@@ -6,6 +6,12 @@ import { Scheduler } from "../../src/scheduler/scheduler.js";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
+import type { ScheduledTask } from "../../src/scheduler/types.js";
+
+type SchedulerInternals = {
+  tick(): Promise<void>;
+  runTask(task: ScheduledTask, agentId: string): Promise<void>;
+};
 
 describe("Scheduler", () => {
   let tmpDir: string;
@@ -69,7 +75,7 @@ describe("Scheduler", () => {
     });
 
     let tickResolved = false;
-    const tickPromise = (scheduler as any).tick().then(() => {
+    const tickPromise = (scheduler as unknown as SchedulerInternals).tick().then(() => {
       tickResolved = true;
     });
 
@@ -108,7 +114,7 @@ describe("Scheduler", () => {
       nextRunAt: past,
     });
 
-    await (scheduler as any).tick();
+    await (scheduler as unknown as SchedulerInternals).tick();
 
     // Poll until runTask updates the schedule.
     let updated = await repo.get(task.id);
@@ -141,7 +147,7 @@ describe("Scheduler", () => {
       nextRunAt: new Date(Date.now() - 1000).toISOString(),
     });
 
-    await expect((scheduler as any).tick()).resolves.not.toThrow();
+    await expect((scheduler as unknown as SchedulerInternals).tick()).resolves.not.toThrow();
     scheduler.stop();
   });
 
@@ -167,8 +173,8 @@ describe("Scheduler", () => {
       nextRunAt: new Date(Date.now() - 1000).toISOString(),
     });
 
-    const run1 = (scheduler as any).runTask(task, "agent-1");
-    const run2 = (scheduler as any).runTask(task, "agent-1");
+    const run1 = (scheduler as unknown as SchedulerInternals).runTask(task, "agent-1");
+    const run2 = (scheduler as unknown as SchedulerInternals).runTask(task, "agent-1");
 
     await new Promise((r) => setTimeout(r, 10));
     resolveWorker!(makeWorker());

@@ -100,7 +100,13 @@ const proxyProviderId = computed({
 
 const proxyModelId = computed({
   get: () => props.agent.modelId || props.agent.model || "",
-  set: (value: string) => emit("update", { modelId: value || undefined }),
+  set: (value: string) => {
+    if (value) {
+      emit("update", { modelId: value });
+    } else {
+      emit("update", { modelId: undefined, model: undefined });
+    }
+  },
 });
 
 const proxyEmbedderProviderId = computed({

@@ -64,7 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useSelfImageStore } from "@/stores/self-image";
 import BackButton from "@/components/BackButton.vue";
 
@@ -87,6 +87,11 @@ watch(
 
 onMounted(() => {
   store.load();
+});
+
+onBeforeUnmount(() => {
+  if (timeout) clearTimeout(timeout);
+  store.save();
 });
 </script>
 

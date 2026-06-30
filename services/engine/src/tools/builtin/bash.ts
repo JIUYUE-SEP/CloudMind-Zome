@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const ALLOWED_COMMANDS = new Set(["ls", "cat", "echo", "pwd", "mkdir", "touch"]);
+const MAX_OUTPUT_LENGTH = 1024 * 1024;
 
 function isDangerousCommand(command: string): { dangerous: boolean; reason?: string } {
   if (/[\r\n]/.test(command)) return { dangerous: true, reason: "newlines are not allowed" };
@@ -12,6 +13,9 @@ function isDangerousCommand(command: string): { dangerous: boolean; reason?: str
   }
   const parts = command.trim().split(/\s+/);
   if (parts.length === 0) return { dangerous: true, reason: "empty command" };
+  if (parts.slice(1).includes("-")) {
+    return { dangerous: true, reason: "interactive/stdin wait not allowed" };
+  }
   const first = parts[0];
   if (first.startsWith("./")) {
     // allow relative executable paths like ./scripts/build.sh, but validate the
@@ -70,6 +74,14 @@ export const bashTool: Tool = {
       child.stderr?.on("data", (data) => { stderr += data.toString(); });
       child.on("error", (err) => settle({ success: false, error: String(err) }));
       child.on("close", (code) => {
+        const combined = stdout + stderr;
+        if (combined.length > MAX_OUTPUT_LENGTH) {
+          settle({
+            success: true,
+            output: combined.slice(0, MAX_OUTPUT_LENGTH) + `\n\n[output truncated: exceeded ${MAX_OUTPUT_LENGTH} bytes]`,
+          });
+          return;
+        }
         if (code === 0) settle({ success: true, output: stdout || stderr });
         else settle({ success: false, error: stderr || `exit code ${code}` });
       });

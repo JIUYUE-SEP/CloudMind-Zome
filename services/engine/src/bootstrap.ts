@@ -23,6 +23,7 @@ async function main() {
   const workers = new Map<string, AgentWorker>();
 
   agentRepository.onChange = (agentId: string, _config: AgentConfig | null) => {
+    void _config;
     const worker = workers.get(agentId);
     if (worker) {
       worker.pause();
