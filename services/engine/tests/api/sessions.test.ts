@@ -87,6 +87,41 @@ describe("Sessions API", () => {
     await app.close();
   });
 
+  it("rejects session creation with invalid agent id", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/sessions").send({ name: "Team", agentIds: ["a1", "bad id!"] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id in agentIds");
+    await app.close();
+  });
+
+  it("updates a session", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    const res = await request(app.server).put(`/sessions/${session.id}`).send({ name: "Crew", agentIds: ["a3"] });
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("Crew");
+    expect(res.body.agentIds).toEqual(["a3"]);
+    await app.close();
+  });
+
+  it("rejects session update with invalid agent id", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    const res = await request(app.server).put(`/sessions/${session.id}`).send({ agentIds: ["a1", "bad id!"] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id in agentIds");
+    await app.close();
+  });
+
   it("gets session messages aggregated from all agents", async () => {
     const app = await makeApp();
     const session = await context.sessionRepository.create({

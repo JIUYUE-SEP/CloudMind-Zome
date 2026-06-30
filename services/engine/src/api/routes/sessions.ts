@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 
+function isValidAgentId(id: unknown): id is string {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
 export async function registerSessionRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/sessions", {
     schema: { summary: "List all sessions", tags: ["sessions"] },
@@ -14,6 +18,9 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     const body = request.body as { name: string; agentIds: string[]; type?: "group" | "intermind" };
     if (!body.name || !body.agentIds?.length) {
       return reply.status(400).send({ error: "name and agentIds required" });
+    }
+    if (!body.agentIds.every(isValidAgentId)) {
+      return reply.status(400).send({ error: "Invalid agent id in agentIds" });
     }
     return context.sessionRepository.create({
       name: body.name,
@@ -38,6 +45,9 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     const body = request.body as { name?: string; agentIds?: string[] };
     const session = await context.sessionRepository.get(id);
     if (!session) return reply.status(404).send({ error: "Session not found" });
+    if (body.agentIds && !body.agentIds.every(isValidAgentId)) {
+      return reply.status(400).send({ error: "Invalid agent id in agentIds" });
+    }
     if (body.name) session.name = body.name;
     if (body.agentIds) session.agentIds = body.agentIds;
     await context.sessionRepository.update(session);
