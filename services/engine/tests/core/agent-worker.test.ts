@@ -5,6 +5,7 @@ import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMEvent } from "../../src/provider/types.js";
+import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 
 const dummyTool: Tool = {
   name: "dummy",
@@ -17,13 +18,16 @@ const dummyTool: Tool = {
   },
 };
 
-function makeConfig(provider = new MockLLMProvider()): {
+function makeConfig(
+  provider = new MockLLMProvider(),
+  messageRepository: Partial<IMessageRepository> = {}
+): {
   agentId: string;
   model: string;
   provider: typeof provider;
   tools: Tool[];
   workspaceDir: string;
-  messageRepository: { append: () => Promise<void>; listBySession: () => Promise<[]> };
+  messageRepository: IMessageRepository;
   requiresApproval: () => Promise<true>;
 } {
   return {
@@ -32,7 +36,11 @@ function makeConfig(provider = new MockLLMProvider()): {
     provider,
     tools: [dummyTool],
     workspaceDir: "/tmp",
-    messageRepository: { append: async () => {}, listBySession: async () => [] },
+    messageRepository: {
+      append: async () => {},
+      listBySession: async () => [],
+      ...messageRepository,
+    } as IMessageRepository,
     requiresApproval: async () => true,
   };
 }
@@ -105,5 +113,59 @@ describe("AgentWorker", () => {
     worker.resume();
     await vi.waitFor(() => expect(events.some((e) => e.type === "text.delta")).toBe(true));
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("runScheduledTask persists user messages when sessionId is provided", async () => {
+    const append = vi.fn(async () => {});
+    const worker = new AgentWorker(makeConfig(new MockLLMProvider(), { append, listBySession: async () => [] }));
+    const enqueueSpy = vi.spyOn(worker, "enqueue");
+
+    await worker.runScheduledTask({
+      id: "sched-1",
+      sessionId: "sess-1",
+      messages: [userMessage("hi")],
+      onEvent: () => {},
+    });
+
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "user", sessionId: "sess-1", content: [{ type: "text", text: "hi" }] })
+    );
+    expect(enqueueSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "sched-1", sessionId: "sess-1" }));
+  });
+
+  it("runScheduledTask does not persist user messages without sessionId", async () => {
+    const append = vi.fn(async () => {});
+    const worker = new AgentWorker(makeConfig(new MockLLMProvider(), { append, listBySession: async () => [] }));
+
+    await worker.runScheduledTask({
+      id: "sched-1",
+      messages: [userMessage("hi")],
+      onEvent: () => {},
+    });
+
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it("runScheduledTask logs and continues when persistence fails", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const append = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    const worker = new AgentWorker(makeConfig(new MockLLMProvider(), { append, listBySession: async () => [] }));
+    const enqueueSpy = vi.spyOn(worker, "enqueue");
+
+    await worker.runScheduledTask({
+      id: "sched-1",
+      sessionId: "sess-1",
+      messages: [userMessage("hi")],
+      onEvent: () => {},
+    });
+
+    expect(append).toHaveBeenCalled();
+    expect(consoleSpy).toHaveBeenCalledWith("failed to persist scheduler user message", expect.any(Error));
+    expect(enqueueSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "sched-1", sessionId: "sess-1" }));
+
+    consoleSpy.mockRestore();
   });
 });

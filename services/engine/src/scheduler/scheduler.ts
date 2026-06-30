@@ -69,7 +69,7 @@ export class Scheduler {
       const worker = await this.context.getAgentWorker(agentId);
       if (!worker) return;
 
-      worker.enqueue({
+      await worker.runScheduledTask({
         id: task.id,
         messages: [
           {
@@ -79,6 +79,7 @@ export class Scheduler {
             createdAt: new Date().toISOString(),
           },
         ],
+        sessionId: task.id,
         onEvent: () => {},
       });
     } catch (err) {

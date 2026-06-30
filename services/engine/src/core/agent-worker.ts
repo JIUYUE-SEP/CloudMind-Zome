@@ -1,9 +1,11 @@
 import type { ChatMessage } from "@mindcloud/shared";
+import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { LLMProvider, LLMEvent } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool } from "../tools/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
+import type { ScheduledTaskJob } from "../scheduler/types.js";
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -40,6 +42,28 @@ export class AgentWorker {
     if (this.status === "idle") {
       this.processQueue();
     }
+  }
+
+  async runScheduledTask(job: ScheduledTaskJob): Promise<void> {
+    if (job.sessionId) {
+      for (const msg of job.messages) {
+        if (msg.role === "user") {
+          await this.config.messageRepository
+            .append({
+              id: randomUUID(),
+              sessionId: job.sessionId,
+              role: "user",
+              content: msg.content,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((err) => {
+              console.error("failed to persist scheduler user message", err);
+            });
+        }
+      }
+    }
+
+    this.enqueue(job);
   }
 
   pause(): void {

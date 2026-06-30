@@ -46,7 +46,7 @@ describe("Scheduler", () => {
   }
 
   function makeWorker(): AgentWorker {
-    return { enqueue: vi.fn() } as unknown as AgentWorker;
+    return { runScheduledTask: vi.fn() } as unknown as AgentWorker;
   }
 
   it("fires tasks asynchronously without blocking tick", async () => {
@@ -80,10 +80,10 @@ describe("Scheduler", () => {
     const worker = makeWorker();
     resolveWorker!(worker);
 
-    // Wait for runTask to complete (enqueue is called after repo.update).
+    // Wait for runTask to complete (runScheduledTask is called after repo.update).
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
-        if ((worker.enqueue as ReturnType<typeof vi.fn>).mock.calls.length > 0) {
+        if ((worker.runScheduledTask as ReturnType<typeof vi.fn>).mock.calls.length > 0) {
           clearInterval(check);
           resolve();
         }
@@ -120,7 +120,7 @@ describe("Scheduler", () => {
 
     expect(updated?.lastRunAt).toBeTruthy();
     expect(updated?.nextRunAt).not.toBe(past);
-    expect(worker.enqueue).toHaveBeenCalledTimes(1);
+    expect(worker.runScheduledTask).toHaveBeenCalledTimes(1);
     scheduler.stop();
   });
 
