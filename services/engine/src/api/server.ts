@@ -19,8 +19,12 @@ import { registerSessionWebSocket } from "./ws/session-handler.js";
 
 export async function createServer(context: ApiContext) {
   const app = Fastify({ logger: true });
+  const allowedOrigins = process.env.CLOUDMIND_ALLOWED_ORIGINS
+    ? process.env.CLOUDMIND_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+    : ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:1420"];
+
   await app.register(cors, {
-    origin: process.env.NODE_ENV === "e2e" ? true : ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: process.env.NODE_ENV === "e2e" ? true : allowedOrigins,
     credentials: true,
   });
   await app.register(websocket);
