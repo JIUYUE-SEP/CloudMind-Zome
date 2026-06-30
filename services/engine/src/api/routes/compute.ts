@@ -6,6 +6,30 @@ function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
   return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
 }
 
+function isAllowedBaseUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    // 禁止 localhost / 内网 / 元数据地址
+    if (["localhost", "127.0.0.1", "0.0.0.0", "::1", "169.254.169.254"].includes(hostname)) {
+      return false;
+    }
+    if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) {
+      return false;
+    }
+    if (hostname.startsWith("172.")) {
+      const second = Number(hostname.split(".")[1]);
+      if (second >= 16 && second <= 31) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function registerComputeRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/compute/providers", {
     schema: { summary: "List compute providers", tags: ["compute"] },
@@ -16,7 +40,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
 
   app.post("/compute/providers", {
     schema: { summary: "Create a compute provider", tags: ["compute"] },
-  }, async (request) => {
+  }, async (request, reply) => {
     const body = request.body as {
       id?: string;
       displayName: string;
@@ -25,6 +49,9 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       apiKey?: string;
       models?: unknown[];
     };
+    if (!isAllowedBaseUrl(body.baseUrl)) {
+      return reply.status(400).send({ error: "Invalid baseUrl" });
+    }
     const config = await context.configRepository.load();
     const provider = {
       id: body.id || crypto.randomUUID(),
@@ -48,6 +75,9 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       baseUrl: string;
       apiKey: string;
     }>;
+    if (body.baseUrl !== undefined && !isAllowedBaseUrl(body.baseUrl)) {
+      return reply.status(400).send({ error: "Invalid baseUrl" });
+    }
     const config = await context.configRepository.load();
     const idx = config.providers.findIndex((p) => p.id === id);
     if (idx < 0) return reply.status(404).send({ error: "Provider not found" });
@@ -89,7 +119,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       }));
       return { ok: true, discovered };
     } catch (err) {
-      return reply.status(500).send({ ok: false, error: String(err) });
+      console.error("test connection failed", err);
+      return reply.status(502).send({ error: "Test connection failed" });
     }
   });
 

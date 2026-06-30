@@ -134,4 +134,60 @@ describe("Compute API", () => {
     expect(listRes.body[0].models).toHaveLength(0);
     await app.close();
   });
+
+  it("rejects localhost baseUrl", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "local",
+      displayName: "Local",
+      providerType: "openai",
+      baseUrl: "http://localhost:11434",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("rejects metadata IP baseUrl", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "metadata",
+      displayName: "Metadata",
+      providerType: "openai",
+      baseUrl: "http://169.254.169.254",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("rejects non-http schemes baseUrl", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "file",
+      displayName: "File",
+      providerType: "openai",
+      baseUrl: "file:///etc/passwd",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("allows valid http/https external baseUrl", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "external",
+      displayName: "External",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.baseUrl).toBe("https://api.openai.com/v1");
+    await app.close();
+  });
 });
