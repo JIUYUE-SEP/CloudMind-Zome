@@ -10,7 +10,7 @@ const MAX_CACHE_SIZE = 64;
 
 export class AgentRepository implements IAgentRepository {
   private cache = new Map<string, { config: AgentConfig; watcher: fs.FSWatcher }>();
-  onChange?: (agentId: string) => void;
+  onChange?: (agentId: string, config: AgentConfig | null) => void;
 
   private store(agentId: string): DocumentStore<AgentConfig> {
     return new DocumentStore<AgentConfig>(path.join(getAgentDir(sanitizeAgentId(agentId)), "agent.json"));
@@ -41,13 +41,21 @@ export class AgentRepository implements IAgentRepository {
 
     let watcher: fs.FSWatcher;
     try {
-      watcher = fs.watch(store.filePath, (eventType) => {
-        if (eventType === "rename") {
-          // file may have been deleted; always invalidate
+      watcher = fs.watch(store.filePath, async () => {
+        try {
+          const reloaded = await store.readJson();
+          if (reloaded) {
+            this.cache.set(agentId, { config: reloaded, watcher });
+            this.onChange?.(agentId, reloaded);
+          } else {
+            this.invalidate(agentId);
+            this.onChange?.(agentId, null);
+          }
+        } catch (err) {
+          console.error(`Failed to reload agent config ${store.filePath}:`, err);
           this.invalidate(agentId);
+          this.onChange?.(agentId, null);
         }
-        // for "change", invalidate only if content actually changed
-        this.invalidate(agentId);
       });
     } catch (err) {
       console.error(`Failed to watch agent config ${store.filePath}:`, err);
@@ -59,6 +67,7 @@ export class AgentRepository implements IAgentRepository {
     watcher.on("error", (err) => {
       console.error(`Watcher error for ${store.filePath}:`, err);
       this.invalidate(agentId);
+      this.onChange?.(agentId, null);
     });
 
     this.cache.set(agentId, { config, watcher });
@@ -86,7 +95,7 @@ export class AgentRepository implements IAgentRepository {
     }
     const store = this.store(id);
     await store.writeJson(config);
-    this.onChange?.(id);
+    this.onChange?.(id, config);
     await this.loadAndWatch(id);
   }
 
@@ -99,7 +108,7 @@ export class AgentRepository implements IAgentRepository {
     }
     const dir = getAgentDir(id);
     await fsp.rm(dir, { recursive: true, force: true });
-    this.onChange?.(id);
+    this.onChange?.(id, null);
   }
 
   async list(): Promise<AgentConfig[]> {

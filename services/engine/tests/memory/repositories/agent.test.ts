@@ -86,4 +86,24 @@ describe("AgentRepository", () => {
     const got = await repo.get("cached");
     expect(got?.name).toBe("Updated");
   });
+
+  it("fires onChange when agent.json is modified externally", async () => {
+    const config = makeConfig("watch-cb", "WatchCb");
+    await repo.save("watch-cb", config);
+    await repo.get("watch-cb");
+
+    const changes: Array<{ agentId: string; config: AgentConfig | null }> = [];
+    repo.onChange = (agentId, cfg) => changes.push({ agentId, config: cfg });
+
+    const updated = { ...config, name: "UpdatedByWatch" };
+    const filePath = path.join(getAgentDir("watch-cb"), "agent.json");
+    await fs.writeFile(filePath, JSON.stringify(updated, null, 2) + "\n");
+
+    // Wait for fs.watch to fire and callback to be invoked.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(changes.length).toBeGreaterThan(0);
+    expect(changes[changes.length - 1].agentId).toBe("watch-cb");
+    expect(changes[changes.length - 1].config?.name).toBe("UpdatedByWatch");
+  });
 });
