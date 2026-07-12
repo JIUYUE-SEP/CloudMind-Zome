@@ -4,7 +4,7 @@ import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
-import type { LLMEvent } from "../../src/provider/types.js";
+import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/types.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 
 const dummyTool: Tool = {
@@ -18,13 +18,29 @@ const dummyTool: Tool = {
   },
 };
 
+class CapturingProvider implements LLMProvider {
+  name = "capturing";
+  capturedParams: LLMChatParams | undefined;
+
+  supportsModel() {
+    return true;
+  }
+
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    this.capturedParams = params;
+    yield { type: "text.delta", delta: "ok" };
+    yield { type: "step.end" };
+  }
+}
+
 function makeConfig(
-  provider = new MockLLMProvider(),
-  messageRepository: Partial<IMessageRepository> = {}
+  provider: LLMProvider = new MockLLMProvider(),
+  messageRepository: Partial<IMessageRepository> = {},
+  tools: Tool[] = [dummyTool]
 ): {
   agentId: string;
   model: string;
-  provider: typeof provider;
+  provider: LLMProvider;
   tools: Tool[];
   workspaceDir: string;
   messageRepository: IMessageRepository;
@@ -34,7 +50,7 @@ function makeConfig(
     agentId: "agent-1",
     model: "mock",
     provider,
-    tools: [dummyTool],
+    tools,
     workspaceDir: "/tmp",
     messageRepository: {
       append: async () => {},
@@ -167,5 +183,75 @@ describe("AgentWorker", () => {
     expect(enqueueSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "sched-1", sessionId: "sess-1" }));
 
     consoleSpy.mockRestore();
+  });
+
+  it("injects code mode system prompt at the front of messages", async () => {
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+
+    worker.enqueue({
+      id: "j-code",
+      messages: [userMessage("hi")],
+      mode: "code",
+      onEvent: () => {},
+    });
+
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const messages = provider.capturedParams?.messages;
+    expect(messages).toBeDefined();
+    expect(messages?.[0].role).toBe("system");
+    expect(messages?.[0].content).toEqual([
+      { type: "text", text: "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes." },
+    ]);
+    expect(messages?.[1]).toEqual(userMessage("hi"));
+  });
+
+  it("does not inject system prompt in chat mode", async () => {
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+
+    worker.enqueue({
+      id: "j-chat",
+      messages: [userMessage("hi")],
+      mode: "chat",
+      onEvent: () => {},
+    });
+
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const messages = provider.capturedParams?.messages;
+    expect(messages?.[0].role).not.toBe("system");
+    expect(messages?.[0]).toEqual(userMessage("hi"));
+  });
+
+  it("passes projectRoot to tool context", async () => {
+    const capturedRoots: (string | undefined)[] = [];
+    const rootCapturingTool: Tool = {
+      name: "capture_root",
+      description: "captures projectRoot",
+      parameters: z.object({}),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute(ctx: ToolContext): Promise<ToolResult> {
+        capturedRoots.push(ctx.projectRoot);
+        return { success: true, output: "captured" };
+      },
+    };
+
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
+
+    const worker = new AgentWorker(makeConfig(provider, {}, [rootCapturingTool]));
+
+    worker.enqueue({
+      id: "j-root",
+      messages: [userMessage("run tool")],
+      projectRoot: "/tmp/project-a",
+      onEvent: () => {},
+    });
+
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    expect(capturedRoots).toContain("/tmp/project-a");
   });
 });

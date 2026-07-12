@@ -9,6 +9,7 @@ export interface ToolAccess {
 export interface ToolContext {
   agentId: string;
   workspaceDir: string;
+  projectRoot?: string;
   requiresApproval: (toolName: string, args: unknown) => boolean | Promise<boolean>;
 }
 

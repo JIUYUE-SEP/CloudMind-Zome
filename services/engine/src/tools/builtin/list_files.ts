@@ -22,7 +22,7 @@ export const listFilesTool: Tool = {
   parameters,
   accesses: [{ resource: "file", action: "read" }],
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
-    const projectRoot = (ctx as unknown as { projectRoot?: string }).projectRoot;
+    const projectRoot = ctx.projectRoot;
     if (!projectRoot) {
       return { success: false, error: "No project root configured" };
     }

@@ -1,8 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
+import path from "node:path";
+import fs from "node:fs/promises";
 import type { ApiContext } from "../context.js";
 import { routeMessage } from "../../conductor/conductor.js";
 import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMode } from "../../conductor/types.js";
+import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
 import { isValidId, sanitizeInput } from "./validation.js";
 
@@ -61,6 +65,21 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
         try {
           if (!session) return;
           const data = JSON.parse(String(raw));
+
+          if (data.type === "session.set_mode") {
+            const mode = data.mode as ChatMode;
+            const projectId = data.projectId as string | undefined;
+            session.mode = mode;
+            session.projectId = projectId;
+            await context.sessionRepository.update(session);
+            if (projectId) {
+              const projectRoot = path.join(getDataDir(), "projects", projectId);
+              await fs.mkdir(projectRoot, { recursive: true });
+            }
+            safeSend(socket, { type: "session.mode_changed", mode, projectId });
+            return;
+          }
+
           const input = sanitizeInput(data.text);
           if (!input.ok) {
             safeSend(socket, { type: "error", error: input.error });
@@ -99,10 +118,16 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             const repo = context.getMessageRepository(agentId);
             const history = await repo.listBySession(sessionId, { limit: 20 });
 
+            const projectRoot = session.mode === "code" && session.projectId
+              ? path.join(getDataDir(), "projects", session.projectId)
+              : undefined;
+
             worker.enqueue({
               id: randomUUID(),
               messages: history,
               sessionId,
+              mode: session.mode,
+              projectRoot,
               onEvent: (event) => {
                 safeSend(socket, { agentId, ...event });
               },

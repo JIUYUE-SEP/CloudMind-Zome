@@ -14,6 +14,7 @@ import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
+import { getDataDir } from "../../src/config/paths.js";
 import WebSocket from "ws";
 
 async function buildSessionWsContext(agentIds: string[]): Promise<{ context: ApiContext; cleanup: () => Promise<void>; sessionId: string }> {
@@ -142,6 +143,43 @@ describe("Session WebSocket API", () => {
       .map((m) => (m as { agentId: string }).agentId);
     expect(agentIds).toContain("a1");
     expect(agentIds).not.toContain("a2");
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("handles session.set_mode and creates project directory", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+
+    const messages: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "proj-1" }));
+      });
+      client.on("message", (data) => {
+        messages.push(JSON.parse(String(data)));
+        client.close();
+        resolve();
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ type: "session.mode_changed", mode: "code", projectId: "proj-1" });
+
+    const projectRoot = path.join(getDataDir(), "projects", "proj-1");
+    const stat = await fs.stat(projectRoot);
+    expect(stat.isDirectory()).toBe(true);
+
+    const session = await context.sessionRepository.get(sessionId);
+    expect(session?.mode).toBe("code");
+    expect(session?.projectId).toBe("proj-1");
 
     await app.close();
     await cleanup();

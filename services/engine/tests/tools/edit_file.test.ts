@@ -10,8 +10,8 @@ function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
     agentId: "test-agent",
     workspaceDir,
     requiresApproval: async () => true,
-    ...(projectRoot ? { projectRoot } : {}),
-  } as ToolContext;
+    projectRoot,
+  };
 }
 
 describe("editFileTool", () => {

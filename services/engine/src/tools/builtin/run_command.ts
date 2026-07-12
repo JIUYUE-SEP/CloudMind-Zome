@@ -52,7 +52,7 @@ export const runCommandTool: Tool = {
   parameters,
   accesses: [{ resource: "process", action: "execute" }],
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
-    const projectRoot = (ctx as unknown as { projectRoot?: string }).projectRoot;
+    const projectRoot = ctx.projectRoot;
     if (!projectRoot) {
       return { success: false, error: "No project root configured" };
     }

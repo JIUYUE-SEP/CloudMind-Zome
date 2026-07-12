@@ -16,6 +16,7 @@ export interface ToolCallResult {
 export interface ToolExecutionContext {
   agentId: string;
   workspaceDir: string;
+  projectRoot?: string;
   tools: Map<string, Tool>;
   requiresApproval: (toolName: string, args: unknown) => boolean | Promise<boolean>;
   emit: (event: LLMEvent) => void;
@@ -67,6 +68,7 @@ export async function runToolCallBatch(
         const toolCtx: ToolContext = {
           agentId: ctx.agentId,
           workspaceDir: ctx.workspaceDir,
+          projectRoot: ctx.projectRoot,
           requiresApproval: ctx.requiresApproval,
         };
         const output = await call.tool.execute(toolCtx, call.args);

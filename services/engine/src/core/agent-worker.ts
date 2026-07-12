@@ -6,6 +6,7 @@ import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool } from "../tools/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
+import type { ChatMode } from "../conductor/types.js";
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -27,6 +28,8 @@ export interface Job {
   id: string;
   messages: ChatMessage[];
   sessionId?: string;
+  mode?: ChatMode;
+  projectRoot?: string;
   onEvent: (event: LLMEvent) => void;
 }
 
@@ -92,14 +95,22 @@ export class AgentWorker {
         },
       }));
 
+      const systemPrompt = job.mode === "code"
+        ? "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes."
+        : undefined;
+      const messages = systemPrompt
+        ? [{ id: "system", role: "system" as const, content: [{ type: "text" as const, text: systemPrompt }], createdAt: new Date().toISOString() }, ...job.messages]
+        : job.messages;
+
       const turnInput: TurnInput = {
         provider: this.config.provider,
         model: this.config.model,
-        messages: job.messages,
+        messages,
         tools: toolDescriptions,
         toolCtx: {
           agentId: this.config.agentId,
           workspaceDir: this.config.workspaceDir,
+          projectRoot: job.projectRoot,
           tools: toolsMap,
           requiresApproval: this.config.requiresApproval,
           emit: job.onEvent,
