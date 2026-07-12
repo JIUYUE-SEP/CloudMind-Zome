@@ -1,4 +1,4 @@
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig, ChatMode } from "@mindcloud/shared";
 import { invoke } from "@tauri-apps/api/core";
 import { ref, onMounted } from "vue";
 
@@ -66,6 +66,8 @@ export interface Session {
   name: string;
   agentIds: string[];
   type: "group" | "intermind";
+  mode?: ChatMode;
+  projectId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -115,10 +117,15 @@ export interface WebSocketHandlers {
   onStepEnd?: (finishReason?: string) => void;
   onError?: (error: string) => void;
   onClose?: () => void;
+  onModeChanged?: (mode: ChatMode, projectId?: string) => void;
+  onFileOpened?: (path: string, content: string) => void;
+  onCommandOutput?: (chunk: string) => void;
 }
 
 export interface Connection {
   send(text: string): void;
+  sendRaw(message: object): void;
+  setMode(mode: ChatMode, projectId?: string): void;
   close(): void;
 }
 
@@ -376,6 +383,15 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);
             break;
+          case "session.mode_changed":
+            handlers.onModeChanged?.(data.mode, data.projectId);
+            break;
+          case "code.file_opened":
+            handlers.onFileOpened?.(data.path, data.content);
+            break;
+          case "code.command_output":
+            handlers.onCommandOutput?.(data.chunk);
+            break;
           case "error":
             handlers.onError?.(data.error);
             break;
@@ -392,6 +408,16 @@ export function useEngineClient(options?: EngineClientOptions) {
       send(text: string) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
+        }
+      },
+      sendRaw(message: object) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(message));
+        }
+      },
+      setMode(mode: ChatMode, projectId?: string) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "session.set_mode", mode, projectId }));
         }
       },
       close() {
@@ -475,6 +501,15 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);
             break;
+          case "session.mode_changed":
+            handlers.onModeChanged?.(data.mode, data.projectId);
+            break;
+          case "code.file_opened":
+            handlers.onFileOpened?.(data.path, data.content);
+            break;
+          case "code.command_output":
+            handlers.onCommandOutput?.(data.chunk);
+            break;
           case "error":
             handlers.onError?.(data.error);
             break;
@@ -491,6 +526,16 @@ export function useEngineClient(options?: EngineClientOptions) {
       send(text: string) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
+        }
+      },
+      sendRaw(message: object) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(message));
+        }
+      },
+      setMode(mode: ChatMode, projectId?: string) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "session.set_mode", mode, projectId }));
         }
       },
       close() {

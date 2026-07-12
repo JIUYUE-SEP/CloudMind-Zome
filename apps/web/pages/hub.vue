@@ -66,16 +66,32 @@
         :key="selectedAgentId"
         :agent-id="selectedAgentId"
       />
-      <GroupChatView
-        v-else-if="selectedType === 'group' && selectedSession"
-        :key="selectedId"
-        :session="selectedSession"
-        :messages="groupMessages"
-        :agents="agents.list"
-        :is-connected="groupIsConnected"
-        :is-streaming="groupIsStreaming"
-        @send="onGroupSend"
-      />
+      <div v-else-if="selectedType === 'group' && selectedSession" class="group-chat-wrapper">
+        <div class="group-mode-switch">
+          <button :class="{ active: sessionMode === 'chat' }" @click="setMode('chat')">聊天</button>
+          <button :class="{ active: sessionMode === 'code' }" @click="setMode('code')">编程</button>
+        </div>
+        <div class="group-body" :class="{ 'code-mode': sessionMode === 'code' }">
+          <GroupChatView
+            :key="selectedId"
+            :session="selectedSession"
+            :messages="groupMessages"
+            :agents="agents.list"
+            :is-connected="groupIsConnected"
+            :is-streaming="groupIsStreaming"
+            @send="onGroupSend"
+          />
+          <CodeWorkspace
+            v-if="sessionMode === 'code'"
+            :entries="fileTreeEntries"
+            :terminal-output="terminalOutput"
+            v-model:current-file-content="currentFileContent"
+            :current-file-path="currentFilePath"
+            @open-file="onOpenFile"
+            @clear-terminal="terminalOutput = ''"
+          />
+        </div>
+      </div>
       <div v-else class="comm-welcome">
         <div class="comm-welcome-icon">//</div>
         <div class="comm-welcome-title">选择一个会话开始交流</div>
@@ -87,12 +103,15 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type ChatMessageRecord, type Session } from "@/composables/useEngineClient";
 import BackButton from "@/components/BackButton.vue";
 import ChatView from "@/components/ChatView.vue";
 import GroupChatView from "@/components/GroupChatView.vue";
+import CodeWorkspace from "@/components/code/CodeWorkspace.vue";
+import type { FileEntry } from "@/components/code/FileTree.vue";
 import type { DisplayMessage } from "@/components/GroupChatView.vue";
 
 const agents = useAgentsStore();
@@ -108,6 +127,11 @@ const selectedSession = ref<Session | undefined>(undefined);
 const groupMessages = ref<DisplayMessage[]>([]);
 const groupIsConnected = ref(false);
 const groupIsStreaming = ref(false);
+const sessionMode = ref<ChatMode>("chat");
+const terminalOutput = ref("");
+const fileTreeEntries = ref<FileEntry[]>([]);
+const currentFileContent = ref("");
+const currentFilePath = ref("");
 let groupConnection: ReturnType<typeof client.connectSession> | null = null;
 
 const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
@@ -134,6 +158,7 @@ async function selectGroup(session: Session) {
   selectedType.value = "group";
   selectedAgentId.value = "";
   selectedSession.value = session;
+  resetIdeState();
   await loadGroupMessages(session.id);
   connectGroup(session.id);
 }
@@ -155,6 +180,9 @@ function connectGroup(sessionId: string) {
   groupConnection = client.connectSession(sessionId, {
     onOpen: () => {
       groupIsConnected.value = true;
+      if (selectedSession.value?.mode === "code") {
+        sessionMode.value = "code";
+      }
     },
     onTextDelta: (delta) => {
       const last = groupMessages.value[groupMessages.value.length - 1];
@@ -190,6 +218,20 @@ function connectGroup(sessionId: string) {
       }
       groupIsStreaming.value = false;
     },
+    onModeChanged: (mode, projectId) => {
+      sessionMode.value = mode;
+      if (selectedSession.value) {
+        selectedSession.value.mode = mode;
+        selectedSession.value.projectId = projectId;
+      }
+    },
+    onFileOpened: (path, content) => {
+      currentFilePath.value = path;
+      currentFileContent.value = content;
+    },
+    onCommandOutput: (chunk) => {
+      terminalOutput.value += chunk + "\n";
+    },
     onError: (error) => {
       groupIsStreaming.value = false;
       groupMessages.value.push({
@@ -213,6 +255,24 @@ function closeGroupConnection() {
   groupConnection = null;
   groupIsConnected.value = false;
   groupIsStreaming.value = false;
+}
+
+function resetIdeState() {
+  sessionMode.value = "chat";
+  terminalOutput.value = "";
+  fileTreeEntries.value = [];
+  currentFileContent.value = "";
+  currentFilePath.value = "";
+}
+
+function setMode(mode: ChatMode) {
+  sessionMode.value = mode;
+  const projectId = mode === "code" ? selectedSession.value?.id : undefined;
+  groupConnection?.sendRaw({ type: "session.set_mode", mode, projectId });
+}
+
+function onOpenFile(path: string) {
+  groupConnection?.sendRaw({ type: "code.file_open", path });
 }
 
 function onGroupSend(text: string) {
@@ -485,5 +545,70 @@ function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
 .comm-welcome-sub {
   font-size: 12px;
   color: var(--mc-text-tertiary);
+}
+
+.group-chat-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.group-mode-switch {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.group-mode-switch button {
+  flex: 1;
+  padding: 7px 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.group-mode-switch button.active {
+  background: rgba(0, 229, 201, 0.12);
+  border-color: rgba(0, 229, 201, 0.3);
+  color: var(--mc-accent);
+}
+
+.group-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.group-body.code-mode {
+  flex-direction: row;
+}
+
+.group-body > .group-chat-view,
+.group-body > .group-chat-view-stub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.group-body.code-mode > .group-chat-view,
+.group-body.code-mode > .group-chat-view-stub {
+  flex: 1;
+}
+
+.group-body.code-mode > .code-workspace,
+.group-body.code-mode > .code-workspace-stub {
+  width: 50%;
+  min-width: 320px;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
 </style>
