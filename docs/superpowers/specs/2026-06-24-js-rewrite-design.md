@@ -1,5 +1,7 @@
 # CloudMind-Zome JS/TypeScript 重构设计
 
+> **历史文档 / 已归档**：本规格记录 2026-06-24 期间将项目从 Python 后端迁移到 Node.js/TypeScript 新架构的原始设计。迁移已完成，旧 Python 后端（`backend/`）和旧版 Tauri 前端（`frontend/`）已于 2026-07-02 移除。本文档保留用于追溯历史，不再作为当前架构依据。
+
 ## 1. 背景与目标
 
 ### 1.1 当前状态
