@@ -36,6 +36,11 @@ apps/desktop/src-tauri/binaries/
 # package-lock.json
 # pnpm-lock.yaml
 
+# Secrets / runtime config
+.env
+.env.*.local
+.env.local
+
 nul
 
 # Tool discovery cache
