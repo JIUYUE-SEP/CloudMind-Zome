@@ -73,27 +73,99 @@ describe("editFileTool", () => {
     expect(result.error).toBe("oldString is not unique in sample.txt (2 occurrences)");
   });
 
-  it("rejects path traversal", async () => {
+  it("fails when oldString is empty", async () => {
+    const filePath = path.join(projectRoot, "sample.txt");
+    fs.writeFileSync(filePath, "hello world");
+
     const ctx = makeCtx(workspaceDir, projectRoot);
     const result = await editFileTool.execute(ctx, {
-      path: "../escape.txt",
-      oldString: "x",
-      newString: "y",
+      path: "sample.txt",
+      oldString: "",
+      newString: "replacement",
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/path traversal detected/);
+    expect(result.error).toBe("oldString must not be empty");
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("hello world");
   });
 
-  it("fails when projectRoot is not configured", async () => {
-    const ctx = makeCtx(workspaceDir);
+  it("does not interpret $ in newString as a replacement pattern", async () => {
+    const filePath = path.join(projectRoot, "sample.ts");
+    fs.writeFileSync(filePath, "function count() { return 1; }");
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await editFileTool.execute(ctx, {
+      path: "sample.ts",
+      oldString: "return 1;",
+      newString: "return $$count;",
+    });
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(filePath, "utf-8")).toBe(
+      "function count() { return $$count; }",
+    );
+  });
+
+  it("replaces only the first matching occurrence", async () => {
+    const filePath = path.join(projectRoot, "sample.txt");
+    fs.writeFileSync(filePath, "foo bar foo");
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
     const result = await editFileTool.execute(ctx, {
       path: "sample.txt",
+      oldString: "foo bar",
+      newString: "baz",
+    });
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("baz foo");
+  });
+
+  it("rejects absolute paths", async () => {
+    const filePath = path.join(projectRoot, "sample.txt");
+    fs.writeFileSync(filePath, "hello world");
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await editFileTool.execute(ctx, {
+      path: filePath,
+      oldString: "hello",
+      newString: "hi",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("absolute paths are not allowed");
+  });
+
+  it("fails on invalid arguments", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await editFileTool.execute(ctx, {
+      path: 123,
       oldString: "x",
       newString: "y",
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe("No project root configured");
+    expect(result.error).toMatch(/Expected string, received number/);
+  });
+
+  it("does not modify files outside project root via path traversal", async () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "engine-outside-"));
+    const outsideFile = path.join(outsideDir, "secret.txt");
+    fs.writeFileSync(outsideFile, "secret");
+
+    const relativeToProject = path.relative(projectRoot, outsideFile);
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await editFileTool.execute(ctx, {
+      path: relativeToProject,
+      oldString: "secret",
+      newString: "hacked",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/path traversal detected|absolute paths are not allowed/);
+    expect(fs.readFileSync(outsideFile, "utf-8")).toBe("secret");
+
+    fs.rmSync(outsideDir, { recursive: true, force: true });
   });
 });
