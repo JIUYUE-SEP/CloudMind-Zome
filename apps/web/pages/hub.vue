@@ -128,6 +128,7 @@ const groupMessages = ref<DisplayMessage[]>([]);
 const groupIsConnected = ref(false);
 const groupIsStreaming = ref(false);
 const sessionMode = ref<ChatMode>("chat");
+const sessionProjectId = ref<string | undefined>(undefined);
 const terminalOutput = ref("");
 const fileTreeEntries = ref<FileEntry[]>([]);
 const currentFileContent = ref("");
@@ -158,6 +159,8 @@ async function selectGroup(session: Session) {
   selectedType.value = "group";
   selectedAgentId.value = "";
   selectedSession.value = session;
+  sessionMode.value = session.mode || "chat";
+  sessionProjectId.value = session.projectId;
   resetIdeState();
   await loadGroupMessages(session.id);
   connectGroup(session.id);
@@ -220,10 +223,7 @@ function connectGroup(sessionId: string) {
     },
     onModeChanged: (mode, projectId) => {
       sessionMode.value = mode;
-      if (selectedSession.value) {
-        selectedSession.value.mode = mode;
-        selectedSession.value.projectId = projectId;
-      }
+      sessionProjectId.value = projectId;
     },
     onFileOpened: (path, content) => {
       currentFilePath.value = path;
@@ -267,8 +267,8 @@ function resetIdeState() {
 
 function setMode(mode: ChatMode) {
   sessionMode.value = mode;
-  const projectId = mode === "code" ? selectedSession.value?.id : undefined;
-  groupConnection?.sendRaw({ type: "session.set_mode", mode, projectId });
+  const projectId = mode === "code" ? selectedSession.value?.id : sessionProjectId.value;
+  groupConnection?.setMode(mode, projectId);
 }
 
 function onOpenFile(path: string) {
@@ -277,6 +277,8 @@ function onOpenFile(path: string) {
 
 function onGroupSend(text: string) {
   if (!groupConnection) return;
+  const sent = groupConnection.send(text);
+  if (!sent) return;
   groupMessages.value.push({
     id: `u_${Date.now()}`,
     role: "user",
@@ -286,7 +288,6 @@ function onGroupSend(text: string) {
     isStreaming: false,
   });
   groupIsStreaming.value = true;
-  groupConnection.send(text);
 }
 
 function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {

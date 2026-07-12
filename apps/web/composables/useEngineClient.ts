@@ -123,9 +123,9 @@ export interface WebSocketHandlers {
 }
 
 export interface Connection {
-  send(text: string): void;
-  sendRaw(message: object): void;
-  setMode(mode: ChatMode, projectId?: string): void;
+  send(text: string): boolean;
+  sendRaw(message: object): boolean;
+  setMode(mode: ChatMode, projectId?: string): boolean;
   close(): void;
 }
 
@@ -408,17 +408,19 @@ export function useEngineClient(options?: EngineClientOptions) {
       send(text: string) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
+          return true;
         }
+        return false;
       },
       sendRaw(message: object) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify(message));
+          return true;
         }
+        return false;
       },
       setMode(mode: ChatMode, projectId?: string) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: "session.set_mode", mode, projectId }));
-        }
+        return this.sendRaw({ type: "session.set_mode", mode, projectId });
       },
       close() {
         socket.close();
@@ -526,17 +528,19 @@ export function useEngineClient(options?: EngineClientOptions) {
       send(text: string) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
+          return true;
         }
+        return false;
       },
       sendRaw(message: object) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify(message));
+          return true;
         }
+        return false;
       },
       setMode(mode: ChatMode, projectId?: string) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: "session.set_mode", mode, projectId }));
-        }
+        return this.sendRaw({ type: "session.set_mode", mode, projectId });
       },
       close() {
         socket.close();

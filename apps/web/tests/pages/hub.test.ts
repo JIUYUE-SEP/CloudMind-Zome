@@ -23,6 +23,7 @@ class MockWebSocket {
 
   send(data: string) {
     this.sent.push(data);
+    return true;
   }
 
   close() {
@@ -145,8 +146,7 @@ describe("Hub page group chat code mode", () => {
 
     expect((wrapper.vm as unknown as { sessionMode: string }).sessionMode).toBe("code");
     expect(
-      (wrapper.vm as unknown as { selectedSession: { projectId?: string } }).selectedSession
-        ?.projectId,
+      (wrapper.vm as unknown as { sessionProjectId?: string }).sessionProjectId,
     ).toBe("s1");
     expect(wrapper.find("code-workspace-stub").exists()).toBe(true);
   });
