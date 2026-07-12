@@ -5,55 +5,40 @@
     </div>
     <div class="workspace-main">
       <div class="editor-area">
-        <CodeEditor v-model="currentFileContent" :language="currentLanguage" :path="currentFilePath" />
+        <CodeEditor
+          :modelValue="currentFileContent"
+          :path="currentFilePath"
+          @update:modelValue="emit('update:currentFileContent', $event)"
+        />
       </div>
       <div class="terminal-area">
-        <TerminalPanel :output="terminalOutput" @clear="$emit('clearTerminal')" />
+        <TerminalPanel :output="terminalOutput" @clear="emit('clearTerminal')" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
 import FileTree, { type FileEntry } from './FileTree.vue';
 import CodeEditor from './CodeEditor.vue';
 import TerminalPanel from './TerminalPanel.vue';
 
-const props = defineProps<{
+withDefaults(defineProps<{
   entries: FileEntry[];
   terminalOutput: string;
   currentFileContent?: string;
   currentFilePath?: string;
-}>();
+}>(), {
+  currentFileContent: '',
+  currentFilePath: '',
+});
 
 const emit = defineEmits<{
   (e: 'openFile', path: string): void;
   (e: 'clearTerminal'): void;
+  (e: 'update:currentFileContent', value: string): void;
+  (e: 'update:currentFilePath', value: string): void;
 }>();
-
-const currentFileContent = ref(props.currentFileContent || '');
-const currentFilePath = ref(props.currentFilePath || '');
-
-watch(() => props.currentFileContent, (val) => {
-  currentFileContent.value = val || '';
-});
-
-watch(() => props.currentFilePath, (val) => {
-  currentFilePath.value = val || '';
-});
-
-const currentLanguage = computed(() => {
-  const path = currentFilePath.value.toLowerCase();
-  if (path.endsWith('.ts') || path.endsWith('.tsx')) return 'typescript';
-  if (path.endsWith('.js') || path.endsWith('.jsx') || path.endsWith('.mjs') || path.endsWith('.cjs')) return 'javascript';
-  if (path.endsWith('.vue')) return 'html';
-  if (path.endsWith('.md')) return 'markdown';
-  if (path.endsWith('.json')) return 'json';
-  if (path.endsWith('.css')) return 'css';
-  if (path.endsWith('.html')) return 'html';
-  return 'plaintext';
-});
 
 function onFileOpen(entry: FileEntry) {
   if (entry.type === 'directory') return;

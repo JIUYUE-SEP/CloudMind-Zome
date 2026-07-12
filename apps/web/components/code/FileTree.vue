@@ -19,7 +19,7 @@ export interface FileEntry {
   type: 'file' | 'directory' | 'symlink' | 'other';
 }
 
-const props = defineProps<{ entries: FileEntry[] }>();
+defineProps<{ entries: FileEntry[] }>();
 const emit = defineEmits<{ (e: 'open', entry: FileEntry): void }>();
 
 function onClick(entry: FileEntry) {

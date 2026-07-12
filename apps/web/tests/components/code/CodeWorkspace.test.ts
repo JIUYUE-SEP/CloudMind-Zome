@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import CodeWorkspace from "../../../components/code/CodeWorkspace.vue";
+import CodeEditor from "../../../components/code/CodeEditor.vue";
 import type { FileEntry } from "../../../components/code/FileTree.vue";
 
 vi.mock("@monaco-editor/loader", () => ({
@@ -15,6 +16,7 @@ vi.mock("@monaco-editor/loader", () => ({
             getModel: vi.fn(),
             dispose: vi.fn(),
           })),
+          createModel: vi.fn(() => ({ dispose: vi.fn() })),
           setModelLanguage: vi.fn(),
         },
       }),
@@ -80,6 +82,28 @@ describe("CodeWorkspace", () => {
       },
     });
     await flushPromises();
-    expect(wrapper.find(".code-editor").exists()).toBe(true);
+
+    const editor = wrapper.findComponent(CodeEditor);
+    expect(editor.exists()).toBe(true);
+    expect(editor.props("modelValue")).toBe("const x = 1;");
+    expect(editor.props("path")).toBe("main.ts");
+  });
+
+  it("emits update:currentFileContent when editor content changes", async () => {
+    const wrapper = mount(CodeWorkspace, {
+      props: {
+        entries,
+        terminalOutput: "",
+        currentFileContent: "initial",
+      },
+    });
+    await flushPromises();
+
+    const editor = wrapper.findComponent(CodeEditor);
+    await editor.vm.$emit("update:modelValue", "changed");
+
+    expect(wrapper.emitted("update:currentFileContent")?.[0]).toEqual([
+      "changed",
+    ]);
   });
 });

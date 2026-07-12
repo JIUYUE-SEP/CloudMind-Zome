@@ -3,7 +3,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, onUnmounted, computed } from 'vue';
+import { ref, onMounted, watch, onUnmounted, computed, shallowRef } from 'vue';
 import loader from '@monaco-editor/loader';
 import type * as monaco from 'monaco-editor';
 
@@ -18,7 +18,10 @@ const emit = defineEmits<{
 }>();
 
 const editorContainer = ref<HTMLElement | null>(null);
-let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+const editor = shallowRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+const monacoRef = shallowRef<typeof monaco | null>(null);
+let model: monaco.editor.ITextModel | null = null;
+let mounted = false;
 
 const resolvedLanguage = computed(() => {
   if (props.language) return props.language;
@@ -44,26 +47,29 @@ function inferLanguageFromPath(filePath: string): string {
 }
 
 onMounted(async () => {
+  mounted = true;
   if (!editorContainer.value) return;
-  const monacoInstance = await loader.init();
-  const createdEditor = monacoInstance.editor.create(editorContainer.value, {
-    value: props.modelValue,
-    language: resolvedLanguage.value,
+  const m = await loader.init();
+  if (!mounted) return;
+  monacoRef.value = m;
+  model = m.editor.createModel(props.modelValue, resolvedLanguage.value);
+  const createdEditor = m.editor.create(editorContainer.value, {
+    model,
     theme: 'vs-dark',
     automaticLayout: true,
     minimap: { enabled: false },
   });
-  editor = createdEditor;
+  editor.value = createdEditor;
   createdEditor.onDidChangeModelContent(() => {
-    emit('update:modelValue', createdEditor.getValue());
+    emit('update:modelValue', editor.value!.getValue());
   });
 });
 
 watch(
   () => props.modelValue,
   (val) => {
-    if (editor && editor.getValue() !== val) {
-      editor.setValue(val);
+    if (editor.value && editor.value.getValue() !== val) {
+      editor.value.setValue(val);
     }
   },
 );
@@ -71,18 +77,17 @@ watch(
 watch(
   () => resolvedLanguage.value,
   (lang) => {
-    if (!editor) return;
-    const model = editor.getModel();
-    if (!model) return;
-    const monacoInstance = (window as unknown as { monaco?: typeof monaco }).monaco;
-    if (!monacoInstance) return;
-    monacoInstance.editor.setModelLanguage(model, lang);
+    if (!editor.value || !model || !monacoRef.value) return;
+    monacoRef.value.editor.setModelLanguage(model, lang);
   },
 );
 
 onUnmounted(() => {
-  editor?.dispose();
-  editor = null;
+  mounted = false;
+  editor.value?.dispose();
+  model?.dispose();
+  editor.value = null;
+  model = null;
 });
 </script>
 
