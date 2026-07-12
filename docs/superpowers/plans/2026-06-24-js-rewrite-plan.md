@@ -1,5 +1,7 @@
 # CloudMind-Zome JS/TypeScript 重构实现计划
 
+> **历史文档 / 已归档**：本计划记录 2026-06-24 期间将项目从 Python 后端迁移到 Node.js/TypeScript 新架构的原始实施计划。迁移已完成，旧 Python 后端（`backend/`）和旧版 Tauri 前端（`frontend/`）已于 2026-07-02 移除。本文档保留用于追溯历史，不再作为当前实施依据。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 **目标：** 在 git 分支 `refactor/js-rewrite` 上用 JavaScript/TypeScript + Rust 完整重写 CloudMind-Zome，实现 Node.js 核心引擎、Rust 性能侧车、Nuxt 3 前端、Tauri 桌面集成，并迁移全部现有功能。
