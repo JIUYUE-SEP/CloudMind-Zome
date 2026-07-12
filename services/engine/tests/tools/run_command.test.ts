@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runCommandTool } from "../../src/tools/builtin/run_command.js";
+import { runCommandTool, MAX_OUTPUT_SIZE } from "../../src/tools/builtin/run_command.js";
 import type { ToolContext } from "../../src/tools/types.js";
 
 function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
@@ -110,13 +110,96 @@ describe("runCommandTool", () => {
     expect(result.error).toBe("No project root configured");
   });
 
-  it("returns non-zero exit code for a nonexistent command", async () => {
+  it("returns success false for a nonexistent command", async () => {
     const ctx = makeCtx(workspaceDir, projectRoot);
     const result = await runCommandTool.execute(ctx, {
       command: "__nonexistent_command_xyz__",
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
     const output = result.output as { stdout: string; stderr: string; exitCode: number };
     expect(output.exitCode).not.toBe(0);
   });
+
+  it("returns success false and the exact non-zero exit code", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: "node -e \"process.exit(42)\"",
+    });
+    expect(result.success).toBe(false);
+    const output = result.output as { stdout: string; stderr: string; exitCode: number };
+    expect(output.exitCode).toBe(42);
+  });
+
+  it("captures both stdout and stderr", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: "node -e \"console.log('stdout-line'); console.error('stderr-line')\"",
+    });
+    expect(result.success).toBe(true);
+    const output = result.output as { stdout: string; stderr: string; exitCode: number };
+    expect(output.exitCode).toBe(0);
+    expect(output.stdout).toContain("stdout-line");
+    expect(output.stderr).toContain("stderr-line");
+  });
+
+  it("times out a long-running command", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const sleepCmd = `node -e "process.chdir(require('os').tmpdir()); setTimeout(() => {}, 5000)"`;
+    const start = Date.now();
+    const result = await runCommandTool.execute(ctx, {
+      command: sleepCmd,
+      timeout: 1,
+    });
+    const duration = Date.now() - start;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timed out/i);
+    const output = result.output as { stdout: string; stderr: string; exitCode: number };
+    expect(output.exitCode).toBe(-1);
+    expect(duration).toBeGreaterThanOrEqual(900);
+    expect(duration).toBeLessThan(8000);
+  }, 15000);
+
+  it("rejects a negative timeout", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: "echo hello",
+      timeout: -1,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timeout must be a positive integer/);
+  });
+
+  it("rejects a zero timeout", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: "echo hello",
+      timeout: 0,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timeout must be a positive integer/);
+  });
+
+  it("rejects a NaN timeout", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: "echo hello",
+      timeout: NaN,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timeout must be a positive integer/);
+  });
+
+  it("terminates a command that exceeds the output limit", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: `node -e "process.chdir(require('os').tmpdir()); process.stdout.write('x'.repeat(${MAX_OUTPUT_SIZE * 2}))"`,
+      timeout: 10,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/exceeded.*bytes/i);
+    const output = result.output as { stdout: string; stderr: string; exitCode: number };
+    expect(output.exitCode).toBe(-1);
+    const size = Buffer.byteLength(output.stdout, "utf8") + Buffer.byteLength(output.stderr, "utf8");
+    expect(size).toBeLessThanOrEqual(MAX_OUTPUT_SIZE + 1024);
+  }, 15000);
 });
