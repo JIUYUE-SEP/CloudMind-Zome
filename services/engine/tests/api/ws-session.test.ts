@@ -12,7 +12,7 @@ import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
-import { AgentWorker } from "../../src/core/agent-worker.js";
+import { AgentWorker, type Job } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
 import { getDataDir } from "../../src/config/paths.js";
@@ -266,6 +266,79 @@ describe("Session WebSocket API", () => {
 
     expect(messages.some((m) => (m as { type: string }).type === "session.mode_changed")).toBe(true);
     expect(capturedRoots).toContain(undefined);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("sets code mode and injects projectRoot into tool context", async () => {
+    const capturedJobs: Job[] = [];
+    const capturedRoots: (string | undefined)[] = [];
+    const rootCapturingTool: Tool = {
+      name: "capture_root",
+      description: "captures projectRoot",
+      parameters: z.object({}),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute(ctx: ToolContext): Promise<ToolResult> {
+        capturedRoots.push(ctx.projectRoot);
+        return { success: true, output: "captured" };
+      },
+    };
+
+    const { context, cleanup, sessionId, providers } = await buildSessionWsContext(["a1"], [rootCapturingTool]);
+    providers.get("a1")?.setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
+
+    // Wrap worker to capture enqueued jobs
+    const originalGetAgentWorker = context.getAgentWorker;
+    context.getAgentWorker = async (id: string) => {
+      const worker = await originalGetAgentWorker(id);
+      if (!worker) return worker;
+      const originalEnqueue = worker.enqueue.bind(worker);
+      worker.enqueue = (job: Job) => {
+        capturedJobs.push(job);
+        return originalEnqueue(job);
+      };
+      return worker;
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+
+    const messages: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "test-project" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        messages.push(message);
+        if (message.type === "session.mode_changed") {
+          client.send(JSON.stringify({ text: "run tool" }));
+        }
+        if (message.type === "step.end") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    expect(messages.some((m) => (m as { type: string }).type === "session.mode_changed")).toBe(true);
+
+    const session = await context.sessionRepository.get(sessionId);
+    expect(session?.mode).toBe("code");
+    expect(session?.projectId).toBe("test-project");
+
+    const expectedProjectRoot = path.join(getDataDir(), "projects", "test-project");
+    await expect(fs.stat(expectedProjectRoot)).resolves.toBeDefined();
+
+    expect(capturedJobs.length).toBeGreaterThan(0);
+    expect(capturedJobs.some((job) => job.mode === "code" && job.projectRoot === expectedProjectRoot)).toBe(true);
+    expect(capturedRoots).toContain(expectedProjectRoot);
 
     await app.close();
     await cleanup();

@@ -1,4 +1,4 @@
-export type ChatMode = "chat" | "code";
+import type { ChatMode } from "@mindcloud/shared";
 
 export function isValidId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{1,64}$/.test(id);

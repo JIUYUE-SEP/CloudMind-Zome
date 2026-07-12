@@ -7,94 +7,122 @@ import { writeTool } from "../../src/tools/builtin/write.js";
 import { bashTool } from "../../src/tools/builtin/bash.js";
 import type { ToolContext } from "../../src/tools/types.js";
 
-function makeCtx(workspaceDir: string): ToolContext {
+function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
   return {
     agentId: "test-agent",
     workspaceDir,
+    projectRoot,
     requiresApproval: async () => true,
   };
 }
 
 describe("readTool", () => {
   let workspaceDir: string;
-  let ctx: ToolContext;
+  let projectRoot: string;
 
   beforeEach(() => {
     workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "engine-read-"));
-    ctx = makeCtx(workspaceDir);
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "engine-project-"));
   });
 
   afterEach(() => {
     fs.rmSync(workspaceDir, { recursive: true, force: true });
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
   it("rejects absolute paths", async () => {
-    const result = await readTool.execute(ctx, { path: "/etc/passwd" });
+    const result = await readTool.execute(makeCtx(workspaceDir), { path: "/etc/passwd" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("absolute paths are not allowed");
   });
 
   it("rejects path traversal", async () => {
-    const result = await readTool.execute(ctx, { path: "../outside.txt" });
+    const result = await readTool.execute(makeCtx(workspaceDir), { path: "../outside.txt" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("path traversal detected");
   });
 
   it("reads files inside the workspace", async () => {
     fs.writeFileSync(path.join(workspaceDir, "inside.txt"), "hello");
-    const result = await readTool.execute(ctx, { path: "inside.txt" });
+    const result = await readTool.execute(makeCtx(workspaceDir), { path: "inside.txt" });
     expect(result.success).toBe(true);
     expect(result.output).toBe("hello");
+  });
+
+  it("reads files inside the project root in code mode", async () => {
+    fs.writeFileSync(path.join(projectRoot, "main.ts"), "export const x = 1;");
+    const result = await readTool.execute(makeCtx(workspaceDir, projectRoot), { path: "main.ts" });
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("export const x = 1;");
+  });
+
+  it("rejects path traversal from project root in code mode", async () => {
+    const result = await readTool.execute(makeCtx(workspaceDir, projectRoot), { path: "../outside.txt" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("path traversal detected");
   });
 });
 
 describe("writeTool", () => {
   let workspaceDir: string;
-  let ctx: ToolContext;
+  let projectRoot: string;
 
   beforeEach(() => {
     workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "engine-write-"));
-    ctx = makeCtx(workspaceDir);
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "engine-project-"));
   });
 
   afterEach(() => {
     fs.rmSync(workspaceDir, { recursive: true, force: true });
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
   it("rejects absolute paths", async () => {
-    const result = await writeTool.execute(ctx, { path: "/tmp/evil.txt", content: "x" });
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "/tmp/evil.txt", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("absolute paths are not allowed");
   });
 
   it("rejects path traversal", async () => {
-    const result = await writeTool.execute(ctx, { path: "../outside.txt", content: "x" });
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "../outside.txt", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("path is outside allowed workspace");
   });
 
   it("rejects traversal to protected agent.json", async () => {
-    const result = await writeTool.execute(ctx, { path: "../agent.json", content: "x" });
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "../agent.json", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("cannot write protected file");
   });
 
   it("rejects protected messages.jsonl", async () => {
-    const result = await writeTool.execute(ctx, { path: "messages.jsonl", content: "x" });
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "messages.jsonl", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("cannot write protected file");
   });
 
   it("rejects deep path traversal", async () => {
-    const result = await writeTool.execute(ctx, { path: "../../etc/passwd", content: "x" });
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "../../etc/passwd", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("path is outside allowed workspace");
   });
 
   it("writes files inside the workspace files subdirectory", async () => {
-    const result = await writeTool.execute(ctx, { path: "files/notes.md", content: "hello" });
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "files/notes.md", content: "hello" });
     expect(result.success).toBe(true);
     expect(fs.readFileSync(path.join(workspaceDir, "files", "files", "notes.md"), "utf-8")).toBe("hello");
+  });
+
+  it("writes files inside the project root in code mode", async () => {
+    const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "src/main.ts", content: "export const x = 1;" });
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(projectRoot, "src", "main.ts"), "utf-8")).toBe("export const x = 1;");
+  });
+
+  it("rejects path traversal from project root in code mode", async () => {
+    const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "../outside.txt", content: "x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("path traversal detected");
   });
 });
 

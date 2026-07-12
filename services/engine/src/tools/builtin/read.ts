@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 function resolveWorkspacePath(workspaceDir: string, filePath: string): string {
@@ -15,15 +16,22 @@ function resolveWorkspacePath(workspaceDir: string, filePath: string): string {
   return fullPath;
 }
 
+function resolveReadPath(ctx: ToolContext, filePath: string): string {
+  if (ctx.projectRoot) {
+    return resolveProjectPath(ctx.projectRoot, filePath);
+  }
+  return resolveWorkspacePath(ctx.workspaceDir, filePath);
+}
+
 export const readTool: Tool = {
   name: "read_file",
-  description: "Read a file from the workspace",
+  description: "Read a file from the workspace or project root",
   parameters: z.object({ path: z.string() }),
   accesses: [{ resource: "file", action: "read" }],
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath } = args as { path: string };
     try {
-      const fullPath = resolveWorkspacePath(ctx.workspaceDir, filePath);
+      const fullPath = resolveReadPath(ctx, filePath);
       const content = await fs.readFile(fullPath, "utf-8");
       return { success: true, output: content };
     } catch (err) {
