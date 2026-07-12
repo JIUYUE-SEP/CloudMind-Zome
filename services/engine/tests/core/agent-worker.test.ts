@@ -225,33 +225,26 @@ describe("AgentWorker", () => {
     expect(messages?.[0]).toEqual(userMessage("hi"));
   });
 
-  it("passes projectRoot to tool context", async () => {
-    const capturedRoots: (string | undefined)[] = [];
-    const rootCapturingTool: Tool = {
-      name: "capture_root",
-      description: "captures projectRoot",
-      parameters: z.object({}),
-      accesses: [{ resource: "file", action: "read" }],
-      async execute(ctx: ToolContext): Promise<ToolResult> {
-        capturedRoots.push(ctx.projectRoot);
-        return { success: true, output: "captured" };
-      },
-    };
-
-    const provider = new MockLLMProvider();
-    provider.setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
-
-    const worker = new AgentWorker(makeConfig(provider, {}, [rootCapturingTool]));
+  it("does not persist system prompt to message repository", async () => {
+    const append = vi.fn(async () => {});
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker(makeConfig(provider, { append, listBySession: async () => [] }));
 
     worker.enqueue({
-      id: "j-root",
-      messages: [userMessage("run tool")],
-      projectRoot: "/tmp/project-a",
+      id: "j-code",
+      messages: [userMessage("hi")],
+      mode: "code",
+      sessionId: "sess-1",
       onEvent: () => {},
     });
 
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
-    expect(capturedRoots).toContain("/tmp/project-a");
+    const messages = provider.capturedParams?.messages;
+    expect(messages?.[0].role).toBe("system");
+
+    const appendCalls = (append.mock.calls as unknown as [ChatMessage][]).map((c) => c[0]);
+    expect(appendCalls.some((m) => m.role === "system")).toBe(false);
+    expect(appendCalls.some((m) => m.role === "assistant")).toBe(true);
   });
 });

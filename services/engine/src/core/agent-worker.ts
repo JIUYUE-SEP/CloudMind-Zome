@@ -6,7 +6,7 @@ import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool } from "../tools/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
-import type { ChatMode } from "../conductor/types.js";
+import type { ChatMode } from "@mindcloud/shared";
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -99,7 +99,7 @@ export class AgentWorker {
         ? "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes."
         : undefined;
       const messages = systemPrompt
-        ? [{ id: "system", role: "system" as const, content: [{ type: "text" as const, text: systemPrompt }], createdAt: new Date().toISOString() }, ...job.messages]
+        ? [{ id: randomUUID(), role: "system" as const, content: [{ type: "text" as const, text: systemPrompt }], createdAt: new Date().toISOString() }, ...job.messages]
         : job.messages;
 
       const turnInput: TurnInput = {

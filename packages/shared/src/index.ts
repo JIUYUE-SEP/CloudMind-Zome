@@ -1,3 +1,5 @@
+export type ChatMode = "chat" | "code";
+
 export interface AgentConfig {
   id: string;
   name: string;

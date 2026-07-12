@@ -1,5 +1,15 @@
+export type ChatMode = "chat" | "code";
+
 export function isValidId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
+export function isValidChatMode(value: unknown): value is ChatMode {
+  return value === "chat" || value === "code";
+}
+
+export function isValidProjectId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 }
 
 export function sanitizeInput(text: unknown): { ok: false; error: string } | { ok: true; text: string } {

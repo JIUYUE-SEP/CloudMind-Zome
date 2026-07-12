@@ -1,4 +1,4 @@
-export type ChatMode = "chat" | "code";
+import type { ChatMode } from "@mindcloud/shared";
 
 export interface Session {
   id: string;

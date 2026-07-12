@@ -2,13 +2,12 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import path from "node:path";
 import fs from "node:fs/promises";
-import type { ApiContext } from "../context.js";
 import { routeMessage } from "../../conductor/conductor.js";
 import type { ChatMessage } from "@mindcloud/shared";
-import type { ChatMode } from "../../conductor/types.js";
+import type { ApiContext } from "../context.js";
 import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, sanitizeInput } from "./validation.js";
+import { isValidId, isValidChatMode, isValidProjectId, sanitizeInput } from "./validation.js";
 
 const MAX_PENDING_MESSAGES = 100;
 
@@ -67,15 +66,28 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           const data = JSON.parse(String(raw));
 
           if (data.type === "session.set_mode") {
-            const mode = data.mode as ChatMode;
-            const projectId = data.projectId as string | undefined;
-            session.mode = mode;
-            session.projectId = projectId;
-            await context.sessionRepository.update(session);
+            const mode = data.mode as unknown;
+            const projectId = data.projectId as unknown;
+
+            if (!isValidChatMode(mode)) {
+              safeSend(socket, { type: "error", error: "Invalid mode" });
+              return;
+            }
+
+            if (projectId !== undefined && !isValidProjectId(projectId)) {
+              safeSend(socket, { type: "error", error: "Invalid project id" });
+              return;
+            }
+
+            const updatedSession = { ...session, mode, projectId };
+            await context.sessionRepository.update(updatedSession);
+            session = updatedSession;
+
             if (projectId) {
               const projectRoot = path.join(getDataDir(), "projects", projectId);
               await fs.mkdir(projectRoot, { recursive: true });
             }
+
             safeSend(socket, { type: "session.mode_changed", mode, projectId });
             return;
           }
