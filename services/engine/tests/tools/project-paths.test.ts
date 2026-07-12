@@ -65,6 +65,30 @@ describe("resolveProjectPath", () => {
   ])("allows path that resolves to the root or a subdirectory: %s", (input) => {
     expect(() => resolveProjectPath(PROJECT_ROOT, input)).not.toThrow();
   });
+
+  it("allows ..hidden file or directory names", () => {
+    expect(() => resolveProjectPath(PROJECT_ROOT, "..hidden")).not.toThrow();
+    expect(() =>
+      resolveProjectPath(PROJECT_ROOT, "sub/..hidden/file.txt"),
+    ).not.toThrow();
+  });
+
+  it("resolves paths when projectRoot is a Windows drive root", () => {
+    if (process.platform !== "win32") return;
+
+    expect(() => resolveProjectPath("C:/", "file.txt")).not.toThrow();
+    expect(resolveProjectPath("C:/", "file.txt")).toBe(
+      path.resolve("C:/", "file.txt"),
+    );
+  });
+
+  it("rejects cross-drive absolute paths", () => {
+    if (process.platform !== "win32") return;
+
+    expect(() => resolveProjectPath("C:/", "D:/file.txt")).toThrow(
+      /absolute paths are not allowed/,
+    );
+  });
 });
 
 describe("validateProjectPath", () => {

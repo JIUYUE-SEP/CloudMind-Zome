@@ -1,7 +1,6 @@
 import path from "node:path";
 
-function isPathInsideProjectRoot(projectRoot: string, fullPath: string): boolean {
-  const resolvedRoot = path.resolve(projectRoot);
+function isPathInsideProjectRoot(resolvedRoot: string, fullPath: string): boolean {
   const resolvedPath = path.resolve(fullPath);
 
   if (process.platform === "win32") {
@@ -9,17 +8,17 @@ function isPathInsideProjectRoot(projectRoot: string, fullPath: string): boolean
     // versions to prevent drive-letter casing or segment casing bypasses.
     const lowerRoot = resolvedRoot.toLowerCase();
     const lowerPath = resolvedPath.toLowerCase();
+    const rootPrefix = lowerRoot.endsWith(path.sep)
+      ? lowerRoot
+      : lowerRoot + path.sep;
 
-    return (
-      lowerPath === lowerRoot ||
-      lowerPath.startsWith(lowerRoot + path.sep)
-    );
+    return lowerPath === lowerRoot || lowerPath.startsWith(rootPrefix);
   }
 
   // On POSIX systems path resolution is case-sensitive; use path.relative to
   // detect traversal, matching the approach in read.ts.
   const rel = path.relative(resolvedRoot, resolvedPath);
-  return !(rel.startsWith("..") || rel === "..");
+  return !(rel === ".." || rel.startsWith("../"));
 }
 
 export function resolveProjectPath(
@@ -30,9 +29,10 @@ export function resolveProjectPath(
     throw new Error("absolute paths are not allowed");
   }
 
+  const resolvedRoot = path.resolve(projectRoot);
   const fullPath = path.resolve(projectRoot, relativePath);
 
-  if (!isPathInsideProjectRoot(projectRoot, fullPath)) {
+  if (!isPathInsideProjectRoot(resolvedRoot, fullPath)) {
     throw new Error("path traversal detected");
   }
 
