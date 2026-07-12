@@ -5,6 +5,8 @@ import path from "node:path";
 import { listFilesTool } from "../../src/tools/builtin/list_files.js";
 import type { ToolContext } from "../../src/tools/types.js";
 
+type EntryType = "directory" | "symlink" | "file" | "other";
+
 function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
   return {
     agentId: "test-agent",
@@ -34,7 +36,7 @@ describe("listFilesTool", () => {
     const ctx = makeCtx(workspaceDir, projectRoot);
     const result = await listFilesTool.execute(ctx, { path: "." });
     expect(result.success).toBe(true);
-    const entries = (result.output as { entries: Array<{ name: string; type: "file" | "directory" }> }).entries;
+    const entries = (result.output as { entries: Array<{ name: string; type: EntryType }> }).entries;
     expect(entries).toEqual(
       expect.arrayContaining([
         { name: "README.md", type: "file" },
@@ -42,6 +44,66 @@ describe("listFilesTool", () => {
       ]),
     );
     expect(entries.length).toBe(2);
+  });
+
+  it("returns an empty list for an empty directory", async () => {
+    const emptyDir = path.join(projectRoot, "empty");
+    fs.mkdirSync(emptyDir);
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await listFilesTool.execute(ctx, { path: "empty" });
+    expect(result.success).toBe(true);
+    const entries = (result.output as { entries: Array<{ name: string; type: EntryType }> }).entries;
+    expect(entries).toEqual([]);
+  });
+
+  it("identifies symbolic links as symlink", async () => {
+    const linkPath = path.join(projectRoot, "readme-link");
+    try {
+      fs.symlinkSync(path.join(projectRoot, "README.md"), linkPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EPERM") {
+        // Creating symbolic links on Windows requires elevated privileges.
+        return;
+      }
+      throw err;
+    }
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await listFilesTool.execute(ctx, { path: "." });
+    expect(result.success).toBe(true);
+    const entries = (result.output as { entries: Array<{ name: string; type: EntryType }> }).entries;
+    expect(entries).toEqual(
+      expect.arrayContaining([{ name: "readme-link", type: "symlink" }]),
+    );
+  });
+
+  it("identifies non-regular file types as other on unix-like systems", async () => {
+    if (process.platform === "win32") {
+      // Windows does not support FIFO creation via mkfifo.
+      return;
+    }
+
+    const fifoPath = path.join(projectRoot, "fifo");
+    try {
+      // Use a short synchronous shell command to create a named pipe.
+      const { execSync } = await import("node:child_process");
+      execSync(`mkfifo "${fifoPath}"`);
+    } catch {
+      return;
+    }
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await listFilesTool.execute(ctx, { path: "." });
+    expect(result.success).toBe(true);
+    const entries = (result.output as { entries: Array<{ name: string; type: EntryType }> }).entries;
+    expect(entries).toEqual(expect.arrayContaining([{ name: "fifo", type: "other" }]));
+  });
+
+  it("returns an error for invalid parameters", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await listFilesTool.execute(ctx, { path: 123 });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Expected string, received number/);
   });
 
   it("rejects path traversal with ../", async () => {
