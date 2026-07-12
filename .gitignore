@@ -1,10 +1,5 @@
 # Dependencies
 node_modules/
-frontend/node_modules/
-frontend/dist/
-backend/venv/
-backend/env/
-runtime/python/
 
 # JS/TS monorepo build outputs
 dist/
@@ -15,16 +10,6 @@ target/
 **/src-tauri/gen/
 .turbo/
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
-
 # Database
 *.db
 *.db-journal
@@ -33,8 +18,6 @@ build/
 
 # Logs
 *.log
-backend/backend.log
-frontend/frontend.log
 
 # OS
 .DS_Store
@@ -46,20 +29,13 @@ Thumbs.db
 *.swp
 *.swo
 
-# Uploads (generated files)
-backend/uploads/
-
 # Tauri build
-frontend/src-tauri/target/
-frontend/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
 
 # Lock files (optional, keeping package-lock.json for reproducibility)
 # package-lock.json
 # pnpm-lock.yaml
 
-# Secrets / runtime config
-backend/engine/config.yaml
 nul
 
 # Tool discovery cache
