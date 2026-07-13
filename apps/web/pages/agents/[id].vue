@@ -195,7 +195,7 @@ function selectAgent(id: string) {
   position: absolute;
   top: 0;
   left: 0;
-  right: 180px;
+  right: 0;
   bottom: 56px;
   background: var(--mc-bg);
   color: var(--mc-text);
