@@ -51,7 +51,7 @@ const navItems: NavItem[] = [
   { label: "广播站", to: "", placeholder: true },
 ];
 
-const topLevelPaths = new Set(["/", "/actions", "/agents/new", "/commissions", "/hub"]);
+const topLevelPaths = new Set(["/"]);
 
 const showRightNav = computed(() => topLevelPaths.has(route.path));
 
