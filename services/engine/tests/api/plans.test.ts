@@ -109,6 +109,36 @@ describe("Plans API", () => {
     expect(noGoal.status).toBe(400);
   });
 
+  it("returns 400 (not 500) when body is missing entirely", async () => {
+    // 无 content-type 时 request.body 为 undefined，不能直接取属性
+    const res = await request(app.server).post("/agents/a1/plans");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("goal required");
+  });
+
+  it("returns 400 (not 500) for non-string goal", async () => {
+    const res = await request(app.server).post("/agents/a1/plans").send({ goal: 123 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("goal required");
+  });
+
+  it("returns 400 for oversized goal", async () => {
+    const res = await request(app.server)
+      .post("/agents/a1/plans")
+      .send({ goal: "x".repeat(10_001) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/too long/);
+  });
+
+  it("returns 400 (not 500) for non-string stepId on retry", async () => {
+    const created = await request(app.server).post("/agents/a1/plans").send({ goal: "goal" });
+    const res = await request(app.server)
+      .post(`/agents/a1/plans/${created.body.id}/retry`)
+      .send({ stepId: 123 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("stepId required");
+  });
+
   it("returns 404 for unknown agent", async () => {
     const res = await request(app.server).post("/agents/ghost/plans").send({ goal: "x" });
     expect(res.status).toBe(404);

@@ -4,6 +4,9 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
 import type { PlanManager } from "../../plan/manager.js";
 
+// 与 WS sanitizeInput 的文本上限保持一致
+const MAX_GOAL_LENGTH = 10_000;
+
 function isValidAgentId(id: unknown): id is string {
   return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
 }
@@ -45,9 +48,13 @@ export async function registerPlanRoutes(app: FastifyInstance, context: ApiConte
     const { agentId } = request.params as { agentId: string };
     const manager = await resolveManager(agentId, reply);
     if (!manager) return;
-    const body = request.body as { goal?: string };
-    if (!body.goal || !body.goal.trim()) {
+    // request.body 在无 body/无 content-type 时为 undefined，直接取属性会抛 TypeError
+    const body = (request.body ?? {}) as { goal?: unknown };
+    if (typeof body.goal !== "string" || !body.goal.trim()) {
       return reply.status(400).send({ error: "goal required" });
+    }
+    if (body.goal.length > MAX_GOAL_LENGTH) {
+      return reply.status(400).send({ error: `goal too long (max ${MAX_GOAL_LENGTH} characters)` });
     }
     return manager.createPlan(body.goal);
   });
@@ -124,8 +131,8 @@ export async function registerPlanRoutes(app: FastifyInstance, context: ApiConte
     const manager = await resolveManager(agentId, reply);
     if (!manager) return;
     if (!manager.get(planId)) return reply.status(404).send({ error: "Plan not found" });
-    const body = request.body as { stepId?: string };
-    if (!body.stepId) {
+    const body = (request.body ?? {}) as { stepId?: unknown };
+    if (typeof body.stepId !== "string" || !body.stepId) {
       return reply.status(400).send({ error: "stepId required" });
     }
     try {
