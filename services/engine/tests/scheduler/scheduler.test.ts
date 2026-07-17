@@ -25,14 +25,16 @@ describe("Scheduler", () => {
 
   afterEach(async () => {
     restoreDataDir(originalDataDir);
-    // Retry cleanup: Windows may briefly hold file handles after async I/O.
+    // Retry cleanup: Windows 上 fire-and-forget 的 runTask 可能仍在写文件，
+    // 瞬时文件锁会让 rm 抛 EPERM/EBUSY；目录非空则是 ENOTEMPTY。
     for (let i = 0; i < 5; i++) {
       try {
         await fs.rm(tmpDir, { recursive: true, force: true });
         break;
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOTEMPTY" && i < 4) {
-          await new Promise((r) => setTimeout(r, 50));
+        const code = (err as NodeJS.ErrnoException).code;
+        if ((code === "ENOTEMPTY" || code === "EPERM" || code === "EBUSY") && i < 4) {
+          await new Promise((r) => setTimeout(r, 100));
           continue;
         }
         throw err;
