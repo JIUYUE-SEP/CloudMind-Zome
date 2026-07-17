@@ -18,8 +18,9 @@ export interface ToolExecutionContext {
   workspaceDir: string;
   projectRoot?: string;
   tools: Map<string, Tool>;
-  requiresApproval: (toolName: string, args: unknown) => boolean | Promise<boolean>;
+  approve: (toolName: string, args: unknown, toolCallId?: string) => boolean | Promise<boolean>;
   emit: (event: LLMEvent) => void;
+  services?: ToolContext["services"];
 }
 
 export async function runToolCallBatch(
@@ -58,7 +59,7 @@ export async function runToolCallBatch(
   for (const batch of batches) {
     const batchResults = await Promise.all(
       batch.map(async (call) => {
-        const approved = await ctx.requiresApproval(call.tool.name, call.args);
+        const approved = await ctx.approve(call.tool.name, call.args, call.toolCallId);
         if (!approved) {
           const result = { toolCallId: call.toolCallId, output: { error: "Approval denied" } };
           ctx.emit({ type: "tool.result", ...result });
@@ -69,7 +70,8 @@ export async function runToolCallBatch(
           agentId: ctx.agentId,
           workspaceDir: ctx.workspaceDir,
           projectRoot: ctx.projectRoot,
-          requiresApproval: ctx.requiresApproval,
+          approve: ctx.approve,
+          services: ctx.services,
         };
         const output = await call.tool.execute(toolCtx, call.args);
         const result = { toolCallId: call.toolCallId, output };

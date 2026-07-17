@@ -4,12 +4,13 @@ import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 export const MAX_OUTPUT_SIZE = 1024 * 1024; // 1 MB
+export const MAX_TIMEOUT_SECONDS = 600;
 const SIGTERM_GRACE_MS = 5000;
 
 const parameters = z.object({
   command: z.string(),
   cwd: z.string().default("."),
-  timeout: z.number().or(z.nan()).default(60),
+  timeout: z.number().default(60),
 });
 
 function isBlockedCommand(command: string): boolean {
@@ -24,7 +25,7 @@ function isBlockedCommand(command: string): boolean {
 }
 
 function isValidTimeout(timeout: number): boolean {
-  return Number.isFinite(timeout) && timeout > 0 && Number.isInteger(timeout);
+  return Number.isFinite(timeout) && timeout > 0 && timeout <= MAX_TIMEOUT_SECONDS && Number.isInteger(timeout);
 }
 
 function truncateOutput(
@@ -48,9 +49,13 @@ function truncateOutput(
 
 export const runCommandTool: Tool = {
   name: "run_command",
-  description: "Execute a shell command under the project root",
+  // 注意：这是无沙箱的任意 shell 执行（shell:true），cwd 限制不是安全边界，
+  // 黑名单只是兜底，不能视为防护。仅应在 code 模式 / 用户知情场景下启用。
+  description:
+    "Execute an arbitrary shell command under the project root (UNSANDBOXED: the command can access the whole machine; cwd is not a security boundary)",
   parameters,
   accesses: [{ resource: "process", action: "execute" }],
+  requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const projectRoot = ctx.projectRoot;
     if (!projectRoot) {
@@ -67,7 +72,7 @@ export const runCommandTool: Tool = {
     const { command, cwd, timeout } = parsed;
 
     if (!isValidTimeout(timeout)) {
-      return { success: false, error: "timeout must be a positive integer (seconds)" };
+      return { success: false, error: `timeout must be a positive integer (seconds, max ${MAX_TIMEOUT_SECONDS})` };
     }
 
     let targetCwd: string;

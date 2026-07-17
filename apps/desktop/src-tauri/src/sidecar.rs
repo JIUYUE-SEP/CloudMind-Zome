@@ -75,12 +75,10 @@ async fn wait_for_backend(timeout: Duration) -> anyhow::Result<()> {
 
     let deadline = tokio::time::Instant::now() + timeout;
     while tokio::time::Instant::now() < deadline {
-        if client
-            .get("http://127.0.0.1:8848/health")
-            .send()
-            .await
-            .is_ok()
-        {
+        if matches!(
+            client.get("http://127.0.0.1:8848/health").send().await,
+            Ok(resp) if resp.status().is_success()
+        ) {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -93,6 +91,21 @@ pub async fn shutdown<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     info!("shutting down zome-sidecar");
     let state = app.state::<SidecarState>();
     if let Some(child) = state.sidecar_handle.lock().await.take() {
-        let _ = child.kill();
+        // 强杀 sidecar 不会运行 Rust 的 kill_on_drop，node engine 会变成孤儿进程占用 8848；
+        // Windows 上按进程树杀（/T），Unix 上先 SIGTERM 让 sidecar 级联关闭再兜底。
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &child.pid().to_string(), "/T", "/F"])
+                .output();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = std::process::Command::new("kill")
+                .arg(child.pid().to_string())
+                .output();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let _ = child.kill();
+        }
     }
 }

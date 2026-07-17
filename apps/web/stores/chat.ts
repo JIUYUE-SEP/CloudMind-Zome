@@ -2,6 +2,13 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
 import type { ChatMessageRecord } from "@/composables/useEngineClient";
+import {
+  createApprovalMessage,
+  findPendingApproval,
+  settleApproval,
+  expireApprovalByToolCallId,
+  type ApprovalInfo,
+} from "@/utils/approval";
 
 export interface DisplayMessage {
   id: string;
@@ -10,6 +17,7 @@ export interface DisplayMessage {
   thinking: string;
   toolCalls: { toolCallId: string; name: string; arguments: unknown }[];
   isStreaming: boolean;
+  approval?: ApprovalInfo;
 }
 
 function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
@@ -72,6 +80,13 @@ export const useChatStore = defineStore("chat", () => {
           last.toolCalls.push(toolCall);
         }
       },
+      onToolResult: (result) => {
+        // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
+        expireApprovalByToolCallId(messages.value, result.toolCallId);
+      },
+      onApprovalRequest: (request) => {
+        messages.value.push(createApprovalMessage(request));
+      },
       onStepEnd: () => {
         const last = messages.value[messages.value.length - 1];
         if (last && last.role === "assistant") {
@@ -111,6 +126,16 @@ export const useChatStore = defineStore("chat", () => {
     connection.send(text);
   }
 
+  // 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问
+  function respondApproval(approvalId: string, approved: boolean, remember: boolean) {
+    if (!connection) return;
+    if (!findPendingApproval(messages.value, approvalId)) return;
+    const sent = connection.sendRaw({ type: "tool.approval", approvalId, approved, remember });
+    if (sent) {
+      settleApproval(messages.value, approvalId, approved ? "approved" : "denied");
+    }
+  }
+
   function disconnect() {
     connection?.close();
     connection = null;
@@ -118,5 +143,5 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming.value = false;
   }
 
-  return { sessionId, messages, isConnected, isStreaming, loadMessages, connect, send, disconnect };
+  return { sessionId, messages, isConnected, isStreaming, loadMessages, connect, send, respondApproval, disconnect };
 });

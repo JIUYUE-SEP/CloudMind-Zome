@@ -30,6 +30,7 @@ export const editFileTool: Tool = {
   description: "Replace a unique occurrence of oldString with newString in a project file",
   parameters,
   accesses: [{ resource: "file", action: "write" }],
+  requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const projectRoot = ctx.projectRoot;
     if (!projectRoot) {

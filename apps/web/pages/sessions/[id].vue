@@ -7,6 +7,7 @@
       :is-connected="isConnected"
       :is-streaming="isStreaming"
       @send="onSend"
+      @approval-respond="onApprovalRespond"
     />
   </div>
 </template>
@@ -19,6 +20,13 @@ import { useAgentsStore } from "@/stores/agents";
 import { useEngineClient, type ChatMessageRecord } from "@/composables/useEngineClient";
 import type { Session } from "@/composables/useEngineClient";
 import type { DisplayMessage } from "@/components/GroupChatView.vue";
+import {
+  createApprovalMessage,
+  findPendingApproval,
+  settleApproval,
+  expireApprovalByToolCallId,
+  type ApprovalResponsePayload,
+} from "@/utils/approval";
 
 const route = useRoute();
 const sessions = useSessionsStore();
@@ -84,6 +92,13 @@ function connect() {
         last.toolCalls.push(toolCall);
       }
     },
+    onToolResult: (result) => {
+      // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
+      expireApprovalByToolCallId(messages.value, result.toolCallId);
+    },
+    onApprovalRequest: (request) => {
+      messages.value.push(createApprovalMessage(request));
+    },
     onStepEnd: () => {
       const last = messages.value[messages.value.length - 1];
       if (last && last.role === "assistant") {
@@ -121,6 +136,21 @@ function onSend(text: string) {
   });
   isStreaming.value = true;
   connection.send(text);
+}
+
+// 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问
+function onApprovalRespond(payload: ApprovalResponsePayload) {
+  if (!connection) return;
+  if (!findPendingApproval(messages.value, payload.approvalId)) return;
+  const sent = connection.sendRaw({
+    type: "tool.approval",
+    approvalId: payload.approvalId,
+    approved: payload.approved,
+    remember: payload.remember,
+  });
+  if (sent) {
+    settleApproval(messages.value, payload.approvalId, payload.approved ? "approved" : "denied");
+  }
 }
 
 function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {

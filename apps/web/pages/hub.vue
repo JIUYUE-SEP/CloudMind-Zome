@@ -80,6 +80,7 @@
             :is-connected="groupIsConnected"
             :is-streaming="groupIsStreaming"
             @send="onGroupSend"
+            @approval-respond="onGroupApprovalRespond"
           />
           <CodeWorkspace
             v-if="sessionMode === 'code'"
@@ -107,6 +108,13 @@ import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type ChatMessageRecord, type Session } from "@/composables/useEngineClient";
+import {
+  createApprovalMessage,
+  findPendingApproval,
+  settleApproval,
+  expireApprovalByToolCallId,
+  type ApprovalResponsePayload,
+} from "@/utils/approval";
 import BackButton from "@/components/BackButton.vue";
 import ChatView from "@/components/ChatView.vue";
 import GroupChatView from "@/components/GroupChatView.vue";
@@ -214,6 +222,13 @@ function connectGroup(sessionId: string) {
         last.toolCalls.push(toolCall);
       }
     },
+    onToolResult: (result) => {
+      // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
+      expireApprovalByToolCallId(groupMessages.value, result.toolCallId);
+    },
+    onApprovalRequest: (request) => {
+      groupMessages.value.push(createApprovalMessage(request));
+    },
     onStepEnd: () => {
       const last = groupMessages.value[groupMessages.value.length - 1];
       if (last && last.role === "assistant") {
@@ -288,6 +303,21 @@ function onGroupSend(text: string) {
     isStreaming: false,
   });
   groupIsStreaming.value = true;
+}
+
+// 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问
+function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
+  if (!groupConnection) return;
+  if (!findPendingApproval(groupMessages.value, payload.approvalId)) return;
+  const sent = groupConnection.sendRaw({
+    type: "tool.approval",
+    approvalId: payload.approvalId,
+    approved: payload.approved,
+    remember: payload.remember,
+  });
+  if (sent) {
+    settleApproval(groupMessages.value, payload.approvalId, payload.approved ? "approved" : "denied");
+  }
 }
 
 function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {

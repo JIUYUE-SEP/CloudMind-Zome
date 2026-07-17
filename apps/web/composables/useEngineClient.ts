@@ -114,6 +114,14 @@ export interface WebSocketHandlers {
   onThinkingDelta?: (delta: string) => void;
   onToolCall?: (toolCall: { toolCallId: string; name: string; arguments: unknown }) => void;
   onToolResult?: (result: { toolCallId: string; output: unknown }) => void;
+  // 危险工具审批请求（群聊帧会额外携带 agentId）
+  onApprovalRequest?: (request: {
+    approvalId: string;
+    toolCallId: string;
+    toolName: string;
+    arguments: unknown;
+    agentId?: string;
+  }) => void;
   onStepEnd?: (finishReason?: string) => void;
   onError?: (error: string) => void;
   onClose?: () => void;
@@ -380,6 +388,9 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "tool.result":
             handlers.onToolResult?.(data);
             break;
+          case "tool.approval_request":
+            handlers.onApprovalRequest?.(data);
+            break;
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);
             break;
@@ -499,6 +510,9 @@ export function useEngineClient(options?: EngineClientOptions) {
             break;
           case "tool.result":
             handlers.onToolResult?.(data);
+            break;
+          case "tool.approval_request":
+            handlers.onApprovalRequest?.(data);
             break;
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);

@@ -44,7 +44,7 @@ function makeConfig(
   tools: Tool[];
   workspaceDir: string;
   messageRepository: IMessageRepository;
-  requiresApproval: () => Promise<true>;
+  approve: () => Promise<true>;
 } {
   return {
     agentId: "agent-1",
@@ -57,7 +57,7 @@ function makeConfig(
       listBySession: async () => [],
       ...messageRepository,
     } as IMessageRepository,
-    requiresApproval: async () => true,
+    approve: async () => true,
   };
 }
 
@@ -246,5 +246,202 @@ describe("AgentWorker", () => {
     const appendCalls = (append.mock.calls as unknown as [ChatMessage][]).map((c) => c[0]);
     expect(appendCalls.some((m) => m.role === "system")).toBe(false);
     expect(appendCalls.some((m) => m.role === "assistant")).toBe(true);
+  });
+
+  it("persists tool-call turns in chronological order", async () => {
+    class ToolThenStopProvider implements LLMProvider {
+      name = "tool-then-stop";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls === 1) {
+          yield { type: "tool.call", toolCallId: "tc_1", name: "dummy", arguments: { value: "x" } };
+        } else {
+          yield { type: "text.delta", delta: "done" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    const appended: (ChatMessage & { sessionId?: string })[] = [];
+    const worker = new AgentWorker(
+      makeConfig(new ToolThenStopProvider(), {
+        append: async (msg) => {
+          appended.push(msg);
+        },
+        listBySession: async () => [],
+      })
+    );
+
+    worker.enqueue({
+      id: "j-tools",
+      messages: [userMessage("use tool")],
+      sessionId: "sess-1",
+      onEvent: () => {},
+    });
+
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 中间步骤带 toolCalls 的 assistant 必须先于其 tool 结果消息持久化，
+    // 否则下一轮加载历史后 OpenAI 会因孤儿 tool 消息拒绝请求。
+    expect(appended.map((m) => m.role)).toEqual(["assistant", "tool", "assistant"]);
+    expect(appended[0].toolCalls?.[0]?.toolCallId).toBe("tc_1");
+    expect(appended[1].toolCallId).toBe("tc_1");
+    expect(appended.every((m) => m.sessionId === "sess-1")).toBe(true);
+  });
+
+  it("injects skill prompts into the system message", async () => {
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      skillPrompts: ["# Core Skill\nDo core things."],
+    });
+
+    worker.enqueue({
+      id: "j-skill",
+      messages: [userMessage("hi")],
+      onEvent: () => {},
+    });
+
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const messages = provider.capturedParams?.messages;
+    expect(messages?.[0].role).toBe("system");
+    expect(messages?.[0].content).toEqual([
+      { type: "text", text: "# Skills\n\n# Core Skill\nDo core things." },
+    ]);
+  });
+
+  it("calls onDone without error after a successful job", async () => {
+    const worker = new AgentWorker(makeConfig());
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-done",
+      messages: [userMessage("hi")],
+      onEvent: () => {},
+      onDone,
+    });
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(onDone).toHaveBeenCalledWith(undefined);
+  });
+
+  it("calls onDone with the caught error when the job fails", async () => {
+    class FailingProvider implements LLMProvider {
+      name = "failing";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        throw new Error("provider exploded");
+        yield { type: "step.end" };
+      }
+    }
+
+    const worker = new AgentWorker(makeConfig(new FailingProvider()));
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-fail",
+      messages: [userMessage("hi")],
+      onEvent: () => {},
+      onDone,
+    });
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(String(onDone.mock.calls[0][0])).toContain("provider exploded");
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  describe("dangerous tool approval", () => {
+    class DangerCallProvider implements LLMProvider {
+      name = "danger";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls === 1) {
+          yield { type: "tool.call", toolCallId: "tc_d", name: "danger_tool", arguments: { x: 1 } };
+        } else {
+          yield { type: "text.delta", delta: "done" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    function makeDangerTool(executed: { flag: boolean }): Tool {
+      return {
+        name: "danger_tool",
+        description: "dangerous",
+        parameters: z.object({ x: z.number() }),
+        accesses: [],
+        requiresApproval: true,
+        execute: async () => {
+          executed.flag = true;
+          return { success: true, output: "ran" };
+        },
+      };
+    }
+
+    it("denies dangerous tools when the job has no approval channel", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)]),
+      );
+      const events: LLMEvent[] = [];
+
+      worker.enqueue({ id: "j1", messages: [userMessage("go")], onEvent: (e) => events.push(e) });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(executed.flag).toBe(false);
+      const result = events.find((e) => e.type === "tool.result");
+      expect(JSON.stringify((result as { output: unknown }).output)).toContain("Approval denied");
+    });
+
+    it("executes dangerous tools approved via onApprovalRequest", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)]),
+      );
+      const requests: unknown[] = [];
+
+      worker.enqueue({
+        id: "j2",
+        messages: [userMessage("go")],
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(executed.flag).toBe(true);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ toolCallId: "tc_d", toolName: "danger_tool" });
+    });
+
+    it("denies dangerous tools when onApprovalRequest returns false", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)]),
+      );
+
+      worker.enqueue({
+        id: "j3",
+        messages: [userMessage("go")],
+        onEvent: () => {},
+        onApprovalRequest: async () => false,
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(executed.flag).toBe(false);
+    });
   });
 });

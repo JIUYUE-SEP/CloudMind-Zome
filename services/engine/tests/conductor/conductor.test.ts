@@ -32,4 +32,22 @@ describe("routeMessage", () => {
     const result = routeMessage("@Bob help", session, agents);
     expect(result.targetAgentIds).toEqual(["a2"]);
   });
+
+  it("routes @all to every agent in the session", () => {
+    const result = routeMessage("@all 开会", session, agents);
+    expect(result.targetAgentIds).toEqual(["a1", "a2"]);
+    expect(result.mentionAll).toBe(true);
+  });
+
+  it("routes @所有人 to every agent in the session", () => {
+    const result = routeMessage("@所有人 开会", session, agents);
+    expect(result.targetAgentIds).toEqual(["a1", "a2"]);
+    expect(result.mentionAll).toBe(true);
+  });
+
+  it("returns empty targets for unresolvable mentions (handler must surface an error)", () => {
+    const result = routeMessage("@nobody help", session, agents);
+    expect(result.targetAgentIds).toEqual([]);
+    expect(result.mentionAll).toBe(false);
+  });
 });

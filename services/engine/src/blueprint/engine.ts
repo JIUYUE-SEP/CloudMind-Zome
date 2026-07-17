@@ -6,6 +6,7 @@ import { getBuiltinTools } from "../tools/builtin/index.js";
 import { getDataDir } from "../config/paths.js";
 import type { Blueprint, BlueprintExecution, BlueprintNode } from "./types.js";
 import type { LLMEvent } from "../provider/types.js";
+import type { ToolServices } from "../tools/types.js";
 
 export interface ExecuteOptions {
   initialInput?: string;
@@ -136,7 +137,9 @@ async function executeToolNode(
 ): Promise<unknown> {
   const toolName = String(node.config?.toolName || "");
   const args = (node.config?.arguments as Record<string, unknown>) || {};
-  const result = await executeTool(toolName, args, execution.id);
+  const result = await executeTool(toolName, args, execution.id, {
+    subagentDispatcher: context.subagentDispatcher,
+  });
   execution.logs.push(`executed tool node ${node.id}`);
   return result;
 }
@@ -151,6 +154,7 @@ async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   executionId: string,
+  services?: ToolServices,
 ): Promise<unknown> {
   const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
   await fs.mkdir(workspaceDir, { recursive: true });
@@ -161,7 +165,8 @@ async function executeTool(
     const toolCtx = {
       agentId: "blueprint",
       workspaceDir,
-      requiresApproval: () => false,
+      approve: () => true,
+      services,
     };
     const result = await tool.execute(toolCtx, args);
     return result.success ? result.output : `tool error: ${result.error || "unknown"}`;

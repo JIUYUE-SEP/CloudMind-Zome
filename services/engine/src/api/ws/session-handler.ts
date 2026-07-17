@@ -7,9 +7,11 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
 import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, isValidChatMode, isValidProjectId, sanitizeInput } from "./validation.js";
+import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, sanitizeInput } from "./validation.js";
+import type { ApprovalRequest } from "../../core/agent-worker.js";
 
 const MAX_PENDING_MESSAGES = 100;
+const APPROVAL_TIMEOUT_MS = 60_000;
 
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
@@ -27,6 +29,11 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
     async (socket: WebSocket, req: FastifyRequest) => {
       const { sessionId } = req.params as { sessionId: string };
 
+      if (!isAllowedWsOrigin(req.headers.origin)) {
+        socket.close(4403, "Forbidden origin");
+        return;
+      }
+
       if (!isValidId(sessionId)) {
         socket.close(4004, "Invalid session id");
         return;
@@ -35,6 +42,41 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       const pendingMessages: unknown[] = [];
       let session: Awaited<ReturnType<typeof context.sessionRepository.get>> = undefined;
       let ready = false;
+
+      // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
+      const pendingApprovals = new Map<
+        string,
+        { toolName: string; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }
+      >();
+      const autoApprovedTools = new Set<string>();
+
+      function requestApproval(agentId: string, req: ApprovalRequest): Promise<boolean> {
+        const rememberKey = `${agentId}:${req.toolName}`;
+        if (autoApprovedTools.has(rememberKey)) return Promise.resolve(true);
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            pendingApprovals.delete(req.id);
+            resolve(false); // 超时视为拒绝
+          }, APPROVAL_TIMEOUT_MS);
+          pendingApprovals.set(req.id, { toolName: rememberKey, resolve, timer });
+          safeSend(socket, {
+            agentId,
+            type: "tool.approval_request",
+            approvalId: req.id,
+            toolCallId: req.toolCallId,
+            toolName: req.toolName,
+            arguments: req.arguments,
+          });
+        });
+      }
+
+      socket.on("close", () => {
+        for (const [id, pending] of pendingApprovals) {
+          clearTimeout(pending.timer);
+          pending.resolve(false);
+          pendingApprovals.delete(id);
+        }
+      });
 
       socket.on("message", (raw: unknown) => {
         if (!ready) {
@@ -64,6 +106,18 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
         try {
           if (!session) return;
           const data = JSON.parse(String(raw));
+
+          // 审批响应
+          if (data.type === "tool.approval") {
+            const pending = pendingApprovals.get(data.approvalId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              pendingApprovals.delete(data.approvalId);
+              if (data.approved && data.remember) autoApprovedTools.add(pending.toolName);
+              pending.resolve(data.approved === true);
+            }
+            return;
+          }
 
           if (data.type === "session.set_mode") {
             const mode = data.mode as unknown;
@@ -121,6 +175,16 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           const validAgents = agents.filter((a): a is NonNullable<typeof a> => !!a);
           const routing = routeMessage(input.text, session, validAgents);
 
+          // 空目标（如 @了不存在的成员、会话内 Agent 均已删除）时明确告知，
+          // 而不是让消息静默消失
+          if (routing.targetAgentIds.length === 0) {
+            safeSend(socket, {
+              type: "error",
+              error: "没有可回复的 Agent：@提及未匹配到会话成员，或会话成员已失效",
+            });
+            return;
+          }
+
           // Notify each target agent
           for (const agentId of routing.targetAgentIds) {
             const worker = await context.getAgentWorker(agentId);
@@ -143,6 +207,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
               onEvent: (event) => {
                 safeSend(socket, { agentId, ...event });
               },
+              onApprovalRequest: (req) => requestApproval(agentId, req),
             });
           }
         } catch (err) {

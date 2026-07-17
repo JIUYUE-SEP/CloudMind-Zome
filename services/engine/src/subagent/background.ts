@@ -7,7 +7,7 @@ export interface BackgroundSubagent {
   startTime: number;
   timeoutMs: number;
   status: "running" | "completed" | "failed";
-  messages: ChatMessage[];
+  output: string;
   error?: string;
 }
 
@@ -15,7 +15,7 @@ export class BackgroundManager {
   private tasks = new Map<string, BackgroundSubagent>();
   private listeners: Array<(task: BackgroundSubagent) => void> = [];
 
-  constructor(private deps: { runAgent(agentId: string, messages: ChatMessage[]): AsyncIterable<unknown> }) {}
+  constructor(private deps: { runAgent(agentId: string, messages: ChatMessage[]): Promise<string> }) {}
 
   register(task: SubagentTask, config: AgentConfig, timeoutMs: number): void {
     const bg: BackgroundSubagent = {
@@ -24,28 +24,27 @@ export class BackgroundManager {
       startTime: Date.now(),
       timeoutMs,
       status: "running",
-      messages: [],
+      output: "",
     };
     this.tasks.set(task.id, bg);
-    this.run(bg);
+    void this.run(bg);
   }
 
   private async run(bg: BackgroundSubagent): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const startTime = Date.now();
-      for await (const event of this.deps.runAgent(bg.config.id, bg.task.messages)) {
-        bg.messages.push(event as ChatMessage);
-        if (Date.now() - startTime > bg.timeoutMs) {
-          bg.error = "timeout";
-          bg.status = "failed";
-          this.notify(bg);
-          return;
-        }
-      }
+      bg.output = await Promise.race([
+        this.deps.runAgent(bg.config.id, bg.task.messages),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("timeout")), bg.timeoutMs);
+        }),
+      ]);
       bg.status = "completed";
     } catch (err) {
       bg.error = String(err);
       bg.status = "failed";
+    } finally {
+      if (timer) clearTimeout(timer);
     }
     this.notify(bg);
   }

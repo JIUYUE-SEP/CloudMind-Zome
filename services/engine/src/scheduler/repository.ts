@@ -29,16 +29,15 @@ export class SchedulerRepository {
   }
 
   async update(task: ScheduledTask): Promise<void> {
-    const tasks = await this.list();
-    const index = tasks.findIndex((t) => t.id === task.id);
-    if (index === -1) throw new Error(`task not found: ${task.id}`);
-    tasks[index] = { ...task, updatedAt: new Date().toISOString() };
-    await this.store.writeLines(tasks);
+    await this.store.mutateLines((tasks) => {
+      const index = tasks.findIndex((t) => t.id === task.id);
+      if (index === -1) throw new Error(`task not found: ${task.id}`);
+      tasks[index] = { ...task, updatedAt: new Date().toISOString() };
+      return tasks;
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const tasks = await this.list();
-    const filtered = tasks.filter((t) => t.id !== id);
-    await this.store.writeLines(filtered);
+    await this.store.mutateLines((tasks) => tasks.filter((t) => t.id !== id));
   }
 }

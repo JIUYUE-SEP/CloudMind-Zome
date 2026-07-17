@@ -54,6 +54,11 @@ const DEFAULT_CONFIG: GlobalConfig = {
   },
 };
 
+// DEFAULT_CONFIG 是共享对象，必须返回深拷贝，避免调用方 push/mutate 污染全局默认值
+function createDefaultConfig(): GlobalConfig {
+  return structuredClone(DEFAULT_CONFIG);
+}
+
 async function decryptValue(value: string | undefined): Promise<string | undefined> {
   if (!value) return undefined;
   if (!value.startsWith("enc:")) return value;
@@ -75,10 +80,11 @@ export class ConfigRepository {
     try {
       const text = await fs.readFile(this.filePath, "utf-8");
       const parsed = JSON.parse(text) as Partial<GlobalConfig>;
+      const defaults = createDefaultConfig();
       const config: GlobalConfig = {
-        ...DEFAULT_CONFIG,
+        ...defaults,
         ...parsed,
-        settings: { ...DEFAULT_CONFIG.settings, ...parsed.settings },
+        settings: { ...defaults.settings, ...parsed.settings },
       };
 
       for (const provider of config.providers) {
@@ -90,7 +96,7 @@ export class ConfigRepository {
 
       return config;
     } catch {
-      return DEFAULT_CONFIG;
+      return createDefaultConfig();
     }
   }
 

@@ -114,6 +114,25 @@ export class OpenAIProvider implements LLMProvider {
   }
 }
 
+/**
+ * Provider 配置缺失时的占位实现。
+ * 不用 Mock 伪装回复，而是明确告知用户配置问题，避免"假回复"写入历史。
+ */
+export class ErrorLLMProvider implements LLMProvider {
+  name = "error";
+
+  constructor(private message: string) {}
+
+  supportsModel() {
+    return true;
+  }
+
+  async *chat(): AsyncIterable<LLMEvent> {
+    yield { type: "text.delta", delta: this.message };
+    yield { type: "step.end" };
+  }
+}
+
 export class MockLLMProvider implements LLMProvider {
   name = "mock";
   private nextToolCalls: Array<{ toolCallId: string; name: string; arguments: unknown }> = [];

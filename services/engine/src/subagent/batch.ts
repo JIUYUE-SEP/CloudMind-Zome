@@ -28,7 +28,7 @@ export class SubagentBatch {
           } catch (err) {
             lastError = err;
             if (attempt === retry) {
-              results[item.index] = { taskId: `batch_${item.index}`, messages: [], error: String(lastError) };
+              results[item.index] = { taskId: `batch_${item.index}`, output: "", error: String(lastError) };
             }
           }
         }

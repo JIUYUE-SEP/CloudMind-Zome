@@ -1,0 +1,137 @@
+import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
+import type { ChatMessage } from "@mindcloud/shared";
+import type { ApiContext } from "../context.js";
+import type { PlanManager } from "../../plan/manager.js";
+
+function isValidAgentId(id: unknown): id is string {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
+function userMessage(text: string): ChatMessage {
+  return {
+    id: randomUUID(),
+    role: "user",
+    content: [{ type: "text", text }],
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function registerPlanRoutes(app: FastifyInstance, context: ApiContext) {
+  /** 校验 agentId 并解析 PlanManager；失败时已写响应，返回 undefined */
+  async function resolveManager(
+    agentId: string,
+    reply: { status(code: number): { send(body: unknown): unknown } }
+  ): Promise<PlanManager | undefined> {
+    if (!isValidAgentId(agentId)) {
+      await reply.status(400).send({ error: "Invalid agent id" });
+      return undefined;
+    }
+    if (!context.getPlanManager) {
+      await reply.status(503).send({ error: "Plan manager not available" });
+      return undefined;
+    }
+    const manager = await context.getPlanManager(agentId);
+    if (!manager) {
+      await reply.status(404).send({ error: "Agent not found" });
+      return undefined;
+    }
+    return manager;
+  }
+
+  app.post("/agents/:agentId/plans", {
+    schema: { summary: "Create a plan from a goal", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    const body = request.body as { goal?: string };
+    if (!body.goal || !body.goal.trim()) {
+      return reply.status(400).send({ error: "goal required" });
+    }
+    return manager.createPlan(body.goal);
+  });
+
+  app.get("/agents/:agentId/plans", {
+    schema: { summary: "List plans of an agent", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    return manager.list();
+  });
+
+  app.get("/agents/:agentId/plans/:planId", {
+    schema: { summary: "Get a plan by id", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId, planId } = request.params as { agentId: string; planId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    const plan = manager.get(planId);
+    if (!plan) return reply.status(404).send({ error: "Plan not found" });
+    return plan;
+  });
+
+  app.post("/agents/:agentId/plans/:planId/run", {
+    schema: { summary: "Run all pending steps of a plan sequentially", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId, planId } = request.params as { agentId: string; planId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    if (!context.runAgentCollect) {
+      return reply.status(503).send({ error: "Agent runner not available" });
+    }
+    const plan = manager.get(planId);
+    if (!plan) return reply.status(404).send({ error: "Plan not found" });
+
+    const runAgent = context.runAgentCollect;
+    // 顺序执行所有 pending 步骤；遇 failed 或 paused 停止后续步骤
+    for (const step of plan.steps) {
+      if (step.status !== "pending") continue;
+      if (manager.get(planId)?.status === "paused") break;
+      const updated = await manager.executeStep(planId, step.id, async (s) =>
+        runAgent(agentId, [userMessage(s.description)])
+      );
+      if (updated.status === "failed") break;
+    }
+    return manager.get(planId);
+  });
+
+  app.post("/agents/:agentId/plans/:planId/pause", {
+    schema: { summary: "Pause a plan", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId, planId } = request.params as { agentId: string; planId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    if (!manager.get(planId)) return reply.status(404).send({ error: "Plan not found" });
+    return manager.pause(planId);
+  });
+
+  app.post("/agents/:agentId/plans/:planId/resume", {
+    schema: { summary: "Resume a paused plan", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId, planId } = request.params as { agentId: string; planId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    if (!manager.get(planId)) return reply.status(404).send({ error: "Plan not found" });
+    return manager.resume(planId);
+  });
+
+  app.post("/agents/:agentId/plans/:planId/retry", {
+    schema: { summary: "Reset a failed step to pending", tags: ["plans"] },
+  }, async (request, reply) => {
+    const { agentId, planId } = request.params as { agentId: string; planId: string };
+    const manager = await resolveManager(agentId, reply);
+    if (!manager) return;
+    if (!manager.get(planId)) return reply.status(404).send({ error: "Plan not found" });
+    const body = request.body as { stepId?: string };
+    if (!body.stepId) {
+      return reply.status(400).send({ error: "stepId required" });
+    }
+    try {
+      return manager.retry(planId, body.stepId);
+    } catch {
+      return reply.status(404).send({ error: "Step not found" });
+    }
+  });
+}

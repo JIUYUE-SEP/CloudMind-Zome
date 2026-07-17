@@ -9,7 +9,8 @@ export interface SubagentTask {
 
 export interface SubagentResult {
   taskId: string;
-  messages: ChatMessage[];
+  /** 子 agent 的最终文本输出 */
+  output: string;
   error?: string;
 }
 

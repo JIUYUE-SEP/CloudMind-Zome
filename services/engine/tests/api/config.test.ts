@@ -83,11 +83,19 @@ describe("Config API", () => {
     });
     expect(updateRes.status).toBe(200);
     expect(updateRes.body.memory.keepRecent).toBe(5);
-    expect(updateRes.body.tavilyApiKey).toBe("tvly-test");
+    expect(updateRes.body.tavilyApiKey).toBe("***");
 
     const getRes = await request(app.server).get("/config");
     expect(getRes.body.memory.keepRecent).toBe(5);
-    expect(getRes.body.tavilyApiKey).toBe("tvly-test");
+    expect(getRes.body.tavilyApiKey).toBe("***");
+
+    // 落盘的值经过加密且可解回原文
+    const raw = JSON.parse(
+      await fs.readFile(path.join(process.env.CLOUDMIND_DATA_DIR!, "config.json"), "utf-8"),
+    );
+    expect(raw.settings.tavilyApiKey).toMatch(/^enc:/);
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.tavilyApiKey).toBe("tvly-test");
     await app.close();
   });
 });

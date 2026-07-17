@@ -113,6 +113,9 @@ const sourceAgent = computed(() =>
 );
 
 const agentForm = ref<AgentConfig>(buildEmptyAgent());
+// 用户开始编辑后置脏，列表刷新（agents.load）不再覆盖未保存的输入；
+// 切换心智时复位。
+let formDirty = false;
 
 function buildEmptyAgent(): AgentConfig {
   return {
@@ -125,6 +128,7 @@ function buildEmptyAgent(): AgentConfig {
 }
 
 function syncAgent() {
+  if (formDirty) return;
   const src = sourceAgent.value;
   if (src) {
     agentForm.value = {
@@ -143,6 +147,10 @@ onMounted(() => {
   agents.load();
 });
 
+watch(selectedId, () => {
+  formDirty = false;
+});
+
 watch(
   () => selectedId.value + agents.list.map((a) => a.id).join(","),
   syncAgent,
@@ -150,6 +158,7 @@ watch(
 );
 
 function onUpdate(patch: Partial<AgentConfig>) {
+  formDirty = true;
   agentForm.value = { ...agentForm.value, ...patch };
 }
 

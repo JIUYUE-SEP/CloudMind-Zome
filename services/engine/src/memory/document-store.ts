@@ -2,9 +2,25 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
+// 写队列挂在模块级、按文件路径串行：
+// DocumentStore 实例由调用方随手 new，实例级队列起不到跨调用串行化的作用，
+// 必须按文件维度串行才能保证 append/writeLines 的顺序与 tmp 文件不互相踩踏。
+const writeQueues = new Map<string, Promise<void>>();
+
 export class DocumentStore<T extends object> {
   constructor(public filePath: string) {}
-  private writeQueue: Promise<unknown> = Promise.resolve();
+
+  private enqueueWrite(op: () => Promise<void>): Promise<void> {
+    const prev = writeQueues.get(this.filePath) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    writeQueues.set(this.filePath, next);
+    // 队列尾部 settle 后清理，避免 Map 随文件数无限增长
+    const cleanup = () => {
+      if (writeQueues.get(this.filePath) === next) writeQueues.delete(this.filePath);
+    };
+    next.then(cleanup, cleanup);
+    return next;
+  }
 
   async readJson(): Promise<T | undefined> {
     try {
@@ -20,34 +36,50 @@ export class DocumentStore<T extends object> {
     }
   }
 
+  private async writeJsonInner(data: T): Promise<void> {
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    const tmpPath = `${this.filePath}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
+    await fs.rename(tmpPath, this.filePath);
+  }
+
   async writeJson(data: T): Promise<void> {
-    this.writeQueue = this.writeQueue.then(async () => {
-      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-      const tmpPath = `${this.filePath}.tmp`;
-      await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
-      await fs.rename(tmpPath, this.filePath);
-    });
-    await this.writeQueue;
+    await this.enqueueWrite(() => this.writeJsonInner(data));
+  }
+
+  private async appendLineInner(record: T): Promise<void> {
+    const line = JSON.stringify(record) + "\n";
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await fs.appendFile(this.filePath, line, "utf-8");
   }
 
   async appendLine(record: T): Promise<void> {
-    const line = JSON.stringify(record) + "\n";
-    this.writeQueue = this.writeQueue.then(async () => {
-      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-      await fs.appendFile(this.filePath, line, "utf-8");
-    });
-    await this.writeQueue;
+    await this.enqueueWrite(() => this.appendLineInner(record));
+  }
+
+  private async writeLinesInner(records: T[]): Promise<void> {
+    const content = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    const tmpPath = `${this.filePath}.tmp`;
+    await fs.writeFile(tmpPath, content);
+    await fs.rename(tmpPath, this.filePath);
   }
 
   async writeLines(records: T[]): Promise<void> {
-    const content = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
-    this.writeQueue = this.writeQueue.then(async () => {
-      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-      const tmpPath = `${this.filePath}.tmp`;
-      await fs.writeFile(tmpPath, content);
-      await fs.rename(tmpPath, this.filePath);
+    await this.enqueueWrite(() => this.writeLinesInner(records));
+  }
+
+  /**
+   * 原子的"读-改-写"：读取与写回在同一个队列槽内完成，
+   * 避免并发 update/delete 之间丢更新（如定时任务删除后被执行器写回复活）。
+   * mutator 抛异常时不写入。
+   */
+  async mutateLines(mutator: (records: T[]) => T[] | Promise<T[]>): Promise<void> {
+    await this.enqueueWrite(async () => {
+      const records = await this.readLines();
+      const next = await mutator(records);
+      await this.writeLinesInner(next);
     });
-    await this.writeQueue;
   }
 
   async readLines(options?: { limit?: number; offset?: number }): Promise<T[]> {

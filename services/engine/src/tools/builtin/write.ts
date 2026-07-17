@@ -47,6 +47,10 @@ function resolveWritePath(
   filePath: string,
 ): { fullPath: string; relativePath: string } {
   if (ctx.projectRoot) {
+    const basename = path.basename(path.normalize(filePath)).toLowerCase();
+    if (PROTECTED_FILES.has(basename)) {
+      throw new Error(`cannot write protected file: ${filePath}`);
+    }
     return {
       fullPath: resolveProjectPath(ctx.projectRoot, filePath),
       relativePath: path.normalize(filePath),
@@ -63,6 +67,7 @@ export const writeTool: Tool = {
     content: z.string(),
   }),
   accesses: [{ resource: "file", action: "write" }],
+  requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath, content } = args as { path: string; content: string };
     try {

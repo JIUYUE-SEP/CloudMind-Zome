@@ -12,7 +12,7 @@ function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
     agentId: "test-agent",
     workspaceDir,
     projectRoot,
-    requiresApproval: async () => true,
+    approve: async () => true,
   };
 }
 
@@ -124,13 +124,19 @@ describe("writeTool", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("path traversal detected");
   });
+
+  it("rejects protected files in code mode too", async () => {
+    const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "config.json", content: "x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("cannot write protected file");
+  });
 });
 
 describe("bashTool", () => {
   const ctx: ToolContext = {
     agentId: "test-agent",
     workspaceDir: os.tmpdir(),
-    requiresApproval: async () => true,
+    approve: async () => true,
   };
 
   it("rejects complex shell constructs", async () => {
@@ -163,9 +169,11 @@ describe("bashTool", () => {
     expect(result.error).toContain("not in allowlist");
   });
 
-  it("allows relative executable paths starting with ./", async () => {
+  it("rejects relative executable paths starting with ./", async () => {
+    // ./ 通道曾是逃逸口：write_file 写脚本 + bash ./ 执行即可绕过白名单
     const result = await bashTool.execute(ctx, { command: "./scripts/build.sh" });
-    expect(result.error).not.toContain("Command rejected");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command rejected");
   });
 
   it("rejects relative script path traversal ./../evil.sh", async () => {
@@ -186,14 +194,16 @@ describe("bashTool", () => {
     expect(result.error).toContain("Command rejected");
   });
 
-  it("allows simple relative script ./valid.sh", async () => {
+  it("rejects simple relative script ./valid.sh", async () => {
     const result = await bashTool.execute(ctx, { command: "./valid.sh" });
-    expect(result.error).not.toContain("Command rejected");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command rejected");
   });
 
-  it("allows relative script with safe arguments ./script.sh arg1", async () => {
+  it("rejects relative script with safe-looking arguments ./script.sh arg1", async () => {
     const result = await bashTool.execute(ctx, { command: "./script.sh arg1" });
-    expect(result.error).not.toContain("Command rejected");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command rejected");
   });
 
   it("rejects absolute paths", async () => {

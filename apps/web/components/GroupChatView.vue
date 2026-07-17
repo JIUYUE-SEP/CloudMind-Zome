@@ -10,14 +10,24 @@
       </div>
     </header>
     <div class="messages">
-      <MessageBubble
-        v-for="msg in messages"
-        :key="msg.id"
-        :role="msg.role"
-        :text="msg.text"
-        :thinking="msg.thinking"
-        :tool-calls="msg.toolCalls"
-      />
+      <template v-for="msg in messages" :key="msg.id">
+        <ApprovalCard
+          v-if="msg.approval"
+          :approval-id="msg.approval.approvalId"
+          :tool-name="msg.approval.toolName"
+          :args="msg.approval.arguments"
+          :status="msg.approval.status"
+          :agent-name="msg.approval.agentId ? agentName(msg.approval.agentId) : undefined"
+          @respond="onApprovalRespond"
+        />
+        <MessageBubble
+          v-else
+          :role="msg.role"
+          :text="msg.text"
+          :thinking="msg.thinking"
+          :tool-calls="msg.toolCalls"
+        />
+      </template>
     </div>
     <div class="status">{{ statusText }}</div>
     <MessageInput :is-loading="isStreaming" @send="onSend" />
@@ -26,9 +36,11 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import ApprovalCard from "./ApprovalCard.vue";
 import MessageBubble from "./MessageBubble.vue";
 import MessageInput from "./MessageInput.vue";
 import type { Session, ChatMessageRecord } from "@/composables/useEngineClient";
+import type { ApprovalInfo, ApprovalResponsePayload } from "@/utils/approval";
 import type { AgentConfig } from "@mindcloud/shared";
 
 export interface DisplayMessage {
@@ -38,6 +50,7 @@ export interface DisplayMessage {
   thinking: string;
   toolCalls: { toolCallId: string; name: string; arguments: unknown }[];
   isStreaming: boolean;
+  approval?: ApprovalInfo;
 }
 
 const props = defineProps<{
@@ -48,7 +61,10 @@ const props = defineProps<{
   isStreaming: boolean;
 }>();
 
-const emit = defineEmits<{ (e: "send", text: string): void }>();
+const emit = defineEmits<{
+  (e: "send", text: string): void;
+  (e: "approval-respond", payload: ApprovalResponsePayload): void;
+}>();
 
 const statusText = computed(() => {
   if (!props.isConnected) return "未连接";
@@ -62,6 +78,10 @@ function agentName(agentId: string): string {
 
 function onSend(text: string) {
   emit("send", text);
+}
+
+function onApprovalRespond(payload: ApprovalResponsePayload) {
+  emit("approval-respond", payload);
 }
 
 function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {

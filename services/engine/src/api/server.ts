@@ -14,14 +14,15 @@ import { registerConfigRoutes } from "./routes/config.js";
 import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerBlueprintRoutes } from "./routes/blueprints.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerPlanRoutes } from "./routes/plans.js";
+import { registerSubagentRoutes } from "./routes/subagents.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 import { registerSessionWebSocket } from "./ws/session-handler.js";
+import { getAllowedOrigins } from "./ws/validation.js";
 
 export async function createServer(context: ApiContext) {
   const app = Fastify({ logger: true });
-  const allowedOrigins = process.env.CLOUDMIND_ALLOWED_ORIGINS
-    ? process.env.CLOUDMIND_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
-    : ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:1420"];
+  const allowedOrigins = getAllowedOrigins();
 
   await app.register(cors, {
     origin: process.env.NODE_ENV === "e2e" ? true : allowedOrigins,
@@ -57,6 +58,8 @@ export async function createServer(context: ApiContext) {
   await registerSchedulerRoutes(app, context);
   await registerBlueprintRoutes(app, context);
   await registerSessionRoutes(app, context);
+  await registerPlanRoutes(app, context);
+  await registerSubagentRoutes(app, context);
   await registerSessionWebSocket(app, context);
   await registerWebSocketHandler(app, context);
 

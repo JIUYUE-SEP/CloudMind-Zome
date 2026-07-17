@@ -26,12 +26,13 @@ export class ActionRepository implements IActionRepository {
   }
 
   async update(record: ActionRecord): Promise<void> {
-    const records = await this.store().readLines();
-    const index = records.findIndex((r) => r.id === record.id);
-    if (index === -1) {
-      throw new Error(`action not found: ${record.id}`);
-    }
-    records[index] = record;
-    await this.store().writeLines(records);
+    await this.store().mutateLines((records) => {
+      const index = records.findIndex((r) => r.id === record.id);
+      if (index === -1) {
+        throw new Error(`action not found: ${record.id}`);
+      }
+      records[index] = record;
+      return records;
+    });
   }
 }

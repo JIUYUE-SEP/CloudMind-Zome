@@ -3,15 +3,13 @@ import { createAgent } from "./utils.js";
 
 test.describe("Chat flow", () => {
   test("user creates an agent and sends a message", async ({ page }) => {
-    await page.goto("/");
-    await page.click("text=进入 Communication Hub");
-
     const agentId = `e2e-agent-${Date.now()}`;
     const agentName = "E2E Agent";
     await createAgent(page, agentId, agentName);
 
-    // Select the newly created agent and open its chat.
-    await page.click(`text=${agentName}`);
+    // 回到通讯中枢，选择刚创建的心智开始私聊
+    await page.goto("/hub");
+    await page.locator(".comm-item", { hasText: agentName }).click();
     await expect(page.locator(".chat-view")).toBeVisible();
 
     // Wait for the WebSocket to connect before sending.

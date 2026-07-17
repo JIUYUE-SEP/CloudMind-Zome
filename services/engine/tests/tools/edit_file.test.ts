@@ -9,7 +9,7 @@ function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
   return {
     agentId: "test-agent",
     workspaceDir,
-    requiresApproval: async () => true,
+    approve: async () => true,
     projectRoot,
   };
 }

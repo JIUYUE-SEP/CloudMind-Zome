@@ -6,7 +6,7 @@ describe("SubagentBatch", () => {
   it("dispatches inputs in parallel and preserves order", async () => {
     const outputs = ["a", "b", "c"];
     const batch = new SubagentBatch(async (input: string) => {
-      return { taskId: input, messages: [] } satisfies SubagentResult;
+      return { taskId: input, output: "" } satisfies SubagentResult;
     });
     const results = await batch.run(outputs, { concurrency: 2 });
     expect(results).toHaveLength(3);
@@ -20,7 +20,7 @@ describe("SubagentBatch", () => {
       if (attempts < 2) {
         throw new Error("transient");
       }
-      return { taskId: "ok", messages: [] };
+      return { taskId: "ok", output: "" };
     });
     const results = await batch.run(["x"], { retry: 2 });
     expect(results[0].error).toBeUndefined();

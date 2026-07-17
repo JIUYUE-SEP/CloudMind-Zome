@@ -43,6 +43,7 @@ export interface IAgentRepository {
 export interface IMessageRepository {
   append(message: ChatMessageRecord): Promise<void>;
   listBySession(sessionId: string, options?: { limit?: number; before?: string }): Promise<ChatMessageRecord[]>;
+  getByIds(ids: string[]): Promise<ChatMessageRecord[]>;
 }
 
 export interface IMemoryRepository {

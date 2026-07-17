@@ -6,24 +6,41 @@ function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
   return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
 }
 
+function isPrivateV4(ip: string): boolean {
+  const parts = ip.split(".").map(Number);
+  const [a, b] = parts;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true; // link-local 整段，不只是元数据 IP
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function isPrivateIp(ip: string): boolean {
+  const normalized = ip.replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized.includes(":")) {
+    // IPv6：loopback、link-local、ULA、IPv4-mapped
+    if (normalized === "::1") return true;
+    if (normalized.startsWith("fe80:")) return true;
+    if (/^f[cd]/.test(normalized)) return true;
+    const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    return mapped ? isPrivateV4(mapped[1]) : false;
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(normalized)) return isPrivateV4(normalized);
+  return normalized === "localhost";
+}
+
+// 已知限制：不做 DNS 解析，指向内网的域名可通过（本地单用户场景威胁有限）
 function isAllowedBaseUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return false;
     }
-    const hostname = parsed.hostname.toLowerCase();
-    // 禁止 localhost / 内网 / 元数据地址
-    if (["localhost", "127.0.0.1", "0.0.0.0", "::1", "169.254.169.254"].includes(hostname)) {
-      return false;
-    }
-    if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) {
-      return false;
-    }
-    if (hostname.startsWith("172.")) {
-      const second = Number(hostname.split(".")[1]);
-      if (second >= 16 && second <= 31) return false;
-    }
+    // new URL 的 hostname 对 IPv6 保留方括号（"[::1]"），先剥掉再比较
+    const hostname = parsed.hostname;
+    if (isPrivateIp(hostname)) return false;
     return true;
   } catch {
     return false;
@@ -86,7 +103,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...existing,
       displayName: body.displayName ?? existing.displayName,
       baseUrl: body.baseUrl ?? existing.baseUrl,
-      apiKey: body.apiKey ?? existing.apiKey,
+      // 空字符串视为"不修改"，避免编辑表单清空已保存的密钥
+      apiKey: body.apiKey || existing.apiKey,
     };
     await context.configRepository.save(config);
     return sanitizeProvider(config.providers[idx]);

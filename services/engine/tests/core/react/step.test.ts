@@ -78,14 +78,14 @@ function makeToolCtx(): {
   agentId: string;
   workspaceDir: string;
   tools: Map<string, Tool>;
-  requiresApproval: () => Promise<true>;
+  approve: () => Promise<true>;
   emit: () => void;
 } {
   return {
     agentId: "a",
     workspaceDir: "/tmp",
     tools: new Map([[dummyTool.name, dummyTool]]),
-    requiresApproval: async () => true,
+    approve: async () => true,
     emit: () => {},
   };
 }

@@ -9,7 +9,7 @@ function makeCtx(workspaceDir: string, projectRoot?: string): ToolContext {
   return {
     agentId: "test-agent",
     workspaceDir,
-    requiresApproval: async () => true,
+    approve: async () => true,
     projectRoot,
   };
 }
@@ -184,6 +184,15 @@ describe("runCommandTool", () => {
     const result = await runCommandTool.execute(ctx, {
       command: "echo hello",
       timeout: NaN,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a timeout above the maximum", async () => {
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await runCommandTool.execute(ctx, {
+      command: "echo hello",
+      timeout: 86400,
     });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/timeout must be a positive integer/);
