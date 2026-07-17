@@ -9,6 +9,10 @@ export interface RoutingResult {
 export function routeMessage(text: string, session: Session, agents: AgentConfig[]): RoutingResult {
   const mentions = parseMentions(text);
   if (mentions.length > 0) {
+    // @all / @所有人 → 广播给会话内所有 Agent
+    if (mentions.some((m) => m === "all" || m === "所有人")) {
+      return { targetAgentIds: session.agentIds, mentionAll: true };
+    }
     const targetAgentIds = mentions
       .map((m) => resolveMention(m, agents))
       .filter((id): id is string => !!id)

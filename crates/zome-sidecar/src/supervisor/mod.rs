@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,10 +23,63 @@ pub struct Supervisor {
     child: Arc<Mutex<Option<Child>>>,
 }
 
+fn node_bin() -> String {
+    std::env::var("ZOME_NODE_PATH").unwrap_or_else(|_| "node".to_string())
+}
+
+/// 解析 node engine 入口（bootstrap.js）与其工作目录：
+/// 1. `ZOME_ENGINE_ENTRY` 环境变量（部署时显式指定）
+/// 2. sidecar 可执行文件附近的 engine/bootstrap.js（打包布局）
+/// 3. 开发环境 monorepo 路径
+/// 找不到时返回明确错误，而不是静默退回 cwd 再神秘超时。
+fn engine_entry() -> anyhow::Result<(PathBuf, PathBuf)> {
+    if let Ok(entry) = std::env::var("ZOME_ENGINE_ENTRY") {
+        let entry = PathBuf::from(entry);
+        if entry.exists() {
+            let cwd = entry
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            return Ok((cwd, entry));
+        }
+        anyhow::bail!("ZOME_ENGINE_ENTRY points to a missing file: {}", entry.display());
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [
+                dir.join("engine").join("bootstrap.js"),
+                dir.join("..").join("engine").join("bootstrap.js"),
+                dir.join("resources").join("engine").join("bootstrap.js"),
+            ] {
+                if candidate.exists() {
+                    let cwd = candidate
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    return Ok((cwd, candidate));
+                }
+            }
+        }
+    }
+    let root = project_root()?;
+    let dev = root.join("services/engine/dist/src/bootstrap.js");
+    if dev.exists() {
+        return Ok((root, dev));
+    }
+    anyhow::bail!(
+        "node engine entry not found; set ZOME_ENGINE_ENTRY or place engine/bootstrap.js next to the sidecar binary"
+    )
+}
+
 pub async fn spawn_node_engine() -> anyhow::Result<()> {
-    let mut cmd = Command::new("node");
-    cmd.arg("services/engine/dist/src/bootstrap.js")
-        .current_dir(project_root()?);
+    if is_node_healthy().await {
+        // 已有运行中的 engine（上次异常退出遗留）：直接复用，避免重复 spawn 导致端口冲突
+        warn!("node engine already healthy; adopting existing process");
+        return Ok(());
+    }
+    let (cwd, entry) = engine_entry()?;
+    let mut cmd = Command::new(node_bin());
+    cmd.arg(&entry).current_dir(&cwd);
 
     info!("spawning node engine: {:?}", cmd);
     let child = cmd.kill_on_drop(true).spawn()?;
@@ -148,9 +202,15 @@ impl Supervisor {
     async fn restart(&self) {
         self.shutdown().await;
 
-        let mut cmd = Command::new("node");
-        cmd.arg("services/engine/dist/src/bootstrap.js")
-            .current_dir(project_root().unwrap_or_else(|_| "./".into()));
+        let (cwd, entry) = match engine_entry() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("cannot restart node engine: {e}");
+                return;
+            }
+        };
+        let mut cmd = Command::new(node_bin());
+        cmd.arg(&entry).current_dir(&cwd);
 
         match cmd.kill_on_drop(true).spawn() {
             Ok(child) => {

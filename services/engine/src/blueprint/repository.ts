@@ -28,16 +28,15 @@ export class BlueprintRepository {
   }
 
   async update(blueprint: Blueprint): Promise<void> {
-    const blueprints = await this.list();
-    const index = blueprints.findIndex((b) => b.id === blueprint.id);
-    if (index === -1) throw new Error(`blueprint not found: ${blueprint.id}`);
-    blueprints[index] = { ...blueprint, updatedAt: new Date().toISOString() };
-    await this.store.writeLines(blueprints);
+    await this.store.mutateLines((blueprints) => {
+      const index = blueprints.findIndex((b) => b.id === blueprint.id);
+      if (index === -1) throw new Error(`blueprint not found: ${blueprint.id}`);
+      blueprints[index] = { ...blueprint, updatedAt: new Date().toISOString() };
+      return blueprints;
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const blueprints = await this.list();
-    const filtered = blueprints.filter((b) => b.id !== id);
-    await this.store.writeLines(filtered);
+    await this.store.mutateLines((blueprints) => blueprints.filter((b) => b.id !== id));
   }
 }

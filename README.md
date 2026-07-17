@@ -26,15 +26,19 @@ Subagent: 前台/后台/Swarm 批量调度
 ## 功能
 
 - **私聊** — 与单个 Agent 一对一对话，流式输出
+- **群聊** — 多 Agent 会话，@mention 路由
 - **Agent 管理** — 创建、编辑、删除 Agent
 - **工具调用** — ReActLoop 调用内置工具
 - **长期记忆** — per-Agent JSON/JSONL 文档存储
-- **Skill 系统** — 基于 SKILL.md manifest 的技能加载
-- **Plan / Goal** — 计划管理、步骤执行、暂停/恢复/重试
-- **Subagent** — 前台/后台/Swarm 批量调度
+- **向量记忆** — 经 Rust sidecar 的跨会话语义检索（需配置 embedder，桌面端运行）
+- **Skill 系统** — 基于 SKILL.md manifest 的技能加载，内容注入 system prompt
+- **Plan / Subagent** — 计划管理（REST）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent）
+- **定时任务** — Cron 调度的 Commission
+- **算力平台** — LLM Provider 管理（API Key 加密存储）
+- **蓝图工作流** — 节点编排（线性链）
 - **桌面应用** — Tauri 启动 Rust sidecar，sidecar 启动 Node 引擎
 
-> 规划中：群聊、Intermind、Scheduler、ComputeCenter、蓝图工作流、系统设置、用户档案（Phase 9）
+> 规划中：Intermind（心智互聊）、蓝图分支/审批、公共 Skill 池、用户档案（完整版）
 > 完整功能列表见 [`docs/路线图.md`](docs/路线图.md)
 
 ---

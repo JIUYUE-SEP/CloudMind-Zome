@@ -28,16 +28,15 @@ export class SessionRepository {
   }
 
   async update(session: Session): Promise<void> {
-    const sessions = await this.list();
-    const index = sessions.findIndex((s) => s.id === session.id);
-    if (index === -1) throw new Error(`session not found: ${session.id}`);
-    sessions[index] = { ...session, updatedAt: new Date().toISOString() };
-    await this.store.writeLines(sessions);
+    await this.store.mutateLines((sessions) => {
+      const index = sessions.findIndex((s) => s.id === session.id);
+      if (index === -1) throw new Error(`session not found: ${session.id}`);
+      sessions[index] = { ...session, updatedAt: new Date().toISOString() };
+      return sessions;
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const sessions = await this.list();
-    const filtered = sessions.filter((s) => s.id !== id);
-    await this.store.writeLines(filtered);
+    await this.store.mutateLines((sessions) => sessions.filter((s) => s.id !== id));
   }
 }

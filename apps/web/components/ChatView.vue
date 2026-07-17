@@ -1,14 +1,23 @@
 <template>
   <div class="chat-view">
     <div class="messages">
-      <MessageBubble
-        v-for="msg in chat.messages"
-        :key="msg.id"
-        :role="msg.role"
-        :text="msg.text"
-        :thinking="msg.thinking"
-        :tool-calls="msg.toolCalls"
-      />
+      <template v-for="msg in chat.messages" :key="msg.id">
+        <ApprovalCard
+          v-if="msg.approval"
+          :approval-id="msg.approval.approvalId"
+          :tool-name="msg.approval.toolName"
+          :args="msg.approval.arguments"
+          :status="msg.approval.status"
+          @respond="onApprovalRespond"
+        />
+        <MessageBubble
+          v-else
+          :role="msg.role"
+          :text="msg.text"
+          :thinking="msg.thinking"
+          :tool-calls="msg.toolCalls"
+        />
+      </template>
     </div>
     <div class="status">{{ statusText }}</div>
     <MessageInput :is-loading="chat.isStreaming" @send="onSend" />
@@ -18,6 +27,8 @@
 <script setup lang="ts">
 import { computed, watch, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/chat";
+import type { ApprovalResponsePayload } from "@/utils/approval";
+import ApprovalCard from "./ApprovalCard.vue";
 import MessageBubble from "./MessageBubble.vue";
 import MessageInput from "./MessageInput.vue";
 
@@ -50,6 +61,10 @@ onUnmounted(() => {
 
 function onSend(text: string) {
   chat.send(text);
+}
+
+function onApprovalRespond(payload: ApprovalResponsePayload) {
+  chat.respondApproval(payload.approvalId, payload.approved, payload.remember);
 }
 </script>
 

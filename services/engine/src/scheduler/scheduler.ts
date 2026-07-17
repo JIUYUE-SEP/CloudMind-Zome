@@ -64,6 +64,11 @@ export class Scheduler {
       // up duplicate triggers while it is still in progress.
       task.lastRunAt = new Date().toISOString();
       task.nextRunAt = computeNextRun(task.cron);
+      if (!task.nextRunAt) {
+        // cron 已失效（如文件被手改）：禁用任务，而不是每个轮询周期都触发一次
+        task.enabled = false;
+        console.error(`scheduled task ${task.id} has invalid cron '${task.cron}', disabling it`);
+      }
       await repo.update(task);
 
       const worker = await this.context.getAgentWorker(agentId);

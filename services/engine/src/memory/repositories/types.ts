@@ -3,7 +3,7 @@ import type { AgentConfig, ToolCall } from "@mindcloud/shared";
 export interface ChatMessageRecord {
   id: string;
   sessionId: string;
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "system";
   content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
   toolCalls?: ToolCall[];
   toolCallId?: string;
@@ -43,6 +43,7 @@ export interface IAgentRepository {
 export interface IMessageRepository {
   append(message: ChatMessageRecord): Promise<void>;
   listBySession(sessionId: string, options?: { limit?: number; before?: string }): Promise<ChatMessageRecord[]>;
+  getByIds(ids: string[]): Promise<ChatMessageRecord[]>;
 }
 
 export interface IMemoryRepository {

@@ -17,21 +17,8 @@ function isDangerousCommand(command: string): { dangerous: boolean; reason?: str
     return { dangerous: true, reason: "interactive/stdin wait not allowed" };
   }
   const first = parts[0];
-  if (first.startsWith("./")) {
-    // allow relative executable paths like ./scripts/build.sh, but validate the
-    // script path itself as well as each argument
-    if (path.isAbsolute(first) || first.includes("..") || first.includes("\\")) {
-      return { dangerous: true, reason: "invalid relative script path" };
-    }
-    for (let i = 1; i < parts.length; i++) {
-      const arg = parts[i];
-      if (path.isAbsolute(arg)) return { dangerous: true, reason: "absolute paths are not allowed" };
-      if (arg.includes("..") || arg.includes("\\")) {
-        return { dangerous: true, reason: "path traversal or backslash in argument" };
-      }
-    }
-    return { dangerous: false };
-  }
+  // 含 / 的一律拒绝：既挡绝对路径与目录参数，也挡住 ./script.sh 这类相对脚本执行
+  // （否则 write_file 写个脚本再 ./ 执行即可绕过白名单）
   if (command.includes("/")) {
     return { dangerous: true, reason: "slashes are not allowed" };
   }
@@ -54,6 +41,7 @@ export const bashTool: Tool = {
   description: "Execute an allowed shell command in the workspace",
   parameters: z.object({ command: z.string().max(4096) }),
   accesses: [{ resource: "process", action: "execute" }],
+  requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { command } = args as { command: string };
     const check = isDangerousCommand(command);
@@ -70,8 +58,19 @@ export const bashTool: Tool = {
         settled = true;
         resolve(result);
       };
-      child.stdout?.on("data", (data) => { stdout += data.toString(); });
-      child.stderr?.on("data", (data) => { stderr += data.toString(); });
+      const onData = (data: Buffer) => {
+        // 边收边查，超限立即杀进程，避免海量输出撑爆内存
+        if (stdout.length + stderr.length > MAX_OUTPUT_LENGTH) {
+          child.kill("SIGKILL");
+          const combined = (stdout + stderr).slice(0, MAX_OUTPUT_LENGTH);
+          settle({
+            success: true,
+            output: combined + `\n\n[output truncated: exceeded ${MAX_OUTPUT_LENGTH} bytes]`,
+          });
+        }
+      };
+      child.stdout?.on("data", (data) => { stdout += data.toString(); onData(data); });
+      child.stderr?.on("data", (data) => { stderr += data.toString(); onData(data); });
       child.on("error", (err) => settle({ success: false, error: String(err) }));
       child.on("close", (code) => {
         const combined = stdout + stderr;

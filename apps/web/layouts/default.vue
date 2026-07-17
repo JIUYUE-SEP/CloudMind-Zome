@@ -4,7 +4,7 @@
       <slot />
     </div>
 
-    <nav class="right-nav">
+    <nav v-if="showRightNav" class="right-nav">
       <NuxtLink
         v-for="item in navItems"
         :key="item.label + item.to"
@@ -31,11 +31,16 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
+import { useRoute } from "vue-router";
+
 interface NavItem {
   label: string;
   to: string;
   placeholder?: boolean;
 }
+
+const route = useRoute();
 
 const navItems: NavItem[] = [
   { label: "行动中心", to: "/actions" },
@@ -45,6 +50,10 @@ const navItems: NavItem[] = [
   { label: "通讯中枢", to: "/hub" },
   { label: "广播站", to: "", placeholder: true },
 ];
+
+const topLevelPaths = new Set(["/"]);
+
+const showRightNav = computed(() => topLevelPaths.has(route.path));
 
 function handleNav(e: Event, item: NavItem) {
   if (item.placeholder) {

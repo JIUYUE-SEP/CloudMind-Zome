@@ -66,16 +66,24 @@
         :key="selectedAgentId"
         :agent-id="selectedAgentId"
       />
-      <GroupChatView
-        v-else-if="selectedType === 'group' && selectedSession"
-        :key="selectedId"
-        :session="selectedSession"
-        :messages="groupMessages"
-        :agents="agents.list"
-        :is-connected="groupIsConnected"
-        :is-streaming="groupIsStreaming"
-        @send="onGroupSend"
-      />
+      <div v-else-if="selectedType === 'group' && selectedSession" class="group-chat-wrapper">
+        <div class="group-mode-switch">
+          <button :class="{ active: sessionMode === 'chat' }" @click="setMode('chat')">聊天</button>
+          <button :class="{ active: sessionMode === 'code' }" @click="setMode('code')">编程</button>
+        </div>
+        <div class="group-body">
+          <GroupChatView
+            :key="selectedId"
+            :session="selectedSession"
+            :messages="groupMessages"
+            :agents="agents.list"
+            :is-connected="groupIsConnected"
+            :is-streaming="groupIsStreaming"
+            @send="onGroupSend"
+            @approval-respond="onGroupApprovalRespond"
+          />
+        </div>
+      </div>
       <div v-else class="comm-welcome">
         <div class="comm-welcome-icon">//</div>
         <div class="comm-welcome-title">选择一个会话开始交流</div>
@@ -87,9 +95,17 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type ChatMessageRecord, type Session } from "@/composables/useEngineClient";
+import {
+  createApprovalMessage,
+  findPendingApproval,
+  settleApproval,
+  expireApprovalByToolCallId,
+  type ApprovalResponsePayload,
+} from "@/utils/approval";
 import BackButton from "@/components/BackButton.vue";
 import ChatView from "@/components/ChatView.vue";
 import GroupChatView from "@/components/GroupChatView.vue";
@@ -108,6 +124,8 @@ const selectedSession = ref<Session | undefined>(undefined);
 const groupMessages = ref<DisplayMessage[]>([]);
 const groupIsConnected = ref(false);
 const groupIsStreaming = ref(false);
+const sessionMode = ref<ChatMode>("chat");
+const sessionProjectId = ref<string | undefined>(undefined);
 let groupConnection: ReturnType<typeof client.connectSession> | null = null;
 
 const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
@@ -134,6 +152,8 @@ async function selectGroup(session: Session) {
   selectedType.value = "group";
   selectedAgentId.value = "";
   selectedSession.value = session;
+  sessionMode.value = session.mode || "chat";
+  sessionProjectId.value = session.projectId;
   await loadGroupMessages(session.id);
   connectGroup(session.id);
 }
@@ -155,6 +175,9 @@ function connectGroup(sessionId: string) {
   groupConnection = client.connectSession(sessionId, {
     onOpen: () => {
       groupIsConnected.value = true;
+      if (selectedSession.value?.mode === "code") {
+        sessionMode.value = "code";
+      }
     },
     onTextDelta: (delta) => {
       const last = groupMessages.value[groupMessages.value.length - 1];
@@ -183,12 +206,23 @@ function connectGroup(sessionId: string) {
         last.toolCalls.push(toolCall);
       }
     },
+    onToolResult: (result) => {
+      // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
+      expireApprovalByToolCallId(groupMessages.value, result.toolCallId);
+    },
+    onApprovalRequest: (request) => {
+      groupMessages.value.push(createApprovalMessage(request));
+    },
     onStepEnd: () => {
       const last = groupMessages.value[groupMessages.value.length - 1];
       if (last && last.role === "assistant") {
         last.isStreaming = false;
       }
       groupIsStreaming.value = false;
+    },
+    onModeChanged: (mode, projectId) => {
+      sessionMode.value = mode;
+      sessionProjectId.value = projectId;
     },
     onError: (error) => {
       groupIsStreaming.value = false;
@@ -215,8 +249,16 @@ function closeGroupConnection() {
   groupIsStreaming.value = false;
 }
 
+function setMode(mode: ChatMode) {
+  sessionMode.value = mode;
+  const projectId = mode === "code" ? selectedSession.value?.id : sessionProjectId.value;
+  groupConnection?.setMode(mode, projectId);
+}
+
 function onGroupSend(text: string) {
   if (!groupConnection) return;
+  const sent = groupConnection.send(text);
+  if (!sent) return;
   groupMessages.value.push({
     id: `u_${Date.now()}`,
     role: "user",
@@ -226,7 +268,21 @@ function onGroupSend(text: string) {
     isStreaming: false,
   });
   groupIsStreaming.value = true;
-  groupConnection.send(text);
+}
+
+// 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问
+function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
+  if (!groupConnection) return;
+  if (!findPendingApproval(groupMessages.value, payload.approvalId)) return;
+  const sent = groupConnection.sendRaw({
+    type: "tool.approval",
+    approvalId: payload.approvalId,
+    approved: payload.approved,
+    remember: payload.remember,
+  });
+  if (sent) {
+    settleApproval(groupMessages.value, payload.approvalId, payload.approved ? "approved" : "denied");
+  }
 }
 
 function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
@@ -485,5 +541,54 @@ function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
 .comm-welcome-sub {
   font-size: 12px;
   color: var(--mc-text-tertiary);
+}
+
+.group-chat-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.group-mode-switch {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.group-mode-switch button {
+  flex: 1;
+  padding: 7px 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.group-mode-switch button.active {
+  background: rgba(0, 229, 201, 0.12);
+  border-color: rgba(0, 229, 201, 0.3);
+  color: var(--mc-accent);
+}
+
+.group-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.group-body > .group-chat-view,
+.group-body > .group-chat-view-stub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 </style>

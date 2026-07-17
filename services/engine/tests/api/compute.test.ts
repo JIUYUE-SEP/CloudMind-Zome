@@ -107,6 +107,30 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("keeps the existing apiKey when update sends an empty string", async () => {
+    const app = await makeApp();
+    const provider = {
+      id: "p1",
+      displayName: "OpenAI",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [],
+    };
+    await request(app.server).post("/compute/providers").send(provider);
+
+    // 编辑表单留空表示"不修改"，不能把已保存的密钥覆盖掉
+    const updateRes = await request(app.server)
+      .put("/compute/providers/p1")
+      .send({ displayName: "Renamed", apiKey: "" });
+    expect(updateRes.status).toBe(200);
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].displayName).toBe("Renamed");
+    expect(config.providers[0].apiKey).toBe("sk-test");
+    await app.close();
+  });
+
   it("manages models under a provider", async () => {
     const app = await makeApp();
     const provider = {
@@ -174,6 +198,70 @@ describe("Compute API", () => {
     });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("rejects IPv6 loopback baseUrl", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "v6loop",
+      displayName: "V6Loop",
+      providerType: "openai",
+      baseUrl: "http://[::1]:11434",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("rejects non-.1 loopback baseUrl", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "loop2",
+      displayName: "Loop2",
+      providerType: "openai",
+      baseUrl: "http://127.0.0.2:11434",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  // WHATWG URL 会把这些 IPv4-mapped/compatible 形式归一化为 hex，
+  // 拦截逻辑必须按 hex 段解析，否则全部绕过
+  it.each([
+    "http://[::ffff:127.0.0.1]/", // mapped loopback
+    "http://[::ffff:169.254.169.254]/", // mapped 云元数据
+    "http://[::ffff:7f00:1]/", // hex 形式直接传入
+    "http://[::127.0.0.1]/", // compatible loopback
+    "http://[::ffff:ac10:fe01]/", // mapped 内网 172.16.254.1
+    "http://[::]/", // unspecified
+  ])("rejects IPv4-mapped/compatible IPv6 baseUrl: %s", async (baseUrl) => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "v6mapped",
+      displayName: "V6Mapped",
+      providerType: "openai",
+      baseUrl,
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("allows a public IPv4-mapped IPv6 baseUrl (不误伤)", async () => {
+    const app = await makeApp();
+    const res = await request(app.server).post("/compute/providers").send({
+      id: "v6public",
+      displayName: "V6Public",
+      providerType: "openai",
+      baseUrl: "http://[::ffff:8.8.8.8]/",
+      models: [],
+    });
+    expect(res.status).toBe(200);
     await app.close();
   });
 

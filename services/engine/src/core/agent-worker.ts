@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { LLMProvider, LLMEvent } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
-import type { Tool } from "../tools/types.js";
+import type { Tool, ToolContext } from "../tools/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
+import type { ChatMode } from "@mindcloud/shared";
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -16,18 +17,39 @@ export interface AgentWorkerConfig {
   tools: Tool[];
   workspaceDir: string;
   messageRepository: IMessageRepository;
-  requiresApproval: (toolName: string, args: unknown) => boolean | Promise<boolean>;
+  approve: (toolName: string, args: unknown, toolCallId?: string) => boolean | Promise<boolean>;
   temperature?: number;
   topP?: number;
+  /** 已解析的 skill 内容（SKILL.md 全文），注入 system prompt */
+  skillPrompts?: string[];
+  /** 向量记忆索引（sidecar 可用时生效），用于跨会话语义检索 */
+  memoryIndexer?: import("../memory/indexer.js").MemoryIndexer;
   embedder?: import("../provider/types.js").EmbedderProvider;
   imageProvider?: import("../provider/types.js").ImageGenProvider;
+  /** 注入工具执行上下文的服务（如 subagent dispatcher），供 dispatch_subagent 等工具使用 */
+  services?: ToolContext["services"];
 }
 
 export interface Job {
   id: string;
   messages: ChatMessage[];
   sessionId?: string;
+  mode?: ChatMode;
+  projectRoot?: string;
+  /** 外部取消信号：已取消的排队 job 直接跳过；运行中在步骤边界中止 */
+  signal?: AbortSignal;
   onEvent: (event: LLMEvent) => void;
+  /** job 结束（成功或异常）时回调；err 为捕获到的异常，正常完成为 undefined */
+  onDone?: (err?: unknown) => void;
+  /** 危险工具（requiresApproval）的人工审批通道；未提供时危险工具一律拒绝 */
+  onApprovalRequest?: (req: ApprovalRequest) => Promise<boolean>;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  toolCallId?: string;
+  toolName: string;
+  arguments: unknown;
 }
 
 export class AgentWorker {
@@ -81,7 +103,12 @@ export class AgentWorker {
     const job = this.queue.shift()!;
     this.runningJob = job;
 
+    let jobError: unknown;
     try {
+      // 排队期间已被外部取消（如 subagent 前台超时）的 job 直接跳过
+      if (job.signal?.aborted) {
+        throw new Error("aborted");
+      }
       const toolsMap = new Map(this.config.tools.map((t) => [t.name, t]));
       const toolDescriptions = this.config.tools.map((t) => ({
         type: "function",
@@ -92,34 +119,111 @@ export class AgentWorker {
         },
       }));
 
+      const promptParts: string[] = [];
+      if (this.config.skillPrompts && this.config.skillPrompts.length > 0) {
+        promptParts.push(
+          "# Skills\n\n" + this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
+        );
+      }
+      if (job.mode === "code") {
+        promptParts.push(
+          "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes.",
+        );
+      }
+      const systemPrompt = promptParts.length > 0 ? promptParts.join("\n\n") : undefined;
+
+      // 跨会话语义检索：sidecar 可用时，取与当前用户消息最相关的历史消息补充上下文。
+      // 失败静默降级；检索结果已在历史文件中，不会也不应被再次持久化。
+      let retrieved: ChatMessage[] = [];
+      const lastUser = [...job.messages].reverse().find((m) => m.role === "user");
+      const lastUserText =
+        lastUser?.content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("") ?? "";
+      if (this.config.memoryIndexer && job.mode !== "code" && lastUser && lastUserText.trim()) {
+        try {
+          const hits = await this.config.memoryIndexer.search(this.config.agentId, lastUserText, 5);
+          const known = new Set(job.messages.map((m) => m.id));
+          const ids = hits.map((h) => h.id).filter((id) => !known.has(id));
+          if (ids.length > 0) {
+            const records = await this.config.messageRepository.getByIds(ids);
+            retrieved = records.map(({ sessionId: _ignored, ...msg }) => msg);
+          }
+        } catch (err) {
+          console.error("semantic retrieval failed", err);
+        }
+      }
+
+      const messages = [
+        ...(systemPrompt
+          ? [{ id: randomUUID(), role: "system" as const, content: [{ type: "text" as const, text: systemPrompt }], createdAt: new Date().toISOString() }]
+          : []),
+        ...retrieved,
+        ...job.messages,
+      ];
+
       const turnInput: TurnInput = {
         provider: this.config.provider,
         model: this.config.model,
-        messages: job.messages,
+        messages,
         tools: toolDescriptions,
         toolCtx: {
           agentId: this.config.agentId,
           workspaceDir: this.config.workspaceDir,
+          projectRoot: job.projectRoot,
           tools: toolsMap,
-          requiresApproval: this.config.requiresApproval,
+          approve: async (name, args, toolCallId) => {
+            // 全局策略门（当前生产环境放行）
+            if (!(await this.config.approve(name, args, toolCallId))) return false;
+            // 危险工具：必须走人工审批通道（交互式 WS 会话提供），无通道一律拒绝
+            const tool = toolsMap.get(name);
+            if (!tool?.requiresApproval) return true;
+            if (!job.onApprovalRequest) return false;
+            return job.onApprovalRequest({ id: randomUUID(), toolCallId, toolName: name, arguments: args });
+          },
           emit: job.onEvent,
+          services: this.config.services,
         },
         maxSteps: 5,
         temperature: this.config.temperature,
         topP: this.config.topP,
+        signal: job.signal,
       };
 
       const result = await runTurn(turnInput, job.onEvent);
 
       const sessionId = job.sessionId || this.config.agentId;
-      await this.config.messageRepository.append({ ...result.assistantMessage, sessionId });
-      for (const toolMsg of result.toolMessages) {
-        await this.config.messageRepository.append({ ...toolMsg, sessionId });
+      // 按真实顺序持久化本轮新增的消息（每步 assistant + tool 消息），
+      // 跳过输入部分（含注入的 system prompt），避免 tool 消息失去前置的 assistant toolCalls。
+      const newMessages = result.messages.slice(messages.length);
+      for (const msg of newMessages) {
+        await this.config.messageRepository.append({ ...msg, sessionId });
+      }
+
+      // 向量索引（fire-and-forget）：本轮的用户输入与新增回复
+      if (this.config.memoryIndexer) {
+        const indexer = this.config.memoryIndexer;
+        const agentId = this.config.agentId;
+        const toIndex = [...(lastUser ? [lastUser] : []), ...newMessages];
+        for (const msg of toIndex) {
+          const text = msg.content
+            .filter((c) => c.type === "text")
+            .map((c) => c.text)
+            .join("");
+          void indexer.indexMessage(agentId, msg.id, text);
+        }
       }
     } catch (err) {
+      jobError = err;
       job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });
     } finally {
       this.runningJob = null;
+      try {
+        job.onDone?.(jobError);
+      } catch (err) {
+        console.error("job onDone callback failed", err);
+      }
       if ((this.status as AgentWorkerStatus) !== "paused") {
         this.status = "idle";
         this.processQueue();

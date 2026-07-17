@@ -6,6 +6,7 @@ import { getBuiltinTools } from "../tools/builtin/index.js";
 import { getDataDir } from "../config/paths.js";
 import type { Blueprint, BlueprintExecution, BlueprintNode } from "./types.js";
 import type { LLMEvent } from "../provider/types.js";
+import type { ToolServices } from "../tools/types.js";
 
 export interface ExecuteOptions {
   initialInput?: string;
@@ -136,7 +137,9 @@ async function executeToolNode(
 ): Promise<unknown> {
   const toolName = String(node.config?.toolName || "");
   const args = (node.config?.arguments as Record<string, unknown>) || {};
-  const result = await executeTool(toolName, args, execution.id);
+  const result = await executeTool(toolName, args, execution.id, {
+    subagentDispatcher: context.subagentDispatcher,
+  });
   execution.logs.push(`executed tool node ${node.id}`);
   return result;
 }
@@ -151,17 +154,24 @@ async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   executionId: string,
+  services?: ToolServices,
 ): Promise<unknown> {
-  const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
-  await fs.mkdir(workspaceDir, { recursive: true });
   const tools = getBuiltinTools();
   const tool = tools.find((t) => t.name === toolName);
   if (!tool) return `tool not found: ${toolName}`;
+  // blueprint 没有人工审批通道，requiresApproval 工具一律拒绝执行
+  // （types.ts 契约：无审批通道的调用一律拒绝），防止审批门被 executeTool 旁路
+  if (tool.requiresApproval) {
+    return `tool requires approval and cannot run in blueprints: ${toolName}`;
+  }
+  const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
+  await fs.mkdir(workspaceDir, { recursive: true });
   try {
     const toolCtx = {
       agentId: "blueprint",
       workspaceDir,
-      requiresApproval: () => false,
+      approve: () => true,
+      services,
     };
     const result = await tool.execute(toolCtx, args);
     return result.success ? result.output : `tool error: ${result.error || "unknown"}`;

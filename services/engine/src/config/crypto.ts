@@ -9,27 +9,41 @@ const IV_LEN = 16;
 const AUTH_TAG_LEN = 16;
 const SALT_LEN = 16;
 
-async function getOrCreateMasterKey(): Promise<Buffer> {
-  const envKey = process.env.CLOUDMIND_MASTER_KEY;
-  if (envKey) {
-    return crypto.scryptSync(envKey, "cloudmind-zome", KEY_LEN);
-  }
-  const keyFile = path.join(getDataDir(), ".master-key");
+// 按密钥文件路径缓存"读取或创建"的 Promise：
+// 1) 避免并发首次调用各自生成不同密钥互相覆盖，导致已加密数据无法解密；
+// 2) 避免每次加解密都重新读盘。
+const keyCache = new Map<string, Promise<Buffer>>();
+
+async function readOrCreateKeyFile(keyFile: string): Promise<Buffer> {
   try {
     const encoded = await fs.readFile(keyFile, "utf-8");
     return Buffer.from(encoded.trim(), "base64");
   } catch {
     const key = crypto.randomBytes(KEY_LEN);
     try {
-      await fs.mkdir(getDataDir(), { recursive: true });
+      await fs.mkdir(path.dirname(keyFile), { recursive: true });
       await fs.writeFile(keyFile, key.toString("base64"), { mode: 0o600 });
     } catch {
       // Fallback for platforms where mode is not supported (e.g. Windows).
-      await fs.mkdir(getDataDir(), { recursive: true });
+      await fs.mkdir(path.dirname(keyFile), { recursive: true });
       await fs.writeFile(keyFile, key.toString("base64"));
     }
     return key;
   }
+}
+
+async function getOrCreateMasterKey(): Promise<Buffer> {
+  const envKey = process.env.CLOUDMIND_MASTER_KEY;
+  if (envKey) {
+    return crypto.scryptSync(envKey, "cloudmind-zome", KEY_LEN);
+  }
+  const keyFile = path.join(getDataDir(), ".master-key");
+  let cached = keyCache.get(keyFile);
+  if (!cached) {
+    cached = readOrCreateKeyFile(keyFile);
+    keyCache.set(keyFile, cached);
+  }
+  return cached;
 }
 
 export async function encrypt(plainText: string): Promise<string> {

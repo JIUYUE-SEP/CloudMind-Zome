@@ -1,3 +1,5 @@
+export type ChatMode = "chat" | "code";
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -27,7 +29,7 @@ export interface ToolCall {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "system";
   content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
   toolCalls?: ToolCall[];
   toolCallId?: string;

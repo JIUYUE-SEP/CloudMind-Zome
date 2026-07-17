@@ -11,6 +11,8 @@ export interface Skill {
   version: string;
   tools: Tool[];
   prompts: SkillPrompt[];
+  /** SKILL.md 全文，用于注入 system prompt */
+  content: string;
   configSchema?: unknown;
 }
 

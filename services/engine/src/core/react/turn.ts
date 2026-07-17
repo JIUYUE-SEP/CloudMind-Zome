@@ -13,6 +13,8 @@ export interface TurnInput {
   maxTokens?: number;
   temperature?: number;
   topP?: number;
+  /** 外部取消信号（如 subagent 前台超时）：在步骤边界检查并中止本轮 */
+  signal?: AbortSignal;
 }
 
 export interface TurnResult {
@@ -31,6 +33,9 @@ export async function runTurn(
   const toolMessages: ChatMessage[] = [];
 
   for (let step = 0; step < maxSteps; step++) {
+    if (input.signal?.aborted) {
+      throw new Error("aborted");
+    }
     const stepInput: StepInput = {
       provider: input.provider,
       model: input.model,

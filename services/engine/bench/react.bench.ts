@@ -21,7 +21,7 @@ describe("ReActLoop", () => {
           agentId: "bench",
           workspaceDir: ".",
           tools: new Map(),
-          requiresApproval: () => false,
+          approve: () => true,
           emit: () => {},
         },
         maxSteps: 3,

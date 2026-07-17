@@ -1,4 +1,4 @@
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig, ChatMode } from "@mindcloud/shared";
 import { invoke } from "@tauri-apps/api/core";
 import { ref, onMounted } from "vue";
 
@@ -66,6 +66,8 @@ export interface Session {
   name: string;
   agentIds: string[];
   type: "group" | "intermind";
+  mode?: ChatMode;
+  projectId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -112,13 +114,24 @@ export interface WebSocketHandlers {
   onThinkingDelta?: (delta: string) => void;
   onToolCall?: (toolCall: { toolCallId: string; name: string; arguments: unknown }) => void;
   onToolResult?: (result: { toolCallId: string; output: unknown }) => void;
+  // 危险工具审批请求（群聊帧会额外携带 agentId）
+  onApprovalRequest?: (request: {
+    approvalId: string;
+    toolCallId: string;
+    toolName: string;
+    arguments: unknown;
+    agentId?: string;
+  }) => void;
   onStepEnd?: (finishReason?: string) => void;
   onError?: (error: string) => void;
   onClose?: () => void;
+  onModeChanged?: (mode: ChatMode, projectId?: string) => void;
 }
 
 export interface Connection {
-  send(text: string): void;
+  send(text: string): boolean;
+  sendRaw(message: object): boolean;
+  setMode(mode: ChatMode, projectId?: string): boolean;
   close(): void;
 }
 
@@ -373,8 +386,14 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "tool.result":
             handlers.onToolResult?.(data);
             break;
+          case "tool.approval_request":
+            handlers.onApprovalRequest?.(data);
+            break;
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);
+            break;
+          case "session.mode_changed":
+            handlers.onModeChanged?.(data.mode, data.projectId);
             break;
           case "error":
             handlers.onError?.(data.error);
@@ -392,7 +411,19 @@ export function useEngineClient(options?: EngineClientOptions) {
       send(text: string) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
+          return true;
         }
+        return false;
+      },
+      sendRaw(message: object) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(message));
+          return true;
+        }
+        return false;
+      },
+      setMode(mode: ChatMode, projectId?: string) {
+        return this.sendRaw({ type: "session.set_mode", mode, projectId });
       },
       close() {
         socket.close();
@@ -472,8 +503,14 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "tool.result":
             handlers.onToolResult?.(data);
             break;
+          case "tool.approval_request":
+            handlers.onApprovalRequest?.(data);
+            break;
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);
+            break;
+          case "session.mode_changed":
+            handlers.onModeChanged?.(data.mode, data.projectId);
             break;
           case "error":
             handlers.onError?.(data.error);
@@ -491,7 +528,19 @@ export function useEngineClient(options?: EngineClientOptions) {
       send(text: string) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
+          return true;
         }
+        return false;
+      },
+      sendRaw(message: object) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(message));
+          return true;
+        }
+        return false;
+      },
+      setMode(mode: ChatMode, projectId?: string) {
+        return this.sendRaw({ type: "session.set_mode", mode, projectId });
       },
       close() {
         socket.close();

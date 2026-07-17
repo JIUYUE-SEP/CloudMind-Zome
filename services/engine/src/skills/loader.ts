@@ -41,12 +41,13 @@ async function loadSkill(skillDir: string): Promise<Skill | undefined> {
     } catch {
       // schema optional
     }
-    // For Phase 5, tools and prompts are loaded from manifest metadata only.
-    // Tool implementations will be discovered/registered separately in future phases.
+    // tools/prompts 的实现发现与注册留待后续阶段；
+    // content 保留 SKILL.md 全文，运行时注入 system prompt。
     return {
       ...manifest,
       tools: [],
       prompts: [],
+      content: manifestContent,
       configSchema,
     };
   } catch {

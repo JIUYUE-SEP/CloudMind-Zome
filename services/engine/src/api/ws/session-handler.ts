@@ -1,12 +1,17 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
-import type { ApiContext } from "../context.js";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { routeMessage } from "../../conductor/conductor.js";
 import type { ChatMessage } from "@mindcloud/shared";
+import type { ApiContext } from "../context.js";
+import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, sanitizeInput } from "./validation.js";
+import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput } from "./validation.js";
+import type { ApprovalRequest } from "../../core/agent-worker.js";
 
 const MAX_PENDING_MESSAGES = 100;
+const APPROVAL_TIMEOUT_MS = 60_000;
 
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
@@ -24,6 +29,11 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
     async (socket: WebSocket, req: FastifyRequest) => {
       const { sessionId } = req.params as { sessionId: string };
 
+      if (!isAllowedWsOrigin(req.headers.origin)) {
+        socket.close(4403, "Forbidden origin");
+        return;
+      }
+
       if (!isValidId(sessionId)) {
         socket.close(4004, "Invalid session id");
         return;
@@ -32,6 +42,41 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       const pendingMessages: unknown[] = [];
       let session: Awaited<ReturnType<typeof context.sessionRepository.get>> = undefined;
       let ready = false;
+
+      // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
+      const pendingApprovals = new Map<
+        string,
+        { toolName: string; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }
+      >();
+      const autoApprovedTools = new Set<string>();
+
+      function requestApproval(agentId: string, req: ApprovalRequest): Promise<boolean> {
+        const rememberKey = `${agentId}:${req.toolName}`;
+        if (autoApprovedTools.has(rememberKey)) return Promise.resolve(true);
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            pendingApprovals.delete(req.id);
+            resolve(false); // 超时视为拒绝
+          }, APPROVAL_TIMEOUT_MS);
+          pendingApprovals.set(req.id, { toolName: rememberKey, resolve, timer });
+          safeSend(socket, {
+            agentId,
+            type: "tool.approval_request",
+            approvalId: req.id,
+            toolCallId: req.toolCallId,
+            toolName: req.toolName,
+            arguments: req.arguments,
+          });
+        });
+      }
+
+      socket.on("close", () => {
+        for (const [id, pending] of pendingApprovals) {
+          clearTimeout(pending.timer);
+          pending.resolve(false);
+          pendingApprovals.delete(id);
+        }
+      });
 
       socket.on("message", (raw: unknown) => {
         if (!ready) {
@@ -61,6 +106,52 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
         try {
           if (!session) return;
           const data = JSON.parse(String(raw));
+
+          // 审批响应
+          if (data.type === "tool.approval") {
+            const pending = pendingApprovals.get(data.approvalId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              pendingApprovals.delete(data.approvalId);
+              if (data.approved && data.remember && isApprovalRememberable(pending.toolName)) {
+                autoApprovedTools.add(pending.toolName);
+              }
+              pending.resolve(data.approved === true);
+            }
+            return;
+          }
+
+          if (data.type === "session.set_mode") {
+            const mode = data.mode as unknown;
+            const projectId = data.projectId as unknown;
+
+            if (!isValidChatMode(mode)) {
+              safeSend(socket, { type: "error", error: "Invalid mode" });
+              return;
+            }
+
+            if (projectId !== undefined && !isValidProjectId(projectId)) {
+              safeSend(socket, { type: "error", error: "Invalid project id" });
+              return;
+            }
+
+            const updatedSession = { ...session, mode, projectId };
+            await context.sessionRepository.update(updatedSession);
+            session = updatedSession;
+
+            if (projectId) {
+              const projectRoot = path.join(getDataDir(), "projects", projectId);
+              await fs.mkdir(projectRoot, { recursive: true });
+            }
+
+            safeSend(socket, { type: "session.mode_changed", mode, projectId });
+            return;
+          }
+
+          // 带 type 的未知控制帧静默忽略（聊天消息不带 type），
+          // 避免前端协议超前时穿透到聊天错误路径
+          if (typeof data.type === "string") return;
+
           const input = sanitizeInput(data.text);
           if (!input.ok) {
             safeSend(socket, { type: "error", error: input.error });
@@ -90,6 +181,16 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           const validAgents = agents.filter((a): a is NonNullable<typeof a> => !!a);
           const routing = routeMessage(input.text, session, validAgents);
 
+          // 空目标（如 @了不存在的成员、会话内 Agent 均已删除）时明确告知，
+          // 而不是让消息静默消失
+          if (routing.targetAgentIds.length === 0) {
+            safeSend(socket, {
+              type: "error",
+              error: "没有可回复的 Agent：@提及未匹配到会话成员，或会话成员已失效",
+            });
+            return;
+          }
+
           // Notify each target agent
           for (const agentId of routing.targetAgentIds) {
             const worker = await context.getAgentWorker(agentId);
@@ -99,13 +200,20 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             const repo = context.getMessageRepository(agentId);
             const history = await repo.listBySession(sessionId, { limit: 20 });
 
+            const projectRoot = session.mode === "code" && session.projectId
+              ? path.join(getDataDir(), "projects", session.projectId)
+              : undefined;
+
             worker.enqueue({
               id: randomUUID(),
               messages: history,
               sessionId,
+              mode: session.mode,
+              projectRoot,
               onEvent: (event) => {
                 safeSend(socket, { agentId, ...event });
               },
+              onApprovalRequest: (req) => requestApproval(agentId, req),
             });
           }
         } catch (err) {

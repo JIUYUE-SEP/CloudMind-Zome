@@ -9,6 +9,7 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
     const config = await context.configRepository.load();
     return {
       ...config.settings,
+      tavilyApiKey: config.settings.tavilyApiKey ? "***" : undefined,
       providers: config.providers.map((p) => ({ ...p, apiKey: p.apiKey ? "***" : undefined })),
     };
   });
@@ -22,9 +23,13 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
     };
     const config = await context.configRepository.load();
     if (body.memory) config.settings.memory = { ...config.settings.memory, ...body.memory } as typeof config.settings.memory;
-    if (body.tavilyApiKey !== undefined) config.settings.tavilyApiKey = body.tavilyApiKey;
+    // 空字符串视为"不修改"，与 provider apiKey 的编辑语义一致
+    if (body.tavilyApiKey) config.settings.tavilyApiKey = body.tavilyApiKey;
     await context.configRepository.save(config);
-    return config.settings;
+    return {
+      ...config.settings,
+      tavilyApiKey: config.settings.tavilyApiKey ? "***" : undefined,
+    };
   });
 
   app.get("/config/tools", {

@@ -57,6 +57,8 @@
         <div class="panel-header">{{ currentTab?.label }}</div>
         <div class="panel-scroll">
           <Component :is="currentComponent" :agent="agentForm" :is-new="isNew" @update="onUpdate" />
+          <div v-if="validationError" class="error-message">{{ validationError }}</div>
+          <div v-if="saveError" class="error-message">{{ saveError }}</div>
           <div class="panel-actions">
             <button v-if="!isNew" class="danger-btn" @click="deleteAgent">删除心智</button>
             <button class="save-btn" :disabled="saving" @click="save">
@@ -88,6 +90,8 @@ const agents = useAgentsStore();
 
 const activeTab = ref("basic");
 const saving = ref(false);
+const validationError = ref("");
+const saveError = ref("");
 
 const tabs = [
   { key: "basic", label: "基础", icon: "◈", comp: AgentEditBasic },
@@ -109,6 +113,9 @@ const sourceAgent = computed(() =>
 );
 
 const agentForm = ref<AgentConfig>(buildEmptyAgent());
+// 用户开始编辑后置脏，列表刷新（agents.load）不再覆盖未保存的输入；
+// 切换心智时复位。
+let formDirty = false;
 
 function buildEmptyAgent(): AgentConfig {
   return {
@@ -121,6 +128,7 @@ function buildEmptyAgent(): AgentConfig {
 }
 
 function syncAgent() {
+  if (formDirty) return;
   const src = sourceAgent.value;
   if (src) {
     agentForm.value = {
@@ -139,6 +147,10 @@ onMounted(() => {
   agents.load();
 });
 
+watch(selectedId, () => {
+  formDirty = false;
+});
+
 watch(
   () => selectedId.value + agents.list.map((a) => a.id).join(","),
   syncAgent,
@@ -146,20 +158,30 @@ watch(
 );
 
 function onUpdate(patch: Partial<AgentConfig>) {
+  formDirty = true;
   agentForm.value = { ...agentForm.value, ...patch };
 }
 
 async function save() {
+  validationError.value = "";
+  saveError.value = "";
+
+  if (!agentForm.value.id || !agentForm.value.name) {
+    validationError.value = "请填写 ID 和名称后再保存";
+    return;
+  }
+
   saving.value = true;
   try {
     if (isNew.value) {
-      if (!agentForm.value.id || !agentForm.value.name) return;
       const created = await agents.create(agentForm.value);
       navigateTo(`/agents/${created.id}`);
     } else {
       if (!selectedId.value) return;
       await agents.update(selectedId.value, agentForm.value);
     }
+  } catch (err) {
+    saveError.value = err instanceof Error ? err.message : "保存失败，请检查输入或稍后重试";
   } finally {
     saving.value = false;
   }
@@ -182,7 +204,7 @@ function selectAgent(id: string) {
   position: absolute;
   top: 0;
   left: 0;
-  right: 180px;
+  right: 0;
   bottom: 56px;
   background: var(--mc-bg);
   color: var(--mc-text);
@@ -445,5 +467,20 @@ function selectAgent(id: string) {
   border-radius: 8px;
   font-size: 13px;
   cursor: pointer;
+}
+
+.error-message {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--mc-danger);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.error-message + .error-message {
+  margin-top: 8px;
 }
 </style>

@@ -37,8 +37,8 @@ async function buildWsContext(agentId: string): Promise<{ context: ApiContext; c
     provider: new MockLLMProvider(),
     tools: [],
     workspaceDir: tmpDir,
-    messageRepository: { append: async () => {}, listBySession: async () => [] },
-    requiresApproval: () => false,
+    messageRepository: { append: async () => {}, listBySession: async () => [], getByIds: async () => [] },
+    approve: () => true,
   });
 
   const context: ApiContext = {
@@ -89,6 +89,41 @@ describe("WebSocket API", () => {
     });
 
     expect(messages.length).toBeGreaterThanOrEqual(1);
+    expect(messages.some((m) => (m as { type: string }).type === "text.delta")).toBe(true);
+    await app.close();
+    await cleanup();
+  });
+
+  it("silently ignores unknown control frames instead of erroring", async () => {
+    const { context, cleanup } = await buildWsContext("agent-ws");
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`);
+
+    const messages: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", async () => {
+        // 未知控制帧（前端协议超前/遗留帧）：应静默忽略，不回错误
+        client.send(JSON.stringify({ type: "code.file_open", path: "src/a.ts" }));
+        await new Promise((r) => setTimeout(r, 300));
+        // 随后的正常聊天消息仍应被处理
+        client.send(JSON.stringify({ text: "hello" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        messages.push(message);
+        if (message.type === "step.end") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    expect(messages.some((m) => (m as { type: string }).type === "error")).toBe(false);
     expect(messages.some((m) => (m as { type: string }).type === "text.delta")).toBe(true);
     await app.close();
     await cleanup();

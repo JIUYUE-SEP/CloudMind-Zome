@@ -1,5 +1,49 @@
+import type { ChatMode } from "@mindcloud/shared";
+
+const DEFAULT_ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:1420",
+];
+
+export function getAllowedOrigins(): string[] {
+  return process.env.CLOUDMIND_ALLOWED_ORIGINS
+    ? process.env.CLOUDMIND_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+    : DEFAULT_ALLOWED_ORIGINS;
+}
+
+/**
+ * WebSocket 握手的 Origin 校验（防 CSWSH：浏览器里任意网页都能连本机 WS）。
+ * 浏览器必然携带 Origin；不带 Origin 的客户端（curl、Node、Tauri 后端）放行。
+ */
+export function isAllowedWsOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (process.env.NODE_ENV === "e2e") return true;
+  // Tauri webview 使用自定义协议或 tauri.localhost 域
+  if (origin.startsWith("tauri://")) return true;
+  if (/^https?:\/\/([a-z0-9-]+\.)?tauri\.localhost$/.test(origin)) return true;
+  return getAllowedOrigins().includes(origin);
+}
+
 export function isValidId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
+export function isValidChatMode(value: unknown): value is ChatMode {
+  return value === "chat" || value === "code";
+}
+
+export function isValidProjectId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
+}
+
+// 每次都必须人工确认的工具：即使客户端回执带了 remember:true 也不记入
+// 免询问名单（与 apps/web/utils/approval.ts 的名单保持一致）。
+// run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
+const NO_REMEMBER_TOOLS = new Set(["run_command"]);
+
+export function isApprovalRememberable(toolName: string): boolean {
+  return !NO_REMEMBER_TOOLS.has(toolName);
 }
 
 export function sanitizeInput(text: unknown): { ok: false; error: string } | { ok: true; text: string } {

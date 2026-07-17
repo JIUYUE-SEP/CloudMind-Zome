@@ -26,4 +26,11 @@ export class MessageRepository implements IMessageRepository {
     const limit = options?.limit ?? 100;
     return filtered.slice(-limit);
   }
+
+  async getByIds(ids: string[]): Promise<ChatMessageRecord[]> {
+    if (ids.length === 0) return [];
+    const wanted = new Set(ids);
+    const all = await this.store().readLines();
+    return all.filter((m) => wanted.has(m.id));
+  }
 }

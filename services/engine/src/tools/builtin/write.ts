@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const PROTECTED_FILES = new Set([
@@ -41,24 +42,39 @@ function resolveAllowedWritePath(
   return { fullPath, relativePath: normalized };
 }
 
+async function resolveWritePath(
+  ctx: ToolContext,
+  filePath: string,
+): Promise<{ fullPath: string; relativePath: string }> {
+  if (ctx.projectRoot) {
+    const basename = path.basename(path.normalize(filePath)).toLowerCase();
+    if (PROTECTED_FILES.has(basename)) {
+      throw new Error(`cannot write protected file: ${filePath}`);
+    }
+    return {
+      fullPath: await resolveProjectPath(ctx.projectRoot, filePath),
+      relativePath: path.normalize(filePath),
+    };
+  }
+  return resolveAllowedWritePath(ctx.workspaceDir, filePath);
+}
+
 export const writeTool: Tool = {
   name: "write_file",
-  description: "Write content to a file in the workspace",
+  description: "Write content to a file in the workspace or project root",
   parameters: z.object({
     path: z.string(),
     content: z.string(),
   }),
   accesses: [{ resource: "file", action: "write" }],
+  requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath, content } = args as { path: string; content: string };
     try {
-      const { fullPath, relativePath } = resolveAllowedWritePath(
-        ctx.workspaceDir,
-        filePath,
-      );
+      const { fullPath, relativePath } = await resolveWritePath(ctx, filePath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, content, "utf-8");
-      return { success: true, output: `Wrote files/${relativePath}` };
+      return { success: true, output: `Wrote ${relativePath}` };
     } catch (err) {
       return { success: false, error: String(err) };
     }
