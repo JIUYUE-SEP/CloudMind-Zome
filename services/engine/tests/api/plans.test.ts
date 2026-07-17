@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
+import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +27,10 @@ function extractText(messages: ChatMessage[]): string {
     .join("");
 }
 
-async function buildContext(agentId: string): Promise<{
+async function buildContext(
+  agentId: string,
+  runAgentImpl?: (id: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }) => Promise<string>,
+): Promise<{
   context: ApiContext;
   planManager: PlanManager;
   cleanup: () => Promise<void>;
@@ -58,11 +62,11 @@ async function buildContext(agentId: string): Promise<{
     blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async () => undefined,
     getPlanManager: async (id: string) => (id === agentId ? planManager : undefined),
-    runAgentCollect: async (_id: string, messages: ChatMessage[]) => {
+    runAgentCollect: runAgentImpl ?? (async (_id: string, messages: ChatMessage[]) => {
       const text = extractText(messages);
       if (text.includes("fail-me")) throw new Error("step failed");
       return `done:${text}`;
-    },
+    }),
   };
 
   return {
@@ -215,5 +219,75 @@ describe("Plans API", () => {
       .post(`/agents/a1/plans/${created.body.id}/retry`)
       .send({ stepId: "nope" });
     expect(res.status).toBe(404);
+  });
+
+  it("returns 409 when the plan is already running", async () => {
+    const calls: number[] = [];
+    let release: ((text: string) => void) | undefined;
+    const gate = new Promise<string>((resolve) => (release = resolve));
+    const local = await buildContext("a1", async () => {
+      calls.push(1);
+      return gate;
+    });
+    const localApp = await createServer(local.context);
+    await localApp.ready();
+    try {
+      const created = await request(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
+      const planId = created.body.id;
+
+      // 第一个 /run 会卡在 gate 上；第二个应立刻 409
+      const first = request(localApp.server).post(`/agents/a1/plans/${planId}/run`);
+      void first.then(() => {}, () => {}); // 启动请求
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+
+      const second = await request(localApp.server).post(`/agents/a1/plans/${planId}/run`);
+      expect(second.status).toBe(409);
+      expect(second.body.error).toMatch(/already running/);
+
+      release!("done");
+      const firstRes = await first;
+      expect(firstRes.status).toBe(200);
+    } finally {
+      await localApp.close();
+      await local.cleanup();
+    }
+  });
+
+  it("aborts the running step when the client disconnects", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const local = await buildContext("a1", (_id, _messages, opts) => {
+      receivedSignal = opts?.signal;
+      return new Promise<string>((_, reject) => {
+        opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    });
+    const localApp = await createServer(local.context);
+    await localApp.listen({ port: 0, host: "127.0.0.1" });
+    try {
+      const created = await request(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
+      const planId = created.body.id;
+      const address = localApp.server.address() as { port: number };
+
+      // 裸 socket 客户端：step 开始执行后立即断连
+      const req = http.request({
+        method: "POST",
+        host: "127.0.0.1",
+        port: address.port,
+        path: `/agents/a1/plans/${planId}/run`,
+      });
+      req.on("error", () => {});
+      req.end();
+      await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+      req.destroy();
+
+      // 断连应中止正在执行的 step（标记 failed），而不是空转到自然结束
+      await vi.waitFor(() => expect(receivedSignal?.aborted).toBe(true));
+      await vi.waitFor(() =>
+        expect(local.planManager.get(planId)?.steps[0].status).toBe("failed"),
+      );
+    } finally {
+      await localApp.close();
+      await local.cleanup();
+    }
   });
 });

@@ -21,6 +21,9 @@ function userMessage(text: string): ChatMessage {
 }
 
 export async function registerPlanRoutes(app: FastifyInstance, context: ApiContext) {
+  // plan 级运行锁：同一 plan 同时只允许一个 /run，冲突返回 409
+  const runningPlanIds = new Set<string>();
+
   /** 校验 agentId 并解析 PlanManager；失败时已写响应，返回 undefined */
   async function resolveManager(
     agentId: string,
@@ -91,17 +94,37 @@ export async function registerPlanRoutes(app: FastifyInstance, context: ApiConte
     const plan = manager.get(planId);
     if (!plan) return reply.status(404).send({ error: "Plan not found" });
 
-    const runAgent = context.runAgentCollect;
-    // 顺序执行所有 pending 步骤；遇 failed 或 paused 停止后续步骤
-    for (const step of plan.steps) {
-      if (step.status !== "pending") continue;
-      if (manager.get(planId)?.status === "paused") break;
-      const updated = await manager.executeStep(planId, step.id, async (s) =>
-        runAgent(agentId, [userMessage(s.description)])
-      );
-      if (updated.status === "failed") break;
+    const runKey = `${agentId}:${planId}`;
+    if (runningPlanIds.has(runKey)) {
+      return reply.status(409).send({ error: "Plan is already running" });
     }
-    return manager.get(planId);
+    runningPlanIds.add(runKey);
+
+    // 客户端断连时中止正在执行的步骤，避免空转继续烧 token；
+    // 正常完成时 done=true，响应结束触发的 close 不会误中止
+    const controller = new AbortController();
+    let done = false;
+    request.raw.once("close", () => {
+      if (!done) controller.abort();
+    });
+
+    try {
+      const runAgent = context.runAgentCollect;
+      // 顺序执行所有 pending 步骤；遇 failed 或 paused 停止后续步骤
+      for (const step of plan.steps) {
+        if (step.status !== "pending") continue;
+        if (controller.signal.aborted) break;
+        if (manager.get(planId)?.status === "paused") break;
+        const updated = await manager.executeStep(planId, step.id, async (s) =>
+          runAgent(agentId, [userMessage(s.description)], { signal: controller.signal })
+        );
+        if (updated.status === "failed") break;
+      }
+      return manager.get(planId);
+    } finally {
+      done = true;
+      runningPlanIds.delete(runKey);
+    }
   });
 
   app.post("/agents/:agentId/plans/:planId/pause", {
