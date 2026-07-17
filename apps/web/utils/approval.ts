@@ -37,6 +37,15 @@ export interface ApprovalResponsePayload {
   remember: boolean;
 }
 
+// 每次都必须人工确认的工具：即使客户端点了"本会话不再询问"，
+// 引擎也不会记住（与 services/engine/src/api/ws/validation.ts 的名单保持一致）。
+// run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
+const NO_REMEMBER_TOOLS = new Set(["run_command"]);
+
+export function isApprovalRememberable(toolName: string): boolean {
+  return !NO_REMEMBER_TOOLS.has(toolName);
+}
+
 // 由审批请求构造一条消息流中的"审批卡片"消息
 export function createApprovalMessage(req: ApprovalRequestPayload) {
   return {

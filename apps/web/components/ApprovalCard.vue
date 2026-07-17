@@ -18,16 +18,22 @@
       <button class="approval-btn deny" :disabled="status !== 'pending'" @click="onRespond(false, false)">
         拒绝
       </button>
-      <button class="approval-btn remember" :disabled="status !== 'pending'" @click="onRespond(true, true)">
+      <button
+        class="approval-btn remember"
+        :disabled="status !== 'pending' || !rememberAllowed"
+        :title="rememberAllowed ? '' : '该工具每次都需要人工确认'"
+        @click="onRespond(true, true)"
+      >
         本会话不再询问
       </button>
+      <span v-if="!rememberAllowed" class="approval-hint">该工具每次都需要确认</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
-import type { ApprovalStatus, ApprovalResponsePayload } from "@/utils/approval";
+import { isApprovalRememberable, type ApprovalStatus, type ApprovalResponsePayload } from "@/utils/approval";
 
 const props = defineProps<{
   approvalId: string;
@@ -40,6 +46,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "respond", payload: ApprovalResponsePayload): void;
 }>();
+
+// run_command 等裸执行工具不允许"本会话不再询问"（引擎侧同样拒绝记忆）
+const rememberAllowed = computed(() => isApprovalRememberable(props.toolName));
 
 // 参数摘要最大长度，超出截断
 const ARGS_LIMIT = 300;
@@ -162,6 +171,11 @@ function onRespond(approved: boolean, remember: boolean) {
 .approval-btn.remember:hover:not(:disabled) {
   border-color: rgba(0, 229, 201, 0.3);
   color: var(--mc-accent);
+}
+.approval-hint {
+  align-self: center;
+  font-size: 11px;
+  color: var(--mc-text-tertiary);
 }
 .approval-btn:disabled {
   cursor: not-allowed;

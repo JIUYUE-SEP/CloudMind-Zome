@@ -45,12 +45,23 @@ describe("ApprovalCard", () => {
   });
 
   it("emits remember respond when clicking 本会话不再询问", async () => {
-    const wrapper = mount(ApprovalCard, { props: baseProps });
+    const wrapper = mount(ApprovalCard, {
+      props: { ...baseProps, toolName: "edit_file", args: { path: "a.ts" } },
+    });
     const btn = wrapper.findAll("button").find((b) => b.text() === "本会话不再询问");
     await btn!.trigger("click");
     expect(wrapper.emitted("respond")).toEqual([
       [{ approvalId: "ap-1", approved: true, remember: true }],
     ]);
+  });
+
+  it("disables remember with hint for run_command (每次都必须确认)", async () => {
+    const wrapper = mount(ApprovalCard, { props: baseProps }); // toolName: run_command
+    const btn = wrapper.findAll("button").find((b) => b.text() === "本会话不再询问");
+    expect(btn!.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("该工具每次都需要确认");
+    await btn!.trigger("click");
+    expect(wrapper.emitted("respond")).toBeUndefined();
   });
 
   it("disables buttons and shows status once processed", async () => {

@@ -37,6 +37,15 @@ export function isValidProjectId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 }
 
+// 每次都必须人工确认的工具：即使客户端回执带了 remember:true 也不记入
+// 免询问名单（与 apps/web/utils/approval.ts 的名单保持一致）。
+// run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
+const NO_REMEMBER_TOOLS = new Set(["run_command"]);
+
+export function isApprovalRememberable(toolName: string): boolean {
+  return !NO_REMEMBER_TOOLS.has(toolName);
+}
+
 export function sanitizeInput(text: unknown): { ok: false; error: string } | { ok: true; text: string } {
   if (typeof text !== "string") return { ok: false, error: "text must be a string" };
   if (text.length > 10000) return { ok: false, error: "text too long (max 10000 characters)" };
