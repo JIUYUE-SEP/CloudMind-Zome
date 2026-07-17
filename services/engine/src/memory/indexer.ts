@@ -2,6 +2,25 @@ import type { EmbedderProvider } from "../provider/types.js";
 import type { SidecarClient } from "../sidecar/client.js";
 
 const MAX_INDEX_CHARS = 2000;
+const EMBED_TIMEOUT_MS = 5000;
+
+/**
+ * embed 走 OpenAI SDK 默认超时（分钟级），嵌入服务 hang 时会卡住聊天主链路。
+ * 包一层超时，超时按失败处理（调用方静默降级）。
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("embed timeout")), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * 向量记忆索引：消息 embed 后写入 sidecar 向量库，供跨会话语义检索。
@@ -11,6 +30,7 @@ export class MemoryIndexer {
   constructor(
     private client: SidecarClient,
     private embedder: EmbedderProvider,
+    private embedTimeoutMs: number = EMBED_TIMEOUT_MS,
   ) {}
 
   async indexMessage(agentId: string, docId: string, text: string): Promise<void> {
@@ -18,7 +38,10 @@ export class MemoryIndexer {
     if (!trimmed) return;
     if (!(await this.client.isAvailable())) return;
     try {
-      const [vec] = await this.embedder.embed([trimmed.slice(0, MAX_INDEX_CHARS)]);
+      const [vec] = await withTimeout(
+        this.embedder.embed([trimmed.slice(0, MAX_INDEX_CHARS)]),
+        this.embedTimeoutMs,
+      );
       if (vec) await this.client.upsert(agentId, docId, vec);
     } catch (err) {
       console.error("memory index failed", err);
@@ -29,7 +52,10 @@ export class MemoryIndexer {
     if (!query.trim()) return [];
     if (!(await this.client.isAvailable())) return [];
     try {
-      const [vec] = await this.embedder.embed([query.slice(0, MAX_INDEX_CHARS)]);
+      const [vec] = await withTimeout(
+        this.embedder.embed([query.slice(0, MAX_INDEX_CHARS)]),
+        this.embedTimeoutMs,
+      );
       if (!vec) return [];
       return await this.client.search(agentId, vec, topK);
     } catch {
