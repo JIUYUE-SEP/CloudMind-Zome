@@ -40,7 +40,9 @@ export class SidecarClient {
     const protoPath = findProtoPath();
     if (!protoPath) return undefined;
     try {
-      const def = protoLoader.loadSync(protoPath, { longs: Number, defaults: true });
+      // keepCase：proto 字段是 snake_case（agent_id/doc_id/top_k），proto-loader
+      // 默认转 camelCase 会导致请求键被整体丢弃、响应读错字段，Upsert/Search 静默失效
+      const def = protoLoader.loadSync(protoPath, { longs: Number, defaults: true, keepCase: true });
       const pkg = grpc.loadPackageDefinition(def) as any;
       this.client = new pkg.zome.ZomeSidecar(this.addr, grpc.credentials.createInsecure());
       return this.client;
