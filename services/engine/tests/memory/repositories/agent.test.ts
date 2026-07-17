@@ -5,6 +5,7 @@ import os from "node:os";
 import { AgentRepository } from "../../../src/memory/repositories/agent.js";
 import { getAgentDir } from "../../../src/config/paths.js";
 import type { AgentConfig } from "@mindcloud/shared";
+import { restoreDataDir } from "../../helpers/env.js";
 
 describe("AgentRepository", () => {
   let repo: AgentRepository;
@@ -18,7 +19,7 @@ describe("AgentRepository", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 

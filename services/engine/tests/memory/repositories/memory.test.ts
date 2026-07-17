@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { MemoryRepository } from "../../../src/memory/repositories/memory.js";
 import type { MemoryRecord } from "../../../src/memory/repositories/types.js";
+import { restoreDataDir } from "../../helpers/env.js";
 
 describe("MemoryRepository", () => {
   let repo: MemoryRepository;
@@ -17,7 +18,7 @@ describe("MemoryRepository", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 

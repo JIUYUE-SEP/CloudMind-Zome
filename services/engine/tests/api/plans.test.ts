@@ -18,6 +18,7 @@ import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import type { ChatMessage } from "@mindcloud/shared";
+import { restoreDataDir } from "../helpers/env.js";
 
 function extractText(messages: ChatMessage[]): string {
   return messages
@@ -74,7 +75,7 @@ async function buildContext(
     planManager,
     cleanup: async () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
-      process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+      restoreDataDir(originalDataDir);
     },
   };
 }

@@ -23,6 +23,9 @@ target/
 .DS_Store
 Thumbs.db
 
+# 测试误把 env 恢复成字面量 "undefined" 时生成的垃圾目录（防再犯）
+undefined/
+
 # IDE
 .vscode/
 .idea/

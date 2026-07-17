@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
 import { DocumentStore } from "../../src/memory/document-store.js";
+import { restoreDataDir } from "../helpers/env.js";
 
 describe("SchedulerRepository concurrency", () => {
   let tmpDir: string;
@@ -15,7 +16,7 @@ describe("SchedulerRepository concurrency", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 

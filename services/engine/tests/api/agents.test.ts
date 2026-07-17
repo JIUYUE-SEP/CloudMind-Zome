@@ -14,6 +14,7 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
+import { restoreDataDir } from "../helpers/env.js";
 
 async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "api-test-"));
@@ -36,7 +37,7 @@ async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () =>
     context,
     cleanup: async () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
-      process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+      restoreDataDir(originalDataDir);
     },
   };
 }

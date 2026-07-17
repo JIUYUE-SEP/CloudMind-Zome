@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { SessionRepository } from "../../src/conductor/repository.js";
+import { restoreDataDir } from "../helpers/env.js";
 
 describe("SessionRepository", () => {
   let tmpDir: string;
@@ -14,7 +15,7 @@ describe("SessionRepository", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 

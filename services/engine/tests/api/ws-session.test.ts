@@ -18,6 +18,7 @@ import type { ApiContext } from "../../src/api/context.js";
 import { getDataDir } from "../../src/config/paths.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import WebSocket from "ws";
+import { restoreDataDir } from "../helpers/env.js";
 
 async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Promise<{ context: ApiContext; cleanup: () => Promise<void>; sessionId: string; providers: Map<string, MockLLMProvider> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-session-test-"));
@@ -76,7 +77,7 @@ async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Pr
     cleanup: async () => {
       agentRepository.dispose();
       await fs.rm(tmpDir, { recursive: true, force: true });
-      process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+      restoreDataDir(originalDataDir);
     },
     sessionId: session.id,
     providers,

@@ -15,6 +15,7 @@ import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
 import WebSocket from "ws";
+import { restoreDataDir } from "../helpers/env.js";
 
 async function buildWsContext(agentId: string): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-test-"));
@@ -58,7 +59,7 @@ async function buildWsContext(agentId: string): Promise<{ context: ApiContext; c
     cleanup: async () => {
       agentRepository.dispose();
       await fs.rm(tmpDir, { recursive: true, force: true });
-      process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+      restoreDataDir(originalDataDir);
     },
   };
 }

@@ -17,6 +17,7 @@ import { BackgroundManager } from "../../src/subagent/background.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import type { AgentConfig } from "@mindcloud/shared";
+import { restoreDataDir } from "../helpers/env.js";
 
 const config: AgentConfig = { id: "a2", name: "A2", persona: "", model: "mock", skills: [], tools: [] };
 
@@ -49,7 +50,7 @@ async function buildContext(runAgent: () => Promise<string>): Promise<{
     backgroundManager,
     cleanup: async () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
-      process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+      restoreDataDir(originalDataDir);
     },
   };
 }

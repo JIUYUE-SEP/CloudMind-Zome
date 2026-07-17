@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { ActionRepository } from "../../../src/memory/repositories/action.js";
 import type { ActionRecord } from "../../../src/memory/repositories/types.js";
+import { restoreDataDir } from "../../helpers/env.js";
 
 describe("ActionRepository", () => {
   let repo: ActionRepository;
@@ -17,7 +18,7 @@ describe("ActionRepository", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { MessageRepository } from "../../../src/memory/repositories/message.js";
 import type { ChatMessageRecord } from "../../../src/memory/repositories/types.js";
+import { restoreDataDir } from "../../helpers/env.js";
 
 describe("MessageRepository", () => {
   let repo: MessageRepository;
@@ -17,7 +18,7 @@ describe("MessageRepository", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 

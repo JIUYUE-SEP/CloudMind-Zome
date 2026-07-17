@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { LLMCallRepository } from "../../../src/memory/repositories/llm-call.js";
 import type { LLMCallRecord } from "../../../src/memory/repositories/types.js";
+import { restoreDataDir } from "../../helpers/env.js";
 
 describe("LLMCallRepository", () => {
   let repo: LLMCallRepository;
@@ -17,7 +18,7 @@ describe("LLMCallRepository", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 

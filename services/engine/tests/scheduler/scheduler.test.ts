@@ -7,6 +7,7 @@ import { SchedulerRepository } from "../../src/scheduler/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import type { ScheduledTask } from "../../src/scheduler/types.js";
+import { restoreDataDir } from "../helpers/env.js";
 
 type SchedulerInternals = {
   tick(): Promise<void>;
@@ -23,7 +24,7 @@ describe("Scheduler", () => {
   });
 
   afterEach(async () => {
-    process.env.CLOUDMIND_DATA_DIR = originalDataDir;
+    restoreDataDir(originalDataDir);
     // Retry cleanup: Windows may briefly hold file handles after async I/O.
     for (let i = 0; i < 5; i++) {
       try {
