@@ -26,8 +26,9 @@ describe("runCommandTool", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(workspaceDir, { recursive: true, force: true });
-    fs.rmSync(projectRoot, { recursive: true, force: true });
+    // Windows 上进程退出后目录锁释放略有延迟，maxRetries 容忍清理竞态
+    fs.rmSync(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    fs.rmSync(projectRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
   it("runs a simple command and returns stdout", async () => {
@@ -210,5 +211,27 @@ describe("runCommandTool", () => {
     expect(output.exitCode).toBe(-1);
     const size = Buffer.byteLength(output.stdout, "utf8") + Buffer.byteLength(output.stderr, "utf8");
     expect(size).toBeLessThanOrEqual(MAX_OUTPUT_SIZE + 1024);
+  }, 15000);
+
+  it("kills the whole process tree on timeout, including grandchildren (POSIX)", async () => {
+    if (process.platform === "win32") return; // POSIX 走进程组 kill，Windows 走 taskkill
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    // sh 后台派生一个孙进程 sleep 并打印其 pid，然后 shell 自身挂住
+    const result = await runCommandTool.execute(ctx, {
+      command: "sleep 300 & echo GRANDCHILD_PID=$!; wait",
+      timeout: 1,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timed out/i);
+
+    const output = result.output as { stdout: string; stderr: string; exitCode: number };
+    const match = output.stdout.match(/GRANDCHILD_PID=(\d+)/);
+    expect(match).not.toBeNull();
+    const grandchildPid = Number(match![1]);
+
+    // 等进程组 SIGKILL 生效后，孙进程应已不存在（ESRCH）；未修复前它会作为孤儿存活
+    await new Promise((r) => setTimeout(r, 500));
+    expect(() => process.kill(grandchildPid, 0)).toThrow();
   }, 15000);
 });
