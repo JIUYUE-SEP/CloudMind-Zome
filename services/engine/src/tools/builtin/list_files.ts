@@ -34,7 +34,7 @@ export const listFilesTool: Tool = {
         return { success: false, error: "Recursive listing is not implemented" };
       }
 
-      const targetPath = resolveProjectPath(projectRoot, relativePath);
+      const targetPath = await resolveProjectPath(projectRoot, relativePath);
       const dirents = await fs.readdir(targetPath, { withFileTypes: true });
       const entries = dirents.map((dirent) => ({
         name: dirent.name,

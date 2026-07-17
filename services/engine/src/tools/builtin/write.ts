@@ -42,17 +42,17 @@ function resolveAllowedWritePath(
   return { fullPath, relativePath: normalized };
 }
 
-function resolveWritePath(
+async function resolveWritePath(
   ctx: ToolContext,
   filePath: string,
-): { fullPath: string; relativePath: string } {
+): Promise<{ fullPath: string; relativePath: string }> {
   if (ctx.projectRoot) {
     const basename = path.basename(path.normalize(filePath)).toLowerCase();
     if (PROTECTED_FILES.has(basename)) {
       throw new Error(`cannot write protected file: ${filePath}`);
     }
     return {
-      fullPath: resolveProjectPath(ctx.projectRoot, filePath),
+      fullPath: await resolveProjectPath(ctx.projectRoot, filePath),
       relativePath: path.normalize(filePath),
     };
   }
@@ -71,7 +71,7 @@ export const writeTool: Tool = {
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath, content } = args as { path: string; content: string };
     try {
-      const { fullPath, relativePath } = resolveWritePath(ctx, filePath);
+      const { fullPath, relativePath } = await resolveWritePath(ctx, filePath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, content, "utf-8");
       return { success: true, output: `Wrote ${relativePath}` };

@@ -77,7 +77,7 @@ export const runCommandTool: Tool = {
 
     let targetCwd: string;
     try {
-      targetCwd = resolveProjectPath(projectRoot, cwd);
+      targetCwd = await resolveProjectPath(projectRoot, cwd);
     } catch (err) {
       return { success: false, error: String(err) };
     }

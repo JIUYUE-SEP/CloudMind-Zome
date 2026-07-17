@@ -16,11 +16,11 @@ function resolveWorkspacePath(workspaceDir: string, filePath: string): string {
   return fullPath;
 }
 
-function resolveReadPath(ctx: ToolContext, filePath: string): string {
+function resolveReadPath(ctx: ToolContext, filePath: string): Promise<string> {
   if (ctx.projectRoot) {
     return resolveProjectPath(ctx.projectRoot, filePath);
   }
-  return resolveWorkspacePath(ctx.workspaceDir, filePath);
+  return Promise.resolve(resolveWorkspacePath(ctx.workspaceDir, filePath));
 }
 
 export const readTool: Tool = {
@@ -31,7 +31,7 @@ export const readTool: Tool = {
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath } = args as { path: string };
     try {
-      const fullPath = resolveReadPath(ctx, filePath);
+      const fullPath = await resolveReadPath(ctx, filePath);
       const content = await fs.readFile(fullPath, "utf-8");
       return { success: true, output: content };
     } catch (err) {

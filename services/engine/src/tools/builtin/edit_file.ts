@@ -44,7 +44,7 @@ export const editFileTool: Tool = {
         return { success: false, error: "oldString must not be empty" };
       }
 
-      const fullPath = resolveProjectPath(projectRoot, filePath);
+      const fullPath = await resolveProjectPath(projectRoot, filePath);
       const content = await fs.readFile(fullPath, "utf-8");
       const occurrences = countOccurrences(content, oldString);
 
