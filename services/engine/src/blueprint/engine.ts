@@ -156,11 +156,16 @@ async function executeTool(
   executionId: string,
   services?: ToolServices,
 ): Promise<unknown> {
-  const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
-  await fs.mkdir(workspaceDir, { recursive: true });
   const tools = getBuiltinTools();
   const tool = tools.find((t) => t.name === toolName);
   if (!tool) return `tool not found: ${toolName}`;
+  // blueprint 没有人工审批通道，requiresApproval 工具一律拒绝执行
+  // （types.ts 契约：无审批通道的调用一律拒绝），防止审批门被 executeTool 旁路
+  if (tool.requiresApproval) {
+    return `tool requires approval and cannot run in blueprints: ${toolName}`;
+  }
+  const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
+  await fs.mkdir(workspaceDir, { recursive: true });
   try {
     const toolCtx = {
       agentId: "blueprint",

@@ -58,4 +58,29 @@ describe("executeBlueprint", () => {
     expect(result.status).toBe("completed");
     expect(result.outputs["tool"]).toContain("tool not found");
   });
+
+  it.each(["run_command", "write_file", "bash"])(
+    "refuses requiresApproval tool in blueprints: %s",
+    async (toolName) => {
+      const blueprint: Blueprint = {
+        id: "b1",
+        name: "Test",
+        nodes: [
+          { id: "start", type: "start", x: 0, y: 0 },
+          { id: "tool", type: "tool", x: 200, y: 0, config: { toolName, arguments: {} } },
+          { id: "end", type: "end", x: 400, y: 0 },
+        ],
+        edges: [
+          { source: "start", target: "tool" },
+          { source: "tool", target: "end" },
+        ],
+        createdAt: "2024-01-01",
+        updatedAt: "2024-01-01",
+      };
+      // blueprint 无人工审批通道，危险工具必须被拒绝而不是 executeTool 直跑
+      const result = await executeBlueprint(blueprint, mockContext);
+      expect(result.status).toBe("completed");
+      expect(result.outputs["tool"]).toContain("requires approval");
+    },
+  );
 });
