@@ -7,6 +7,28 @@ import { createInterface } from "node:readline";
 // 必须按文件维度串行才能保证 append/writeLines 的顺序与 tmp 文件不互相踩踏。
 const writeQueues = new Map<string, Promise<void>>();
 
+/**
+ * Windows 上 rename 覆盖一个正被并发读取（读句柄未释放）的目标文件会 EPERM
+ * （典型：scheduler 写回 scheduler.jsonl 时 API/轮询正在 readLines）。
+ * 句柄占用是瞬时的，短暂退避重试即可；POSIX 下 rename 本就允许覆盖，一次成功。
+ */
+async function renameWithRetry(tmpPath: string, filePath: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(tmpPath, filePath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const retryable = code === "EPERM" || code === "EBUSY" || code === "EACCES";
+      if (retryable && attempt < 5) {
+        await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export class DocumentStore<T extends object> {
   constructor(public filePath: string) {}
 
@@ -40,7 +62,7 @@ export class DocumentStore<T extends object> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
-    await fs.rename(tmpPath, this.filePath);
+    await renameWithRetry(tmpPath, this.filePath);
   }
 
   async writeJson(data: T): Promise<void> {
@@ -62,7 +84,7 @@ export class DocumentStore<T extends object> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp`;
     await fs.writeFile(tmpPath, content);
-    await fs.rename(tmpPath, this.filePath);
+    await renameWithRetry(tmpPath, this.filePath);
   }
 
   async writeLines(records: T[]): Promise<void> {

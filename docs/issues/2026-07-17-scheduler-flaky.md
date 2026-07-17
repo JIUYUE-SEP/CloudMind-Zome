@@ -1,50 +1,52 @@
-# 跟进 issue：scheduler.test.ts 时序断言在并行负载下偶发 flaky
+# 跟进 issue：scheduler 测试在并行负载下 flaky（timing + Windows 文件锁）
 
 - 创建日期：2026-07-17
 - 来源：feat/code-agent-mode 修复收尾验证时发现
 - 优先级：低（测试稳定性，非产品缺陷）
-- 状态：open
+- 状态：**已解决**（2026-07-17，见文末）
 
-## 问题描述
+## 问题描述（两部分）
 
-`services/engine/tests/scheduler/scheduler.test.ts:83-84`（用例 "does not run task concurrently when worker is pending"，describe: Scheduler）：
+### A. 墙钟时序断言
+
+`services/engine/tests/scheduler/scheduler.test.ts` 的 "fires tasks asynchronously without blocking tick"：
 
 ```ts
-// Yield so runTask starts awaiting workerPromise.
 await new Promise((r) => setTimeout(r, 10));
 expect(tickResolved).toBe(true);
 ```
 
-该断言依赖一个 **10ms 的 `setTimeout` 让出窗口**：测试期望 `tick()` 的 promise 在这 10ms 内 resolve。这是一个基于墙钟时间的时序假设，而非确定性同步点。
+断言依赖 10ms 的 `setTimeout` 让出窗口：期望 `tick()` 在此期间 resolve（验证 tick 不被 pending 的 worker 阻塞）。CPU/IO 满载（turbo 并行跑多包）时事件循环延迟可超过 10ms，断言偶发失败。
 
-## 现象
+### B. Windows 文件锁（rename EPERM）
 
-在 `pnpm test`（turbo 并行跑 engine + web + desktop 三个包）满载运行时偶发失败：
+同文件 "updates nextRunAt and enqueues due task" 偶发失败，真实错误为：
 
 ```
-FAIL tests/scheduler/scheduler.test.ts
-AssertionError: expected false to be true // tickResolved
+Error: EPERM: operation not permitted, rename '...\scheduler.jsonl.tmp' -> '...\scheduler.jsonl'
 ```
 
-- 单独运行 `pnpm vitest run tests/scheduler/scheduler.test.ts`：稳定通过（4/4）。
-- 重跑完整套件：通过。
-- 2026-07-17 在 feat/code-agent-mode 收尾验证中复现一次（engine 288 个测试仅此 1 个失败）。
+根因：`DocumentStore.writeLinesInner`/`writeJsonInner` 用"写 tmp + rename"做原子写，而 Windows 不允许 rename 覆盖一个正被读句柄占用的目标文件。测试内轮询 `repo.get()`（readLines）与 `runTask` 的 `repo.update()`（rename）并发，读句柄短暂占用期间 rename 即 EPERM。**这是生产缺陷，不只是测试问题**：Windows 上 scheduler 写回 `scheduler.jsonl` 时，API/轮询并发读取同一文件同样会触发，后果是任务调度时间未推进（可能重复触发）。
 
-## 根因
+## 复现
 
-CPU 满载时事件循环延迟可超过 10ms，导致让出窗口结束时 `tick()` 的微任务链尚未完成。断言的通过与否取决于机器瞬时负载，属于典型的 timing-sensitive flaky test。
+- 单独跑 `tests/scheduler/`：A、B 均偶发（实测失败率约 20–50%，随机器负载波动）。
+- `pnpm test`（turbo 并行满载）更容易触发。
+- 重跑通常通过，因此长期被"重跑即绿"掩盖。
 
-## 建议修复方向（二选一）
+## 解决方案（已实施）
 
-1. **放宽窗口（最小改动）**：把 10ms 提高到一个在过载 CI 上也有充分余量的值（如 100–200ms），并加注释说明这只是"让 tick 开始等待"的让出，不是性能断言。缺点：仍是墙钟时间，理论上不是 100% 确定。
-2. **改确定性同步（推荐）**：去掉墙钟依赖——例如用 `vi.waitFor(() => expect(tickResolved).toBe(true))` 轮询等待（项目已有此用法），或重构被测代码注入可控的调度钩子 / 使用 `vi.useFakeTimers()` 显式推进，使"runTask 已开始等待 workerPromise"成为可观测的确定性事件。
+1. **A — 去墙钟化**（scheduler.test.ts）：10ms 固定窗口改为 `vi.waitFor(..., { timeout: 2000, interval: 5 })` 轮询，确定性等待 tick 完成，同时仍验证"tick 不阻塞于 worker"这一性质（若 tick 阻塞，waitFor 超时判负）。
+2. **B — rename 重试**（`src/memory/document-store.ts`）：新增 `renameWithRetry`，对 EPERM/EBUSY/EACCES 做 5 次递增退避重试（20–100ms），覆盖瞬时读句柄占用；`writeJsonInner`/`writeLinesInner` 统一走该路径。POSIX 行为不变（rename 本就允许覆盖，一次成功）。回归测试：`tests/memory/document-store.test.ts` 模拟"并发读句柄持有 200ms 期间 writeLines"，未修复时必抛 EPERM。
 
-## 影响范围
+## 关联背景：测试并行度配置
 
-- 仅测试层：`tests/scheduler/scheduler.test.ts` 单个用例，不涉及 `src/scheduler/*` 产品代码（已确认被测逻辑本身正确）。
-- 影响面：全量 `pnpm test` 偶发红，需要人工重跑确认，降低 CI 信号可信度。
-- 不影响引擎功能、不影响其他 287 个引擎测试。
+`services/engine/vitest.config.ts` 保留 `fileParallelism: false`（测试文件串行）。评估记录：
+- 并行（默认）实测 11 败：进程级 `CLOUDMIND_DATA_DIR` 互相覆盖 + 未覆盖 env 的测试并发写同一兜底数据目录。
+- `isolate: true`（每文件独立进程）并行实测 10–12 败：46 个文件进程爆炸导致资源饱和、5s 超时，此路不通。
+- 故保留串行，代价是套件耗时略增（约 10–20s）。
 
-## 验收标准
+## 验证
 
-- 在 turbo 并行满载下连续跑 20 次完整 `pnpm test`，该用例 0 失败。
+- `tests/scheduler/` 连续 8 次运行全绿（修复前约半数失败）。
+- `pnpm vitest run`（引擎 289 测试）与 `pnpm test`（turbo 三包）均全绿。

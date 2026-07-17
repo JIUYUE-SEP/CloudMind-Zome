@@ -79,9 +79,9 @@ describe("Scheduler", () => {
       tickResolved = true;
     });
 
-    // Yield so runTask starts awaiting workerPromise.
-    await new Promise((r) => setTimeout(r, 10));
-    expect(tickResolved).toBe(true);
+    // tick 必须是非阻塞的（workerPromise 尚未 resolve，tick 就已完成）。
+    // 用 waitFor 轮询代替固定 10ms 墙钟窗口——并行满载时 10ms 不可靠（flaky）。
+    await vi.waitFor(() => expect(tickResolved).toBe(true), { timeout: 2000, interval: 5 });
 
     const worker = makeWorker();
     resolveWorker!(worker);
