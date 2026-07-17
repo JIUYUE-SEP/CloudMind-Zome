@@ -100,6 +100,9 @@ importers:
 
   services/engine:
     dependencies:
+      '@dqbd/tiktoken':
+        specifier: ^1.0.22
+        version: 1.0.22
       '@fastify/cors':
         specifier: ^11.2.0
         version: 11.2.0
@@ -391,6 +394,9 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@dqbd/tiktoken@1.0.22':
+    resolution: {integrity: sha512-RYhO8xeHkMNX5Ixqf4M1Ve3siCYJY/dI0yLnlX4M4oIEDOvjMIQ+E+3OUpAaZcWTaMtQJzGcDAghYfllpx3i/w==}
 
   '@dxup/nuxt@0.4.1':
     resolution: {integrity: sha512-gtYffW6OfWNvoLW+XD3Mx/K8uUq08PMGLYJoDxc92EzZAWqR0FhcR5iaLm5r/OxyGTKz+P5f5Y7Aoir9+SjYaw==}
@@ -5770,6 +5776,8 @@ snapshots:
       css-tree: 3.2.1
 
   '@csstools/css-tokenizer@4.0.0': {}
+
+  '@dqbd/tiktoken@1.0.22': {}
 
   '@dxup/nuxt@0.4.1(magicast@0.5.3)(typescript@5.9.3)':
     dependencies:
