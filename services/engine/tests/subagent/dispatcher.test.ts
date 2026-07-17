@@ -45,6 +45,43 @@ describe("SubagentDispatcher", () => {
     expect(result).toMatchObject({ output: "", error: "timeout" });
   });
 
+  it("aborts the underlying run when foreground run times out", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const dispatcher = new SubagentDispatcher({
+      getAgentConfig: async () => config,
+      runAgent: (_id, _messages, opts) => {
+        receivedSignal = opts?.signal;
+        return new Promise(() => {});
+      },
+    });
+    const result = await dispatcher.dispatch("a1", "a2", "do work", { mode: "foreground", timeoutMs: 20 });
+    expect(result).toMatchObject({ output: "", error: "timeout" });
+    // 超时后必须真正中止 worker 里仍在跑的任务，而不是只放弃等待
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
+  it("aborts the underlying run when background task times out", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const background = new BackgroundManager({
+      runAgent: (_id, _messages, opts) => {
+        receivedSignal = opts?.signal;
+        return new Promise(() => {});
+      },
+    });
+    const dispatcher = new SubagentDispatcher({
+      getAgentConfig: async () => config,
+      runAgent: async () => "ok",
+      background,
+    });
+    const taskId = (await dispatcher.dispatch("a1", "a2", "do work", {
+      mode: "background",
+      timeoutMs: 20,
+    })) as string;
+    await vi.waitFor(() => expect(background.get(taskId)?.status).toBe("failed"));
+    expect(background.get(taskId)?.error).toContain("timeout");
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
   it("registers background task and returns task id", async () => {
     const background = new BackgroundManager({ runAgent: async () => "ok" });
     const dispatcher = new SubagentDispatcher({

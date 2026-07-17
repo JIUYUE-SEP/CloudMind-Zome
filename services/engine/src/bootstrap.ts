@@ -74,7 +74,11 @@ async function main() {
 
   // subagent 调度链路：runAgentCollect 经 AgentWorker 队列执行（保持串行不变量），
   // dispatcher/background 为全局单例，同时暴露给工具上下文与 REST 路由。
-  async function runAgentCollect(agentId: string, messages: ChatMessage[]): Promise<string> {
+  async function runAgentCollect(
+    agentId: string,
+    messages: ChatMessage[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<string> {
     const worker = await getOrCreateWorker(agentId);
     if (!worker) throw new Error(`Agent ${agentId} not found`);
     // 独立 sessionId，避免子 agent 任务污染私聊会话历史
@@ -85,6 +89,7 @@ async function main() {
         id: taskId,
         sessionId: taskId,
         messages,
+        signal: opts?.signal,
         onEvent: (event) => {
           if (event.type === "text.delta") text += event.delta;
         },

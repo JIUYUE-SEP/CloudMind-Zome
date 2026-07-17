@@ -357,6 +357,58 @@ describe("AgentWorker", () => {
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
   });
 
+  it("skips a job whose signal is already aborted without invoking the provider", async () => {
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+    const controller = new AbortController();
+    controller.abort();
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-aborted",
+      messages: [userMessage("hi")],
+      signal: controller.signal,
+      onEvent: () => {},
+      onDone,
+    });
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(String(onDone.mock.calls[0][0])).toContain("aborted");
+    expect(provider.capturedParams).toBeUndefined();
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("aborts a running turn at the step boundary when the signal fires mid-run", async () => {
+    const controller = new AbortController();
+    const abortingTool: Tool = {
+      name: "aborter",
+      description: "aborts the job signal when executed",
+      parameters: z.object({}),
+      accesses: [],
+      async execute(): Promise<ToolResult> {
+        controller.abort();
+        return { success: true, output: "aborting now" };
+      },
+    };
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc-1", name: "aborter", arguments: {} }]);
+    const worker = new AgentWorker(makeConfig(provider, {}, [abortingTool]));
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-mid-abort",
+      messages: [userMessage("go")],
+      signal: controller.signal,
+      onEvent: () => {},
+      onDone,
+    });
+
+    // 工具执行触发了 abort，下一步步骤边界应抛 aborted 而不是正常收尾
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(String(onDone.mock.calls[0][0])).toContain("aborted");
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
   describe("dangerous tool approval", () => {
     class DangerCallProvider implements LLMProvider {
       name = "danger";

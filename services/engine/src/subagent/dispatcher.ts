@@ -7,7 +7,7 @@ export const MAX_FOREGROUND_TIMEOUT_MS = 300_000;
 
 export interface SubagentDispatcherDependencies {
   getAgentConfig(agentId: string): Promise<AgentConfig | undefined>;
-  runAgent(agentId: string, messages: ChatMessage[]): Promise<string>;
+  runAgent(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string>;
   background?: BackgroundManager;
 }
 
@@ -55,16 +55,19 @@ export class SubagentDispatcher {
   }
 
   private async runForeground(task: SubagentTask, config: AgentConfig, timeoutMs: number): Promise<SubagentResult> {
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const output = await Promise.race([
-        this.deps.runAgent(config.id, task.messages),
+        this.deps.runAgent(config.id, task.messages, { signal: controller.signal }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
         }),
       ]);
       return { taskId: task.id, output };
     } catch (err) {
+      // 超时（或失败）后中止 worker 里仍在跑的任务，避免空转继续烧 token
+      controller.abort();
       const error = err instanceof Error && err.message === "timeout" ? "timeout" : String(err);
       return { taskId: task.id, output: "", error };
     } finally {

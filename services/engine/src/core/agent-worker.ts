@@ -36,6 +36,8 @@ export interface Job {
   sessionId?: string;
   mode?: ChatMode;
   projectRoot?: string;
+  /** 外部取消信号：已取消的排队 job 直接跳过；运行中在步骤边界中止 */
+  signal?: AbortSignal;
   onEvent: (event: LLMEvent) => void;
   /** job 结束（成功或异常）时回调；err 为捕获到的异常，正常完成为 undefined */
   onDone?: (err?: unknown) => void;
@@ -103,6 +105,10 @@ export class AgentWorker {
 
     let jobError: unknown;
     try {
+      // 排队期间已被外部取消（如 subagent 前台超时）的 job 直接跳过
+      if (job.signal?.aborted) {
+        throw new Error("aborted");
+      }
       const toolsMap = new Map(this.config.tools.map((t) => [t.name, t]));
       const toolDescriptions = this.config.tools.map((t) => ({
         type: "function",
@@ -182,6 +188,7 @@ export class AgentWorker {
         maxSteps: 5,
         temperature: this.config.temperature,
         topP: this.config.topP,
+        signal: job.signal,
       };
 
       const result = await runTurn(turnInput, job.onEvent);

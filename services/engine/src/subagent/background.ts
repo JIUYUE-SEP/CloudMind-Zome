@@ -15,7 +15,7 @@ export class BackgroundManager {
   private tasks = new Map<string, BackgroundSubagent>();
   private listeners: Array<(task: BackgroundSubagent) => void> = [];
 
-  constructor(private deps: { runAgent(agentId: string, messages: ChatMessage[]): Promise<string> }) {}
+  constructor(private deps: { runAgent(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string> }) {}
 
   register(task: SubagentTask, config: AgentConfig, timeoutMs: number): void {
     const bg: BackgroundSubagent = {
@@ -31,16 +31,19 @@ export class BackgroundManager {
   }
 
   private async run(bg: BackgroundSubagent): Promise<void> {
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       bg.output = await Promise.race([
-        this.deps.runAgent(bg.config.id, bg.task.messages),
+        this.deps.runAgent(bg.config.id, bg.task.messages, { signal: controller.signal }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("timeout")), bg.timeoutMs);
         }),
       ]);
       bg.status = "completed";
     } catch (err) {
+      // 超时（或失败）后中止 worker 里仍在跑的任务，避免空转继续烧 token
+      controller.abort();
       bg.error = String(err);
       bg.status = "failed";
     } finally {
