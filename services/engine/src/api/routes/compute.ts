@@ -17,15 +17,31 @@ function isPrivateV4(ip: string): boolean {
   return false;
 }
 
+// 两个 hex 段还原成点分 IPv4（如 ("7f00","1") → "127.0.0.1"）
+function hexPairToV4(hi: string, lo: string): string {
+  const h = parseInt(hi, 16);
+  const l = parseInt(lo, 16);
+  return `${(h >> 8) & 255}.${h & 255}.${(l >> 8) & 255}.${l & 255}`;
+}
+
 function isPrivateIp(ip: string): boolean {
   const normalized = ip.replace(/^\[|\]$/g, "").toLowerCase();
   if (normalized.includes(":")) {
-    // IPv6：loopback、link-local、ULA、IPv4-mapped
+    // IPv6：loopback、unspecified、link-local、ULA、IPv4-mapped/compatible
     if (normalized === "::1") return true;
+    if (normalized === "::") return true; // unspecified（0.0.0.0 等价）
     if (normalized.startsWith("fe80:")) return true;
     if (/^f[cd]/.test(normalized)) return true;
-    const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return mapped ? isPrivateV4(mapped[1]) : false;
+    // WHATWG URL 会把 IPv4-mapped 归一化为 hex 形式
+    // （[::ffff:127.0.0.1] → [::ffff:7f00:1]），点分正则命中不了，必须按 hex 段解析
+    const mappedHex = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex) return isPrivateV4(hexPairToV4(mappedHex[1], mappedHex[2]));
+    // 兼容形式 ::a.b.c.d 同样被归一化为 ::xxxx:xxxx（前 96 位为 0）
+    const compatHex = normalized.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (compatHex) return isPrivateV4(hexPairToV4(compatHex[1], compatHex[2]));
+    // 直接传入（非 URL 归一化）时仍可能是点分形式
+    const mappedDotted = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    return mappedDotted ? isPrivateV4(mappedDotted[1]) : false;
   }
   if (/^\d+\.\d+\.\d+\.\d+$/.test(normalized)) return isPrivateV4(normalized);
   return normalized === "localhost";
