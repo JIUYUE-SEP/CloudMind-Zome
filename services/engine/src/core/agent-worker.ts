@@ -7,6 +7,7 @@ import type { Tool, ToolContext } from "../tools/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
+import { ContextPipeline } from "../context/pipeline.js";
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -28,6 +29,8 @@ export interface AgentWorkerConfig {
   imageProvider?: import("../provider/types.js").ImageGenProvider;
   /** 注入工具执行上下文的服务（如 subagent dispatcher），供 dispatch_subagent 等工具使用 */
   services?: ToolContext["services"];
+  /** 上下文管线（可选注入，测试用）；默认按 DEFAULT_PIPELINE_CONFIG 构造 */
+  contextPipeline?: ContextPipeline;
 }
 
 export interface Job {
@@ -56,8 +59,11 @@ export class AgentWorker {
   status: AgentWorkerStatus = "idle";
   private queue: Job[] = [];
   private runningJob: Job | null = null;
+  private pipeline: ContextPipeline;
 
-  constructor(private config: AgentWorkerConfig) {}
+  constructor(private config: AgentWorkerConfig) {
+    this.pipeline = config.contextPipeline ?? new ContextPipeline();
+  }
 
   enqueue(job: Job): void {
     this.queue.push(job);
@@ -125,12 +131,12 @@ export class AgentWorker {
           "# Skills\n\n" + this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
         );
       }
-      if (job.mode === "code") {
-        promptParts.push(
-          "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes.",
-        );
-      }
-      const systemPrompt = promptParts.length > 0 ? promptParts.join("\n\n") : undefined;
+      // L1 人格/skill 内容（pipeline 注入为 system 消息）；code 模式指令映射为 L1.5
+      const mindContext = promptParts.join("\n\n");
+      const personalityDesc =
+        job.mode === "code"
+          ? "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes."
+          : undefined;
 
       // 跨会话语义检索：sidecar 可用时，取与当前用户消息最相关的历史消息补充上下文。
       // 失败静默降级；检索结果已在历史文件中，不会也不应被再次持久化。
@@ -156,9 +162,6 @@ export class AgentWorker {
       }
 
       const messages = [
-        ...(systemPrompt
-          ? [{ id: randomUUID(), role: "system" as const, content: [{ type: "text" as const, text: systemPrompt }], createdAt: new Date().toISOString() }]
-          : []),
         ...retrieved,
         ...job.messages,
       ];
@@ -189,15 +192,24 @@ export class AgentWorker {
         temperature: this.config.temperature,
         topP: this.config.topP,
         signal: job.signal,
+        contextPipeline: {
+          pipeline: this.pipeline,
+          input: {
+            agentId: this.config.agentId,
+            mindContext,
+            personalityDesc,
+            sourceId: job.sessionId || this.config.agentId,
+          },
+        },
       };
 
       const result = await runTurn(turnInput, job.onEvent);
 
       const sessionId = job.sessionId || this.config.agentId;
-      // 按真实顺序持久化本轮新增的消息（每步 assistant + tool 消息），
-      // 跳过输入部分（含注入的 system prompt），避免 tool 消息失去前置的 assistant toolCalls。
-      const newMessages = result.messages.slice(messages.length);
-      for (const msg of newMessages) {
+      // 按真实顺序持久化本轮新增的消息（每步 assistant + tool 消息）。
+      // appended 由 runTurn 显式收集，与 pipeline 如何组装/截断输入无关，
+      // 避免 tool 消息失去前置的 assistant toolCalls，也天然不含 system prompt。
+      for (const msg of result.appended) {
         await this.config.messageRepository.append({ ...msg, sessionId });
       }
 
@@ -205,7 +217,7 @@ export class AgentWorker {
       if (this.config.memoryIndexer) {
         const indexer = this.config.memoryIndexer;
         const agentId = this.config.agentId;
-        const toIndex = [...(lastUser ? [lastUser] : []), ...newMessages];
+        const toIndex = [...(lastUser ? [lastUser] : []), ...result.appended];
         for (const msg of toIndex) {
           const text = msg.content
             .filter((c) => c.type === "text")

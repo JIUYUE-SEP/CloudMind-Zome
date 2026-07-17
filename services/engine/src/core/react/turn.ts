@@ -2,6 +2,7 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMEvent } from "../../provider/types.js";
 import { executeLoopStep, type StepInput } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";
+import type { AssembleInput, ContextPipeline } from "../../context/pipeline.js";
 
 export interface TurnInput {
   provider: LLMProvider;
@@ -15,22 +16,46 @@ export interface TurnInput {
   topP?: number;
   /** 外部取消信号（如 subagent 前台超时）：在步骤边界检查并中止本轮 */
   signal?: AbortSignal;
+  /**
+   * ContextPipeline v2：存在时，本轮 messages/tools 先经 pipeline.assemble
+   * 组装（含超预算降级），替换直接 messages 传递。
+   */
+  contextPipeline?: {
+    pipeline: ContextPipeline;
+    input: Omit<AssembleInput, "history" | "tools">;
+  };
 }
 
 export interface TurnResult {
   messages: ChatMessage[];
   assistantMessage: ChatMessage;
   toolMessages: ChatMessage[];
+  /** 本轮按序新增的全部消息（assistant + tool），供持久化（与输入如何组装/截断无关） */
+  appended: ChatMessage[];
 }
 
 export async function runTurn(
   input: TurnInput,
   emit: (event: LLMEvent) => void
 ): Promise<TurnResult> {
-  const messages: ChatMessage[] = [...input.messages];
+  let messages: ChatMessage[] = [...input.messages];
+  let tools = input.tools;
+
+  // ContextPipeline v2：每轮统一组装（超预算自动降级）
+  if (input.contextPipeline) {
+    const assembled = await input.contextPipeline.pipeline.assemble({
+      ...input.contextPipeline.input,
+      history: messages,
+      tools,
+    });
+    messages = assembled.messages;
+    tools = assembled.tools;
+  }
+
   const maxSteps = input.maxSteps ?? 10;
   let assistantMessage: ChatMessage | undefined;
   const toolMessages: ChatMessage[] = [];
+  const appended: ChatMessage[] = [];
 
   for (let step = 0; step < maxSteps; step++) {
     if (input.signal?.aborted) {
@@ -40,7 +65,7 @@ export async function runTurn(
       provider: input.provider,
       model: input.model,
       messages,
-      tools: input.tools,
+      tools,
       toolCtx: input.toolCtx,
       maxTokens: input.maxTokens,
       temperature: input.temperature,
@@ -50,10 +75,12 @@ export async function runTurn(
     const result = await executeLoopStep(stepInput, emit);
     assistantMessage = result.assistantMessage;
     messages.push(result.assistantMessage);
+    appended.push(result.assistantMessage);
 
     if (result.toolMessages) {
       messages.push(...result.toolMessages);
       toolMessages.push(...result.toolMessages);
+      appended.push(...result.toolMessages);
     }
 
     if (result.stopReason !== "tool_use") {
@@ -65,5 +92,6 @@ export async function runTurn(
     messages,
     assistantMessage: assistantMessage!,
     toolMessages,
+    appended,
   };
 }
