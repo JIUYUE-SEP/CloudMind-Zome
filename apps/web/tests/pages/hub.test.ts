@@ -97,7 +97,6 @@ describe("Hub page group chat code mode", () => {
     return mount(Hub, {
       global: {
         stubs: {
-          CodeWorkspace: true,
           GroupChatView: {
             name: "GroupChatView",
             template: "<div class='group-chat-view'></div>",
@@ -134,7 +133,7 @@ describe("Hub page group chat code mode", () => {
     expect((wrapper.vm as unknown as { sessionMode: string }).sessionMode).toBe("code");
   });
 
-  it("updates state and shows CodeWorkspace on session.mode_changed", async () => {
+  it("updates state on session.mode_changed", async () => {
     const wrapper = await mountHub();
     await selectGroup(wrapper);
     const ws = currentWs();
@@ -148,65 +147,5 @@ describe("Hub page group chat code mode", () => {
     expect(
       (wrapper.vm as unknown as { sessionProjectId?: string }).sessionProjectId,
     ).toBe("s1");
-    expect(wrapper.find("code-workspace-stub").exists()).toBe(true);
-  });
-
-  it("updates current file content on code.file_opened", async () => {
-    const wrapper = await mountHub();
-    await selectGroup(wrapper);
-    const ws = currentWs();
-
-    ws.onmessage?.({
-      data: JSON.stringify({ type: "session.mode_changed", mode: "code", projectId: "s1" }),
-    });
-    await flushPromises();
-
-    ws.onmessage?.({
-      data: JSON.stringify({
-        type: "code.file_opened",
-        path: "src/main.ts",
-        content: "console.log('hello');",
-      }),
-    });
-    await flushPromises();
-
-    const vm = wrapper.vm as unknown as {
-      currentFilePath: string;
-      currentFileContent: string;
-    };
-    expect(vm.currentFilePath).toBe("src/main.ts");
-    expect(vm.currentFileContent).toBe("console.log('hello');");
-  });
-
-  it("appends command output chunks", async () => {
-    const wrapper = await mountHub();
-    await selectGroup(wrapper);
-    const ws = currentWs();
-
-    ws.onmessage?.({ data: JSON.stringify({ type: "code.command_output", chunk: "build done" }) });
-    await flushPromises();
-
-    const vm = wrapper.vm as unknown as { terminalOutput: string };
-    expect(vm.terminalOutput).toContain("build done");
-  });
-
-  it("sends code.file_open frame when CodeWorkspace emits openFile", async () => {
-    const wrapper = await mountHub();
-    await selectGroup(wrapper);
-    const ws = currentWs();
-
-    ws.onmessage?.({
-      data: JSON.stringify({ type: "session.mode_changed", mode: "code", projectId: "s1" }),
-    });
-    await flushPromises();
-
-    const stub = wrapper.find("code-workspace-stub").element as unknown as {
-      __vueParentComponent: { emit: (event: string, ...args: unknown[]) => void };
-    };
-    stub.__vueParentComponent.emit("openFile", "src/index.ts");
-    await flushPromises();
-
-    const last = ws.sent[ws.sent.length - 1];
-    expect(JSON.parse(last)).toEqual({ type: "code.file_open", path: "src/index.ts" });
   });
 });

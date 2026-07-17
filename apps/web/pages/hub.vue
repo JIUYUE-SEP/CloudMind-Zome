@@ -71,7 +71,7 @@
           <button :class="{ active: sessionMode === 'chat' }" @click="setMode('chat')">聊天</button>
           <button :class="{ active: sessionMode === 'code' }" @click="setMode('code')">编程</button>
         </div>
-        <div class="group-body" :class="{ 'code-mode': sessionMode === 'code' }">
+        <div class="group-body">
           <GroupChatView
             :key="selectedId"
             :session="selectedSession"
@@ -81,15 +81,6 @@
             :is-streaming="groupIsStreaming"
             @send="onGroupSend"
             @approval-respond="onGroupApprovalRespond"
-          />
-          <CodeWorkspace
-            v-if="sessionMode === 'code'"
-            :entries="fileTreeEntries"
-            :terminal-output="terminalOutput"
-            v-model:current-file-content="currentFileContent"
-            :current-file-path="currentFilePath"
-            @open-file="onOpenFile"
-            @clear-terminal="terminalOutput = ''"
           />
         </div>
       </div>
@@ -118,8 +109,6 @@ import {
 import BackButton from "@/components/BackButton.vue";
 import ChatView from "@/components/ChatView.vue";
 import GroupChatView from "@/components/GroupChatView.vue";
-import CodeWorkspace from "@/components/code/CodeWorkspace.vue";
-import type { FileEntry } from "@/components/code/FileTree.vue";
 import type { DisplayMessage } from "@/components/GroupChatView.vue";
 
 const agents = useAgentsStore();
@@ -137,10 +126,6 @@ const groupIsConnected = ref(false);
 const groupIsStreaming = ref(false);
 const sessionMode = ref<ChatMode>("chat");
 const sessionProjectId = ref<string | undefined>(undefined);
-const terminalOutput = ref("");
-const fileTreeEntries = ref<FileEntry[]>([]);
-const currentFileContent = ref("");
-const currentFilePath = ref("");
 let groupConnection: ReturnType<typeof client.connectSession> | null = null;
 
 const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
@@ -169,7 +154,6 @@ async function selectGroup(session: Session) {
   selectedSession.value = session;
   sessionMode.value = session.mode || "chat";
   sessionProjectId.value = session.projectId;
-  resetIdeState();
   await loadGroupMessages(session.id);
   connectGroup(session.id);
 }
@@ -240,13 +224,6 @@ function connectGroup(sessionId: string) {
       sessionMode.value = mode;
       sessionProjectId.value = projectId;
     },
-    onFileOpened: (path, content) => {
-      currentFilePath.value = path;
-      currentFileContent.value = content;
-    },
-    onCommandOutput: (chunk) => {
-      terminalOutput.value += chunk + "\n";
-    },
     onError: (error) => {
       groupIsStreaming.value = false;
       groupMessages.value.push({
@@ -272,22 +249,10 @@ function closeGroupConnection() {
   groupIsStreaming.value = false;
 }
 
-function resetIdeState() {
-  sessionMode.value = "chat";
-  terminalOutput.value = "";
-  fileTreeEntries.value = [];
-  currentFileContent.value = "";
-  currentFilePath.value = "";
-}
-
 function setMode(mode: ChatMode) {
   sessionMode.value = mode;
   const projectId = mode === "code" ? selectedSession.value?.id : sessionProjectId.value;
   groupConnection?.setMode(mode, projectId);
-}
-
-function onOpenFile(path: string) {
-  groupConnection?.sendRaw({ type: "code.file_open", path });
 }
 
 function onGroupSend(text: string) {
@@ -620,26 +585,10 @@ function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
   min-width: 0;
 }
 
-.group-body.code-mode {
-  flex-direction: row;
-}
-
 .group-body > .group-chat-view,
 .group-body > .group-chat-view-stub {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-}
-
-.group-body.code-mode > .group-chat-view,
-.group-body.code-mode > .group-chat-view-stub {
-  flex: 1;
-}
-
-.group-body.code-mode > .code-workspace,
-.group-body.code-mode > .code-workspace-stub {
-  width: 50%;
-  min-width: 320px;
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
 </style>

@@ -105,6 +105,10 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
+          // 带 type 的未知控制帧静默忽略（聊天消息不带 type），
+          // 避免前端协议超前时穿透到聊天错误路径
+          if (typeof data.type === "string") return;
+
           const input = sanitizeInput(data.text);
           if (!input.ok) {
             safeSend(socket, { type: "error", error: input.error });

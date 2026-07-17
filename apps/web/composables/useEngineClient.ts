@@ -126,8 +126,6 @@ export interface WebSocketHandlers {
   onError?: (error: string) => void;
   onClose?: () => void;
   onModeChanged?: (mode: ChatMode, projectId?: string) => void;
-  onFileOpened?: (path: string, content: string) => void;
-  onCommandOutput?: (chunk: string) => void;
 }
 
 export interface Connection {
@@ -397,12 +395,6 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "session.mode_changed":
             handlers.onModeChanged?.(data.mode, data.projectId);
             break;
-          case "code.file_opened":
-            handlers.onFileOpened?.(data.path, data.content);
-            break;
-          case "code.command_output":
-            handlers.onCommandOutput?.(data.chunk);
-            break;
           case "error":
             handlers.onError?.(data.error);
             break;
@@ -519,12 +511,6 @@ export function useEngineClient(options?: EngineClientOptions) {
             break;
           case "session.mode_changed":
             handlers.onModeChanged?.(data.mode, data.projectId);
-            break;
-          case "code.file_opened":
-            handlers.onFileOpened?.(data.path, data.content);
-            break;
-          case "code.command_output":
-            handlers.onCommandOutput?.(data.chunk);
             break;
           case "error":
             handlers.onError?.(data.error);
