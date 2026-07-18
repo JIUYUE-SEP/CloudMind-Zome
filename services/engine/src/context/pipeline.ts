@@ -88,9 +88,20 @@ export class ContextPipeline {
       const step = selectNextStep(layers);
       if (!step) {
         // 兜底：无可再降，按现状返回（设计文档：放弃，返回）
+        // M3：兜底是"记忆静默退化"的最坏形态，必须 warn 留痕
+        console.warn(
+          `[ContextPipeline] agent=${input.agentId} 预算不足且无可再降层，按现状返回：` +
+            `total=${total} budget=${this.budgetTokens} l3=${layers.l3.length}`,
+        );
         return { messages, tools };
       }
       step.apply(layers);
+      // M3：每步降级打 debug——哪一层被降、降后各层规模、当前预算使用
+      console.debug(
+        `[ContextPipeline] agent=${input.agentId} 降级 ${step.name}：` +
+          `total=${total} budget=${this.budgetTokens}，降后 ` +
+          `l3=${layers.l3.length} l5=${layers.l5.length} l4=${layers.l4.length} l6Ext=${layers.l6Ext.length}`,
+      );
     }
   }
 }

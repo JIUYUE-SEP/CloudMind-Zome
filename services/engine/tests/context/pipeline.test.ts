@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import {
   ContextPipeline,
@@ -115,5 +115,45 @@ describe("ContextPipeline", () => {
     );
     const systems = result.messages.filter((m) => m.role === "system");
     expect(systems).toHaveLength(3); // L1/L1.5/L2 全保留
+  });
+});
+
+describe("M3：降级可观测日志", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("未超预算：不打任何降级日志", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await makePipeline(10000).assemble(makeInput({ history: history(3) }));
+    expect(debug).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("超预算：每步降级打 debug，含 step 名、agentId、预算使用", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 25 条 → keep-15（>20）→ 仍超 → keep-5（15>10）→ 满足
+    await makePipeline(100).assemble(makeInput({ agentId: "agent-x", history: history(25) }));
+    const logs = debug.mock.calls.map((c) => String(c[0]));
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toContain("l3:keep-15");
+    expect(logs[1]).toContain("l3:keep-5");
+    expect(logs[0]).toContain("agent-x");
+    expect(logs[0]).toMatch(/total=\d+.*budget=\d+/);
+  });
+
+  it("兜底（无可再降）：打 warn 一次，含 agentId 与 total/budget", async () => {
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await makePipeline(10).assemble(
+      makeInput({ agentId: "agent-y", mindContext: "x".repeat(100), history: history(2) }),
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = String(warn.mock.calls[0][0]);
+    expect(msg).toContain("agent-y");
+    expect(msg).toMatch(/total=\d+/);
+    expect(msg).toMatch(/budget=\d+/);
   });
 });
