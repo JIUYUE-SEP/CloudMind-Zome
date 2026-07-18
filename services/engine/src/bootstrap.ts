@@ -10,6 +10,7 @@ import { OpenAIProvider, MockLLMProvider, ErrorLLMProvider } from "./provider/ll
 import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedder.js";
 import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-gen.js";
 import { AgentWorker } from "./core/agent-worker.js";
+import { createContextPipelineForAgent } from "./core/pipeline-factory.js";
 import { getBuiltinTools } from "./tools/builtin/index.js";
 import type { ApiContext } from "./api/context.js";
 import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
@@ -151,6 +152,8 @@ async function main() {
       embedder,
       imageProvider,
       services: { subagentDispatcher },
+      // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
+      contextPipeline: createContextPipelineForAgent(agentConfig),
     });
     workers.set(agentId, worker);
     return worker;

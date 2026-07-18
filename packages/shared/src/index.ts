@@ -17,6 +17,8 @@ export interface AgentConfig {
   imageModelId?: string;
   temperature?: number;
   topP?: number;
+  /** 上下文窗口总预算（token），缺省由引擎按 80000 处理；32k/128k 窗口模型应显式配置 */
+  maxContextTokens?: number;
   skills: string[];
   tools: string[];
 }
