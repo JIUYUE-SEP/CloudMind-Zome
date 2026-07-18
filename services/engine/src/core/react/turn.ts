@@ -3,6 +3,7 @@ import type { LLMProvider, LLMEvent } from "../../provider/types.js";
 import { executeLoopStep, type StepInput } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";
 import type { AssembleInput, ContextPipeline } from "../../context/pipeline.js";
+import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
 
 export interface TurnInput {
   provider: LLMProvider;
@@ -42,6 +43,7 @@ export async function runTurn(
   let tools = input.tools;
 
   // ContextPipeline v2：每轮统一组装（超预算自动降级）
+  let maxToolResultTokens: number | undefined;
   if (input.contextPipeline) {
     const assembled = await input.contextPipeline.pipeline.assemble({
       ...input.contextPipeline.input,
@@ -50,6 +52,11 @@ export async function runTurn(
     });
     messages = assembled.messages;
     tools = assembled.tools;
+    // M1：步骤内工具结果也纳入预算约束——单条上限为预算的 20%
+    maxToolResultTokens = Math.max(
+      1,
+      Math.floor(input.contextPipeline.pipeline.budgetTokens * TOOL_RESULT_BUDGET_RATIO),
+    );
   }
 
   const maxSteps = input.maxSteps ?? 10;
@@ -70,6 +77,7 @@ export async function runTurn(
       maxTokens: input.maxTokens,
       temperature: input.temperature,
       topP: input.topP,
+      maxToolResultTokens,
     };
 
     const result = await executeLoopStep(stepInput, emit);

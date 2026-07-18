@@ -1,6 +1,11 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../provider/types.js";
 import { runToolCallBatch, type ToolExecutionContext, type ToolCallRequest } from "./tool-call.js";
+import { getTokenCounter } from "../../context/token-counter.js";
+import {
+  DEFAULT_MAX_TOOL_RESULT_TOKENS,
+  truncateToolResultText,
+} from "../../context/truncate.js";
 
 export interface StepInput {
   provider: LLMProvider;
@@ -11,6 +16,8 @@ export interface StepInput {
   maxTokens?: number;
   temperature?: number;
   topP?: number;
+  /** 单条工具结果的 token 上限（review M1）；缺省 DEFAULT_MAX_TOOL_RESULT_TOKENS */
+  maxToolResultTokens?: number;
 }
 
 export interface StepResult {
@@ -76,13 +83,20 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
       arguments: req.arguments,
     }));
     const toolResults = await runToolCallBatch(Array.from(toolCalls.values()), input.toolCtx);
+    // M1：工具结果落 context 前做 token 截断，防单步击穿窗口
+    const counter = getTokenCounter();
+    const maxToolResultTokens = input.maxToolResultTokens ?? DEFAULT_MAX_TOOL_RESULT_TOKENS;
     const toolMessages: ChatMessage[] = toolResults.map((r) => ({
       id: `tool_${r.toolCallId}`,
       role: "tool",
       content: [
         {
           type: "text",
-          text: typeof r.output === "string" ? r.output : JSON.stringify(r.output),
+          text: truncateToolResultText(
+            typeof r.output === "string" ? r.output : JSON.stringify(r.output),
+            maxToolResultTokens,
+            counter,
+          ),
         },
       ],
       toolCallId: r.toolCallId,
