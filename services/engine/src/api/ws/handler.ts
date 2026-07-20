@@ -4,7 +4,7 @@ import type { ApiContext } from "../context.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput } from "./validation.js";
+import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent } from "./validation.js";
 
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
@@ -166,7 +166,9 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             messages: history.length > 0 ? history : [userMessage],
             sessionId,
             onEvent: (event) => {
-              safeSend(socket, event);
+              // delta 帧只放行 string，脏帧丢弃（sanitizeDeltaEvent 内部已打 warn）
+              const safeEvent = sanitizeDeltaEvent(event);
+              if (safeEvent) safeSend(socket, safeEvent);
             },
             onApprovalRequest: requestApproval,
           });

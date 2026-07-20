@@ -51,3 +51,19 @@ export function sanitizeInput(text: unknown): { ok: false; error: string } | { o
   if (text.length > 10000) return { ok: false, error: "text too long (max 10000 characters)" };
   return { ok: true, text };
 }
+
+/**
+ * 下发 WS 事件前的 delta 帧校验：携带 delta 字段的帧（text.delta / thinking.delta）
+ * 其值必须是 string。provider 层异常产生的非 string delta 直接丢弃并打 warn，
+ * 避免脏帧穿透到前端拼接口径。
+ */
+export function sanitizeDeltaEvent<T>(event: T): T | null {
+  if (event && typeof event === "object" && "delta" in event) {
+    const delta = (event as { delta: unknown }).delta;
+    if (typeof delta !== "string") {
+      console.warn("dropping ws event with non-string delta", event);
+      return null;
+    }
+  }
+  return event;
+}

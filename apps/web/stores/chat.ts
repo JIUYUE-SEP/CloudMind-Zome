@@ -57,6 +57,11 @@ export const useChatStore = defineStore("chat", () => {
         isConnected.value = true;
       },
       onTextDelta: (delta) => {
+        // 防御：非 string 的 delta 帧直接丢弃（engine 侧已校验，这里双重防御）
+        if (typeof delta !== "string") {
+          console.warn("dropping non-string text.delta frame", delta);
+          return;
+        }
         const last = messages.value[messages.value.length - 1];
         if (last && last.role === "assistant" && last.isStreaming) {
           last.text += delta;
@@ -72,6 +77,10 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onThinkingDelta: (delta) => {
+        if (typeof delta !== "string") {
+          console.warn("dropping non-string think.delta frame", delta);
+          return;
+        }
         const last = messages.value[messages.value.length - 1];
         if (last && last.role === "assistant" && last.isStreaming) {
           last.thinking += delta;

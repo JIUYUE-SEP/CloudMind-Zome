@@ -7,7 +7,7 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
 import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput } from "./validation.js";
+import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent } from "./validation.js";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 
 const MAX_PENDING_MESSAGES = 100;
@@ -211,7 +211,9 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
               mode: session.mode,
               projectRoot,
               onEvent: (event) => {
-                safeSend(socket, { agentId, ...event });
+                // 与私聊 handler 同一校验：delta 帧只放行 string，脏帧丢弃
+                const safeEvent = sanitizeDeltaEvent(event);
+                if (safeEvent) safeSend(socket, { agentId, ...safeEvent });
               },
               onApprovalRequest: (req) => requestApproval(agentId, req),
             });
