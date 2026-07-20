@@ -30,14 +30,11 @@ export const useSettingsStore = defineStore("settings", () => {
     saveState.value = "saving";
     saveError.value = "";
     try {
-      // "***" 是 GET 掩码：原样回传会覆盖真实密钥（engine 侧已同样防御），这里直接不提交
-      const tavilyApiKey =
-        settings.value.tavilyApiKey && settings.value.tavilyApiKey !== "***"
-          ? settings.value.tavilyApiKey
-          : undefined;
+      // "***" 是 GET 掩码：不提交（engine 侧也防御）；空字符串语义是"清除 key"，必须原样提交
+      const tavilyApiKey = settings.value.tavilyApiKey;
       await client.updateConfig({
         memory: settings.value.memory,
-        ...(tavilyApiKey ? { tavilyApiKey } : {}),
+        ...(tavilyApiKey !== undefined && tavilyApiKey !== "***" ? { tavilyApiKey } : {}),
       });
       saveState.value = "saved";
     } catch (err) {

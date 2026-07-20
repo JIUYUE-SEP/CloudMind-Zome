@@ -112,4 +112,36 @@ describe("Config API", () => {
     expect(loaded.settings.tavilyApiKey).toBe("tvly-real");
     await app.close();
   });
+
+  it("clears tavily key when empty string is sent", async () => {
+    const app = await makeApp();
+    await request(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
+
+    // 空字符串 = 清除 key
+    const res = await request(app.server).put("/config").send({ tavilyApiKey: "" });
+    expect(res.status).toBe(200);
+    expect(res.body.tavilyApiKey).toBeUndefined();
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.tavilyApiKey).toBeUndefined();
+
+    const getRes = await request(app.server).get("/config");
+    expect(getRes.body.tavilyApiKey).toBeUndefined();
+    await app.close();
+  });
+
+  it("does not modify tavily key when the field is omitted", async () => {
+    const app = await makeApp();
+    await request(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
+
+    // undefined（字段缺失）= 不修改，哪怕同请求带了其他配置项
+    const res = await request(app.server).put("/config").send({ memory: { keepRecent: 7 } });
+    expect(res.status).toBe(200);
+    expect(res.body.tavilyApiKey).toBe("***");
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.tavilyApiKey).toBe("tvly-real");
+    expect(loaded.settings.memory.keepRecent).toBe(7);
+    await app.close();
+  });
 });

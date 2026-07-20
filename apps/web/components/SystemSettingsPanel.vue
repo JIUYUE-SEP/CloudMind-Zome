@@ -68,7 +68,7 @@
       <div v-if="activeTab === 'external'" class="ss-section">
         <label class="ss-field">
           <span>Tavily API Key（网络搜索）</span>
-          <input v-model="form.tavilyApiKey" :type="showKey ? 'text' : 'password'" :placeholder="hasSavedKey ? '已保存，留空则保持不变' : '用于网络搜索的 Tavily API Key'" />
+          <input v-model="form.tavilyApiKey" :type="showKey ? 'text' : 'password'" :placeholder="hasSavedKey ? '已保存，留空清除' : '用于网络搜索的 Tavily API Key'" />
           <button class="ss-toggle-key" @click="showKey = !showKey">
             {{ showKey ? "隐藏" : "显示" }}
           </button>
@@ -169,9 +169,10 @@ async function load() {
   form.memory.keepRecent = store.settings.memory.keepRecent;
   form.memory.hotMemoryLimit = store.settings.memory.hotMemoryLimit;
   form.memory.warmMemoryLimit = store.settings.memory.warmMemoryLimit;
-  // 服务端只返回掩码 "***"：不回填，留空表示保持不变，避免把掩码当真值保存
+  // 服务端只返回掩码 "***"：回填掩码表示"保持不变"（保存时 store 会剥离），
+  // 用户清空输入框再保存 = 清除已保存的 key（engine 空字符串语义）
   hasSavedKey.value = store.settings.tavilyApiKey === "***";
-  form.tavilyApiKey = "";
+  form.tavilyApiKey = hasSavedKey.value ? "***" : "";
 }
 
 async function save() {
