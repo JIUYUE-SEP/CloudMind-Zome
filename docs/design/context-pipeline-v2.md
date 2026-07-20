@@ -251,7 +251,91 @@ if (topicClosed) {
 
 ---
 
-## 四、实施路线
+## 四、设计决策（指挥官与维克托共识）
+
+以下决策已确认，不再变更：
+
+### 1. 话题检测：规则版 v1，留 LLM 接口
+
+**决策**：先做规则版，预留 LLM 检测接口。
+
+**规则**：
+- 时间间隔 > 30 分钟 → 新话题
+- 用户显式说"换个话题"/"不说这个了" → 新话题
+- 连续 5 条消息没有实体重叠（关键词匹配）→ 新话题
+- 默认：同话题
+
+**理由**：规则版可控、可解释；LLM 版作为 v2 升级路径，用于处理"杂谈"等模糊场景。
+
+### 2. 压缩模型：便宜模型，必须指定
+
+**决策**：用 K3-cheap / GLM-flash 级别模型做压缩，不用主模型。
+
+**配置**：
+```yaml
+compression:
+  model: "k3-cheap"  # 或 "glm-flash"
+  fallback_to_main: false  # 压缩模型挂了不 fallback 到主模型
+```
+
+**理由**：压缩是体力活，不需要创造力；指定模型避免数据泄露风险。
+
+### 3. 压缩档格式：markdown + frontmatter + embedding_id
+
+**决策**：frontmatter 增加 `embedding_id` 字段，关联向量数据库。
+
+```markdown
+---
+topic_id: tp_20260717_001
+embedding_id: emb_7a3f9c2
+label: 前端-React状态管理
+importance: high
+source_id: session_abc
+source_name: 与指挥官的私聊
+compressed_at: 2026-07-17T10:00:00Z
+msg_count: 47
+---
+```
+
+**理由**：纯 markdown 可读性好，embedding_id 支持语义检索反查。
+
+### 4. 热存储清理：归档保护
+
+**决策**：被移除的消息先写入 `messages_archived.jsonl`（只追加），压缩档 msg_ids 指向归档行号。
+
+**保护**：
+- 每周校验归档消息都有对应压缩档，缺失则告警
+- 压缩档丢失时，原始消息仍可从归档恢复
+
+**理由**：frontmatter 可能损坏，msg_ids 可能失配，归档是最后防线。
+
+### 5. 时间衰减：分段衰减，重要记忆不衰减
+
+**决策**：替换 Python 的 `exp(-age_days / 30)`，改用分段衰减。
+
+```typescript
+if (age_days < 7) return 1.0;           // 一周内不衰减
+if (age_days < 30) return 0.8;          // 一个月内 80%
+if (age_days < 90) return 0.5;          // 三个月内 50%
+return 0.3;                              // 三个月以上保底 30%
+```
+
+**重要记忆（importance: high）**：不衰减，永远 1.0。
+
+**理由**：CMZ 的 Agent 是生命，早期对话可能包含人格设定、偏好、共同经历，不应快速衰减。
+
+### 6. 压缩信息保护：memory flush + importance 标记 + 用户可审计
+
+**决策**：
+- 压缩前执行 memory flush：关键决策、事实、情感表达写入 memory 文档
+- importance: high 的话题压缩时保留更多原文引用（不只是摘要）
+- 用户可随时查看 `_compressed/` 目录，发现压缩错误可手动修
+
+**理由**：LLM 摘要注定有损，关键信息不能依赖摘要保留。
+
+---
+
+## 五、实施路线
 
 ### Phase 1：地基（约 1 周）
 
