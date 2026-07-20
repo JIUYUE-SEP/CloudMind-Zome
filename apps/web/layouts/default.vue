@@ -46,7 +46,6 @@ const navItems: NavItem[] = [
   { label: "行动中心", to: "", placeholder: true },
   { label: "心智整备", to: "/agents/new" },
   { label: "自动委托", to: "", placeholder: true },
-  { label: "心智招募", to: "/agents/new" },
   { label: "通讯中枢", to: "/hub" },
   { label: "广播站", to: "", placeholder: true },
 ];
