@@ -8,11 +8,15 @@ export const useAgentsStore = defineStore("agents", () => {
   const list = ref<AgentConfig[]>([]);
   const currentId = ref<string | null>(null);
   const isLoading = ref(false);
+  const error = ref("");
 
   async function load() {
     isLoading.value = true;
+    error.value = "";
     try {
       list.value = await client.listAgents();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
       isLoading.value = false;
     }
@@ -43,5 +47,5 @@ export const useAgentsStore = defineStore("agents", () => {
 
   const current = computed(() => list.value.find((a) => a.id === currentId.value));
 
-  return { list, currentId, current, isLoading, load, create, update, remove, select };
+  return { list, currentId, current, isLoading, error, load, create, update, remove, select };
 });

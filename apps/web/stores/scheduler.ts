@@ -16,9 +16,25 @@ export interface ScheduledTask {
 export const useSchedulerStore = defineStore("scheduler", () => {
   const client = useEngineClient();
   const tasks = ref<ScheduledTask[]>([]);
+  const error = ref("");
+  // 防止切换 Agent 后旧的 load 结果覆盖新选择
+  let loadSeq = 0;
+  let tasksAgentId = "";
 
   async function load(agentId: string) {
-    tasks.value = await client.getScheduledTasks(agentId);
+    const seq = ++loadSeq;
+    error.value = "";
+    // 切换 Agent 时先清空，避免加载在途期间旧 Agent 的任务被误读为当前 Agent 的
+    if (tasksAgentId !== agentId) {
+      tasks.value = [];
+      tasksAgentId = agentId;
+    }
+    try {
+      const result = await client.getScheduledTasks(agentId);
+      if (seq === loadSeq) tasks.value = result;
+    } catch (err) {
+      if (seq === loadSeq) error.value = err instanceof Error ? err.message : "加载失败";
+    }
   }
 
   async function create(agentId: string, task: Omit<ScheduledTask, "id" | "agentId">) {
@@ -37,5 +53,5 @@ export const useSchedulerStore = defineStore("scheduler", () => {
     await load(agentId);
   }
 
-  return { tasks, load, create, update, remove };
+  return { tasks, error, load, create, update, remove };
 });

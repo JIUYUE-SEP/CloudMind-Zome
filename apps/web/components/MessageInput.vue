@@ -1,6 +1,6 @@
 <template>
   <div class="message-input">
-    <input v-model="text" type="text" placeholder="输入消息..." @keydown.enter="submit" />
+    <input v-model="text" type="text" placeholder="输入消息..." @keydown.enter="onEnter" />
     <button :disabled="!text.trim() || isLoading" @click="submit">发送</button>
   </div>
 </template>
@@ -14,6 +14,12 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: "send", text: string): void }>();
 const text = ref("");
+
+function onEnter(e: KeyboardEvent) {
+  // 中文输入法选词确认也是 Enter，合成态下不能把未完成的拼音发出去
+  if (e.isComposing) return;
+  submit();
+}
 
 function submit() {
   const trimmed = text.value.trim();

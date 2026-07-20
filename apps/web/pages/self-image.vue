@@ -64,17 +64,20 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useSelfImageStore } from "@/stores/self-image";
 import BackButton from "@/components/BackButton.vue";
 
 const store = useSelfImageStore();
 const saveStatus = ref("已保存");
+// load() 回填会触发 deep watch，加载完成前不自动保存
+let loaded = false;
 
 let timeout: ReturnType<typeof setTimeout> | null = null;
 watch(
   () => store.selfImage,
   () => {
+    if (!loaded) return;
     saveStatus.value = "保存中…";
     if (timeout) clearTimeout(timeout);
     timeout = setTimeout(() => {
@@ -85,8 +88,11 @@ watch(
   { deep: true }
 );
 
-onMounted(() => {
+onMounted(async () => {
   store.load();
+  // load 触发的 watch 先于 nextTick 执行，此后才允许自动保存
+  await nextTick();
+  loaded = true;
 });
 
 onBeforeUnmount(() => {

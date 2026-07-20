@@ -7,11 +7,15 @@ export const useComputeStore = defineStore("compute", () => {
   const client = useEngineClient();
   const providers = ref<Provider[]>([]);
   const isLoading = ref(false);
+  const error = ref("");
 
   async function load() {
     isLoading.value = true;
+    error.value = "";
     try {
       providers.value = await client.listProviders();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
       isLoading.value = false;
     }
@@ -82,6 +86,7 @@ export const useComputeStore = defineStore("compute", () => {
   return {
     providers,
     isLoading,
+    error,
     load,
     addProvider,
     updateProvider,

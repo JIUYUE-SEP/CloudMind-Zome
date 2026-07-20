@@ -7,14 +7,16 @@
     <main class="main">
       <div class="controls">
         <input v-model="newName" placeholder="新蓝图名称" @keyup.enter="createBlueprint" />
-        <button @click="createBlueprint">创建蓝图</button>
+        <button :disabled="creating" @click="createBlueprint">{{ creating ? "创建中..." : "创建蓝图" }}</button>
       </div>
+      <div v-if="opError" class="op-error">{{ opError }}</div>
       <div v-if="store.isLoading" class="empty">加载中...</div>
+      <div v-else-if="store.error" class="op-error">加载失败：{{ store.error }}</div>
       <ul v-else-if="store.blueprints.length" class="blueprint-list">
         <li v-for="bp in store.blueprints" :key="bp.id" class="blueprint-item">
           <NuxtLink :to="`/blueprints/${bp.id}`" class="name">{{ bp.name }}</NuxtLink>
           <span class="meta">{{ bp.nodes.length }} 节点 · {{ bp.edges.length }} 连线</span>
-          <button class="danger" @click.prevent="store.remove(bp.id)">删除</button>
+          <button class="danger" @click.prevent="removeBlueprint(bp.id)">删除</button>
         </li>
       </ul>
       <div v-else class="empty">暂无蓝图</div>
@@ -28,15 +30,37 @@ import { useBlueprintsStore } from "@/stores/blueprints";
 
 const store = useBlueprintsStore();
 const newName = ref("");
+const creating = ref(false);
+const opError = ref("");
 
 onMounted(() => {
   store.load();
 });
 
 async function createBlueprint() {
-  if (!newName.value.trim()) return;
-  await store.create({ name: newName.value.trim(), nodes: [], edges: [] });
-  newName.value = "";
+  const name = newName.value.trim();
+  if (!name || creating.value) return;
+  creating.value = true;
+  opError.value = "";
+  try {
+    const created = await store.create({ name, nodes: [], edges: [] });
+    newName.value = "";
+    navigateTo(`/blueprints/${created.id}`);
+  } catch (err) {
+    opError.value = err instanceof Error ? err.message : "创建失败";
+  } finally {
+    creating.value = false;
+  }
+}
+
+async function removeBlueprint(id: string) {
+  if (!confirm("确定删除这个蓝图吗？")) return;
+  opError.value = "";
+  try {
+    await store.remove(id);
+  } catch (err) {
+    opError.value = err instanceof Error ? err.message : "删除失败";
+  }
 }
 </script>
 
@@ -46,8 +70,14 @@ async function createBlueprint() {
   inset: 0;
   background: var(--mc-bg);
   color: var(--mc-text);
-  padding: 24px 196px 80px 24px;
+  padding: 24px 24px 80px;
   overflow-y: auto;
+}
+
+.op-error {
+  color: var(--mc-danger);
+  font-size: 13px;
+  margin-bottom: 12px;
 }
 
 .header {

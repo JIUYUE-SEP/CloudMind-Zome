@@ -6,6 +6,8 @@
       <button @click="openProviderModal()">添加 Provider</button>
     </header>
 
+    <div v-if="compute.error" class="load-error">加载失败：{{ compute.error }}</div>
+    <div v-else-if="!compute.providers.length && !compute.isLoading" class="load-empty">暂无 Provider，点击右上角添加</div>
     <div class="providers">
       <div v-for="provider in compute.providers" :key="provider.id" class="provider-card" @click="editProvider(provider)">
         <h3>{{ provider.displayName }}</h3>
@@ -13,7 +15,7 @@
         <p>模型数: {{ provider.models.length }}</p>
         <div class="actions">
           <button @click.stop="testProvider(provider.id)">测试连接</button>
-          <button @click.stop="compute.deleteProvider(provider.id)">删除</button>
+          <button @click.stop="removeProvider(provider.id)">删除</button>
         </div>
       </div>
     </div>
@@ -34,9 +36,10 @@
           <input v-model="providerForm.apiKey" type="password" placeholder="留空则保持不变" />
         </label>
         <div class="modal-actions">
-          <button @click="saveProvider">保存</button>
+          <button :disabled="saving" @click="saveProvider">{{ saving ? "保存中..." : "保存" }}</button>
           <button @click="showProviderModal = false">取消</button>
         </div>
+        <div v-if="modalError" class="op-error">{{ modalError }}</div>
       </div>
     </div>
 
@@ -59,6 +62,7 @@
         </select>
         <button @click="addModel">添加模型</button>
       </div>
+      <div v-if="modelError" class="op-error">{{ modelError }}</div>
     </div>
 
     <div v-if="testResult" class="test-result">
@@ -68,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, watch, onMounted } from "vue";
 import { useComputeStore } from "@/stores/compute";
 import type { Provider, ModelInfo } from "@/composables/useEngineClient";
 
@@ -76,6 +80,9 @@ const compute = useComputeStore();
 const showProviderModal = ref(false);
 const editingProvider = ref<Provider | null>(null);
 const testResult = ref<{ ok: boolean; error?: string } | null>(null);
+const saving = ref(false);
+const modalError = ref("");
+const modelError = ref("");
 
 const providerForm = reactive({
   displayName: "",
@@ -93,11 +100,23 @@ onMounted(() => {
   compute.load();
 });
 
+// store 每次操作后全量重载 providers，editingProvider 会指向被替换掉的旧对象；
+// 按 id 跟随最新快照，Provider 被删除时自动清空（隐藏模型管理区）
+watch(
+  () => compute.providers,
+  (list) => {
+    if (editingProvider.value) {
+      editingProvider.value = list.find((p) => p.id === editingProvider.value!.id) ?? null;
+    }
+  },
+);
+
 function openProviderModal() {
   editingProvider.value = null;
   providerForm.displayName = "";
   providerForm.baseUrl = "https://api.openai.com/v1";
   providerForm.apiKey = "";
+  modalError.value = "";
   showProviderModal.value = true;
 }
 
@@ -106,39 +125,72 @@ function editProvider(provider: Provider) {
   providerForm.displayName = provider.displayName;
   providerForm.baseUrl = provider.baseUrl;
   providerForm.apiKey = "";
+  modalError.value = "";
   showProviderModal.value = true;
 }
 
 async function saveProvider() {
-  if (editingProvider.value) {
-    await compute.updateProvider(editingProvider.value.id, { ...providerForm });
-  } else {
-    await compute.addProvider({
-      displayName: providerForm.displayName,
-      providerType: "openai",
-      baseUrl: providerForm.baseUrl,
-      apiKey: providerForm.apiKey,
-      models: [],
-    });
+  saving.value = true;
+  modalError.value = "";
+  try {
+    if (editingProvider.value) {
+      await compute.updateProvider(editingProvider.value.id, { ...providerForm });
+    } else {
+      await compute.addProvider({
+        displayName: providerForm.displayName,
+        providerType: "openai",
+        baseUrl: providerForm.baseUrl,
+        apiKey: providerForm.apiKey,
+        models: [],
+      });
+    }
+    showProviderModal.value = false;
+  } catch (err) {
+    modalError.value = err instanceof Error ? err.message : "保存失败";
+  } finally {
+    saving.value = false;
   }
-  showProviderModal.value = false;
+}
+
+async function removeProvider(id: string) {
+  if (!confirm("确定删除这个 Provider 吗？")) return;
+  try {
+    await compute.deleteProvider(id);
+  } catch (err) {
+    alert(err instanceof Error ? err.message : "删除失败");
+  }
 }
 
 async function testProvider(id: string) {
-  testResult.value = await compute.testConnection(id);
+  testResult.value = null;
+  try {
+    testResult.value = await compute.testConnection(id);
+  } catch (err) {
+    testResult.value = { ok: false, error: err instanceof Error ? err.message : "测试失败" };
+  }
 }
 
 async function addModel() {
   if (!editingProvider.value || !newModel.id) return;
-  await compute.addModel(editingProvider.value.id, { ...newModel });
-  newModel.id = "";
-  newModel.displayName = "";
-  newModel.modelType = "llm";
+  modelError.value = "";
+  try {
+    await compute.addModel(editingProvider.value.id, { ...newModel });
+    newModel.id = "";
+    newModel.displayName = "";
+    newModel.modelType = "llm";
+  } catch (err) {
+    modelError.value = err instanceof Error ? err.message : "添加模型失败";
+  }
 }
 
 async function deleteModel(modelId: string) {
   if (!editingProvider.value) return;
-  await compute.deleteModel(editingProvider.value.id, modelId);
+  modelError.value = "";
+  try {
+    await compute.deleteModel(editingProvider.value.id, modelId);
+  } catch (err) {
+    modelError.value = err instanceof Error ? err.message : "删除模型失败";
+  }
 }
 </script>
 
@@ -146,10 +198,22 @@ async function deleteModel(modelId: string) {
 .compute-page {
   position: absolute;
   inset: 0;
-  padding: 24px 196px 80px 24px;
+  padding: 24px 24px 80px;
   color: var(--mc-text);
   background: var(--mc-bg);
   overflow-y: auto;
+}
+
+.load-error,
+.op-error {
+  color: var(--mc-danger);
+  font-size: 13px;
+}
+
+.load-empty {
+  color: var(--mc-text-tertiary);
+  font-size: 13px;
+  padding: 24px 0;
 }
 
 header {

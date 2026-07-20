@@ -19,7 +19,7 @@
 
     <footer class="bottom-bar">
       <div class="bar-left">
-        <button class="bar-avatar" title="个人信息">
+        <button class="bar-avatar" title="个人信息" @click="navigateTo('/user-profile')">
           <span>我</span>
         </button>
         <button class="bar-btn" @click="navigateTo('/self-image')">心智侧写</button>
@@ -43,9 +43,9 @@ interface NavItem {
 const route = useRoute();
 
 const navItems: NavItem[] = [
-  { label: "行动中心", to: "/actions" },
+  { label: "行动中心", to: "", placeholder: true },
   { label: "心智整备", to: "/agents/new" },
-  { label: "自动委托", to: "/commissions" },
+  { label: "自动委托", to: "", placeholder: true },
   { label: "心智招募", to: "/agents/new" },
   { label: "通讯中枢", to: "/hub" },
   { label: "广播站", to: "", placeholder: true },
@@ -91,6 +91,8 @@ function handleNav(e: Event, item: NavItem) {
   padding: 16px;
   z-index: 100;
   background: linear-gradient(to left, rgba(11, 15, 23, 0.9), transparent);
+  /* 矮窗口下导航项不截断，可滚动 */
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -139,16 +141,16 @@ function handleNav(e: Event, item: NavItem) {
 .bar-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 32px;
 }
 
 .bar-btn {
   background: transparent;
   border: none;
   color: var(--mc-text-secondary);
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
-  padding: 6px 12px;
+  padding: 8px 20px;
   transition: color 0.15s;
 }
 

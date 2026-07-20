@@ -49,7 +49,12 @@ export const useSelfImageStore = defineStore("self-image", () => {
 
   function save() {
     if (typeof window === "undefined") return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(selfImage.value));
+    // localStorage 在隐私模式/超配额时会抛错，静默降级为不持久化
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(selfImage.value));
+    } catch {
+      // ignore
+    }
   }
 
   return { selfImage, load, save };

@@ -1,8 +1,10 @@
 <template>
   <div class="model-selector">
-    <select :value="modelId" @change="onChange">
+    <select :value="currentValue" @change="onChange">
       <option value="">请选择模型</option>
-      <option v-for="m in models" :key="m.id" :value="m.id">{{ m.displayName || m.id }}</option>
+      <option v-for="m in models" :key="`${m.providerId}:${m.id}`" :value="`${m.providerId}:${m.id}`">
+        {{ m.displayName || m.id }}<template v-if="!providerId">（{{ m.providerId }}）</template>
+      </option>
     </select>
   </div>
 </template>
@@ -24,22 +26,32 @@ const emit = defineEmits<{
 
 const store = useComputeStore();
 
+// 统一带上 providerId：不同 provider 常有同名模型（如两家都有 gpt-4o），
+// 只按 modelId 做 key/查找会撞键并选错 provider
 const models = computed(() => {
-  if (props.providerId) {
-    return store.getProvider(props.providerId)?.models.filter((m) => m.modelType === props.modelType) || [];
-  }
-  return store.providers.flatMap((p) =>
+  const all = store.providers.flatMap((p) =>
     p.models.filter((m) => m.modelType === props.modelType).map((m) => ({ ...m, providerId: p.id })),
   );
+  return props.providerId ? all.filter((m) => m.providerId === props.providerId) : all;
 });
 
+const currentValue = computed(() =>
+  props.providerId && props.modelId ? `${props.providerId}:${props.modelId}` : "",
+);
+
 function onChange(event: Event) {
-  const id = (event.target as HTMLSelectElement).value;
-  const model = models.value.find((m) => m.id === id);
-  if (model && "providerId" in model) {
-    emit("update:providerId", model.providerId as string);
+  const value = (event.target as HTMLSelectElement).value;
+  if (!value) {
+    // 清空时 providerId 也要一起清，否则会残留旧 provider 配空模型
+    emit("update:providerId", "");
+    emit("update:modelId", "");
+    return;
   }
-  emit("update:modelId", id);
+  // 按第一个冒号切分：前提是 providerId 不含冒号（engine 生成的 id 满足）；
+  // modelId 含冒号（如 llama3.1:8b）会被完整保留
+  const sep = value.indexOf(":");
+  emit("update:providerId", value.slice(0, sep));
+  emit("update:modelId", value.slice(sep + 1));
 }
 </script>
 

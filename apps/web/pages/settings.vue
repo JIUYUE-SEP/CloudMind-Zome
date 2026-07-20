@@ -38,7 +38,17 @@
         <input v-model="store.settings.tavilyApiKey" type="password" />
       </label>
 
-      <button class="save" @click="store.save">保存</button>
+      <div class="actions">
+        <button class="save" :disabled="store.saveState === 'saving'" @click="store.save">
+          {{ store.saveState === 'saving' ? '保存中...' : '保存' }}
+        </button>
+        <span v-if="store.saveState === 'saved'" class="save-ok">已保存</span>
+        <span v-if="store.saveState === 'error'" class="save-err">{{ store.saveError }}</span>
+      </div>
+    </section>
+    <section v-else class="load-error">
+      <p>{{ store.loadError ? `加载失败：${store.loadError}` : '加载中...' }}</p>
+      <button v-if="store.loadError" class="save" @click="store.load">重试</button>
     </section>
   </div>
 </template>
@@ -59,7 +69,7 @@ onMounted(() => {
 .settings-page {
   position: absolute;
   inset: 0;
-  padding: 24px 196px 80px 24px;
+  padding: 24px 24px 80px;
   color: var(--mc-text);
   background: var(--mc-bg);
   overflow-y: auto;
@@ -127,5 +137,31 @@ input {
   background: var(--mc-accent);
   color: var(--mc-bg);
   cursor: pointer;
+}
+
+.save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.save-ok {
+  color: var(--mc-success);
+  font-size: 13px;
+}
+
+.save-err {
+  color: var(--mc-danger);
+  font-size: 13px;
+}
+
+.load-error {
+  color: var(--mc-text-secondary);
+  font-size: 14px;
 }
 </style>

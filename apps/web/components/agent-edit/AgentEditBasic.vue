@@ -60,7 +60,9 @@ function update<K extends keyof AgentConfig>(key: K, event: Event) {
   emit("update", { [key]: value } as Partial<AgentConfig>);
 }
 
-function addTag() {
+function addTag(e: KeyboardEvent) {
+  // 中文输入法选词确认也是 Enter，合成态下不误添加
+  if (e.isComposing) return;
   const value = tagInput.value.trim();
   if (!value) return;
   const current = new Set(tags.value);

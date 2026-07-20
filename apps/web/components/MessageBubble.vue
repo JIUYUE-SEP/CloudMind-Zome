@@ -45,6 +45,17 @@ const roleClass = computed(() => `role-${props.role}`);
   background: rgba(255, 255, 255, 0.06);
   color: #d8e1ec;
 }
+.message-content p {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+/* 工具结果消息弱化显示，避免与用户/助手气泡混淆 */
+.role-tool .message-content {
+  background: rgba(255, 255, 255, 0.03);
+  color: #8899aa;
+  font-size: 12px;
+}
 .thinking-block {
   margin-top: 8px;
   font-size: 12px;

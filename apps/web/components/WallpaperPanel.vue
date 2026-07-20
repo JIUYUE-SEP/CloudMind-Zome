@@ -46,7 +46,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{
@@ -114,12 +114,19 @@ function loadFromStorage() {
 
 function persist() {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEYS.fit, wallpaperFit.value);
-  localStorage.setItem(STORAGE_KEYS.pos, wallpaperPos.value);
-  if (wallpaperUrl.value) {
-    localStorage.setItem(STORAGE_KEYS.url, wallpaperUrl.value);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.url);
+  const previousUrl = localStorage.getItem(STORAGE_KEYS.url) || "";
+  try {
+    localStorage.setItem(STORAGE_KEYS.fit, wallpaperFit.value);
+    localStorage.setItem(STORAGE_KEYS.pos, wallpaperPos.value);
+    if (wallpaperUrl.value) {
+      localStorage.setItem(STORAGE_KEYS.url, wallpaperUrl.value);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.url);
+    }
+  } catch {
+    // base64 图片容易超 localStorage 配额（一般 5MB）；回滚到上一张已保存的壁纸而不是清空
+    alert("壁纸保存失败：图片过大，浏览器存储空间不足，请换更小的图片");
+    wallpaperUrl.value = previousUrl;
   }
   emit("update", wallpaperUrl.value, wallpaperFit.value, wallpaperPos.value);
 }
@@ -128,15 +135,25 @@ function triggerUpload() {
   fileInput.value?.click();
 }
 
+const MAX_WALLPAPER_BYTES = 2 * 1024 * 1024;
+
 function onFileChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0];
   if (!file) return;
+  if (file.size > MAX_WALLPAPER_BYTES) {
+    alert("图片超过 2MB，无法用作壁纸（浏览器存储限制），请压缩后再试");
+    (e.target as HTMLInputElement).value = "";
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     wallpaperUrl.value = reader.result as string;
     wallpaperFit.value = "cover";
     wallpaperPos.value = "center";
     persist();
+  };
+  reader.onerror = () => {
+    alert("图片读取失败，请重试");
   };
   reader.readAsDataURL(file);
   (e.target as HTMLInputElement).value = "";
@@ -186,6 +203,13 @@ function onMouseUp() {
   document.removeEventListener("mousemove", onMouseMove);
   document.removeEventListener("mouseup", onMouseUp);
 }
+
+// 拖拽中途组件被卸载时兜底清理 document 监听与 userSelect
+onBeforeUnmount(() => {
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
+  document.body.style.userSelect = "";
+});
 </script>
 
 <style scoped>

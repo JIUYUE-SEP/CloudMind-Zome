@@ -5,14 +5,17 @@
         <BackButton />
         <h1>用户档案</h1>
       </div>
-      <button class="save-btn" @click="save">保存</button>
+      <div class="up-actions">
+        <span v-if="saveMsg" class="save-msg" :class="{ error: saveFailed }">{{ saveMsg }}</span>
+        <button class="save-btn" @click="save">保存</button>
+      </div>
     </header>
 
     <main class="up-body">
       <div class="up-preview">
         <div
           class="up-avatar"
-          :style="{ backgroundColor: store.profile.representColor }"
+          :style="{ backgroundColor: store.profile.representColor || '#00e5c9' }"
         >
           {{ nicknameInitial }}
         </div>
@@ -49,11 +52,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useUserProfileStore } from "@/stores/user-profile";
 import BackButton from "@/components/BackButton.vue";
 
 const store = useUserProfileStore();
+const saveMsg = ref("");
+const saveFailed = ref(false);
+let msgTimer: ReturnType<typeof setTimeout> | null = null;
 
 const nicknameInitial = computed(() => {
   const name = store.profile.nickname || "我";
@@ -61,11 +67,25 @@ const nicknameInitial = computed(() => {
 });
 
 function save() {
-  store.save();
+  try {
+    store.save();
+    saveFailed.value = false;
+    saveMsg.value = "已保存";
+  } catch {
+    // localStorage 不可用（隐私模式/超限）
+    saveFailed.value = true;
+    saveMsg.value = "保存失败：浏览器存储不可用";
+  }
+  if (msgTimer) clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => (saveMsg.value = ""), 1500);
 }
 
 onMounted(() => {
   store.load();
+});
+
+onBeforeUnmount(() => {
+  if (msgTimer) clearTimeout(msgTimer);
 });
 </script>
 
@@ -111,6 +131,21 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.up-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.save-msg {
+  font-size: 12px;
+  color: var(--mc-success);
+}
+
+.save-msg.error {
+  color: var(--mc-danger);
 }
 
 .up-body {

@@ -1,6 +1,12 @@
 <template>
   <div class="session-detail-page">
+    <header class="page-header">
+      <BackButton />
+      <span class="page-title">{{ session?.name || "群聊" }}</span>
+    </header>
+    <div v-if="notFound" class="not-found">会话不存在或已被删除</div>
     <GroupChatView
+      v-else
       :session="session"
       :messages="messages"
       :agents="agents.list"
@@ -20,6 +26,7 @@ import { useAgentsStore } from "@/stores/agents";
 import { useEngineClient, type ChatMessageRecord } from "@/composables/useEngineClient";
 import type { Session } from "@/composables/useEngineClient";
 import type { DisplayMessage } from "@/components/GroupChatView.vue";
+import BackButton from "@/components/BackButton.vue";
 import {
   createApprovalMessage,
   findPendingApproval,
@@ -37,13 +44,26 @@ const session = ref<Session | undefined>(undefined);
 const messages = ref<DisplayMessage[]>([]);
 const isConnected = ref(false);
 const isStreaming = ref(false);
+const notFound = ref(false);
 let connection: ReturnType<typeof client.connectSession> | null = null;
+// Date.now() 同毫秒会撞 id（v-for key 冲突），挂自增序号
+let msgSeq = 0;
+const nextMsgId = (prefix: string) => `${prefix}_${Date.now()}_${msgSeq++}`;
 
 onMounted(async () => {
+  // store 内部已捕获加载错误并写入 error：列表没拉下来时不做存在性判断，继续尝试连接
   await sessions.load();
   await agents.load();
   session.value = sessions.sessions.find((s) => s.id === sessionId.value);
-  await loadMessages();
+  if (!sessions.error && !session.value) {
+    notFound.value = true;
+    return;
+  }
+  try {
+    await loadMessages();
+  } catch {
+    // 历史加载失败则从空会话开始
+  }
   connect();
 });
 
@@ -71,7 +91,7 @@ function connect() {
         last.text += delta;
       } else {
         messages.value.push({
-          id: `stream_${Date.now()}`,
+          id: nextMsgId("stream"),
           role: "assistant",
           text: delta,
           thinking: "",
@@ -107,9 +127,13 @@ function connect() {
       isStreaming.value = false;
     },
     onError: (error) => {
+      const last = messages.value[messages.value.length - 1];
+      if (last && last.role === "assistant") {
+        last.isStreaming = false;
+      }
       isStreaming.value = false;
       messages.value.push({
-        id: `err_${Date.now()}`,
+        id: nextMsgId("err"),
         role: "assistant",
         text: `Error: ${error}`,
         thinking: "",
@@ -126,8 +150,21 @@ function connect() {
 
 function onSend(text: string) {
   if (!connection) return;
+  // 先确认帧真的发出去了再乐观上屏，避免 WS 未就绪时静默吞消息、isStreaming 永不复位
+  const sent = connection.send(text);
+  if (!sent) {
+    messages.value.push({
+      id: nextMsgId("err"),
+      role: "assistant",
+      text: "发送失败：连接未就绪，请稍后重试",
+      thinking: "",
+      toolCalls: [],
+      isStreaming: false,
+    });
+    return;
+  }
   messages.value.push({
-    id: `u_${Date.now()}`,
+    id: nextMsgId("u"),
     role: "user",
     text,
     thinking: "",
@@ -135,7 +172,6 @@ function onSend(text: string) {
     isStreaming: false,
   });
   isStreaming.value = true;
-  connection.send(text);
 }
 
 // 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问
@@ -150,6 +186,16 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
   });
   if (sent) {
     settleApproval(messages.value, payload.approvalId, payload.approved ? "approved" : "denied");
+  } else {
+    // 发送失败必须让用户感知：卡片闩锁已置位，静默失败会把卡片锁成死态
+    messages.value.push({
+      id: nextMsgId("err"),
+      role: "assistant",
+      text: "审批回执发送失败：连接未就绪，请重试",
+      thinking: "",
+      toolCalls: [],
+      isStreaming: false,
+    });
   }
 }
 
@@ -170,11 +216,35 @@ function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
   position: absolute;
   top: 0;
   left: 0;
-  right: 180px;
+  right: 0;
   bottom: 56px;
   display: flex;
   flex-direction: column;
   background: var(--mc-bg);
   color: var(--mc-text);
+}
+
+.page-header {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.page-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.not-found {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mc-text-tertiary);
+  font-size: 14px;
 }
 </style>

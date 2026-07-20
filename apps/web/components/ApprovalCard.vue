@@ -32,7 +32,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { ref, computed } from "vue";
 import { isApprovalRememberable, type ApprovalStatus, type ApprovalResponsePayload } from "@/utils/approval";
 
 const props = defineProps<{
@@ -77,8 +77,12 @@ const statusText = computed(() => {
   }
 });
 
+// 快速双击时父组件还没回写 status，本地立即置位防止重复 emit 审批回执
+const responded = ref(false);
+
 function onRespond(approved: boolean, remember: boolean) {
-  if (props.status !== "pending") return;
+  if (props.status !== "pending" || responded.value) return;
+  responded.value = true;
   emit("respond", { approvalId: props.approvalId, approved, remember });
 }
 </script>

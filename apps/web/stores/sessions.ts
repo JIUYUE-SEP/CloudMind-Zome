@@ -7,11 +7,15 @@ export const useSessionsStore = defineStore("sessions", () => {
   const client = useEngineClient();
   const sessions = ref<Session[]>([]);
   const isLoading = ref(false);
+  const error = ref("");
 
   async function load() {
     isLoading.value = true;
+    error.value = "";
     try {
       sessions.value = await client.listSessions();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
       isLoading.value = false;
     }
@@ -35,5 +39,5 @@ export const useSessionsStore = defineStore("sessions", () => {
     sessions.value = sessions.value.filter((s) => s.id !== id);
   }
 
-  return { sessions, isLoading, load, create, update, remove };
+  return { sessions, isLoading, error, load, create, update, remove };
 });

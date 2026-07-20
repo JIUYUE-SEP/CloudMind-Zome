@@ -19,8 +19,11 @@ function onClick() {
   emit("click");
   if (props.to) {
     router.push(props.to);
-  } else {
+  } else if (router.options.history.state.back) {
+    // 有应用内历史才 back；直开/刷新进入时回退首页而不是离开应用
     router.back();
+  } else {
+    router.push("/");
   }
 }
 </script>

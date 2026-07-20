@@ -46,7 +46,7 @@
         @mousedown="startDrag($event, node)"
         @click.stop="selectNode(node)"
       >
-        <div class="port in" @mousedown.stop @click.stop="onInPortClick(node)"></div>
+        <div class="port in" data-in-port @mousedown.stop @click.stop="onInPortClick(node)"></div>
         <div class="node-label">{{ nodeLabel(node) }}</div>
         <div class="port out" @mousedown.stop @click.stop="onOutPortClick(node)"></div>
       </div>
@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from "vue";
+import { ref, computed, nextTick, onBeforeUnmount } from "vue";
 import type { BlueprintNode, BlueprintEdge } from "@/composables/useEngineClient";
 
 const props = defineProps<{
@@ -218,13 +218,11 @@ function onDragEnd() {
 }
 
 function onOutPortClick(node: BlueprintNode) {
-  event?.stopPropagation();
-  const rect = canvasRef.value?.getBoundingClientRect();
-  if (!rect) return;
+  // 坐标统一用画布相对坐标（与静态边 portX/portY 一致），不混视口坐标
   edgeState.value = {
     sourceId: node.id,
-    x1: node.x + NODE_WIDTH + rect.left,
-    y1: node.y + NODE_HEIGHT / 2 + rect.top,
+    x1: node.x + NODE_WIDTH,
+    y1: node.y + NODE_HEIGHT / 2,
   };
   document.addEventListener("mousemove", onEdgeMove);
   document.addEventListener("mouseup", onEdgeEnd);
@@ -232,7 +230,6 @@ function onOutPortClick(node: BlueprintNode) {
 
 function onInPortClick(node: BlueprintNode) {
   if (!edgeState.value) return;
-  event?.stopPropagation();
   const sourceId = edgeState.value.sourceId;
   if (sourceId === node.id) {
     cancelEdge();
@@ -249,10 +246,15 @@ function onInPortClick(node: BlueprintNode) {
 }
 
 function onEdgeMove(event: MouseEvent) {
-  mousePos.value = { x: event.clientX, y: event.clientY };
+  const rect = canvasRef.value?.getBoundingClientRect();
+  if (!rect) return;
+  mousePos.value = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
-function onEdgeEnd() {
+function onEdgeEnd(event: MouseEvent) {
+  // 落在目标 in-port 上的 mouseup 不能取消连线：
+  // DOM 事件序为 mouseup → click，此处先清掉 edgeState 会让随后的 onInPortClick 永远落空
+  if ((event.target as HTMLElement | null)?.closest("[data-in-port]")) return;
   cancelEdge();
 }
 
@@ -261,6 +263,13 @@ function cancelEdge() {
   document.removeEventListener("mousemove", onEdgeMove);
   document.removeEventListener("mouseup", onEdgeEnd);
 }
+
+// 拖拽/连线中途组件被卸载（切路由）时，兜底移除 document 级监听
+onBeforeUnmount(() => {
+  document.removeEventListener("mousemove", onDragMove);
+  document.removeEventListener("mouseup", onDragEnd);
+  cancelEdge();
+});
 
 function onCanvasClick() {
   selectedNodeId.value = null;

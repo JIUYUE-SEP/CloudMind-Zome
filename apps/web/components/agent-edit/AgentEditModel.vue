@@ -1,5 +1,6 @@
 <template>
   <div class="edit-section">
+    <div v-if="compute.error" class="load-error">模型列表加载失败：{{ compute.error }}</div>
     <section class="model-group">
       <div class="group-title">主模型</div>
       <ModelSelector
@@ -37,7 +38,7 @@
           min="0"
           max="2"
           placeholder="默认"
-          @input="updateNumber('temperature', $event)"
+          @change="updateNumber('temperature', $event)"
         />
       </label>
       <label>
@@ -49,7 +50,7 @@
           min="0"
           max="1"
           placeholder="默认"
-          @input="updateNumber('topP', $event)"
+          @change="updateNumber('topP', $event)"
         />
       </label>
     </section>
@@ -135,6 +136,11 @@ const proxyImageModelId = computed({
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.load-error {
+  color: var(--mc-danger);
+  font-size: 13px;
 }
 
 .model-group {

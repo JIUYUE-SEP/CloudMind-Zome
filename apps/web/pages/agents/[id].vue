@@ -21,11 +21,12 @@
             {{ a.name?.charAt(0) || '?' }}
           </div>
           <div class="agent-meta">
-            <div class="agent-name">{{ a.name }}</div>
+            <div class="agent-name">{{ a.name || a.id }}</div>
             <div class="agent-code">{{ a.codename || a.id }}</div>
           </div>
         </div>
-        <div v-if="!agents.list.length" class="sidebar-empty">暂无心智</div>
+        <div v-if="agents.error" class="sidebar-empty">加载失败：{{ agents.error }}</div>
+        <div v-else-if="!agents.list.length" class="sidebar-empty">暂无心智</div>
       </div>
     </aside>
 
@@ -149,6 +150,8 @@ onMounted(() => {
 
 watch(selectedId, () => {
   formDirty = false;
+  validationError.value = "";
+  saveError.value = "";
 });
 
 watch(
@@ -175,10 +178,13 @@ async function save() {
   try {
     if (isNew.value) {
       const created = await agents.create(agentForm.value);
+      formDirty = false;
       navigateTo(`/agents/${created.id}`);
     } else {
       if (!selectedId.value) return;
       await agents.update(selectedId.value, agentForm.value);
+      // 复位脏标记：之后切换心智再切回时，表单以服务端最新数据重新填充
+      formDirty = false;
     }
   } catch (err) {
     saveError.value = err instanceof Error ? err.message : "保存失败，请检查输入或稍后重试";
@@ -190,8 +196,12 @@ async function save() {
 async function deleteAgent() {
   if (isNew.value || !selectedId.value) return;
   if (!confirm("确定要删除这个心智吗？")) return;
-  await agents.remove(selectedId.value);
-  navigateTo("/hub");
+  try {
+    await agents.remove(selectedId.value);
+    navigateTo("/hub");
+  } catch (err) {
+    saveError.value = err instanceof Error ? err.message : "删除失败";
+  }
 }
 
 function selectAgent(id: string) {

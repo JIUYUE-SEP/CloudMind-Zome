@@ -11,7 +11,7 @@
           <select v-model="selectedAgentId" @change="onSelectAgent">
             <option value="">请选择 Agent</option>
             <option v-for="agent in agents.list" :key="agent.id" :value="agent.id">
-              {{ agent.name }}
+              {{ agent.name || agent.id }}
             </option>
           </select>
         </label>
@@ -19,7 +19,8 @@
 
       <section v-if="selectedAgentId" class="panel">
         <h2>任务列表</h2>
-        <div v-if="scheduler.tasks.length === 0" class="empty">暂无定时任务</div>
+        <div v-if="scheduler.error" class="op-error">加载失败：{{ scheduler.error }}</div>
+        <div v-else-if="scheduler.tasks.length === 0" class="empty">暂无定时任务</div>
         <ul class="task-list">
           <li v-for="task in scheduler.tasks" :key="task.id" class="task-item">
             <div class="task-info">
@@ -54,6 +55,7 @@
             <textarea v-model="form.prompt" rows="4" required></textarea>
           </label>
           <button type="submit" :disabled="loading">添加</button>
+          <div v-if="opError" class="op-error">{{ opError }}</div>
         </form>
       </section>
 
@@ -71,6 +73,7 @@ const agents = useAgentsStore();
 const scheduler = useSchedulerStore();
 const selectedAgentId = ref("");
 const loading = ref(false);
+const opError = ref("");
 
 const form = ref({
   description: "",
@@ -84,6 +87,7 @@ onMounted(() => {
 });
 
 async function onSelectAgent() {
+  opError.value = "";
   if (selectedAgentId.value) {
     await scheduler.load(selectedAgentId.value);
   } else {
@@ -94,9 +98,12 @@ async function onSelectAgent() {
 async function submit() {
   if (!selectedAgentId.value) return;
   loading.value = true;
+  opError.value = "";
   try {
     await scheduler.create(selectedAgentId.value, { ...form.value });
     form.value = { description: "", cron: "", prompt: "", enabled: true };
+  } catch (err) {
+    opError.value = err instanceof Error ? err.message : "创建失败";
   } finally {
     loading.value = false;
   }
@@ -104,12 +111,23 @@ async function submit() {
 
 async function toggleEnabled(task: { id: string; enabled: boolean }) {
   if (!selectedAgentId.value) return;
-  await scheduler.update(selectedAgentId.value, task.id, { enabled: !task.enabled });
+  opError.value = "";
+  try {
+    await scheduler.update(selectedAgentId.value, task.id, { enabled: !task.enabled });
+  } catch (err) {
+    opError.value = err instanceof Error ? err.message : "操作失败";
+  }
 }
 
 async function remove(task: { id: string }) {
   if (!selectedAgentId.value) return;
-  await scheduler.remove(selectedAgentId.value, task.id);
+  if (!confirm("确定删除这个定时任务吗？")) return;
+  opError.value = "";
+  try {
+    await scheduler.remove(selectedAgentId.value, task.id);
+  } catch (err) {
+    opError.value = err instanceof Error ? err.message : "删除失败";
+  }
 }
 
 function formatTime(iso: string) {
@@ -127,8 +145,14 @@ function formatTime(iso: string) {
   inset: 0;
   background: var(--mc-bg);
   color: var(--mc-text);
-  padding: 24px 196px 80px 24px;
+  padding: 24px 24px 80px;
   overflow-y: auto;
+}
+
+.op-error {
+  color: var(--mc-danger);
+  font-size: 13px;
+  margin-top: 8px;
 }
 
 .header {

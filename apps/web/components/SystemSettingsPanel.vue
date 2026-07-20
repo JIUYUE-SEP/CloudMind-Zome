@@ -91,14 +91,14 @@
 
     <div v-if="saveMsg" class="ss-msg" :class="saveMsgType">{{ saveMsg }}</div>
     <div class="ss-actions">
-      <button class="ss-save" @click="save">保存</button>
+      <button class="ss-save" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存" }}</button>
       <button class="ss-cancel" @click="emit('close')">关闭</button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from "vue";
+import { ref, reactive, watch, onMounted, onBeforeUnmount } from "vue";
 import { useSettingsStore } from "@/stores/settings";
 
 const props = defineProps<{ visible: boolean }>();
@@ -114,6 +114,8 @@ const showKey = ref(false);
 const hasSavedKey = ref(false);
 const saveMsg = ref("");
 const saveMsgType = ref<"success" | "error">("success");
+const loadedOk = ref(false);
+const saving = ref(false);
 
 const activeTab = ref("tools");
 const tabs = [
@@ -155,32 +157,49 @@ async function load() {
   saveMsg.value = "";
   await store.load();
   await store.loadTools();
-  if (store.settings) {
-    form.memory.compactThreshold = store.settings.memory.compactThreshold;
-    form.memory.keepRecent = store.settings.memory.keepRecent;
-    form.memory.hotMemoryLimit = store.settings.memory.hotMemoryLimit;
-    form.memory.warmMemoryLimit = store.settings.memory.warmMemoryLimit;
-    // 服务端只返回掩码 "***"：不回填，留空表示保持不变，避免把掩码当真值保存
-    hasSavedKey.value = store.settings.tavilyApiKey === "***";
-    form.tavilyApiKey = "";
+  if (store.loadError || !store.settings) {
+    // 加载失败时表单还是硬编码默认值，此时保存会把默认值覆盖服务端真实配置
+    saveMsg.value = `加载失败: ${store.loadError || "未知错误"}，请关闭后重试`;
+    saveMsgType.value = "error";
+    loadedOk.value = false;
+    return;
   }
+  loadedOk.value = true;
+  form.memory.compactThreshold = store.settings.memory.compactThreshold;
+  form.memory.keepRecent = store.settings.memory.keepRecent;
+  form.memory.hotMemoryLimit = store.settings.memory.hotMemoryLimit;
+  form.memory.warmMemoryLimit = store.settings.memory.warmMemoryLimit;
+  // 服务端只返回掩码 "***"：不回填，留空表示保持不变，避免把掩码当真值保存
+  hasSavedKey.value = store.settings.tavilyApiKey === "***";
+  form.tavilyApiKey = "";
 }
 
 async function save() {
-  try {
-    store.settings = {
-      memory: { ...form.memory },
-      tavilyApiKey: form.tavilyApiKey,
-    };
-    await store.save();
-    saveMsg.value = "保存成功";
-    saveMsgType.value = "success";
-    setTimeout(() => emit("close"), 400);
-  } catch (err) {
-    saveMsg.value = `保存失败: ${err instanceof Error ? err.message : String(err)}`;
-    saveMsgType.value = "error";
+  if (!loadedOk.value || saving.value) {
+    if (!loadedOk.value) {
+      saveMsg.value = "配置未加载成功，不能保存";
+      saveMsgType.value = "error";
+    }
+    return;
   }
+  saving.value = true;
+  store.settings = {
+    memory: { ...form.memory },
+    tavilyApiKey: form.tavilyApiKey,
+  };
+  await store.save();
+  saving.value = false;
+  if (store.saveState === "error") {
+    saveMsg.value = `保存失败: ${store.saveError}`;
+    saveMsgType.value = "error";
+    return;
+  }
+  saveMsg.value = "保存成功";
+  saveMsgType.value = "success";
+  closeTimer = setTimeout(() => emit("close"), 400);
 }
+
+let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function goCompute() {
   emit("close");
@@ -209,6 +228,14 @@ function onMouseUp() {
   document.removeEventListener("mousemove", onMouseMove);
   document.removeEventListener("mouseup", onMouseUp);
 }
+
+// 拖拽中途组件被卸载时兜底清理 document 监听与 userSelect
+onBeforeUnmount(() => {
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
+  document.body.style.userSelect = "";
+  if (closeTimer) clearTimeout(closeTimer);
+});
 </script>
 
 <style scoped>

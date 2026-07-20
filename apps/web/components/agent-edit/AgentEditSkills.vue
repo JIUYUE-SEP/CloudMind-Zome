@@ -1,6 +1,6 @@
 <template>
   <div class="edit-section">
-    <div class="hint">当前后端技能列表为空，可手动输入技能名称作为标签。</div>
+    <div class="hint">输入技能名称，按 Enter 添加为标签。</div>
     <div class="tags-list">
       <span v-for="skill in skills" :key="skill" class="skill-tag">
         {{ skill }}
@@ -32,7 +32,9 @@ const skillInput = ref("");
 
 const skills = computed(() => props.agent.skills || []);
 
-function addSkill() {
+function addSkill(e: KeyboardEvent) {
+  // 中文输入法选词确认也是 Enter，合成态下不误添加
+  if (e.isComposing) return;
   const value = skillInput.value.trim();
   if (!value) return;
   const current = new Set(skills.value);

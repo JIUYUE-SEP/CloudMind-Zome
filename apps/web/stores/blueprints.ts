@@ -7,11 +7,15 @@ export const useBlueprintsStore = defineStore("blueprints", () => {
   const client = useEngineClient();
   const blueprints = ref<Blueprint[]>([]);
   const isLoading = ref(false);
+  const error = ref("");
 
   async function load() {
     isLoading.value = true;
+    error.value = "";
     try {
       blueprints.value = await client.listBlueprints();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
       isLoading.value = false;
     }
@@ -39,5 +43,5 @@ export const useBlueprintsStore = defineStore("blueprints", () => {
     return client.executeBlueprint(id, initialInput);
   }
 
-  return { blueprints, isLoading, load, create, update, remove, execute };
+  return { blueprints, isLoading, error, load, create, update, remove, execute };
 });

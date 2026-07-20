@@ -9,7 +9,7 @@
       <input v-model="newSession.name" type="text" placeholder="群聊名称" />
       <select v-model="selectedAgentId">
         <option value="">选择 Agent</option>
-        <option v-for="agent in agents.list" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+        <option v-for="agent in agents.list" :key="agent.id" :value="agent.id">{{ agent.name || agent.id }}</option>
       </select>
       <button @click="addAgent">添加</button>
       <div class="selected-agents">
@@ -19,10 +19,13 @@
         </span>
       </div>
       <div class="actions">
-        <button @click="createSession">创建</button>
+        <button :disabled="creating" @click="createSession">{{ creating ? "创建中..." : "创建" }}</button>
         <button @click="showForm = false">取消</button>
       </div>
+      <div v-if="formError" class="form-error">{{ formError }}</div>
     </div>
+    <div v-if="sessions.error" class="load-error">加载失败：{{ sessions.error }}</div>
+    <div v-else-if="!sessions.sessions.length && !sessions.isLoading" class="load-empty">暂无群聊</div>
     <ul class="session-list">
       <li v-for="session in sessions.sessions" :key="session.id">
         <NuxtLink :to="`/sessions/${session.id}`">
@@ -42,6 +45,8 @@ const sessions = useSessionsStore();
 const agents = useAgentsStore();
 const showForm = ref(false);
 const selectedAgentId = ref("");
+const creating = ref(false);
+const formError = ref("");
 const newSession = ref<{ name: string; agentIds: string[] }>({ name: "", agentIds: [] });
 
 onMounted(() => {
@@ -51,6 +56,7 @@ onMounted(() => {
 
 function startCreate() {
   newSession.value = { name: "", agentIds: [] };
+  formError.value = "";
   showForm.value = true;
 }
 
@@ -67,17 +73,31 @@ function removeAgent(id: string) {
 }
 
 async function createSession() {
-  if (!newSession.value.name || newSession.value.agentIds.length === 0) return;
-  await sessions.create({
-    name: newSession.value.name,
-    agentIds: newSession.value.agentIds,
-    type: "group",
-  });
-  showForm.value = false;
+  const name = newSession.value.name.trim();
+  if (!name || newSession.value.agentIds.length === 0) {
+    formError.value = "请填写群聊名称并至少添加一个 Agent";
+    return;
+  }
+  creating.value = true;
+  formError.value = "";
+  try {
+    const created = await sessions.create({
+      name,
+      agentIds: newSession.value.agentIds,
+      type: "group",
+    });
+    showForm.value = false;
+    navigateTo(`/sessions/${created.id}`);
+  } catch (err) {
+    formError.value = err instanceof Error ? err.message : "创建失败";
+  } finally {
+    creating.value = false;
+  }
 }
 
 function agentName(id: string): string {
-  return agents.list.find((a) => a.id === id)?.name || id;
+  const agent = agents.list.find((a) => a.id === id);
+  return agent?.name || id;
 }
 </script>
 
@@ -85,10 +105,22 @@ function agentName(id: string): string {
 .sessions-page {
   position: absolute;
   inset: 0;
-  padding: 24px 196px 80px 24px;
+  padding: 24px 24px 80px;
   color: var(--mc-text);
   background: var(--mc-bg);
   overflow-y: auto;
+}
+
+.form-error,
+.load-error {
+  color: var(--mc-danger);
+  font-size: 13px;
+}
+
+.load-empty {
+  color: var(--mc-text-tertiary);
+  font-size: 13px;
+  padding: 24px 0;
 }
 
 header {

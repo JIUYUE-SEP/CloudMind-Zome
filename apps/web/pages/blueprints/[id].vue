@@ -3,18 +3,24 @@
     <header class="header">
       <BackButton to="/blueprints" />
       <input v-model="name" class="title-input" @change="save" />
-      <button class="secondary" @click="save">保存</button>
+      <button class="secondary" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存" }}</button>
+      <span v-if="saveState === 'saved'" class="save-ok">已保存</span>
+      <span v-if="saveState === 'error'" class="save-err">{{ saveError }}</span>
     </header>
-    <BlueprintCanvas :nodes="nodes" :edges="edges" @update="onUpdate" @save="save" @execute="execute" />
-    <div class="execution-panel">
-      <h3>执行</h3>
-      <textarea v-model="initialInput" rows="2" placeholder="初始输入"></textarea>
-      <button :disabled="running" @click="execute">{{ running ? "执行中..." : "执行" }}</button>
-      <div v-if="result" class="result">
-        <div class="status" :class="result.status">状态: {{ result.status }}</div>
-        <pre>{{ resultText }}</pre>
+    <div v-if="loadError" class="load-error">加载失败：{{ loadError }}</div>
+    <template v-else>
+      <BlueprintCanvas :nodes="nodes" :edges="edges" @update="onUpdate" @save="save" @execute="execute" />
+      <div class="execution-panel">
+        <h3>执行</h3>
+        <textarea v-model="initialInput" rows="2" placeholder="初始输入"></textarea>
+        <button :disabled="running" @click="execute">{{ running ? "执行中..." : "执行" }}</button>
+        <div v-if="executeError" class="save-err">{{ executeError }}</div>
+        <div v-if="result" class="result">
+          <div class="status" :class="result.status">状态: {{ result.status }}</div>
+          <pre>{{ resultText }}</pre>
+        </div>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -36,6 +42,11 @@ const edges = ref<BlueprintEdge[]>([]);
 const initialInput = ref("");
 const result = ref<BlueprintExecution | null>(null);
 const running = ref(false);
+const loadError = ref("");
+const saving = ref(false);
+const saveState = ref<"" | "saved" | "error">("");
+const saveError = ref("");
+const executeError = ref("");
 
 const resultText = computed(() => {
   if (!result.value) return "";
@@ -44,7 +55,12 @@ const resultText = computed(() => {
 
 onMounted(async () => {
   const id = route.params.id as string;
-  blueprint.value = await client.getBlueprint(id);
+  try {
+    blueprint.value = await client.getBlueprint(id);
+  } catch (err) {
+    loadError.value = err instanceof Error ? err.message : "蓝图不存在或加载失败";
+    return;
+  }
   name.value = blueprint.value.name;
   nodes.value = blueprint.value.nodes;
   edges.value = blueprint.value.edges;
@@ -56,19 +72,33 @@ function onUpdate(newNodes: BlueprintNode[], newEdges: BlueprintEdge[]) {
 }
 
 async function save() {
-  if (!blueprint.value) return;
-  await store.update(blueprint.value.id, {
-    name: name.value,
-    nodes: nodes.value,
-    edges: edges.value,
-  });
+  if (!blueprint.value || saving.value) return;
+  saving.value = true;
+  saveState.value = "";
+  saveError.value = "";
+  try {
+    await store.update(blueprint.value.id, {
+      name: name.value,
+      nodes: nodes.value,
+      edges: edges.value,
+    });
+    saveState.value = "saved";
+  } catch (err) {
+    saveState.value = "error";
+    saveError.value = err instanceof Error ? err.message : "保存失败";
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function execute() {
   if (!blueprint.value || running.value) return;
   running.value = true;
+  executeError.value = "";
   try {
     result.value = await store.execute(blueprint.value.id, initialInput.value);
+  } catch (err) {
+    executeError.value = err instanceof Error ? err.message : "执行失败";
   } finally {
     running.value = false;
   }
@@ -80,12 +110,31 @@ async function execute() {
   position: absolute;
   top: 0;
   left: 0;
-  right: 180px;
+  right: 0;
   bottom: 56px;
   display: flex;
   flex-direction: column;
   background: var(--mc-bg);
   color: var(--mc-text);
+}
+
+.save-ok {
+  color: #10b981;
+  font-size: 13px;
+}
+
+.save-err {
+  color: #ef4444;
+  font-size: 13px;
+}
+
+.load-error {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mc-text-secondary);
+  font-size: 14px;
 }
 
 .header {
@@ -129,7 +178,7 @@ button:disabled {
 
 .execution-panel {
   position: fixed;
-  right: 200px;
+  right: 16px;
   bottom: 72px;
   width: 320px;
   max-height: 40vh;

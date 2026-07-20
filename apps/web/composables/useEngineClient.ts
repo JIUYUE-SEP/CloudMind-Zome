@@ -169,13 +169,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getAgent(id: string): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl.value}/agents/${id}`);
+    const res = await fetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error(`Failed to get agent: ${res.status}`);
     return res.json();
   }
 
   async function updateAgent(id: string, agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl.value}/agents/${id}`, {
+    const res = await fetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -185,7 +185,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteAgent(id: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/agents/${id}`, { method: "DELETE" });
+    const res = await fetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete agent: ${res.status}`);
   }
 
@@ -193,7 +193,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     const params = new URLSearchParams();
     params.set("sessionId", sessionId);
     if (limit) params.set("limit", String(limit));
-    const res = await fetch(`${baseUrl.value}/chat/${agentId}/messages?${params.toString()}`);
+    const res = await fetch(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
     if (!res.ok) throw new Error(`Failed to get messages: ${res.status}`);
     return res.json();
   }
@@ -272,6 +272,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
     const res = await fetch(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" });
+    if (!res.ok) throw new Error(`Failed to test provider: ${res.status}`);
     return res.json();
   }
 
@@ -325,7 +326,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   // Scheduler
   async function getScheduledTasks(agentId: string): Promise<ScheduledTask[]> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}`);
+    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
     if (!res.ok) throw new Error(`Failed to list scheduled tasks: ${res.status}`);
     return res.json();
   }
@@ -334,7 +335,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     agentId: string,
     task: Omit<ScheduledTask, "id" | "agentId">
   ): Promise<ScheduledTask> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}`, {
+    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(task),
@@ -348,7 +349,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     taskId: string,
     patch: Partial<Omit<ScheduledTask, "id" | "agentId">>
   ): Promise<ScheduledTask> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}/${taskId}`, {
+    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -358,13 +359,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteScheduledTask(agentId: string, taskId: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${agentId}/${taskId}`, { method: "DELETE" });
+    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete scheduled task: ${res.status}`);
   }
 
   function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsUrl}/ws/${agentId}?sessionId=${encodeURIComponent(sessionId)}`);
+    const socket = new WebSocket(`${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`);
 
     socket.onopen = () => {
       handlers.onOpen?.();
