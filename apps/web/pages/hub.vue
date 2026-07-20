@@ -101,7 +101,7 @@ import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type Session } from "@/composables/useEngineClient";
-import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
+import { useChatRecords, setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
 import {
   createApprovalMessage,
   findPendingApproval,
@@ -234,8 +234,10 @@ function connectGroup(sessionId: string) {
     onToolResult: (result) => {
       // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
       expireApprovalByToolCallId(groupMessages.value, result.toolCallId);
+      setToolCallStatus(groupMessages.value, result.toolCallId, "done");
     },
     onApprovalRequest: (request) => {
+      setToolCallStatus(groupMessages.value, request.toolCallId, "awaiting-approval");
       groupMessages.value.push(createApprovalMessage(request));
     },
     onStepEnd: () => {

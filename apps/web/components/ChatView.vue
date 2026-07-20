@@ -17,6 +17,7 @@
           :text="msg.text"
           :thinking="msg.thinking"
           :tool-calls="msg.toolCalls"
+          :is-streaming="msg.isStreaming"
         />
       </template>
     </div>

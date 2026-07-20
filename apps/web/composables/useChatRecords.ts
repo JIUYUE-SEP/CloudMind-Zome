@@ -1,12 +1,21 @@
 import type { ChatMessageRecord } from "@/composables/useEngineClient";
 import type { ApprovalInfo } from "@/utils/approval";
 
+export type ToolCallStatus = "running" | "awaiting-approval" | "done";
+
+export interface DisplayToolCall {
+  toolCallId: string;
+  name: string;
+  arguments: unknown;
+  status?: ToolCallStatus;
+}
+
 export interface DisplayMessage {
   id: string;
   role: "user" | "assistant" | "tool";
   text: string;
   thinking: string;
-  toolCalls: { toolCallId: string; name: string; arguments: unknown }[];
+  toolCalls: DisplayToolCall[];
   isStreaming: boolean;
   approval?: ApprovalInfo;
 }
@@ -28,4 +37,22 @@ export function useChatRecords() {
   }
 
   return { recordsToDisplay };
+}
+
+/**
+ * 从消息流尾部向前找包含 toolCallId 的工具调用并更新其状态。
+ * 审批请求/工具结果到达时由各会话 handler 调用，驱动工具卡片的状态徽章。
+ */
+export function setToolCallStatus(
+  messages: DisplayMessage[],
+  toolCallId: string,
+  status: ToolCallStatus,
+): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const toolCall = messages[i]!.toolCalls.find((t) => t.toolCallId === toolCallId);
+    if (toolCall) {
+      toolCall.status = status;
+      return;
+    }
+  }
 }

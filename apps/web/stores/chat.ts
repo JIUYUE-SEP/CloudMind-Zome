@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
-import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
+import { useChatRecords, setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
 import {
   createApprovalMessage,
   findPendingApproval,
@@ -75,8 +75,10 @@ export const useChatStore = defineStore("chat", () => {
       onToolResult: (result) => {
         // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
         expireApprovalByToolCallId(messages.value, result.toolCallId);
+        setToolCallStatus(messages.value, result.toolCallId, "done");
       },
       onApprovalRequest: (request) => {
+        setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
         messages.value.push(createApprovalMessage(request));
       },
       onStepEnd: () => {

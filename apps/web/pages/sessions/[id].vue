@@ -24,7 +24,7 @@ import { useRoute } from "vue-router";
 import { useSessionsStore } from "@/stores/sessions";
 import { useAgentsStore } from "@/stores/agents";
 import { useEngineClient } from "@/composables/useEngineClient";
-import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
+import { useChatRecords, setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
 import type { Session } from "@/composables/useEngineClient";
 import BackButton from "@/components/BackButton.vue";
 import {
@@ -116,8 +116,10 @@ function connect() {
     onToolResult: (result) => {
       // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
       expireApprovalByToolCallId(messages.value, result.toolCallId);
+      setToolCallStatus(messages.value, result.toolCallId, "done");
     },
     onApprovalRequest: (request) => {
+      setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
       messages.value.push(createApprovalMessage(request));
     },
     onStepEnd: () => {
