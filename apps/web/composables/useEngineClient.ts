@@ -1,6 +1,7 @@
 import type { AgentConfig, ChatMode } from "@mindcloud/shared";
 import { invoke } from "@tauri-apps/api/core";
 import { ref, onMounted } from "vue";
+import { fetchWithTimeout } from "@/utils/fetch";
 
 export interface ChatMessageRecord {
   id: string;
@@ -159,13 +160,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   });
 
   async function listAgents(): Promise<AgentConfig[]> {
-    const res = await fetch(`${baseUrl.value}/agents`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/agents`);
     if (!res.ok) throw new Error(`Failed to list agents: ${res.status}`);
     return res.json();
   }
 
   async function createAgent(agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl.value}/agents`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -175,13 +176,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getAgent(id: string): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error(`Failed to get agent: ${res.status}`);
     return res.json();
   }
 
   async function updateAgent(id: string, agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -191,7 +192,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteAgent(id: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete agent: ${res.status}`);
   }
 
@@ -199,20 +200,20 @@ export function useEngineClient(options?: EngineClientOptions) {
     const params = new URLSearchParams();
     params.set("sessionId", sessionId);
     if (limit) params.set("limit", String(limit));
-    const res = await fetch(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
     if (!res.ok) throw new Error(`Failed to get messages: ${res.status}`);
     return res.json();
   }
 
   // Sessions
   async function listSessions(): Promise<Session[]> {
-    const res = await fetch(`${baseUrl.value}/sessions`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions`);
     if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
     return res.json();
   }
 
   async function createSession(session: Omit<Session, "id" | "createdAt" | "updatedAt">): Promise<Session> {
-    const res = await fetch(`${baseUrl.value}/sessions`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(session),
@@ -222,7 +223,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateSession(id: string, patch: Partial<Session>): Promise<Session> {
-    const res = await fetch(`${baseUrl.value}/sessions/${id}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -232,27 +233,27 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteSession(id: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/sessions/${id}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`);
   }
 
   async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
     if (limit) params.set("limit", String(limit));
-    const res = await fetch(`${baseUrl.value}/sessions/${sessionId}/messages?${params.toString()}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${sessionId}/messages?${params.toString()}`);
     if (!res.ok) throw new Error(`Failed to get session messages: ${res.status}`);
     return res.json();
   }
 
   // Compute
   async function listProviders(): Promise<Provider[]> {
-    const res = await fetch(`${baseUrl.value}/compute/providers`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers`);
     if (!res.ok) throw new Error(`Failed to list providers: ${res.status}`);
     return res.json();
   }
 
   async function createProvider(body: Omit<Provider, "id">): Promise<Provider> {
-    const res = await fetch(`${baseUrl.value}/compute/providers`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -262,7 +263,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateProvider(id: string, body: Partial<Provider>): Promise<Provider> {
-    const res = await fetch(`${baseUrl.value}/compute/providers/${id}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -272,18 +273,18 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteProvider(id: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/compute/providers/${id}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete provider: ${res.status}`);
   }
 
   async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
-    const res = await fetch(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" });
     if (!res.ok) throw new Error(`Failed to test provider: ${res.status}`);
     return res.json();
   }
 
   async function addModel(providerId: string, body: ModelInfo): Promise<ModelInfo> {
-    const res = await fetch(`${baseUrl.value}/compute/providers/${providerId}/models`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -293,7 +294,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateModel(providerId: string, modelId: string, body: Partial<ModelInfo>): Promise<ModelInfo> {
-    const res = await fetch(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -303,19 +304,19 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteModel(providerId: string, modelId: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete model: ${res.status}`);
   }
 
   // Settings
   async function getConfig(): Promise<AppSettings & { providers: Provider[] }> {
-    const res = await fetch(`${baseUrl.value}/config`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/config`);
     if (!res.ok) throw new Error(`Failed to get config: ${res.status}`);
     return res.json();
   }
 
   async function updateConfig(body: Partial<AppSettings>): Promise<AppSettings> {
-    const res = await fetch(`${baseUrl.value}/config`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/config`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -325,21 +326,21 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getTools(): Promise<ToolInfo[]> {
-    const res = await fetch(`${baseUrl.value}/config/tools`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/config/tools`);
     if (!res.ok) throw new Error(`Failed to get tools: ${res.status}`);
     return res.json();
   }
 
   // Logs
   async function getLogs(limit = 200): Promise<EngineLogEntry[]> {
-    const res = await fetch(`${baseUrl.value}/logs?limit=${limit}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/logs?limit=${limit}`);
     if (!res.ok) throw new Error(`Failed to get logs: ${res.status}`);
     return res.json();
   }
 
   // Scheduler
   async function getScheduledTasks(agentId: string): Promise<ScheduledTask[]> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
     if (!res.ok) throw new Error(`Failed to list scheduled tasks: ${res.status}`);
     return res.json();
   }
@@ -348,7 +349,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     agentId: string,
     task: Omit<ScheduledTask, "id" | "agentId">
   ): Promise<ScheduledTask> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(task),
@@ -362,7 +363,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     taskId: string,
     patch: Partial<Omit<ScheduledTask, "id" | "agentId">>
   ): Promise<ScheduledTask> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -372,7 +373,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteScheduledTask(agentId: string, taskId: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete scheduled task: ${res.status}`);
   }
 
@@ -447,13 +448,13 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   // Blueprints
   async function listBlueprints(): Promise<Blueprint[]> {
-    const res = await fetch(`${baseUrl.value}/blueprints`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints`);
     if (!res.ok) throw new Error(`Failed to list blueprints: ${res.status}`);
     return res.json();
   }
 
   async function createBlueprint(blueprint: Omit<Blueprint, "id" | "createdAt" | "updatedAt">): Promise<Blueprint> {
-    const res = await fetch(`${baseUrl.value}/blueprints`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(blueprint),
@@ -463,13 +464,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getBlueprint(id: string): Promise<Blueprint> {
-    const res = await fetch(`${baseUrl.value}/blueprints/${id}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`);
     if (!res.ok) throw new Error(`Failed to get blueprint: ${res.status}`);
     return res.json();
   }
 
   async function updateBlueprint(id: string, patch: Partial<Blueprint>): Promise<Blueprint> {
-    const res = await fetch(`${baseUrl.value}/blueprints/${id}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -479,12 +480,12 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteBlueprint(id: string): Promise<void> {
-    const res = await fetch(`${baseUrl.value}/blueprints/${id}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`Failed to delete blueprint: ${res.status}`);
   }
 
   async function executeBlueprint(id: string, initialInput?: string): Promise<BlueprintExecution> {
-    const res = await fetch(`${baseUrl.value}/blueprints/${id}/execute`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initialInput }),
