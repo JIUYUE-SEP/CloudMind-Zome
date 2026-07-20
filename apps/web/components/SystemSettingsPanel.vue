@@ -243,7 +243,8 @@ onBeforeUnmount(() => {
 .sys-settings-panel {
   position: absolute;
   bottom: 120px;
-  right: 116px;
+  /* 避开右侧导航条（.right-nav 宽 180px 在布局层 stacking context 中压在页面之上） */
+  right: 200px;
   width: 380px;
   max-height: 520px;
   padding: 14px;

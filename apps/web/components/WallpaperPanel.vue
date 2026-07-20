@@ -216,7 +216,8 @@ onBeforeUnmount(() => {
 .wp-panel {
   position: absolute;
   bottom: 120px;
-  right: 16px;
+  /* 避开右侧导航条（.right-nav 宽 180px 在布局层 stacking context 中压在页面之上） */
+  right: 200px;
   width: 220px;
   padding: 16px;
   background: rgba(11, 15, 23, 0.85);
