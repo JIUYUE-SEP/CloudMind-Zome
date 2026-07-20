@@ -408,7 +408,7 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "text.delta":
             handlers.onTextDelta?.(data.delta);
             break;
-          case "think.delta":
+          case "thinking.delta":
             handlers.onThinkingDelta?.(data.delta);
             break;
           case "tool.call":
@@ -526,7 +526,7 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "text.delta":
             handlers.onTextDelta?.(data.delta);
             break;
-          case "think.delta":
+          case "thinking.delta":
             handlers.onThinkingDelta?.(data.delta);
             break;
           case "tool.call":

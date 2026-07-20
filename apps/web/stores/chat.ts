@@ -58,7 +58,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       onThinkingDelta: (delta) => {
         if (typeof delta !== "string") {
-          console.warn("dropping non-string think.delta frame", delta);
+          console.warn("dropping non-string thinking.delta frame", delta);
           return;
         }
         const last = messages.value[messages.value.length - 1];
