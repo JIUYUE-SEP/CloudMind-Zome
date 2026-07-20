@@ -293,7 +293,8 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" });
+    // 探测外部 provider 的 models 列表，慢节点可能超过默认 10s，放宽到 30s
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" }, 30_000);
     if (!res.ok) throw new Error(`Failed to test provider: ${res.status}`);
     return res.json();
   }
@@ -500,11 +501,12 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function executeBlueprint(id: string, initialInput?: string): Promise<BlueprintExecution> {
+    // engine 侧同步跑完整个 LLM 工作流才返回，远超默认 10s，放宽到 120s
     const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initialInput }),
-    });
+    }, 120_000);
     if (!res.ok) throw new Error(`Failed to execute blueprint: ${res.status}`);
     return res.json();
   }
