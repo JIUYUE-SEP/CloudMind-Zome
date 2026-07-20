@@ -170,7 +170,9 @@ function onMouseUp() {
 .log-panel {
   position: absolute;
   bottom: 120px;
-  right: 68px;
+  /* 右侧导航条（.right-nav 宽 180px）在布局层 stacking context 中压在本面板之上，
+     默认位置必须避开它，否则面板右半部分点击不到 */
+  right: 200px;
   width: 320px;
   max-height: 420px;
   padding: 14px;
