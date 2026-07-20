@@ -9,8 +9,6 @@ import {
   expireApprovalByToolCallId,
 } from "@/utils/approval";
 
-export type { DisplayMessage };
-
 const { recordsToDisplay } = useChatRecords();
 
 export const useChatStore = defineStore("chat", () => {

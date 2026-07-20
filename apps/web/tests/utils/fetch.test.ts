@@ -13,11 +13,11 @@ describe("fetchWithTimeout", () => {
   });
 
   it("passes an abort signal to fetch", async () => {
-    const spy = vi.fn(async () => new Response("{}", { status: 200 }));
+    const spy = vi.fn(async (_input: unknown, _init?: RequestInit) => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", spy);
     await fetchWithTimeout("http://engine.test/health");
-    const init = spy.mock.calls[0]?.[1] as RequestInit;
-    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const init = spy.mock.calls[0]?.[1];
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("throws a Chinese timeout hint when the request times out", async () => {

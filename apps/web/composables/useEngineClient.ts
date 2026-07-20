@@ -1,6 +1,5 @@
 import type { AgentConfig, ChatMode } from "@mindcloud/shared";
-import { invoke } from "@tauri-apps/api/core";
-import { ref, onMounted } from "vue";
+import { ref } from "vue";
 import { fetchWithTimeout } from "@/utils/fetch";
 
 export interface ChatMessageRecord {
@@ -142,22 +141,38 @@ export interface Connection {
   close(): void;
 }
 
+const DEFAULT_ENGINE_URL = "http://127.0.0.1:8848";
+
+// 模块级 backend URL 单例：模块加载即开始解析，结果缓存，
+// 后续所有 useEngineClient() 调用直接复用，不再逐个 onMounted 异步获取。
+const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tauriGlobal = typeof window !== "undefined" ? ((window as any).__TAURI__ ?? undefined) : undefined;
+
+// Tauri 环境：模块加载时经 __TAURI__.core.invoke 拿 sidecar 端口（需 tauri.conf withGlobalTauri），
+// resolve 后更新缓存；失败保留默认 8848
+if (tauriGlobal?.core?.invoke) {
+  tauriGlobal.core
+    .invoke("get_backend_url")
+    .then((url: unknown) => {
+      if (typeof url === "string" && url) sharedBaseUrl.value = url;
+    })
+    .catch(() => {
+      // backend 未就绪或 IPC 失败：保留默认 8848
+    });
+}
+
+// 非 Tauri 环境：首次调用时从 runtimeConfig 取一次（NUXT_PUBLIC_ENGINE_URL 可覆盖），之后缓存复用
+let runtimeConfigApplied = false;
+
 export function useEngineClient(options?: EngineClientOptions) {
   const config = useRuntimeConfig();
-  const baseUrl = ref<string>(
-    options?.baseUrl || (config.public.engineUrl as string) || "http://127.0.0.1:8848"
-  );
-
-  onMounted(async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (typeof window !== "undefined" && (window as any).__TAURI__) {
-      try {
-        baseUrl.value = await invoke<string>("get_backend_url");
-      } catch {
-        // fallback to default
-      }
-    }
-  });
+  if (!runtimeConfigApplied && !tauriGlobal) {
+    runtimeConfigApplied = true;
+    if (config.public.engineUrl) sharedBaseUrl.value = config.public.engineUrl as string;
+  }
+  const baseUrl = options?.baseUrl ? ref(options.baseUrl) : sharedBaseUrl;
 
   async function listAgents(): Promise<AgentConfig[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/agents`);
