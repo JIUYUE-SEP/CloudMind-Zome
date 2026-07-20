@@ -99,4 +99,17 @@ describe("Config API", () => {
     expect(loaded.settings.tavilyApiKey).toBe("tvly-test");
     await app.close();
   });
+
+  it("does not overwrite tavily key when mask '***' is sent back", async () => {
+    const app = await makeApp();
+    await request(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
+
+    // 前端把 GET 到的掩码原样 PUT 回来时，真实密钥必须保持不动
+    const res = await request(app.server).put("/config").send({ tavilyApiKey: "***" });
+    expect(res.status).toBe(200);
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.tavilyApiKey).toBe("tvly-real");
+    await app.close();
+  });
 });

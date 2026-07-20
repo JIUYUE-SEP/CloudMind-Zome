@@ -23,8 +23,9 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
     };
     const config = await context.configRepository.load();
     if (body.memory) config.settings.memory = { ...config.settings.memory, ...body.memory } as typeof config.settings.memory;
-    // 空字符串视为"不修改"，与 provider apiKey 的编辑语义一致
-    if (body.tavilyApiKey) config.settings.tavilyApiKey = body.tavilyApiKey;
+    // 空字符串视为"不修改"，与 provider apiKey 的编辑语义一致；
+    // "***" 是 GET 掩码，原样回写会毁掉真实密钥，同样视为"不修改"
+    if (body.tavilyApiKey && body.tavilyApiKey !== "***") config.settings.tavilyApiKey = body.tavilyApiKey;
     await context.configRepository.save(config);
     return {
       ...config.settings,

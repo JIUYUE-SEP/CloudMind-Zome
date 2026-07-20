@@ -16,6 +16,7 @@ function safeSend(socket: WebSocket, data: string | object): void {
 }
 
 const APPROVAL_TIMEOUT_MS = 60_000;
+const MAX_PENDING_MESSAGES = 100;
 
 export async function registerWebSocketHandler(app: FastifyInstance, context: ApiContext) {
   app.get(
@@ -38,6 +39,34 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         socket.close(4004, "Invalid session id");
         return;
       }
+
+      // message 监听必须在首个 await 之前同步注册：客户端在 onopen 后立即发送，
+      // 若等 getAgentWorker 完成才注册，这期间到达的消息会被 ws 静默丢弃。
+      // 与 session-handler.ts 同一模式：初始化期间先缓冲，ready 后按同一 chain 串行回放。
+      const pendingMessages: unknown[] = [];
+      let ready = false;
+      // 串行处理消息，保证持久化与入队顺序
+      let chain = Promise.resolve();
+
+      function dispatch(raw: unknown): void {
+        chain = chain.then(() => handleMessage(raw)).catch((err) => {
+          console.error("failed to handle websocket message", err);
+          safeSend(socket, { type: "error", error: "Internal error" });
+        });
+      }
+
+      socket.on("message", (raw: unknown) => {
+        if (!ready) {
+          if (pendingMessages.length >= MAX_PENDING_MESSAGES) {
+            safeSend(socket, { type: "error", error: "Too many pending messages" });
+            socket.close();
+            return;
+          }
+          pendingMessages.push(raw);
+          return;
+        }
+        dispatch(raw);
+      });
 
       const worker = await context.getAgentWorker(agentId);
       if (!worker) {
@@ -80,14 +109,9 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         }
       });
 
-      // 串行处理消息，保证持久化与入队顺序
-      let chain = Promise.resolve();
-      socket.on("message", (raw: unknown) => {
-        chain = chain.then(() => handleMessage(raw)).catch((err) => {
-          console.error("failed to handle websocket message", err);
-          safeSend(socket, { type: "error", error: "Internal error" });
-        });
-      });
+      ready = true;
+      for (const raw of pendingMessages) dispatch(raw);
+      pendingMessages.length = 0;
 
       async function handleMessage(raw: unknown): Promise<void> {
         try {

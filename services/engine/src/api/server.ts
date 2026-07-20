@@ -27,6 +27,9 @@ export async function createServer(context: ApiContext) {
   await app.register(cors, {
     origin: process.env.NODE_ENV === "e2e" ? true : allowedOrigins,
     credentials: true,
+    // @fastify/cors v11 默认只放行 CORS 安全方法（GET/HEAD/POST），
+    // 不显式声明会导致浏览器对 PUT/DELETE 的预检失败（前端报 "Failed to fetch"）
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
   await app.register(websocket);
 

@@ -94,7 +94,8 @@ export class AgentRepository implements IAgentRepository {
       this.cache.delete(id);
     }
     const store = this.store(id);
-    await store.writeJson(config);
+    // 目录名即 id：强制写回，防止缺 id 的 agent.json 让 list/get 结果不可用
+    await store.writeJson({ ...config, id });
     this.onChange?.(id, config);
     await this.loadAndWatch(id);
   }
@@ -123,7 +124,9 @@ export class AgentRepository implements IAgentRepository {
         try {
           const content = await fsp.readFile(filePath, "utf-8");
           const config = JSON.parse(content) as AgentConfig;
-          configs.push(config);
+          // 目录名即 id（get() 按目录名寻址）：外部写入的配置可能缺 id 或 id 不一致，
+          // 统一以目录名为准，否则前端拿到 id 为 undefined 的条目，点击/编辑全部失效
+          configs.push({ ...config, id: entry.name });
         } catch (err) {
           console.error(`Failed to load agent config from ${filePath}:`, err);
         }

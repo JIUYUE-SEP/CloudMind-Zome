@@ -9,6 +9,8 @@ import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
 import { ContextPipeline } from "../context/pipeline.js";
 
+console.log("[agent-worker] module loaded");
+
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
 export interface AgentWorkerConfig {
@@ -66,9 +68,13 @@ export class AgentWorker {
   }
 
   enqueue(job: Job): void {
+    console.log("[agent-worker] enqueue, status:", this.status, "queue:", this.queue.length);
     this.queue.push(job);
     if (this.status === "idle") {
-      this.processQueue();
+      console.log("[agent-worker] triggering processQueue");
+      this.processQueue().catch((err) => {
+        console.error("[agent-worker] processQueue failed:", err);
+      });
     }
   }
 
@@ -115,6 +121,7 @@ export class AgentWorker {
       if (job.signal?.aborted) {
         throw new Error("aborted");
       }
+      console.log("[agent-worker] processQueue start, messages:", job.messages.length);
       const toolsMap = new Map(this.config.tools.map((t) => [t.name, t]));
       const toolDescriptions = this.config.tools.map((t) => ({
         type: "function",
@@ -124,6 +131,7 @@ export class AgentWorker {
           parameters: zodToJsonSchema(t.parameters),
         },
       }));
+      console.log("[agent-worker] tools:", toolDescriptions.length);
 
       const promptParts: string[] = [];
       if (this.config.skillPrompts && this.config.skillPrompts.length > 0) {
@@ -203,7 +211,9 @@ export class AgentWorker {
         },
       };
 
+      console.log("[agent-worker] before runTurn, messages:", messages.length, "tools:", toolDescriptions.length);
       const result = await runTurn(turnInput, job.onEvent);
+      console.log("[agent-worker] after runTurn, appended:", result.appended.length);
 
       const sessionId = job.sessionId || this.config.agentId;
       // 按真实顺序持久化本轮新增的消息（每步 assistant + tool 消息）。

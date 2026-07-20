@@ -58,6 +58,28 @@ describe("AgentRepository", () => {
     expect(list[0].id).toBe("good");
   });
 
+  it("list() backfills id from directory name when agent.json lacks it", async () => {
+    const dir = path.join(dataDir, "agents", "no-id-agent");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "agent.json"),
+      JSON.stringify({ name: "NoId", persona: "p", model: "gpt-4" }),
+    );
+
+    const list = await repo.list();
+    expect(list).toHaveLength(1);
+    expect(list[0].id).toBe("no-id-agent");
+  });
+
+  it("save() persists the route id into agent.json even when body omits it", async () => {
+    const config = makeConfig("ignored", "X");
+    await repo.save("file-id", config);
+    const raw = JSON.parse(
+      await fs.readFile(path.join(dataDir, "agents", "file-id", "agent.json"), "utf-8"),
+    );
+    expect(raw.id).toBe("file-id");
+  });
+
   it("deletes agent", async () => {
     await repo.save("del", makeConfig("del", "Del"));
     await repo.delete("del");
