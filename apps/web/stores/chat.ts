@@ -1,35 +1,17 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
-import type { ChatMessageRecord } from "@/composables/useEngineClient";
+import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
 import {
   createApprovalMessage,
   findPendingApproval,
   settleApproval,
   expireApprovalByToolCallId,
-  type ApprovalInfo,
 } from "@/utils/approval";
 
-export interface DisplayMessage {
-  id: string;
-  role: "user" | "assistant" | "tool";
-  text: string;
-  thinking: string;
-  toolCalls: { toolCallId: string; name: string; arguments: unknown }[];
-  isStreaming: boolean;
-  approval?: ApprovalInfo;
-}
+export type { DisplayMessage };
 
-function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
-  return records.map((r) => ({
-    id: r.id,
-    role: r.role,
-    text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
-    thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
-    toolCalls: r.toolCalls || [],
-    isStreaming: false,
-  }));
-}
+const { recordsToDisplay } = useChatRecords();
 
 export const useChatStore = defineStore("chat", () => {
   const client = useEngineClient();

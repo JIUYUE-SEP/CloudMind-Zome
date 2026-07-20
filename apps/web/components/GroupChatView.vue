@@ -9,7 +9,7 @@
         </span>
       </div>
     </header>
-    <div class="messages">
+    <div ref="messagesEl" class="messages">
       <template v-for="msg in messages" :key="msg.id">
         <ApprovalCard
           v-if="msg.approval"
@@ -35,23 +35,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import ApprovalCard from "./ApprovalCard.vue";
 import MessageBubble from "./MessageBubble.vue";
 import MessageInput from "./MessageInput.vue";
-import type { Session, ChatMessageRecord } from "@/composables/useEngineClient";
-import type { ApprovalInfo, ApprovalResponsePayload } from "@/utils/approval";
+import type { Session } from "@/composables/useEngineClient";
+import type { DisplayMessage } from "@/composables/useChatRecords";
+import type { ApprovalResponsePayload } from "@/utils/approval";
 import type { AgentConfig } from "@mindcloud/shared";
-
-export interface DisplayMessage {
-  id: string;
-  role: "user" | "assistant" | "tool";
-  text: string;
-  thinking: string;
-  toolCalls: { toolCallId: string; name: string; arguments: unknown }[];
-  isStreaming: boolean;
-  approval?: ApprovalInfo;
-}
 
 const props = defineProps<{
   session: Session | undefined;
@@ -66,11 +57,27 @@ const emit = defineEmits<{
   (e: "approval-respond", payload: ApprovalResponsePayload): void;
 }>();
 
+const messagesEl = ref<HTMLElement | null>(null);
+
 const statusText = computed(() => {
   if (!props.isConnected) return "未连接";
   if (props.isStreaming) return "生成中...";
   return "已连接";
 });
+
+// 新消息/流式增量时自动滚动到底部（与 ChatView 同一口径）
+watch(
+  () => [
+    props.messages.length,
+    props.messages[props.messages.length - 1]?.text,
+    props.messages[props.messages.length - 1]?.thinking,
+  ],
+  async () => {
+    await nextTick();
+    const el = messagesEl.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  },
+);
 
 function agentName(agentId: string): string {
   return props.agents.find((a) => a.id === agentId)?.name || agentId;
@@ -83,19 +90,6 @@ function onSend(text: string) {
 function onApprovalRespond(payload: ApprovalResponsePayload) {
   emit("approval-respond", payload);
 }
-
-function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
-  return records.map((r) => ({
-    id: r.id,
-    role: r.role,
-    text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
-    thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
-    toolCalls: r.toolCalls || [],
-    isStreaming: false,
-  }));
-}
-
-defineExpose({ recordsToDisplay });
 </script>
 
 <style scoped>

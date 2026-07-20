@@ -100,7 +100,8 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
-import { useEngineClient, type ChatMessageRecord, type Session } from "@/composables/useEngineClient";
+import { useEngineClient, type Session } from "@/composables/useEngineClient";
+import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
 import {
   createApprovalMessage,
   findPendingApproval,
@@ -111,11 +112,11 @@ import {
 import BackButton from "@/components/BackButton.vue";
 import ChatView from "@/components/ChatView.vue";
 import GroupChatView from "@/components/GroupChatView.vue";
-import type { DisplayMessage } from "@/components/GroupChatView.vue";
 
 const agents = useAgentsStore();
 const sessions = useSessionsStore();
 const client = useEngineClient();
+const { recordsToDisplay } = useChatRecords();
 
 const tab = ref<"private" | "group">("private");
 const selectedId = ref<string>("");
@@ -342,17 +343,6 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
       isStreaming: false,
     });
   }
-}
-
-function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
-  return records.map((r) => ({
-    id: r.id,
-    role: r.role,
-    text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
-    thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
-    toolCalls: r.toolCalls || [],
-    isStreaming: false,
-  }));
 }
 </script>
 

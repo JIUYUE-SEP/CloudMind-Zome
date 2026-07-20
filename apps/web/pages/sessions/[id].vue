@@ -23,9 +23,9 @@ import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRoute } from "vue-router";
 import { useSessionsStore } from "@/stores/sessions";
 import { useAgentsStore } from "@/stores/agents";
-import { useEngineClient, type ChatMessageRecord } from "@/composables/useEngineClient";
+import { useEngineClient } from "@/composables/useEngineClient";
+import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
 import type { Session } from "@/composables/useEngineClient";
-import type { DisplayMessage } from "@/components/GroupChatView.vue";
 import BackButton from "@/components/BackButton.vue";
 import {
   createApprovalMessage,
@@ -39,6 +39,7 @@ const route = useRoute();
 const sessions = useSessionsStore();
 const agents = useAgentsStore();
 const client = useEngineClient();
+const { recordsToDisplay } = useChatRecords();
 const sessionId = computed(() => route.params.id as string);
 const session = ref<Session | undefined>(undefined);
 const messages = ref<DisplayMessage[]>([]);
@@ -197,17 +198,6 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
       isStreaming: false,
     });
   }
-}
-
-function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
-  return records.map((r) => ({
-    id: r.id,
-    role: r.role,
-    text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
-    thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
-    toolCalls: r.toolCalls || [],
-    isStreaming: false,
-  }));
 }
 </script>
 
