@@ -50,6 +50,12 @@ export interface ToolInfo {
   safeToParallel: boolean;
 }
 
+export interface EngineLogEntry {
+  time: number;
+  level: number;
+  msg: string;
+}
+
 interface ScheduledTask {
   id: string;
   agentId: string;
@@ -324,6 +330,13 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
+  // Logs
+  async function getLogs(limit = 200): Promise<EngineLogEntry[]> {
+    const res = await fetch(`${baseUrl.value}/logs?limit=${limit}`);
+    if (!res.ok) throw new Error(`Failed to get logs: ${res.status}`);
+    return res.json();
+  }
+
   // Scheduler
   async function getScheduledTasks(agentId: string): Promise<ScheduledTask[]> {
     const res = await fetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
@@ -572,6 +585,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     getConfig,
     updateConfig,
     getTools,
+    getLogs,
     getScheduledTasks,
     createScheduledTask,
     updateScheduledTask,

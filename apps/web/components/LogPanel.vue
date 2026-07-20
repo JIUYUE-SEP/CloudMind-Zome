@@ -19,13 +19,14 @@
     </div>
     <div class="log-actions">
       <button class="log-clear" @click="clearLogs">清空</button>
-      <button class="log-refresh" @click="pushLog({ type: 'info', source: '系统', message: '手动刷新' })">刷新</button>
+      <button class="log-refresh" @click="refresh">刷新</button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
+import { useEngineClient, type EngineLogEntry } from "@/composables/useEngineClient";
 
 export interface LogEntry {
   id: string;
@@ -37,7 +38,7 @@ export interface LogEntry {
 
 const props = defineProps<{ visible: boolean }>();
 
-const STORAGE_KEY = "mc-system-logs";
+const client = useEngineClient();
 
 const panelRef = ref<HTMLElement>();
 const logListRef = ref<HTMLElement>();
@@ -49,27 +50,80 @@ const panelStyle = computed(() => ({
 }));
 
 const logs = ref<LogEntry[]>([]);
+// 同一条日志可能被重复拉取，用 time+msg 去重
+const seen = new Set<string>();
+let entrySeq = 0;
+let loading = false;
 
-onMounted(() => {
+// pino level: 10 trace / 20 debug / 30 info / 40 warn / 50 error / 60 fatal
+function levelToType(level: number): LogEntry["type"] {
+  if (level >= 50) return "error";
+  if (level >= 40) return "warn";
+  return "info";
+}
+
+function levelToSource(level: number): string {
+  if (level >= 60) return "FATAL";
+  if (level >= 50) return "ERROR";
+  if (level >= 40) return "WARN";
+  if (level >= 30) return "INFO";
+  return "DEBUG";
+}
+
+function toDisplay(entry: EngineLogEntry): LogEntry {
+  return {
+    id: `${entry.time}_${entrySeq++}`,
+    type: levelToType(entry.level),
+    source: levelToSource(entry.level),
+    message: entry.msg,
+    time: new Date(entry.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  };
+}
+
+async function refresh() {
+  if (loading) return;
+  loading = true;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      logs.value = JSON.parse(raw);
+    const entries = await client.getLogs(200);
+    for (const entry of entries) {
+      const key = `${entry.time}:${entry.level}:${entry.msg}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      logs.value.push(toDisplay(entry));
     }
-  } catch {
-    logs.value = [];
+  } catch (err) {
+    pushLocal({
+      type: "error",
+      source: "系统",
+      message: `日志加载失败：${err instanceof Error ? err.message : String(err)}`,
+    });
+  } finally {
+    loading = false;
   }
-  pushLog({ type: "info", source: "系统", message: "Zome 已启动" });
-});
+}
 
-onBeforeUnmount(() => {
-  persist();
-});
+function pushLocal(entry: Omit<LogEntry, "id" | "time">) {
+  logs.value.push({
+    ...entry,
+    id: `local_${entrySeq++}`,
+    time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  });
+}
+
+function clearLogs() {
+  logs.value = [];
+  seen.clear();
+}
+
+function scrollToBottom() {
+  logListRef.value?.scrollTo({ top: logListRef.value.scrollHeight, behavior: "smooth" });
+}
 
 watch(
   () => props.visible,
   (v) => {
     if (v) {
+      void refresh();
       scrollToBottom();
     }
   },
@@ -78,35 +132,10 @@ watch(
 watch(
   logs,
   () => {
-    persist();
     nextTick(scrollToBottom);
   },
   { deep: true },
 );
-
-function persist() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(logs.value.slice(-200)));
-  } catch {
-    // ignore storage errors
-  }
-}
-
-function pushLog(entry: Omit<LogEntry, "id" | "time">) {
-  logs.value.push({
-    ...entry,
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-  });
-}
-
-function clearLogs() {
-  logs.value = [];
-}
-
-function scrollToBottom() {
-  logListRef.value?.scrollTo({ top: logListRef.value.scrollHeight, behavior: "smooth" });
-}
 
 function onMouseDown(e: MouseEvent) {
   const target = e.target as HTMLElement;
@@ -135,8 +164,6 @@ function onMouseUp() {
   document.removeEventListener("mousemove", onMouseMove);
   document.removeEventListener("mouseup", onMouseUp);
 }
-
-defineExpose({ pushLog });
 </script>
 
 <style scoped>

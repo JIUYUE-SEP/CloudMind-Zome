@@ -3,7 +3,9 @@ import websocket from "@fastify/websocket";
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
+import pino from "pino";
 import type { ApiContext } from "./context.js";
+import { createLogBufferStream } from "./log-buffer.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
@@ -16,12 +18,18 @@ import { registerBlueprintRoutes } from "./routes/blueprints.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPlanRoutes } from "./routes/plans.js";
 import { registerSubagentRoutes } from "./routes/subagents.js";
+import { registerLogRoutes } from "./routes/logs.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 import { registerSessionWebSocket } from "./ws/session-handler.js";
 import { getAllowedOrigins } from "./ws/validation.js";
 
 export async function createServer(context: ApiContext) {
-  const app = Fastify({ logger: true });
+  // pino 默认只写 stdout；multistream 并行 tee 一份进内存缓冲，供 GET /logs 给前端 LogPanel
+  const app = Fastify({
+    logger: {
+      stream: pino.multistream([{ stream: process.stdout }, { stream: createLogBufferStream() }]),
+    },
+  });
   const allowedOrigins = getAllowedOrigins();
 
   await app.register(cors, {
@@ -63,6 +71,7 @@ export async function createServer(context: ApiContext) {
   await registerSessionRoutes(app, context);
   await registerPlanRoutes(app, context);
   await registerSubagentRoutes(app, context);
+  await registerLogRoutes(app);
   await registerSessionWebSocket(app, context);
   await registerWebSocketHandler(app, context);
 
