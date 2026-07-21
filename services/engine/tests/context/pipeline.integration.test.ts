@@ -272,8 +272,8 @@ describe("降级顺序", () => {
     }
 
     expect(applied).toEqual([
-      "l5:merge",
-      "l5:drop",
+      "l5:drop-oldest",
+      "l5:drop-oldest",
       "l4:keep-10",
       "l4:keep-5",
       "l4:keep-3",

@@ -21,24 +21,17 @@ function strings(n: number, prefix = "s"): string[] {
 }
 
 describe("downgrade 单步行为", () => {
-  it("L5 多条时合并为一条", () => {
-    const layers = createLayers({ l3: [], l5: strings(3, "话题") });
-    const step = createDowngradeSteps().find((s) => s.name === "l5:merge")!;
+  it("L5 逐条丢弃最旧摘要（数组按时间倒序，最新在前）", () => {
+    const layers = createLayers({ l3: [], l5: ["最新", "较旧", "最旧"] });
+    const step = createDowngradeSteps().find((s) => s.name === "l5:drop-oldest")!;
     expect(step.applicable(layers)).toBe(true);
     step.apply(layers);
-    expect(layers.l5).toHaveLength(1);
-    expect(layers.l5[0]).toContain("话题0");
-    expect(layers.l5[0]).toContain("话题2");
-  });
-
-  it("L5 仅剩一条时丢弃", () => {
-    const layers = createLayers({ l3: [], l5: strings(1) });
-    const steps = createDowngradeSteps();
-    expect(steps.find((s) => s.name === "l5:merge")!.applicable(layers)).toBe(false);
-    const drop = steps.find((s) => s.name === "l5:drop")!;
-    expect(drop.applicable(layers)).toBe(true);
-    drop.apply(layers);
+    expect(layers.l5).toEqual(["最新", "较旧"]);
+    step.apply(layers);
+    expect(layers.l5).toEqual(["最新"]);
+    step.apply(layers);
     expect(layers.l5).toEqual([]);
+    expect(step.applicable(layers)).toBe(false);
   });
 
   it("L4 逐级减少：>10 → 10，>5 → 5，>3 → 3，最后丢弃", () => {
@@ -157,8 +150,8 @@ describe("downgrade 顺序（L5 → L4 → L6-ext → L3）", () => {
       step.apply(layers);
     }
     expect(sequence).toEqual([
-      "l5:merge",
-      "l5:drop",
+      "l5:drop-oldest",
+      "l5:drop-oldest",
       "l4:keep-10",
       "l4:keep-5",
       "l4:keep-3",

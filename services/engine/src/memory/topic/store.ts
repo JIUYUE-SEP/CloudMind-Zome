@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "../../config/paths.js";
+import { renameWithRetry } from "../document-store.js";
 import type { CompressedTopic } from "./types.js";
 
 export function compressedDir(agentId: string): string {
@@ -45,7 +46,10 @@ export async function writeCompressedTopic(
   const dir = compressedDir(agentId);
   await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, `${topic.topicId}.md`);
-  await fs.writeFile(filePath, lines.join("\n"), "utf-8");
+  // tmp + rename 原子写：崩溃不留半截压缩档（与 DocumentStore 同一模式）
+  const tmpPath = `${filePath}.tmp`;
+  await fs.writeFile(tmpPath, lines.join("\n"), "utf-8");
+  await renameWithRetry(tmpPath, filePath);
   return filePath;
 }
 
@@ -83,7 +87,9 @@ function parseCompressedFile(raw: string): ParsedCompressedFile | null {
 }
 
 /**
- * 读取最近 count 个压缩档，渲染为 L5 注入文本（按 compressed_at 倒序）。
+ * 读取最近 count 个压缩档，渲染为 L5 注入文本。
+ * topicId 自带时间戳前缀（tp_<Date.now()>），文件名倒序即时间倒序：
+ * 先按文件名取前 N 个再读内容，避免每轮全量扫描目录。
  * 目录不存在/单档损坏不中断，最多返回空数组。
  */
 export async function latestSummaries(agentId: string, count: number): Promise<string[]> {
@@ -94,17 +100,20 @@ export async function latestSummaries(agentId: string, count: number): Promise<s
   } catch {
     return [];
   }
-  const parsed: ParsedCompressedFile[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".md")) continue;
+  const candidates = files
+    .filter((f) => f.endsWith(".md"))
+    .sort()
+    .reverse()
+    .slice(0, count);
+  const parsed: string[] = [];
+  for (const file of candidates) {
     try {
       const raw = await fs.readFile(path.join(compressedDir(agentId), file), "utf-8");
       const p = parseCompressedFile(raw);
-      if (p) parsed.push(p);
+      if (p) parsed.push(p.text);
     } catch (err) {
       console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
     }
   }
-  parsed.sort((a, b) => b.compressedAt.localeCompare(a.compressedAt));
-  return parsed.slice(0, count).map((p) => p.text);
+  return parsed;
 }

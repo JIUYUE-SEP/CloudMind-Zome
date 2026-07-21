@@ -26,22 +26,16 @@ export function truncateHotContext(messages: ChatMessage[], keep: number): ChatM
  * 降级步骤序列（设计决策：L5 → L4 → L6-ext → L3，L1/L2/L6-core 永不触碰）。
  * 参考 Python 降级伪代码：每步先判断是否可执行，每轮从序列头部重新扫描。
  *
- * L4/L6-ext 数组约定按相关性/优先级降序排列，裁剪保留前部。
+ * L4/L6-ext 数组约定按相关性/优先级降序排列，裁剪保留前部；
+ * L5 话题摘要按时间倒序（最新在前），逐条丢弃最旧的一条。
  */
 export function createDowngradeSteps(): DowngradeStep[] {
   return [
     {
-      name: "l5:merge",
-      applicable: (l) => l.l5.length > 1,
+      name: "l5:drop-oldest",
+      applicable: (l) => l.l5.length > 0,
       apply: (l) => {
-        l.l5 = [l.l5.join("\n\n---\n\n")];
-      },
-    },
-    {
-      name: "l5:drop",
-      applicable: (l) => l.l5.length === 1,
-      apply: (l) => {
-        l.l5 = [];
+        l.l5 = l.l5.slice(0, -1);
       },
     },
     {

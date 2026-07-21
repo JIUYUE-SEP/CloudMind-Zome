@@ -56,6 +56,33 @@ export const DEFAULT_TOPIC_COMPRESSION_CONFIG: TopicCompressionConfig = {
   hotMemoryCount: 2,
 };
 
+/** 短话题不调用 LLM 压缩（一两句话就产一个压缩档只会制造噪声），仅归档 */
+export const MIN_SEGMENT_MESSAGES = 4;
+
+/**
+ * 配置归一：非法取值会造成静默失效（threshold < MIN 时压缩永不发生、
+ * windowMinutes <= 0 时每条消息都切话题），clamp 并 warn，不放任。
+ */
+export function normalizeTopicCompressionConfig(
+  partial: Partial<TopicCompressionConfig> = {},
+): TopicCompressionConfig {
+  const config = { ...DEFAULT_TOPIC_COMPRESSION_CONFIG, ...partial };
+  if (config.messageThreshold < MIN_SEGMENT_MESSAGES) {
+    console.warn(
+      `[topic] messageThreshold=${config.messageThreshold} 小于最短压缩段 ${MIN_SEGMENT_MESSAGES}，已按 ${MIN_SEGMENT_MESSAGES} 处理`,
+    );
+    config.messageThreshold = MIN_SEGMENT_MESSAGES;
+  }
+  if (config.windowMinutes <= 0) {
+    console.warn(
+      `[topic] windowMinutes=${config.windowMinutes} 非法，已按默认 ${DEFAULT_TOPIC_COMPRESSION_CONFIG.windowMinutes} 处理`,
+    );
+    config.windowMinutes = DEFAULT_TOPIC_COMPRESSION_CONFIG.windowMinutes;
+  }
+  if (config.hotMemoryCount < 0) config.hotMemoryCount = 0;
+  return config;
+}
+
 /** 提取消息的全部文本内容（检测/压缩 prompt 共用） */
 export function messageText(msg: ChatMessage): string {
   return msg.content

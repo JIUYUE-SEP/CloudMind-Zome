@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@mindcloud/shared";
 import { detectTopicBoundary } from "./detector.js";
-import type { TopicCompressionConfig, TopicSegment } from "./types.js";
+import { MIN_SEGMENT_MESSAGES, type TopicCompressionConfig, type TopicSegment } from "./types.js";
 
-// 短话题不调用 LLM 压缩（一两句话就产一个压缩档只会制造噪声），仅归档
-export const MIN_SEGMENT_MESSAGES = 4;
+export { MIN_SEGMENT_MESSAGES };
 
 /**
  * per-agent 话题跟踪（TopicContext 的规则版）。
@@ -28,10 +27,8 @@ export class TopicTracker {
   onUserMessage(msg: ChatMessage, sourceId: string, sourceName?: string): TopicSegment | null {
     this.lastSourceId = sourceId;
     this.lastSourceName = sourceName;
-    if (!this.config.enabled) {
-      this.current.push(msg);
-      return null;
-    }
+    // 禁用时直接返回，不累积消息（否则长跑进程内存无界增长）
+    if (!this.config.enabled) return null;
     const prev = this.current[this.current.length - 1];
     const boundary = detectTopicBoundary({
       prevMessage: prev,

@@ -56,10 +56,10 @@ describe("topic store", () => {
     expect(raw).toContain("m1, m2");
   });
 
-  it("latestSummaries 按 compressed_at 倒序取最近 N 个", async () => {
-    await writeCompressedTopic("a1", makeTopic({ label: "旧话题", compressedAt: "2026-07-01T10:00:00.000Z" }));
-    await writeCompressedTopic("a1", makeTopic({ label: "最新话题", compressedAt: "2026-07-21T10:00:00.000Z" }));
-    await writeCompressedTopic("a1", makeTopic({ label: "中间话题", compressedAt: "2026-07-15T10:00:00.000Z" }));
+  it("latestSummaries 按文件名（topicId 时间戳）倒序取最近 N 个", async () => {
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_1000_aaaa", label: "旧话题" }));
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_3000_cccc", label: "最新话题" }));
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_2000_bbbb", label: "中间话题" }));
 
     const two = await latestSummaries("a1", 2);
     expect(two).toHaveLength(2);

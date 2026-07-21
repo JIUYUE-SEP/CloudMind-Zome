@@ -12,7 +12,7 @@ const writeQueues = new Map<string, Promise<void>>();
  * （典型：scheduler 写回 scheduler.jsonl 时 API/轮询正在 readLines）。
  * 句柄占用是瞬时的，短暂退避重试即可；POSIX 下 rename 本就允许覆盖，一次成功。
  */
-async function renameWithRetry(tmpPath: string, filePath: string): Promise<void> {
+export async function renameWithRetry(tmpPath: string, filePath: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       await fs.rename(tmpPath, filePath);

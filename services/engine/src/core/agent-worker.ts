@@ -13,7 +13,7 @@ import { CompressionQueue } from "../memory/topic/queue.js";
 import { compressTopic } from "../memory/topic/compressor.js";
 import { latestSummaries, removeCompressedTopic, writeCompressedTopic } from "../memory/topic/store.js";
 import {
-  DEFAULT_TOPIC_COMPRESSION_CONFIG,
+  normalizeTopicCompressionConfig,
   type TopicCompressionConfig,
 } from "../memory/topic/types.js";
 
@@ -78,7 +78,7 @@ export class AgentWorker {
 
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
-    this.topicConfig = { ...DEFAULT_TOPIC_COMPRESSION_CONFIG, ...config.topicCompression };
+    this.topicConfig = normalizeTopicCompressionConfig(config.topicCompression);
     this.topicTracker = new TopicTracker(this.topicConfig);
     this.compressionQueue = new CompressionQueue(async (segment) => {
       if (segment.archiveOnly) {
