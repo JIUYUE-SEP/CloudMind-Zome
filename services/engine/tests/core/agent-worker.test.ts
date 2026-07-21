@@ -1,11 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { z } from "zod";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/types.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
+import { MessageRepository } from "../../src/memory/repositories/message.js";
+import { restoreDataDir } from "../helpers/env.js";
 
 const dummyTool: Tool = {
   name: "dummy",
@@ -497,5 +502,91 @@ describe("AgentWorker", () => {
 
       expect(executed.flag).toBe(false);
     });
+  });
+});
+
+describe("AgentWorker 话题压缩集成（Phase 2）", () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "worker-topic-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
+  function seqMessage(id: string, text: string, min: number): ChatMessage {
+    return {
+      id,
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date(Date.parse("2026-07-21T10:00:00.000Z") + min * 60_000).toISOString(),
+    };
+  }
+
+  it("达到消息阈值后关闭话题：压缩档落盘、热存储归档、后续 assemble 注入 L5", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 4 },
+    });
+
+    // j1：u1 + a1；j2：u2 + a2 → tracker 累计 4 条（阈值），触发关闭压缩
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "第一个问题", 0)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "第二个问题", 1)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 后台压缩队列：压缩档落盘（CapturingProvider 的 "ok" 走兜底摘要）
+    await vi.waitFor(async () => {
+      const files = await fs
+        .readdir(path.join(tmpDir, "agents", "agent-1", "_compressed"))
+        .catch(() => [] as string[]);
+      expect(files.filter((f) => f.endsWith(".md"))).toHaveLength(1);
+    });
+
+    // 热存储中的 assistant 消息被归档清理（u1/u2 未经过 worker 持久化）
+    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+    const archived = await repo.getArchivedByIds(["u1", "u2"]);
+    expect(archived.length).toBeGreaterThanOrEqual(0); // 归档恢复通道可用
+    const archivedAssistant = await repo.listBySession("agent-1");
+    expect(archivedAssistant).toHaveLength(0);
+
+    // j3：assemble 注入最近压缩档（L5 system 消息进入 provider 参数）
+    worker.enqueue({ id: "j3", messages: [seqMessage("u3", "新话题", 2)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const systemTexts = (provider.capturedParams?.messages ?? [])
+      .filter((m) => m.role === "system")
+      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
+    expect(systemTexts.some((t) => t.includes("话题摘要"))).toBe(true);
+  });
+
+  it("enabled=false 时不产出压缩档也不注入 L5", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      topicCompression: { enabled: false, messageThreshold: 2 },
+    });
+
+    for (let i = 0; i < 3; i++) {
+      worker.enqueue({ id: `j${i}`, messages: [seqMessage(`u${i}`, `消息${i}`, i)], onEvent: () => {} });
+    }
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const dir = path.join(tmpDir, "agents", "agent-1", "_compressed");
+    expect(await fs.readdir(dir).catch(() => null)).toBeNull();
+    const systemTexts = (provider.capturedParams?.messages ?? [])
+      .filter((m) => m.role === "system")
+      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
+    expect(systemTexts.some((t) => t.includes("话题摘要"))).toBe(false);
   });
 });

@@ -19,6 +19,12 @@ export interface AgentConfig {
   topP?: number;
   /** 上下文窗口总预算（token），缺省由引擎按 80000 处理；32k/128k 窗口模型应显式配置 */
   maxContextTokens?: number;
+  /** 话题压缩模型；缺省用主模型，压缩失败不 fallback（ContextPipeline Phase 2） */
+  compressionModel?: string;
+  /** 话题检测时间窗（分钟）：超过该间隔无交互视为新话题，缺省 30 */
+  topicDetectionWindowMinutes?: number;
+  /** 当前话题消息数达到该阈值即关闭并压缩，缺省 20 */
+  topicMessageThreshold?: number;
   skills: string[];
   tools: string[];
 }

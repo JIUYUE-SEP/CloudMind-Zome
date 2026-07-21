@@ -154,6 +154,16 @@ async function main() {
       services: { subagentDispatcher },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),
+      // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）
+      topicCompression: {
+        ...(agentConfig.compressionModel !== undefined ? { compressionModel: agentConfig.compressionModel } : {}),
+        ...(agentConfig.topicDetectionWindowMinutes !== undefined
+          ? { windowMinutes: agentConfig.topicDetectionWindowMinutes }
+          : {}),
+        ...(agentConfig.topicMessageThreshold !== undefined
+          ? { messageThreshold: agentConfig.topicMessageThreshold }
+          : {}),
+      },
     });
     workers.set(agentId, worker);
     return worker;

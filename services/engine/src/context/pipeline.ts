@@ -36,6 +36,8 @@ export interface AssembleInput {
   /** 当前场景 ID（session/group；Phase 3 跨场景标注使用） */
   sourceId: string;
   sourceName?: string;
+  /** L5 话题摘要（Phase 2：最近压缩档的渲染文本，已按时间倒序） */
+  topicSummaries?: string[];
 }
 
 export interface AssembleResult {
@@ -69,6 +71,7 @@ export class ContextPipeline {
       l1: input.mindContext,
       l2: input.mentionDesc,
       l3: [...input.history],
+      l5: input.topicSummaries ?? [],
       l6Core: [...input.tools],
       // Phase 1 决策：现有 7 个内置工具全部为 L6-core；L6-ext 预留（MCP 接入后启用）
       l6Ext: [],

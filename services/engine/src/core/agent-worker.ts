@@ -8,6 +8,14 @@ import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
 import { ContextPipeline } from "../context/pipeline.js";
+import { TopicTracker } from "../memory/topic/tracker.js";
+import { CompressionQueue } from "../memory/topic/queue.js";
+import { compressTopic } from "../memory/topic/compressor.js";
+import { latestSummaries, writeCompressedTopic } from "../memory/topic/store.js";
+import {
+  DEFAULT_TOPIC_COMPRESSION_CONFIG,
+  type TopicCompressionConfig,
+} from "../memory/topic/types.js";
 
 console.log("[agent-worker] module loaded");
 
@@ -33,6 +41,8 @@ export interface AgentWorkerConfig {
   services?: ToolContext["services"];
   /** 上下文管线（可选注入，测试用）；默认按 DEFAULT_PIPELINE_CONFIG 构造 */
   contextPipeline?: ContextPipeline;
+  /** 话题压缩配置（Phase 2）；缺省按 DEFAULT_TOPIC_COMPRESSION_CONFIG（开启） */
+  topicCompression?: Partial<TopicCompressionConfig>;
 }
 
 export interface Job {
@@ -62,9 +72,24 @@ export class AgentWorker {
   private queue: Job[] = [];
   private runningJob: Job | null = null;
   private pipeline: ContextPipeline;
+  private topicConfig: TopicCompressionConfig;
+  private topicTracker: TopicTracker;
+  private compressionQueue: CompressionQueue;
 
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
+    this.topicConfig = { ...DEFAULT_TOPIC_COMPRESSION_CONFIG, ...config.topicCompression };
+    this.topicTracker = new TopicTracker(this.topicConfig);
+    this.compressionQueue = new CompressionQueue(async (segment) => {
+      // 压缩失败不 fallback 主模型语义：异常由队列统一告警，原始消息留在热存储
+      const compressed = await compressTopic(
+        segment,
+        this.config.provider,
+        this.topicConfig.compressionModel || this.config.model,
+      );
+      await writeCompressedTopic(this.config.agentId, compressed);
+      await this.config.messageRepository.archiveAndRemove(compressed.msgIds);
+    });
   }
 
   enqueue(job: Job): void {
@@ -151,6 +176,24 @@ export class AgentWorker {
           .filter((c) => c.type === "text")
           .map((c) => c.text)
           .join("") ?? "";
+
+      const sessionId = job.sessionId || this.config.agentId;
+      // 话题边界检测（Phase 2）：新话题开启时，旧话题送后台压缩队列
+      if (lastUser) {
+        const closed = this.topicTracker.onUserMessage(lastUser, sessionId);
+        if (closed) this.compressionQueue.enqueue(closed);
+      }
+
+      // L5 话题摘要：最近压缩档注入组装（读取失败按空处理，不阻塞对话）
+      let topicSummaries: string[] = [];
+      if (this.topicConfig.enabled) {
+        try {
+          topicSummaries = await latestSummaries(this.config.agentId, this.topicConfig.hotMemoryCount);
+        } catch (err) {
+          console.warn("[topic] 压缩档读取失败，L5 按空处理", err);
+        }
+      }
+
       if (this.config.memoryIndexer && job.mode !== "code" && lastUser && lastUserText.trim()) {
         try {
           const hits = await this.config.memoryIndexer.search(this.config.agentId, lastUserText, 5);
@@ -201,7 +244,8 @@ export class AgentWorker {
           input: {
             agentId: this.config.agentId,
             mindContext,
-            sourceId: job.sessionId || this.config.agentId,
+            sourceId: sessionId,
+            topicSummaries,
           },
         },
       };
@@ -210,13 +254,16 @@ export class AgentWorker {
       const result = await runTurn(turnInput, job.onEvent);
       console.log("[agent-worker] after runTurn, appended:", result.appended.length);
 
-      const sessionId = job.sessionId || this.config.agentId;
       // 按真实顺序持久化本轮新增的消息（每步 assistant + tool 消息）。
       // appended 由 runTurn 显式收集，与 pipeline 如何组装/截断输入无关，
       // 避免 tool 消息失去前置的 assistant toolCalls，也天然不含 system prompt。
       for (const msg of result.appended) {
         await this.config.messageRepository.append({ ...msg, sessionId });
       }
+
+      // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
+      const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
+      if (closedByCount) this.compressionQueue.enqueue(closedByCount);
 
       // 向量索引（fire-and-forget）：本轮的用户输入与新增回复
       if (this.config.memoryIndexer) {

@@ -115,6 +115,44 @@ describe("ContextPipeline", () => {
     const systems = result.messages.filter((m) => m.role === "system");
     expect(systems).toHaveLength(2); // L1/L2 全保留
   });
+
+  it("topicSummaries 注入为 L5 system 消息，位于历史之前", async () => {
+    const pipeline = makePipeline(10000);
+    const result = await pipeline.assemble(
+      makeInput({
+        history: history(2),
+        topicSummaries: ["[话题摘要] 旧话题A", "[话题摘要] 旧话题B"],
+      }),
+    );
+    const l5 = result.messages.find(
+      (m) => m.role === "system" && m.content.some((c) => c.type === "text" && c.text.includes("以下是过去话题的摘要")),
+    );
+    expect(l5).toBeTruthy();
+    const text = l5!.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(text).toContain("旧话题A");
+    expect(text).toContain("旧话题B");
+    // L5 在 L3 历史之前
+    expect(result.messages.indexOf(l5!)).toBeLessThan(
+      result.messages.findIndex((m) => m.role === "user"),
+    );
+  });
+
+  it("超预算时先丢 L5 再截 L3：丢弃摘要后满足预算则历史完整保留", async () => {
+    // l3：5 条 × 13 = 65；l5 摘要约 77；预算 100 → 丢 L5 后 65 ≤ 100
+    const pipeline = makePipeline(100);
+    const result = await pipeline.assemble(
+      makeInput({
+        history: history(5),
+        topicSummaries: ["S".repeat(60)],
+      }),
+    );
+    expect(
+      result.messages.some(
+        (m) => m.role === "system" && m.content.some((c) => c.type === "text" && c.text.includes("以下是过去话题的摘要")),
+      ),
+    ).toBe(false);
+    expect(result.messages.filter((m) => m.role === "user")).toHaveLength(5);
+  });
 });
 
 describe("M3：降级可观测日志", () => {
@@ -154,5 +192,18 @@ describe("M3：降级可观测日志", () => {
     expect(msg).toContain("agent-y");
     expect(msg).toMatch(/total=\d+/);
     expect(msg).toMatch(/budget=\d+/);
+  });
+
+  it("降级顺序：l5:drop 先于 l3 截断", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // l3：25 条 × 13 = 325；l5 ≈ 77；预算 300 → l5:drop（325 仍超）→ l3:keep-15（195）满足
+    const result = await makePipeline(300).assemble(
+      makeInput({ history: history(25), topicSummaries: ["S".repeat(60)] }),
+    );
+    expect(result.messages.filter((m) => m.role === "user")).toHaveLength(15);
+    const logs = debug.mock.calls.map((c) => String(c[0]));
+    expect(logs[0]).toContain("l5:drop");
+    expect(logs[1]).toContain("l3:keep-15");
   });
 });

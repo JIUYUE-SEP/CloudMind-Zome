@@ -10,21 +10,24 @@ export const MIN_SEGMENT_MESSAGES = 4;
  * per-agent 话题跟踪（TopicContext 的规则版）。
  * 状态只存内存：进程重启后未压缩的 segment 丢失，但消息仍在热存储，
  * 由下一轮话题关闭时自然覆盖，不做跨重启追溯。
+ * sourceId 随调用传入：同一 agent 可能跨多个会话，segment 记录关闭时所在场景。
  */
 export class TopicTracker {
   private current: ChatMessage[] = [];
+  private lastSourceId = "";
+  private lastSourceName: string | undefined;
 
   constructor(
     private config: Pick<
       TopicCompressionConfig,
       "enabled" | "windowMinutes" | "messageThreshold"
     >,
-    private sourceId: string,
-    private sourceName?: string,
   ) {}
 
   /** 新用户消息到达（turn 开始前）调用；返回被关闭的话题片段（无则 null） */
-  onUserMessage(msg: ChatMessage): TopicSegment | null {
+  onUserMessage(msg: ChatMessage, sourceId: string, sourceName?: string): TopicSegment | null {
+    this.lastSourceId = sourceId;
+    this.lastSourceName = sourceName;
     if (!this.config.enabled) {
       this.current.push(msg);
       return null;
@@ -47,7 +50,9 @@ export class TopicTracker {
   }
 
   /** turn 完成（assistant/tool 消息落库前）调用；达到数量阈值则关闭当前话题 */
-  onTurnAppended(messages: ChatMessage[]): TopicSegment | null {
+  onTurnAppended(messages: ChatMessage[], sourceId: string, sourceName?: string): TopicSegment | null {
+    this.lastSourceId = sourceId;
+    this.lastSourceName = sourceName;
     if (!this.config.enabled) return null;
     this.current.push(...messages);
     if (this.current.length >= this.config.messageThreshold) {
@@ -66,8 +71,8 @@ export class TopicTracker {
     return {
       topicId: `tp_${Date.now()}_${randomUUID().slice(0, 8)}`,
       messages,
-      sourceId: this.sourceId,
-      sourceName: this.sourceName,
+      sourceId: this.lastSourceId,
+      sourceName: this.lastSourceName,
       startedAt: first.createdAt,
       endedAt: last.createdAt,
     };

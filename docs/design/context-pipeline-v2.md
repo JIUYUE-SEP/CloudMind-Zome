@@ -2,7 +2,7 @@
 
 > 版本：v2 | 日期：2026-07-17（2026-07-21 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：**Phase 1 已实现**（见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 2/3 待实现
+> 状态：**Phase 1/2 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 3 待实现
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---
@@ -348,14 +348,15 @@ return 0.3;                              // 三个月以上保底 30%
 
 **验收**：超窗口时不再报错，能按 L5 → L4 → L6-ext → L3 顺序降级。✅ 已达（13 个 mock 集成测试）
 
-### Phase 2：话题压缩（约 1 周）
+### Phase 2：话题压缩（约 1 周）— ✅ 已完成（2026-07-21）
 
-- [ ] `memory/topic/context.ts`：话题树数据结构
-- [ ] `memory/topic/detector.ts` v1：规则版（时间间隔 + 关键词 + 用户切 session）
-- [ ] `memory/topic/compressor.ts`：LLM 单程压缩（摘要 + 关键点）
-- [ ] `memory/topic/worker.ts`：后台 worker
-- [ ] 压缩档落盘 `_compressed/*.md`
-- [ ] 热存储清理（被压缩消息从 messages.jsonl 移除）
+- [x] `memory/topic/tracker.ts`：话题跟踪（TopicContext 规则版，含太短不压缩的噪声控制）
+- [x] `memory/topic/detector.ts` v1：规则版（时间间隔 + 数量阈值 + 用户显式切换词；关键词边界留 Phase 3）
+- [x] `memory/topic/compressor.ts`：LLM 单程压缩（摘要 + 关键点，失败不 fallback 主模型）
+- [x] `memory/topic/queue.ts`：后台串行压缩队列（fire-and-forget）
+- [x] 压缩档落盘 `_compressed/*.md`（frontmatter 预留 embedding_id，Phase 3 接入）
+- [x] 热存储清理（`archiveAndRemove`：先归档 `messages_archived.jsonl` 再移除，可恢复）
+- [x] L5 注入：`pipeline.assemble` 的 `topicSummaries` 输入，agent-worker 接线与 agent 级配置（`compressionModel` / `topicDetectionWindowMinutes` / `topicMessageThreshold`）
 
 **验收**：长对话后，`_compressed/` 目录有归档，热存储消息数控制在合理范围。
 
