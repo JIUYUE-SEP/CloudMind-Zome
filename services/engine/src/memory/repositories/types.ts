@@ -44,6 +44,13 @@ export interface IMessageRepository {
   append(message: ChatMessageRecord): Promise<void>;
   listBySession(sessionId: string, options?: { limit?: number; before?: string }): Promise<ChatMessageRecord[]>;
   getByIds(ids: string[]): Promise<ChatMessageRecord[]>;
+  /**
+   * 话题压缩后的热存储清理：先把 ids 对应记录追加到 messages_archived.jsonl，
+   * 再从 messages.jsonl 移除（先归档后删除，任何一步失败都不丢消息）。
+   */
+  archiveAndRemove(ids: string[]): Promise<void>;
+  /** 从归档恢复（压缩档丢失时的最后防线） */
+  getArchivedByIds(ids: string[]): Promise<ChatMessageRecord[]>;
 }
 
 export interface IMemoryRepository {

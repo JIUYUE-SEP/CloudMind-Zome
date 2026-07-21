@@ -12,6 +12,10 @@ export class MessageRepository implements IMessageRepository {
     return new DocumentStore<ChatMessageRecord>(path.join(getAgentDir(this.agentId), "messages.jsonl"));
   }
 
+  private archiveStore(): DocumentStore<ChatMessageRecord> {
+    return new DocumentStore<ChatMessageRecord>(path.join(getAgentDir(this.agentId), "messages_archived.jsonl"));
+  }
+
   async append(message: ChatMessageRecord): Promise<void> {
     await this.store().appendLine(message);
   }
@@ -31,6 +35,26 @@ export class MessageRepository implements IMessageRepository {
     if (ids.length === 0) return [];
     const wanted = new Set(ids);
     const all = await this.store().readLines();
+    return all.filter((m) => wanted.has(m.id));
+  }
+
+  async archiveAndRemove(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const wanted = new Set(ids);
+    const all = await this.store().readLines();
+    const archived = all.filter((m) => wanted.has(m.id));
+    if (archived.length === 0) return;
+    // 先写归档再删热存储：归档成功前不动 messages.jsonl
+    for (const record of archived) {
+      await this.archiveStore().appendLine(record);
+    }
+    await this.store().mutateLines((records) => records.filter((m) => !wanted.has(m.id)));
+  }
+
+  async getArchivedByIds(ids: string[]): Promise<ChatMessageRecord[]> {
+    if (ids.length === 0) return [];
+    const wanted = new Set(ids);
+    const all = await this.archiveStore().readLines();
     return all.filter((m) => wanted.has(m.id));
   }
 }

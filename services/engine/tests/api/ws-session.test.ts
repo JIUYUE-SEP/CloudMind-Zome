@@ -47,7 +47,13 @@ async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Pr
         provider,
         tools,
         workspaceDir: tmpDir,
-        messageRepository: { append: async () => {}, listBySession: async () => [], getByIds: async () => [] },
+        messageRepository: {
+          append: async () => {},
+          listBySession: async () => [],
+          getByIds: async () => [],
+          archiveAndRemove: async () => {},
+          getArchivedByIds: async () => [],
+        },
         approve: () => true,
       })
     );
