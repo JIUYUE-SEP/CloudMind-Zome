@@ -1,7 +1,7 @@
 <template>
   <div class="blueprints">
     <header class="header">
-      <BackButton />
+      <BackButton to="/" />
       <h1>蓝图工作流</h1>
     </header>
     <main class="main">

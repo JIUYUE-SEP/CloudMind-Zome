@@ -1,7 +1,7 @@
 <template>
   <div class="session-detail-page">
     <header class="page-header">
-      <BackButton />
+      <BackButton to="/sessions" />
       <span class="page-title">{{ session?.name || "群聊" }}</span>
     </header>
     <div v-if="notFound" class="not-found">会话不存在或已被删除</div>

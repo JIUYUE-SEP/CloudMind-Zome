@@ -1,7 +1,7 @@
 <template>
   <div class="scheduler">
     <header class="header">
-      <BackButton />
+      <BackButton to="/" />
       <h1>定时任务</h1>
     </header>
     <main class="main">

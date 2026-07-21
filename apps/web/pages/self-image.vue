@@ -2,7 +2,7 @@
   <div class="self-image-page">
     <header class="si-header">
       <div class="si-header-left">
-        <BackButton />
+        <BackButton to="/" />
         <h1>我的心智侧写</h1>
       </div>
       <div class="save-status">

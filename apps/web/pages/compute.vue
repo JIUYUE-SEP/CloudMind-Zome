@@ -1,7 +1,7 @@
 <template>
   <div class="compute-page">
     <header>
-      <BackButton />
+      <BackButton to="/" />
       <h1>算力中枢</h1>
       <button @click="openProviderModal()">添加 Provider</button>
     </header>

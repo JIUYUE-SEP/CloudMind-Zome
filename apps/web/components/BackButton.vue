@@ -6,7 +6,7 @@
 
 <script setup lang="ts">
 const props = defineProps<{
-  to?: string;
+  to: string;
 }>();
 
 const emit = defineEmits<{
@@ -17,14 +17,8 @@ const router = useRouter();
 
 function onClick() {
   emit("click");
-  if (props.to) {
-    router.push(props.to);
-  } else if (router.options.history.state.back) {
-    // 有应用内历史才 back；直开/刷新进入时回退首页而不是离开应用
-    router.back();
-  } else {
-    router.push("/");
-  }
+  // 固定跳显式路径，不用 router.back()（历史栈上一页不一定是逻辑父页）
+  router.push(props.to);
 }
 </script>
 

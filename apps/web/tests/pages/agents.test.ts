@@ -88,6 +88,17 @@ describe("agents 列表页", () => {
     expect(wrapper.find(".agent-grid").exists()).toBe(false);
   });
 
+  it("返回按钮固定回主页，不走历史回退", async () => {
+    const { fetchMock } = mockAgentsFetch([]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(AgentsIndex, mountOptions());
+    await flushPromises();
+
+    await wrapper.find(".back-btn").trigger("click");
+    expect(routerPushMock).toHaveBeenCalledWith("/");
+  });
+
   it("有数据时渲染 Agent 卡片（名称/描述/标签/模型/工具技能数）", async () => {
     const { fetchMock } = mockAgentsFetch([agentA]);
     vi.stubGlobal("fetch", fetchMock);

@@ -2,7 +2,7 @@
   <div class="comm-hub">
     <aside class="comm-sidebar">
       <div class="comm-sidebar-header">
-        <BackButton />
+        <BackButton to="/" />
         <span class="comm-sidebar-title">通讯中枢</span>
         <button class="new-agent-btn" title="新建 Agent" @click="navigateTo('/agents/new')">+</button>
       </div>

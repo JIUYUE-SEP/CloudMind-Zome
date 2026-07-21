@@ -1,7 +1,7 @@
 <template>
   <div class="settings-page">
     <header class="header">
-      <BackButton />
+      <BackButton to="/" />
       <h1>系统设置</h1>
     </header>
 

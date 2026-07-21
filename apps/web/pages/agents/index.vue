@@ -2,7 +2,7 @@
   <div class="agents-page">
     <header class="page-header">
       <div class="page-header-left">
-        <BackButton />
+        <BackButton to="/" />
         <h1 class="page-title">心智整备</h1>
       </div>
       <button class="btn-primary" @click="navigateTo('/agents/new')">+ 新建心智</button>

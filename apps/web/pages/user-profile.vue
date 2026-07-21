@@ -2,7 +2,7 @@
   <div class="user-profile-page">
     <header class="up-header">
       <div class="up-header-left">
-        <BackButton />
+        <BackButton to="/" />
         <h1>用户档案</h1>
       </div>
       <div class="up-actions">

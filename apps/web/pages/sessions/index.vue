@@ -1,7 +1,7 @@
 <template>
   <div class="sessions-page">
     <header>
-      <BackButton />
+      <BackButton to="/" />
       <h1>群聊</h1>
       <button @click="startCreate">新建群聊</button>
     </header>
