@@ -36,6 +36,15 @@ export const useChatStore = defineStore("chat", () => {
     isConnected.value = false;
     isStreaming.value = false;
 
+    // 流式中断（turn 结束/出错/断连）时复位最后一条气泡的 streaming 态，
+    // 否则光标与打字机永不停止
+    const sealLastAssistant = () => {
+      const last = messages.value[messages.value.length - 1];
+      if (last && last.role === "assistant") {
+        last.isStreaming = false;
+      }
+    };
+
     connection = client.connect(agentId, sessionId.value, {
       onOpen: () => {
         isConnected.value = true;
@@ -85,19 +94,14 @@ export const useChatStore = defineStore("chat", () => {
         setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
         messages.value.push(createApprovalMessage(request));
       },
-      onStepEnd: () => {
-        const last = messages.value[messages.value.length - 1];
-        if (last && last.role === "assistant") {
-          last.isStreaming = false;
-        }
+      onTurnEnd: () => {
+        // 一轮生成结束才复位流式态；step.end 每个 ReAct step 都发，
+        // 若在 step 边界复位，工具执行期间输入框会提前解锁
+        sealLastAssistant();
         isStreaming.value = false;
       },
       onError: (error) => {
-        // 错误中断流时，最后一条消息的 streaming 态也要复位，否则加载动画永不消失
-        const last = messages.value[messages.value.length - 1];
-        if (last && last.role === "assistant") {
-          last.isStreaming = false;
-        }
+        sealLastAssistant();
         isStreaming.value = false;
         messages.value.push({
           id: nextMsgId("err"),
@@ -109,6 +113,7 @@ export const useChatStore = defineStore("chat", () => {
         });
       },
       onClose: () => {
+        sealLastAssistant();
         isConnected.value = false;
         isStreaming.value = false;
       },

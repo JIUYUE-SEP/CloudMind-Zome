@@ -71,6 +71,19 @@ describe("useEngineClient WS 帧路由", () => {
     expect(onTextDelta).toHaveBeenCalledWith("无归属", undefined);
   });
 
+  it("turn.end 帧路由到 onTurnEnd（群聊透出 agentId，私聊为 undefined）", () => {
+    const client = useEngineClient();
+    const onTurnEnd = vi.fn();
+    client.connectSession("session-1", { onTurnEnd });
+    lastSocket().onmessage?.({ data: JSON.stringify({ type: "turn.end", agentId: "a1" }) });
+    expect(onTurnEnd).toHaveBeenCalledWith("a1");
+
+    const onPrivateTurnEnd = vi.fn();
+    client.connect("agent-1", "default", { onTurnEnd: onPrivateTurnEnd });
+    lastSocket().onmessage?.({ data: JSON.stringify({ type: "turn.end" }) });
+    expect(onPrivateTurnEnd).toHaveBeenCalledWith();
+  });
+
   it("旧的 think.delta 帧名不再路由（engine 只发 thinking.delta）", () => {
     const client = useEngineClient();
     const onThinkingDelta = vi.fn();

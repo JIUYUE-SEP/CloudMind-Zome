@@ -132,6 +132,9 @@ export interface WebSocketHandlers {
     agentId?: string;
   }) => void;
   onStepEnd?: (finishReason?: string, agentId?: string) => void;
+  // 一轮生成结束（与 step.end 区分：后者每个 ReAct step 都发）；
+  // 输入框锁定等"生成中"状态只应在 turn.end / error / close 时复位
+  onTurnEnd?: (agentId?: string) => void;
   onError?: (error: string) => void;
   onClose?: () => void;
   onModeChanged?: (mode: ChatMode, projectId?: string) => void;
@@ -442,6 +445,9 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "step.end":
             handlers.onStepEnd?.(data.finishReason);
             break;
+          case "turn.end":
+            handlers.onTurnEnd?.();
+            break;
           case "session.mode_changed":
             handlers.onModeChanged?.(data.mode, data.projectId);
             break;
@@ -559,6 +565,9 @@ export function useEngineClient(options?: EngineClientOptions) {
             break;
           case "step.end":
             handlers.onStepEnd?.(data.finishReason, data.agentId);
+            break;
+          case "turn.end":
+            handlers.onTurnEnd?.(data.agentId);
             break;
           case "session.mode_changed":
             handlers.onModeChanged?.(data.mode, data.projectId);

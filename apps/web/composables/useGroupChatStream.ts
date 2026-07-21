@@ -12,12 +12,13 @@ import {
  *
  * engine 群聊帧按 agentId 多路复用（不 @任何人时全体成员并发回复），
  * 因此每个 Agent 的流式增量进独立气泡槽：互不交错、互不提前封口。
- * 私聊的单流场景不要用这个，用 stores/chat.ts。
+ * 槽的生命周期以 turn 为界（turn.end 关闭），同一 turn 的多步 ReAct
+ * （文本 → 工具 → 文本）进同一气泡。私聊的单流场景不要用这个，用 stores/chat.ts。
  */
 export function useGroupChatStream() {
   const messages = ref<DisplayMessage[]>([]);
   const isStreaming = ref(false);
-  // agentId → 该 Agent 进行中的流式气泡；step.end 只关闭对应槽
+  // agentId → 该 Agent 当前 turn 的流式气泡；turn.end 只关闭对应槽
   const streamSlots = new Map<string, DisplayMessage>();
   // Date.now() 同毫秒会撞 id（v-for key 冲突），挂自增序号
   let msgSeq = 0;
@@ -85,7 +86,7 @@ export function useGroupChatStream() {
     });
   }
 
-  // connectSession 的帧处理集；delta/step.end 依赖 useEngineClient 透出的 agentId
+  // connectSession 的帧处理集；delta/turn.end 依赖 useEngineClient 透出的 agentId
   const handlers = {
     onTextDelta: (delta: string, agentId?: string) => {
       slotFor(agentId).text += delta;
@@ -105,7 +106,9 @@ export function useGroupChatStream() {
       setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
       messages.value.push(createApprovalMessage(request));
     },
-    onStepEnd: (_finishReason?: string, agentId?: string) => {
+    onTurnEnd: (agentId?: string) => {
+      // 一轮结束才关闭该 Agent 的气泡槽；step.end 每个 ReAct step 都发，
+      // 同一 turn 的后续 step（工具执行后的文本）仍进同一气泡
       closeSlot(agentId);
     },
     onError: (error: string) => {

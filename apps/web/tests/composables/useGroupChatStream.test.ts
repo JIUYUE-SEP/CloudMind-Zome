@@ -40,24 +40,31 @@ describe("useGroupChatStream", () => {
     expect(messages.value[1]!.toolCalls[0]!.toolCallId).toBe("t1");
   });
 
-  it("step.end 只关闭对应 Agent 的槽，全部结束后 isStreaming 才复位", () => {
+  it("turn.end 只关闭对应 Agent 的槽，同一 turn 的多步进同一气泡", () => {
     const { messages, isStreaming, handlers } = useGroupChatStream();
     handlers.onTextDelta("A", "a1");
     handlers.onTextDelta("B", "a2");
     expect(isStreaming.value).toBe(true);
 
-    handlers.onStepEnd(undefined, "a1");
+    // a1 工具调用后继续输出：仍进 a1 的同一气泡，不开新气泡
+    handlers.onToolCall({ toolCallId: "t1", name: "search", arguments: {}, agentId: "a1" });
+    handlers.onTextDelta("继续", "a1");
+    expect(messages.value).toHaveLength(2);
+    expect(messages.value[0]!.text).toBe("A继续");
+    expect(messages.value[0]!.toolCalls).toHaveLength(1);
+
+    handlers.onTurnEnd("a1");
     expect(messages.value[0]!.isStreaming).toBe(false);
     expect(messages.value[1]!.isStreaming).toBe(true);
     expect(isStreaming.value).toBe(true);
 
-    // a1 后续 step 的 delta 开新气泡，不复活旧气泡
+    // a1 下一轮的发言开新气泡
     handlers.onTextDelta("A2", "a1");
     expect(messages.value).toHaveLength(3);
     expect(messages.value[2]!.text).toBe("A2");
 
-    handlers.onStepEnd(undefined, "a2");
-    handlers.onStepEnd(undefined, "a1");
+    handlers.onTurnEnd("a2");
+    handlers.onTurnEnd("a1");
     expect(isStreaming.value).toBe(false);
   });
 
