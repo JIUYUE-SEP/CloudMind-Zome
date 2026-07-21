@@ -164,7 +164,7 @@ async function execute() {
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--mc-border);
   flex-shrink: 0;
 }
 

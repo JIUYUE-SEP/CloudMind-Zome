@@ -238,7 +238,7 @@ async function onDelete(a: AgentConfig) {
   font-size: 11px;
   padding: 4px 8px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--mc-panel);
   color: var(--mc-text-secondary);
 }
 

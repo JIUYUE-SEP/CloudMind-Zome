@@ -222,7 +222,7 @@ textarea {
   justify-content: space-between;
   align-items: center;
   padding: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--mc-panel);
 }
 
 .task-desc {
@@ -258,7 +258,7 @@ button:disabled {
 }
 
 button.danger {
-  background: #ff5c5c;
+  background: var(--mc-danger);
   color: white;
 }
 

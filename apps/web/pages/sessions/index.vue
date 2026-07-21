@@ -189,7 +189,7 @@ header h1 {
 
 .session-list li {
   padding: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--mc-panel);
 }
 
 .session-list a {

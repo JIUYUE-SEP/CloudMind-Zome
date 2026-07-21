@@ -186,7 +186,7 @@ onBeforeUnmount(() => {
   padding: 14px;
   background: rgba(11, 15, 23, 0.88);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--mc-border);
   border-radius: 12px;
   z-index: 120;
   color: var(--mc-text);
@@ -285,8 +285,8 @@ onBeforeUnmount(() => {
 .log-actions button {
   flex: 1;
   padding: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--mc-panel);
+  border: 1px solid var(--mc-border);
   border-radius: 6px;
   color: var(--mc-text-secondary);
   font-size: 12px;

@@ -250,7 +250,7 @@ onBeforeUnmount(() => {
   padding: 14px;
   background: rgba(11, 15, 23, 0.92);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--mc-border);
   border-radius: 12px;
   z-index: 120;
   color: var(--mc-text);
@@ -282,7 +282,7 @@ onBeforeUnmount(() => {
 .ss-tab {
   padding: 5px 10px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--mc-panel);
   border-radius: 6px;
   color: var(--mc-text-secondary);
   font-size: 11px;

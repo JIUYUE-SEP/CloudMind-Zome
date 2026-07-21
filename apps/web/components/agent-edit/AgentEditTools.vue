@@ -120,7 +120,7 @@ function toggle(name: string) {
 }
 
 .tool-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--mc-panel);
 }
 
 .tool-item.missing {

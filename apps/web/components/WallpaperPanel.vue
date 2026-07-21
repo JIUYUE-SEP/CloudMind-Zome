@@ -222,7 +222,7 @@ onBeforeUnmount(() => {
   padding: 16px;
   background: rgba(11, 15, 23, 0.85);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--mc-border);
   border-radius: 12px;
   z-index: 120;
   color: var(--mc-text);
@@ -244,8 +244,8 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: 8px;
   margin-bottom: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--mc-panel);
+  border: 1px solid var(--mc-border);
   border-radius: 6px;
   color: var(--mc-text);
   font-size: 13px;
@@ -266,7 +266,7 @@ onBeforeUnmount(() => {
 
 .wp-sep {
   height: 1px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--mc-panel);
   margin: 12px 0;
 }
 
@@ -285,7 +285,7 @@ onBeforeUnmount(() => {
   flex: 1;
   padding: 6px 0;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--mc-panel);
   border-radius: 6px;
   color: var(--mc-text-secondary);
   font-size: 12px;
@@ -311,8 +311,8 @@ onBeforeUnmount(() => {
 .wp-anchor-btn {
   width: 100%;
   aspect-ratio: 1;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--mc-panel);
+  border: 1px solid var(--mc-border);
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.15s;

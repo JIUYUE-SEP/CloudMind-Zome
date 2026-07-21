@@ -137,7 +137,7 @@ function handleNav(e: Event, item: NavItem) {
   z-index: 100;
   background: rgba(11, 15, 23, 0.25);
   backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--mc-panel);
 }
 
 .bar-left {

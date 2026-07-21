@@ -118,7 +118,7 @@ input {
   display: flex;
   justify-content: space-between;
   padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--mc-border);
 }
 
 .tag {

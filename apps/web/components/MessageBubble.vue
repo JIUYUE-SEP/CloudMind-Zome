@@ -129,7 +129,7 @@ function formatArgs(args: unknown): string {
   max-width: 80%;
   padding: 10px 14px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--mc-panel);
   color: #d8e1ec;
 }
 .message-text {
@@ -232,7 +232,7 @@ function formatArgs(args: unknown): string {
 /* ---- 工具调用卡片 ---- */
 .tool-card {
   margin-top: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--mc-border);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.2);
   font-size: 12px;
@@ -257,7 +257,7 @@ function formatArgs(args: unknown): string {
   font-size: 10px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--mc-panel);
   color: #8899aa;
 }
 .tool-running .tool-badge {
@@ -290,7 +290,7 @@ function formatArgs(args: unknown): string {
 .tool-args {
   margin: 0;
   padding: 8px 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--mc-panel);
   font-family: monospace;
   font-size: 11px;
   line-height: 1.5;

@@ -23,7 +23,7 @@
           :y1="portY(edge.source)"
           :x2="portX(edge.target, 'in')"
           :y2="portY(edge.target)"
-          stroke="#00e5c9"
+          stroke="var(--mc-accent)"
           stroke-width="2"
         />
         <line
@@ -32,7 +32,7 @@
           :y1="draggingEdge.y1"
           :x2="draggingEdge.x2"
           :y2="draggingEdge.y2"
-          stroke="#00e5c9"
+          stroke="var(--mc-accent)"
           stroke-width="2"
           stroke-dasharray="4"
         />
@@ -298,27 +298,27 @@ function portY(nodeId: string): number {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0b0f17;
-  color: #d8e1ec;
+  background: var(--mc-bg);
+  color: var(--mc-text);
 }
 .toolbar {
   display: flex;
   gap: 8px;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--mc-border);
 }
 .toolbar button {
   padding: 8px 14px;
   border-radius: 6px;
   border: none;
-  background: #00e5c9;
-  color: #0b0f17;
+  background: var(--mc-accent);
+  color: var(--mc-bg);
   cursor: pointer;
   font-size: 13px;
 }
 .toolbar button.secondary {
   background: #1f2937;
-  color: #d8e1ec;
+  color: var(--mc-text);
   margin-left: auto;
 }
 .canvas {
@@ -348,15 +348,15 @@ function portY(nodeId: string): number {
   user-select: none;
 }
 .node.selected {
-  border-color: #00e5c9;
+  border-color: var(--mc-accent);
 }
 .node.start {
   background: #064e3b;
-  border-color: #10b981;
+  border-color: var(--mc-success);
 }
 .node.end {
   background: #7f1d1d;
-  border-color: #ef4444;
+  border-color: var(--mc-danger);
 }
 .node.llm {
   background: #1e3a8a;
@@ -376,7 +376,7 @@ function portY(nodeId: string): number {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #d8e1ec;
+  background: var(--mc-text);
   cursor: crosshair;
 }
 .port.in {
@@ -414,21 +414,21 @@ function portY(nodeId: string): number {
   padding: 8px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #0b0f17;
-  color: #d8e1ec;
+  background: var(--mc-bg);
+  color: var(--mc-text);
   font-size: 13px;
 }
 .config-panel button {
   padding: 8px;
   border-radius: 6px;
   border: none;
-  background: #00e5c9;
-  color: #0b0f17;
+  background: var(--mc-accent);
+  color: var(--mc-bg);
   cursor: pointer;
   font-size: 13px;
 }
 .config-panel button.danger {
-  background: #ff5c5c;
+  background: var(--mc-danger);
   color: white;
 }
 

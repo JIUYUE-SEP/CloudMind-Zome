@@ -40,8 +40,8 @@ function onClick() {
 }
 
 .back-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.08);
+  background: var(--mc-panel);
+  border-color: var(--mc-border);
   color: var(--mc-accent);
 }
 

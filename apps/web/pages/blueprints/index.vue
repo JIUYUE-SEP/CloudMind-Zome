@@ -123,7 +123,7 @@ button {
 }
 
 button.danger {
-  background: #ff5c5c;
+  background: var(--mc-danger);
   color: white;
 }
 

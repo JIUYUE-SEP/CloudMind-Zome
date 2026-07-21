@@ -106,7 +106,7 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
 }
 .session-header {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--mc-border);
 }
 .session-header h2 {
   margin: 0 0 4px;

@@ -271,7 +271,7 @@ header h1 {
 }
 
 .provider-card:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--mc-border);
 }
 
 .actions {
@@ -334,7 +334,7 @@ header h1 {
   display: flex;
   justify-content: space-between;
   padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--mc-border);
 }
 
 .add-model {

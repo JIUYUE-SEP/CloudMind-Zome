@@ -34,7 +34,7 @@ function submit() {
   display: flex;
   gap: 8px;
   padding: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--mc-border);
 }
 .message-input input {
   flex: 1;

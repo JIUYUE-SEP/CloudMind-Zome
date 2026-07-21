@@ -281,7 +281,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   display: flex;
   flex-direction: column;
   background: rgba(11, 15, 23, 0.95);
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid var(--mc-panel);
 }
 
 .comm-sidebar-header {
@@ -290,7 +290,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   align-items: center;
   gap: 10px;
   padding: 0 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--mc-panel);
   flex-shrink: 0;
 }
 
@@ -331,7 +331,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   flex: 1;
   padding: 7px 0;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--mc-panel);
   border-radius: 6px;
   color: var(--mc-text-secondary);
   font-size: 12px;
@@ -388,7 +388,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--mc-border);
   color: var(--mc-text-secondary);
   font-size: 13px;
   font-weight: 500;
@@ -521,7 +521,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   display: flex;
   gap: 4px;
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--mc-panel);
   flex-shrink: 0;
 }
 
@@ -529,7 +529,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   flex: 1;
   padding: 7px 0;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--mc-panel);
   border-radius: 6px;
   color: var(--mc-text-secondary);
   font-size: 12px;
