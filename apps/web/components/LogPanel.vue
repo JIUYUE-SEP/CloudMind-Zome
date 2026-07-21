@@ -25,7 +25,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useEngineClient, type EngineLogEntry } from "@/composables/useEngineClient";
 
 export interface LogEntry {
@@ -164,6 +164,14 @@ function onMouseUp() {
   document.removeEventListener("mousemove", onMouseMove);
   document.removeEventListener("mouseup", onMouseUp);
 }
+
+// 拖拽中途离开页面也要恢复现场：否则 document 监听泄漏，
+// body 的 userSelect: none 永久残留导致全站无法选中文字
+onBeforeUnmount(() => {
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
+  document.body.style.userSelect = "";
+});
 </script>
 
 <style scoped>
