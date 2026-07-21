@@ -81,6 +81,11 @@ export class AgentWorker {
     this.topicConfig = { ...DEFAULT_TOPIC_COMPRESSION_CONFIG, ...config.topicCompression };
     this.topicTracker = new TopicTracker(this.topicConfig);
     this.compressionQueue = new CompressionQueue(async (segment) => {
+      if (segment.archiveOnly) {
+        // 短话题：不调用 LLM，仅归档，保证热存储有界
+        await this.config.messageRepository.archiveAndRemove(segment.messages.map((m) => m.id));
+        return;
+      }
       // 压缩失败不 fallback 主模型语义：异常由队列统一告警，原始消息留在热存储
       const compressed = await compressTopic(
         segment,

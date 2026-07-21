@@ -42,11 +42,22 @@ describe("TopicTracker", () => {
     expect(again).toBeNull();
   });
 
-  it("太短的话题不产出 segment（消息不追溯）", () => {
+  it("太短的话题产出 archiveOnly segment（不压缩仅归档）", () => {
     const tracker = new TopicTracker(config);
     tracker.onUserMessage(msg("user", "只说一句", at(0)), "s1");
     const closed = tracker.onUserMessage(msg("user", "换个话题", at(1)), "s1");
-    expect(closed).toBeNull();
+    expect(closed).not.toBeNull();
+    expect(closed!.archiveOnly).toBe(true);
+    expect(closed!.messages).toHaveLength(1);
+  });
+
+  it("达到 MIN_SEGMENT_MESSAGES 的话题正常压缩（非 archiveOnly）", () => {
+    const tracker = new TopicTracker(config);
+    for (let i = 0; i < MIN_SEGMENT_MESSAGES; i++) {
+      tracker.onUserMessage(msg("user", `内容${i}`, at(i)), "s1");
+    }
+    const closed = tracker.onUserMessage(msg("user", "换个话题", at(10)), "s1");
+    expect(closed!.archiveOnly).toBe(false);
   });
 
   it("切换词触发关闭", () => {

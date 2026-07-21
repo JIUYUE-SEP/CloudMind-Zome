@@ -10,6 +10,11 @@ export interface TopicSegment {
   sourceName?: string;
   startedAt: string;
   endedAt: string;
+  /**
+   * true 时只做归档、不调用 LLM 生成摘要（短话题）：
+   * 保证热存储有界，又不为两三句话浪费一次压缩调用
+   */
+  archiveOnly?: boolean;
 }
 
 /** 压缩档：frontmatter 元数据 + 正文，落盘为 _compressed/{topicId}.md */

@@ -3,13 +3,13 @@ import type { ChatMessage } from "@mindcloud/shared";
 import { detectTopicBoundary } from "./detector.js";
 import type { TopicCompressionConfig, TopicSegment } from "./types.js";
 
-// 太短的话题不压缩：一两句话就产一个压缩档只会制造噪声
+// 短话题不调用 LLM 压缩（一两句话就产一个压缩档只会制造噪声），仅归档
 export const MIN_SEGMENT_MESSAGES = 4;
 
 /**
  * per-agent 话题跟踪（TopicContext 的规则版）。
- * 状态只存内存：进程重启后未压缩的 segment 丢失，但消息仍在热存储，
- * 由下一轮话题关闭时自然覆盖，不做跨重启追溯。
+ * 状态只存内存。已知取舍：进程重启后 tracker 状态清空，重启前的未压缩
+ * 消息成为孤儿——留在热存储且不再被追溯归档（当前不做启动对账）。
  * sourceId 随调用传入：同一 agent 可能跨多个会话，segment 记录关闭时所在场景。
  */
 export class TopicTracker {
@@ -61,11 +61,15 @@ export class TopicTracker {
     return null;
   }
 
-  /** 关闭当前话题；消息太少时不产出 segment（消息留在热存储不追溯） */
+  /**
+   * 关闭当前话题：任何非空话题都产出 segment——
+   * 达到 MIN_SEGMENT_MESSAGES 的走 LLM 压缩；更短的标记 archiveOnly
+   * （不调用 LLM，仅归档，保证热存储有界且不产生噪声压缩档）。
+   */
   private closeSegment(): TopicSegment | null {
     const messages = this.current;
     this.current = [];
-    if (messages.length < MIN_SEGMENT_MESSAGES) return null;
+    if (messages.length === 0) return null;
     const first = messages[0]!;
     const last = messages[messages.length - 1]!;
     return {
@@ -75,6 +79,7 @@ export class TopicTracker {
       sourceName: this.lastSourceName,
       startedAt: first.createdAt,
       endedAt: last.createdAt,
+      archiveOnly: messages.length < MIN_SEGMENT_MESSAGES,
     };
   }
 }

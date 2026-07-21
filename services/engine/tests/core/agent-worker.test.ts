@@ -573,6 +573,37 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(systemTexts.some((t) => t.includes("话题摘要"))).toBe(true);
   });
 
+  it("短话题不调用 LLM：仅归档、不产生压缩档", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      // 阈值 4：u1+a1 只有 2 条，时间窗（>30min）触发关闭 → archiveOnly
+      topicCompression: { messageThreshold: 20, windowMinutes: 30 },
+    });
+
+    await repo.append({ ...seqMessage("u1", "早上好", 0), sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "早上好", 0)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 切换词触发关闭：旧 segment（u1+a1 共 2 条 < 4）以 archiveOnly 关闭
+    await repo.append({ ...seqMessage("u2", "换个话题，继续说", 100), sessionId: "agent-1" });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "换个话题，继续说", 100)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // u1 已被归档（热存储只剩新话题的 u2 与 j2 的 assistant 回复）
+    await vi.waitFor(async () => {
+      const archived = await repo.getArchivedByIds(["u1"]);
+      expect(archived.map((m) => m.id)).toEqual(["u1"]);
+    });
+    expect(await repo.listBySession("agent-1")).toHaveLength(2);
+    // 不产生压缩档
+    expect(
+      await fs.readdir(path.join(tmpDir, "agents", "agent-1", "_compressed")).catch(() => []),
+    ).toEqual([]);
+  });
+
   it("enabled=false 时不产出压缩档也不注入 L5", async () => {
     const provider = new CapturingProvider();
     const repo = new MessageRepository("agent-1");
