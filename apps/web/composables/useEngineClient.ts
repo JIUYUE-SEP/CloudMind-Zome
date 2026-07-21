@@ -146,6 +146,22 @@ export interface Connection {
 
 const DEFAULT_ENGINE_URL = "http://127.0.0.1:8848";
 
+// engine 的失败响应通常携带 { error } 正文（如 "Invalid agent id"、
+// "invalid cron expression"），透出给调用方，避免错误语义被压成裸状态码
+async function ensureOk(res: Response, action: string): Promise<void> {
+  if (res.ok) return;
+  let detail = "";
+  try {
+    const body: unknown = await res.json();
+    if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+      detail = (body as { error: string }).error;
+    }
+  } catch {
+    // 非 JSON 响应体：退回状态码
+  }
+  throw new Error(detail ? `Failed to ${action}: ${detail}` : `Failed to ${action}: ${res.status}`);
+}
+
 // 模块级 backend URL 单例：模块加载即开始解析，结果缓存，
 // 后续所有 useEngineClient() 调用直接复用，不再逐个 onMounted 异步获取。
 const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
@@ -179,7 +195,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   async function listAgents(): Promise<AgentConfig[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/agents`);
-    if (!res.ok) throw new Error(`Failed to list agents: ${res.status}`);
+    await ensureOk(res, "list agents");
     return res.json();
   }
 
@@ -189,13 +205,13 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
     });
-    if (!res.ok) throw new Error(`Failed to create agent: ${res.status}`);
+    await ensureOk(res, "create agent");
     return res.json();
   }
 
   async function getAgent(id: string): Promise<AgentConfig> {
     const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`);
-    if (!res.ok) throw new Error(`Failed to get agent: ${res.status}`);
+    await ensureOk(res, "get agent");
     return res.json();
   }
 
@@ -205,13 +221,13 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
     });
-    if (!res.ok) throw new Error(`Failed to update agent: ${res.status}`);
+    await ensureOk(res, "update agent");
     return res.json();
   }
 
   async function deleteAgent(id: string): Promise<void> {
     const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Failed to delete agent: ${res.status}`);
+    await ensureOk(res, "delete agent");
   }
 
   async function getMessages(agentId: string, sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
@@ -219,14 +235,14 @@ export function useEngineClient(options?: EngineClientOptions) {
     params.set("sessionId", sessionId);
     if (limit) params.set("limit", String(limit));
     const res = await fetchWithTimeout(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to get messages: ${res.status}`);
+    await ensureOk(res, "get messages");
     return res.json();
   }
 
   // Sessions
   async function listSessions(): Promise<Session[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/sessions`);
-    if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
+    await ensureOk(res, "list sessions");
     return res.json();
   }
 
@@ -236,7 +252,7 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(session),
     });
-    if (!res.ok) throw new Error(`Failed to create session: ${res.status}`);
+    await ensureOk(res, "create session");
     return res.json();
   }
 
@@ -246,27 +262,27 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     });
-    if (!res.ok) throw new Error(`Failed to update session: ${res.status}`);
+    await ensureOk(res, "update session");
     return res.json();
   }
 
   async function deleteSession(id: string): Promise<void> {
     const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${id}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`);
+    await ensureOk(res, "delete session");
   }
 
   async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
     if (limit) params.set("limit", String(limit));
     const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${sessionId}/messages?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to get session messages: ${res.status}`);
+    await ensureOk(res, "get session messages");
     return res.json();
   }
 
   // Compute
   async function listProviders(): Promise<Provider[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers`);
-    if (!res.ok) throw new Error(`Failed to list providers: ${res.status}`);
+    await ensureOk(res, "list providers");
     return res.json();
   }
 
@@ -276,7 +292,7 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to create provider: ${res.status}`);
+    await ensureOk(res, "create provider");
     return res.json();
   }
 
@@ -286,19 +302,19 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to update provider: ${res.status}`);
+    await ensureOk(res, "update provider");
     return res.json();
   }
 
   async function deleteProvider(id: string): Promise<void> {
     const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Failed to delete provider: ${res.status}`);
+    await ensureOk(res, "delete provider");
   }
 
   async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
     // 探测外部 provider 的 models 列表，慢节点可能超过默认 10s，放宽到 30s
     const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" }, 30_000);
-    if (!res.ok) throw new Error(`Failed to test provider: ${res.status}`);
+    await ensureOk(res, "test provider");
     return res.json();
   }
 
@@ -308,7 +324,7 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to add model: ${res.status}`);
+    await ensureOk(res, "add model");
     return res.json();
   }
 
@@ -318,19 +334,19 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to update model: ${res.status}`);
+    await ensureOk(res, "update model");
     return res.json();
   }
 
   async function deleteModel(providerId: string, modelId: string): Promise<void> {
     const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Failed to delete model: ${res.status}`);
+    await ensureOk(res, "delete model");
   }
 
   // Settings
   async function getConfig(): Promise<AppSettings & { providers: Provider[] }> {
     const res = await fetchWithTimeout(`${baseUrl.value}/config`);
-    if (!res.ok) throw new Error(`Failed to get config: ${res.status}`);
+    await ensureOk(res, "get config");
     return res.json();
   }
 
@@ -340,27 +356,27 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to update config: ${res.status}`);
+    await ensureOk(res, "update config");
     return res.json();
   }
 
   async function getTools(): Promise<ToolInfo[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/config/tools`);
-    if (!res.ok) throw new Error(`Failed to get tools: ${res.status}`);
+    await ensureOk(res, "get tools");
     return res.json();
   }
 
   // Logs
   async function getLogs(limit = 200): Promise<EngineLogEntry[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/logs?limit=${limit}`);
-    if (!res.ok) throw new Error(`Failed to get logs: ${res.status}`);
+    await ensureOk(res, "get logs");
     return res.json();
   }
 
   // Scheduler
   async function getScheduledTasks(agentId: string): Promise<ScheduledTask[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
-    if (!res.ok) throw new Error(`Failed to list scheduled tasks: ${res.status}`);
+    await ensureOk(res, "list scheduled tasks");
     return res.json();
   }
 
@@ -373,7 +389,7 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(task),
     });
-    if (!res.ok) throw new Error(`Failed to create scheduled task: ${res.status}`);
+    await ensureOk(res, "create scheduled task");
     return res.json();
   }
 
@@ -387,13 +403,13 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     });
-    if (!res.ok) throw new Error(`Failed to update scheduled task: ${res.status}`);
+    await ensureOk(res, "update scheduled task");
     return res.json();
   }
 
   async function deleteScheduledTask(agentId: string, taskId: string): Promise<void> {
     const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Failed to delete scheduled task: ${res.status}`);
+    await ensureOk(res, "delete scheduled task");
   }
 
   function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
@@ -468,7 +484,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   // Blueprints
   async function listBlueprints(): Promise<Blueprint[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/blueprints`);
-    if (!res.ok) throw new Error(`Failed to list blueprints: ${res.status}`);
+    await ensureOk(res, "list blueprints");
     return res.json();
   }
 
@@ -478,13 +494,13 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(blueprint),
     });
-    if (!res.ok) throw new Error(`Failed to create blueprint: ${res.status}`);
+    await ensureOk(res, "create blueprint");
     return res.json();
   }
 
   async function getBlueprint(id: string): Promise<Blueprint> {
     const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`);
-    if (!res.ok) throw new Error(`Failed to get blueprint: ${res.status}`);
+    await ensureOk(res, "get blueprint");
     return res.json();
   }
 
@@ -494,13 +510,13 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     });
-    if (!res.ok) throw new Error(`Failed to update blueprint: ${res.status}`);
+    await ensureOk(res, "update blueprint");
     return res.json();
   }
 
   async function deleteBlueprint(id: string): Promise<void> {
     const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Failed to delete blueprint: ${res.status}`);
+    await ensureOk(res, "delete blueprint");
   }
 
   async function executeBlueprint(id: string, initialInput?: string): Promise<BlueprintExecution> {
@@ -510,7 +526,7 @@ export function useEngineClient(options?: EngineClientOptions) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initialInput }),
     }, 120_000);
-    if (!res.ok) throw new Error(`Failed to execute blueprint: ${res.status}`);
+    await ensureOk(res, "execute blueprint");
     return res.json();
   }
 

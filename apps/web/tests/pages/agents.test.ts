@@ -195,6 +195,23 @@ describe("agents 新建页", () => {
     expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit");
   });
 
+  it("非法 ID 被前端预校验拦截，不提交", async () => {
+    const { fetchMock, calls } = mockAgentsFetch([]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(AgentsNew);
+    await flushPromises();
+
+    const inputs = wrapper.findAll(".form-section input");
+    await inputs[0].setValue("中文名");
+    await inputs[1].setValue("新心智");
+    await wrapper.find(".save-btn").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("ID 仅支持字母、数字、连字符和下划线");
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
   it("保存前统一 trim：ID/名称的首尾空格被去除", async () => {
     const { fetchMock, calls } = mockAgentsFetch([]);
     vi.stubGlobal("fetch", fetchMock);

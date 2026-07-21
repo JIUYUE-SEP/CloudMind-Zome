@@ -80,3 +80,51 @@ describe("useEngineClient WS 帧路由", () => {
     expect(onThinkingDelta).not.toHaveBeenCalled();
   });
 });
+
+describe("useEngineClient REST 错误透出", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubErrorResponse(status: number, body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status,
+          json: () => Promise.resolve(body),
+        } as unknown as Response),
+      ),
+    );
+  }
+
+  it("!res.ok 时透出响应体的 error 字段", async () => {
+    stubErrorResponse(400, { error: "Invalid agent id" });
+    const client = useEngineClient();
+    await expect(
+      client.createAgent({ id: "中文", name: "x", persona: "", skills: [], tools: [] }),
+    ).rejects.toThrow("Failed to create agent: Invalid agent id");
+  });
+
+  it("响应体无 error 字段时退回状态码", async () => {
+    stubErrorResponse(502, { message: "bad gateway" });
+    const client = useEngineClient();
+    await expect(client.listAgents()).rejects.toThrow("Failed to list agents: 502");
+  });
+
+  it("响应体非 JSON 时退回状态码", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.reject(new Error("not json")),
+        } as unknown as Response),
+      ),
+    );
+    const client = useEngineClient();
+    await expect(client.listAgents()).rejects.toThrow("Failed to list agents: 500");
+  });
+});

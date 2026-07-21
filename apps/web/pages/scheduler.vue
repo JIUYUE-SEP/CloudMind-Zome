@@ -97,10 +97,16 @@ async function onSelectAgent() {
 
 async function submit() {
   if (!selectedAgentId.value) return;
-  loading.value = true;
   opError.value = "";
+  // 与 engine cron-parser 的 5 段式（分 时 日 月 周）口径一致的前端预校验，
+  // 非法表达式不必等后端 400 才发现
+  if (!/^\S+( +\S+){4}$/.test(form.value.cron.trim())) {
+    opError.value = "Cron 表达式需为 5 段格式（分 时 日 月 周），例如：0 9 * * *";
+    return;
+  }
+  loading.value = true;
   try {
-    await scheduler.create(selectedAgentId.value, { ...form.value });
+    await scheduler.create(selectedAgentId.value, { ...form.value, cron: form.value.cron.trim() });
     form.value = { description: "", cron: "", prompt: "", enabled: true };
   } catch (err) {
     opError.value = err instanceof Error ? err.message : "创建失败";

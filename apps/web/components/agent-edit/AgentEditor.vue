@@ -59,6 +59,9 @@ const props = defineProps<{
   agentId?: string;
 }>();
 
+// 与 engine 的 isValidAgentId 同一口径（services/engine/src/api/routes/agents.ts）
+const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
 const agents = useAgentsStore();
 
 const isNew = computed(() => !props.agentId);
@@ -157,6 +160,10 @@ async function save() {
   const codename = agentForm.value.codename?.trim();
   if (!id || !name) {
     validationError.value = "请填写 ID 和名称后再保存";
+    return;
+  }
+  if (isNew.value && !AGENT_ID_PATTERN.test(id)) {
+    validationError.value = "ID 仅支持字母、数字、连字符和下划线，最长 64 个字符";
     return;
   }
   agentForm.value = { ...agentForm.value, id, name, codename };
