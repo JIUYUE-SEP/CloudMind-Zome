@@ -41,9 +41,21 @@ describe("fetchWithTimeout", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
+        throw new RangeError("weird failure");
+      }),
+    );
+    await expect(fetchWithTimeout("http://engine.test/down")).rejects.toThrow("weird failure");
+  });
+
+  it("wraps network TypeError (engine 不可达) into a Chinese hint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
         throw new TypeError("fetch failed");
       }),
     );
-    await expect(fetchWithTimeout("http://engine.test/down")).rejects.toThrow("fetch failed");
+    await expect(fetchWithTimeout("http://engine.test/down")).rejects.toThrow(
+      "无法连接 engine，请检查 engine 是否运行",
+    );
   });
 });

@@ -124,11 +124,15 @@ export const useChatStore = defineStore("chat", () => {
           isStreaming: false,
         });
       },
-      onClose: () => {
+      onClose: (_code, reason) => {
         if (stale()) return;
         sealLastAssistant();
         isConnected.value = false;
         isStreaming.value = false;
+        // engine 主动关闭会带原因（4001 agent 不存在、4002 session 不存在、4403 冲突等）
+        if (reason) {
+          pushErrorMessage(`连接已关闭：${reason}`);
+        }
       },
     });
     connection = conn;

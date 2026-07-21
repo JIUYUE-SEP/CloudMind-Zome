@@ -67,6 +67,8 @@ interface ScheduledTask {
   enabled: boolean;
   lastRunAt?: string;
   nextRunAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Session {
@@ -136,7 +138,7 @@ export interface WebSocketHandlers {
   // 输入框锁定等"生成中"状态只应在 turn.end / error / close 时复位
   onTurnEnd?: (agentId?: string) => void;
   onError?: (error: string) => void;
-  onClose?: () => void;
+  onClose?: (code?: number, reason?: string) => void;
   onModeChanged?: (mode: ChatMode, projectId?: string) => void;
 }
 
@@ -169,6 +171,11 @@ async function ensureOk(res: Response, action: string): Promise<void> {
 // 后续所有 useEngineClient() 调用直接复用，不再逐个 onMounted 异步获取。
 const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 
+// baseUrl 尾部斜杠未归一会拼出 "//agents" 导致全部 404：赋值入口统一去除
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const tauriGlobal = typeof window !== "undefined" ? ((window as any).__TAURI__ ?? undefined) : undefined;
 
@@ -178,7 +185,7 @@ if (tauriGlobal?.core?.invoke) {
   tauriGlobal.core
     .invoke("get_backend_url")
     .then((url: unknown) => {
-      if (typeof url === "string" && url) sharedBaseUrl.value = url;
+      if (typeof url === "string" && url) sharedBaseUrl.value = normalizeBaseUrl(url);
     })
     .catch(() => {
       // backend 未就绪或 IPC 失败：保留默认 8848
@@ -192,9 +199,9 @@ export function useEngineClient(options?: EngineClientOptions) {
   const config = useRuntimeConfig();
   if (!runtimeConfigApplied && !tauriGlobal) {
     runtimeConfigApplied = true;
-    if (config.public.engineUrl) sharedBaseUrl.value = config.public.engineUrl as string;
+    if (config.public.engineUrl) sharedBaseUrl.value = normalizeBaseUrl(config.public.engineUrl as string);
   }
-  const baseUrl = options?.baseUrl ? ref(options.baseUrl) : sharedBaseUrl;
+  const baseUrl = options?.baseUrl ? ref(normalizeBaseUrl(options.baseUrl)) : sharedBaseUrl;
 
   async function listAgents(): Promise<AgentConfig[]> {
     const res = await fetchWithTimeout(`${baseUrl.value}/agents`);
@@ -259,7 +266,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  async function updateSession(id: string, patch: Partial<Session>): Promise<Session> {
+  // engine 只应用 name/agentIds（其余字段静默丢弃），类型与之一致
+  async function updateSession(id: string, patch: Partial<Pick<Session, "name" | "agentIds">>): Promise<Session> {
     const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -299,7 +307,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  async function updateProvider(id: string, body: Partial<Provider>): Promise<Provider> {
+  // engine 只应用 displayName/baseUrl/apiKey（models/providerType 静默丢弃），类型与之一致
+  async function updateProvider(id: string, body: Partial<Pick<Provider, "displayName" | "baseUrl" | "apiKey">>): Promise<Provider> {
     const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -314,7 +323,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     await ensureOk(res, "delete provider");
   }
 
-  async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
+  // engine 失败路径是 502（ensureOk 抛出），成功时才有 discovered
+  async function testProvider(id: string): Promise<{ ok: true; discovered?: ModelInfo[] }> {
     // 探测外部 provider 的 models 列表，慢节点可能超过默认 10s，放宽到 30s
     const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}/test`, { method: "POST" }, 30_000);
     await ensureOk(res, "test provider");
@@ -385,7 +395,8 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   async function createScheduledTask(
     agentId: string,
-    task: Omit<ScheduledTask, "id" | "agentId">
+    // engine 创建时忽略 lastRunAt/nextRunAt 并自算 nextRunAt，类型上直接排除
+    task: Omit<ScheduledTask, "id" | "agentId" | "createdAt" | "updatedAt" | "lastRunAt" | "nextRunAt">
   ): Promise<ScheduledTask> {
     const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`, {
       method: "POST",
@@ -448,9 +459,6 @@ export function useEngineClient(options?: EngineClientOptions) {
           case "turn.end":
             handlers.onTurnEnd?.();
             break;
-          case "session.mode_changed":
-            handlers.onModeChanged?.(data.mode, data.projectId);
-            break;
           case "error":
             handlers.onError?.(data.error);
             break;
@@ -461,7 +469,16 @@ export function useEngineClient(options?: EngineClientOptions) {
     };
 
     socket.onerror = () => handlers.onError?.("WebSocket error");
-    socket.onclose = () => handlers.onClose?.();
+    // engine 主动关闭会携带 code/reason（4001 agent 不存在、4002 session 不存在等），透传给调用方
+    socket.onclose = (event) => handlers.onClose?.(event?.code, event?.reason);
+
+    const sendRawFrame = (message: object): boolean => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+        return true;
+      }
+      return false;
+    };
 
     return {
       send(text: string) {
@@ -471,16 +488,10 @@ export function useEngineClient(options?: EngineClientOptions) {
         }
         return false;
       },
-      sendRaw(message: object) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify(message));
-          return true;
-        }
-        return false;
-      },
-      setMode(mode: ChatMode, projectId?: string) {
-        return this.sendRaw({ type: "session.set_mode", mode, projectId });
-      },
+      sendRaw: sendRawFrame,
+      // 经闭包而非 this.sendRaw 调用：解构 setMode 后 this 会丢失
+      setMode: (mode: ChatMode, projectId?: string) =>
+        sendRawFrame({ type: "session.set_mode", mode, projectId }),
       close() {
         socket.close();
       },
@@ -582,7 +593,16 @@ export function useEngineClient(options?: EngineClientOptions) {
     };
 
     socket.onerror = () => handlers.onError?.("WebSocket error");
-    socket.onclose = () => handlers.onClose?.();
+    // engine 主动关闭会携带 code/reason（4001 agent 不存在、4002 session 不存在等），透传给调用方
+    socket.onclose = (event) => handlers.onClose?.(event?.code, event?.reason);
+
+    const sendRawFrame = (message: object): boolean => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+        return true;
+      }
+      return false;
+    };
 
     return {
       send(text: string) {
@@ -592,16 +612,10 @@ export function useEngineClient(options?: EngineClientOptions) {
         }
         return false;
       },
-      sendRaw(message: object) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify(message));
-          return true;
-        }
-        return false;
-      },
-      setMode(mode: ChatMode, projectId?: string) {
-        return this.sendRaw({ type: "session.set_mode", mode, projectId });
-      },
+      sendRaw: sendRawFrame,
+      // 经闭包而非 this.sendRaw 调用：解构 setMode 后 this 会丢失
+      setMode: (mode: ChatMode, projectId?: string) =>
+        sendRawFrame({ type: "session.set_mode", mode, projectId }),
       close() {
         socket.close();
       },

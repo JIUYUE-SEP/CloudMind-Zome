@@ -15,6 +15,11 @@ export async function fetchWithTimeout(
     if (err instanceof DOMException && err.name === "TimeoutError") {
       throw new Error("请求超时，请检查 engine 是否运行");
     }
+    // engine 未启动/网络不可达时浏览器抛 TypeError("Failed to fetch")，
+    // 原样上屏用户看不懂，统一包装为可执行的提示
+    if (err instanceof TypeError) {
+      throw new Error("无法连接 engine，请检查 engine 是否运行");
+    }
     throw err;
   }
 }
