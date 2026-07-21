@@ -58,6 +58,38 @@ export async function removeCompressedTopic(agentId: string, topicId: string): P
   await fs.unlink(path.join(compressedDir(agentId), `${topicId}.md`)).catch(() => {});
 }
 
+/**
+ * 已压缩话题的原始消息 id 全集（L4 归档排除用）：
+ * 读全部压缩档的 "## Messages Archived" 段，避免每轮全量读 messages_archived.jsonl
+ * （归档文件只增不减；压缩档 frontmatter 体积小得多）。
+ * 注意：archiveOnly 短话题没有压缩档，其消息不在此集合——它们没有 L5 摘要，
+ * 被 L4 检索到是预期行为，不算重复。
+ */
+export async function archivedMessageIds(agentId: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  let files: string[];
+  try {
+    files = await fs.readdir(compressedDir(agentId));
+  } catch {
+    return ids;
+  }
+  for (const file of files) {
+    if (!file.endsWith(".md")) continue;
+    try {
+      const raw = await fs.readFile(path.join(compressedDir(agentId), file), "utf-8");
+      const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
+      if (!section) continue;
+      for (const id of section.split(",")) {
+        const trimmed = id.trim();
+        if (trimmed) ids.add(trimmed);
+      }
+    } catch (err) {
+      console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
+    }
+  }
+  return ids;
+}
+
 interface ParsedCompressedFile {
   compressedAt: string;
   text: string;

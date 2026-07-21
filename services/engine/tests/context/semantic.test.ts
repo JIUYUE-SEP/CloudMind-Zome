@@ -1,6 +1,11 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
+import { writeCompressedTopic } from "../../src/memory/topic/store.js";
+import { restoreDataDir } from "../helpers/env.js";
 import {
   SemanticRetriever,
   normalizeSemanticSearchConfig,
@@ -67,14 +72,13 @@ function makeIndexer(hits: { id: string; score: number }[]): MemoryIndexer {
   return { search: vi.fn(async () => hits) } as unknown as MemoryIndexer;
 }
 
-function makeRepo(records: ChatMessageRecord[], archivedIds: string[] = []): IMessageRepository {
+function makeRepo(records: ChatMessageRecord[]): IMessageRepository {
   return {
     append: async () => {},
     listBySession: async () => [],
     getByIds: async (ids: string[]) => records.filter((r) => ids.includes(r.id)),
     archiveAndRemove: async () => {},
-    getArchivedByIds: async (ids: string[]) =>
-      records.filter((r) => archivedIds.includes(r.id) && ids.includes(r.id)),
+    getArchivedByIds: async () => [],
   };
 }
 
@@ -110,18 +114,39 @@ describe("SemanticRetriever", () => {
     expect(out.map((m) => m.id)).toEqual(["fresh"]);
   });
 
-  it("排除已归档话题的原始消息（Phase 2 衔接）", async () => {
-    const indexer = makeIndexer([
-      { id: "archived", score: 0.95 },
-      { id: "alive", score: 0.8 },
-    ]);
-    const repo = makeRepo(
-      [rec("archived", "已归档原文", new Date(NOW).toISOString()), rec("alive", "未归档", new Date(NOW).toISOString())],
-      ["archived"],
-    );
-    const r = new SemanticRetriever(indexer, repo, config);
-    const out = await r.retrieve("a1", "q", new Set(), "default");
-    expect(out.map((m) => m.id)).toEqual(["alive"]);
+  it("排除已压缩话题的原始消息（Phase 2 衔接，依压缩档 msg_ids）", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "semantic-archived-test-"));
+    const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+    try {
+      // "archived" 已是某压缩话题的原文（摘要在 L5）
+      await writeCompressedTopic("a1", {
+        topicId: "tp_1000_test",
+        label: "旧话题",
+        summary: "摘要",
+        keyPoints: [],
+        msgIds: ["archived"],
+        msgCount: 1,
+        importance: "normal",
+        sourceId: "default",
+        compressedAt: new Date().toISOString(),
+      });
+
+      const indexer = makeIndexer([
+        { id: "archived", score: 0.95 },
+        { id: "alive", score: 0.8 },
+      ]);
+      const repo = makeRepo([
+        rec("archived", "已归档原文", new Date(NOW).toISOString()),
+        rec("alive", "未归档", new Date(NOW).toISOString()),
+      ]);
+      const r = new SemanticRetriever(indexer, repo, config);
+      const out = await r.retrieve("a1", "q", new Set(), "default");
+      expect(out.map((m) => m.id)).toEqual(["alive"]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      restoreDataDir(originalDataDir);
+    }
   });
 
   it("跨场景命中标注 source，同场景不标注", async () => {

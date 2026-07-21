@@ -1,6 +1,7 @@
 import type { MemoryIndexer } from "../memory/indexer.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ChatMessageRecord } from "../memory/repositories/types.js";
+import { archivedMessageIds } from "../memory/topic/store.js";
 import type { SemanticMemory } from "./layers.js";
 
 export interface SemanticSearchConfig {
@@ -85,16 +86,16 @@ export class SemanticRetriever {
     if (candidateIds.length === 0) return [];
     const simById = new Map(hits.map((h) => [h.id, h.score] as const));
 
-    const [records, archived] = await Promise.all([
+    const [records, archivedIds] = await Promise.all([
       this.repo.getByIds(candidateIds),
-      this.repo.getArchivedByIds(candidateIds),
+      // 已压缩话题的原文 id（压缩档 frontmatter 索引，不读 messages_archived.jsonl 全文）
+      archivedMessageIds(agentId),
     ]);
-    const archivedIds = new Set(archived.map((r) => r.id));
 
     const now = Date.now();
     const memories: SemanticMemory[] = [];
     for (const record of records) {
-      // 已归档话题的原始消息不进 L4：对应摘要在 L5，避免同一内容双重注入
+      // 已压缩话题的原始消息不进 L4：对应摘要在 L5，避免同一内容双重注入
       if (archivedIds.has(record.id)) continue;
       const content = recordText(record);
       if (!content) continue;
