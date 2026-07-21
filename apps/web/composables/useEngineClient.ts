@@ -260,7 +260,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateSession(id: string, patch: Partial<Session>): Promise<Session> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${id}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -270,14 +270,14 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteSession(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${id}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete session");
   }
 
   async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
     if (limit) params.set("limit", String(limit));
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${sessionId}/messages?${params.toString()}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`);
     await ensureOk(res, "get session messages");
     return res.json();
   }
@@ -300,7 +300,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateProvider(id: string, body: Partial<Provider>): Promise<Provider> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -310,19 +310,19 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteProvider(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete provider");
   }
 
   async function testProvider(id: string): Promise<{ ok: boolean; discovered?: ModelInfo[]; error?: string }> {
     // 探测外部 provider 的 models 列表，慢节点可能超过默认 10s，放宽到 30s
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${id}/test`, { method: "POST" }, 30_000);
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}/test`, { method: "POST" }, 30_000);
     await ensureOk(res, "test provider");
     return res.json();
   }
 
   async function addModel(providerId: string, body: ModelInfo): Promise<ModelInfo> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -332,7 +332,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateModel(providerId: string, modelId: string, body: Partial<ModelInfo>): Promise<ModelInfo> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -342,7 +342,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteModel(providerId: string, modelId: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${providerId}/models/${modelId}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, { method: "DELETE" });
     await ensureOk(res, "delete model");
   }
 
@@ -401,7 +401,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     taskId: string,
     patch: Partial<Omit<ScheduledTask, "id" | "agentId">>
   ): Promise<ScheduledTask> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${encodeURIComponent(taskId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -411,7 +411,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteScheduledTask(agentId: string, taskId: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${taskId}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${encodeURIComponent(taskId)}`, { method: "DELETE" });
     await ensureOk(res, "delete scheduled task");
   }
 
@@ -505,13 +505,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getBlueprint(id: string): Promise<Blueprint> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`);
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`);
     await ensureOk(res, "get blueprint");
     return res.json();
   }
 
   async function updateBlueprint(id: string, patch: Partial<Blueprint>): Promise<Blueprint> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -521,13 +521,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteBlueprint(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}`, { method: "DELETE" });
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete blueprint");
   }
 
   async function executeBlueprint(id: string, initialInput?: string): Promise<BlueprintExecution> {
     // engine 侧同步跑完整个 LLM 工作流才返回，远超默认 10s，放宽到 120s
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${id}/execute`, {
+    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initialInput }),

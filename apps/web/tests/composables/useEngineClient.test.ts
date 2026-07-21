@@ -141,3 +141,47 @@ describe("useEngineClient REST 错误透出", () => {
     await expect(client.listAgents()).rejects.toThrow("Failed to list agents: 500");
   });
 });
+
+describe("useEngineClient URL 路径段编码", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function captureUrl() {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        urls.push(String(input));
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    return urls;
+  }
+
+  it("含斜杠的 modelId 被编码，URL 不多出路径段", async () => {
+    const urls = captureUrl();
+    const client = useEngineClient();
+    await client.updateModel("p1", "openai/gpt-4o", { displayName: "GPT-4o" });
+    expect(urls[0]).toContain("/compute/providers/p1/models/openai%2Fgpt-4o");
+
+    await client.deleteModel("p1", "openai/gpt-4o");
+    expect(urls[1]).toContain("/models/openai%2Fgpt-4o");
+  });
+
+  it("providerId / sessionId / taskId / blueprintId 均编码", async () => {
+    const urls = captureUrl();
+    const client = useEngineClient();
+    await client.deleteProvider("my provider");
+    expect(urls[0]).toContain("/compute/providers/my%20provider");
+
+    await client.updateSession("s 1", { name: "x" });
+    expect(urls[1]).toContain("/sessions/s%201");
+
+    await client.deleteScheduledTask("a1", "task/1");
+    expect(urls[2]).toContain("/scheduler/a1/task%2F1");
+
+    await client.getBlueprint("bp 1");
+    expect(urls[3]).toContain("/blueprints/bp%201");
+  });
+});
