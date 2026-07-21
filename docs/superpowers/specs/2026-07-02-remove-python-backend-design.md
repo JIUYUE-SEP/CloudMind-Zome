@@ -1,5 +1,7 @@
 # 清理 Python 后端与旧版 frontend — 设计规格
 
+> **历史文档 / 已归档**：本规格所述清理已于 2026-07-02 完成，`backend/` 与 `frontend/` 已移除。保留用于追溯历史，不再作为当前架构依据。
+
 > 版本：1.0 | 日期：2026-07-02
 > 目标：彻底移除 CloudMind-Zome 项目中遗留的 Python 后端（`backend/`）及依赖它的旧版 Tauri 桌面应用（`frontend/`），保留并仅保留 Node.js + TypeScript 新架构。
 

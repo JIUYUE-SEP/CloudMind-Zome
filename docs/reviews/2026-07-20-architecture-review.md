@@ -327,4 +327,14 @@ CloudMind-Zome 地基已稳。ContextPipeline Phase 1 完成，前端体验接�
 
 ---
 
+## 勘误（2026-07-21 补注）
+
+本报告为 2026-07-20 时点快照，以下条目与当前代码不符，予以勘正：
+
+- §六："向量索引（sqlite-vec）"有误——sidecar 实际使用自研 instant-distance HNSW（内存索引 + JSONL 持久化），非 sqlite-vec。
+- §4.1 页面表：`agents/[id]/index.vue` 与 `agents/[id]/edit.vue` 不存在——实际为单一 `pages/agents/[id].vue`（`/agents/new` 由同一文件处理）。
+- §十"待决策"中的 `/agents` 列表页 + 编辑页拆分：至今未实现，`/agents/:id` 仍是唯一编辑入口。
+
+---
+
 报告完毕。指挥官，明早见。

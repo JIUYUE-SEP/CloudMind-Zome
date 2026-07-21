@@ -1,5 +1,7 @@
 # Code Review：ContextPipeline v2 Phase 1（自评审）
 
+> **编者注（2026-07-21）**：本文评审时存在 L1.5（平台能力层），该层已于 2026-07-21 移除（commit `ba7f726`）。文中"L1/L1.5/L2/L6-core 不可触碰"为当时快照，当前层结构为 L1/L2/L3/L4/L5/L6。
+
 - 日期：2026-07-17
 - 范围：`services/engine/src/context/{token-counter,layers,downgrade,assembler,pipeline}.ts` + `core/react/turn.ts` 与 `core/agent-worker.ts` 集成（commit 96fd7ff..10492bd）
 - 评审人：kimi（作者自评，已按 review 纪律重新回读全部相关源码与 provider 发送层）

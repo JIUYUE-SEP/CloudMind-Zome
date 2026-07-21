@@ -5,7 +5,7 @@
 ### 环境要求
 
 - Node.js 22+
-- Rust 1.80+
+- Rust（版本见 `rust-toolchain.toml`，当前 1.88）
 - protoc 27+
 - Windows: WebView2 Runtime
 
@@ -36,11 +36,13 @@ pnpm --filter @mindcloud/desktop build
 
 ```bash
 pnpm build
-pnpm --filter @mindcloud/engine start
-pnpm --filter @mindcloud/web start
+pnpm --filter @mindcloud/engine start    # node dist/src/bootstrap.js
+pnpm --filter @mindcloud/web preview     # 预览构建产物（web 无 start 脚本）
 ```
 
 访问 `http://localhost:3000`。
+
+> sidecar 在 Web 模式下可选：需要向量记忆时，先 `cargo build --release --manifest-path crates/zome-sidecar/Cargo.toml` 并运行 `zome-sidecar`（gRPC `127.0.0.1:50051`），engine 会自动连接。
 
 ## 数据目录
 

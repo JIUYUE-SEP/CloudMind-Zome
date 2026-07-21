@@ -1,5 +1,7 @@
 # CloudMind-Zome 编程 Agent 模式 — 设计规格
 
+> **历史文档 / 部分落地**：引擎侧已实现（`session.set_mode`、chat/code 双模式、`list_files` / `edit_file` / `run_command` 工具、projectRoot 路径限制）；前端 IDE 工作区（Monaco 编辑器、CodeWorkspace、FileTree）曾实现但后续已移除，当前前端无 IDE 面板。保留用于追溯历史。
+
 > 版本：1.0 | 日期：2026-07-12
 > 目标：在现有 `/hub` 私聊页面中增加「编程模式」，让 Agent 能在浏览器内帮用户查看、编辑、运行项目代码。
 

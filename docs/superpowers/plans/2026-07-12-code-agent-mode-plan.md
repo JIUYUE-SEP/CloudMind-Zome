@@ -1,5 +1,7 @@
 # CloudMind-Zome 编程 Agent 模式 — 实现计划（Phase 1）
 
+> **历史文档 / 部分落地**：引擎侧已实现（chat/code 模式与三个新工具）；前端 IDE 面板（Monaco / CodeWorkspace / FileTree）后续已移除，`code.*` WS 帧协议未落地。保留用于追溯历史。
+
 > **面向 AI 代理的工作者：** 本计划为前端 + 后端功能实现，推荐子代理驱动或内联执行。步骤使用复选框（`- [ ]`）语法跟踪进度。
 
 **目标：** 在现有 `/hub` 私聊页面中增加「编程模式」，实现会话模式切换、IDE 面板（文件树 + Monaco 编辑器 + 命令输出）、以及 `list_files` / `edit_file` / `run_command` 三个新工具。

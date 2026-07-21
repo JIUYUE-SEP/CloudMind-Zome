@@ -1,6 +1,6 @@
 # CloudMind Zome Engine API
 
-Engine 默认监听 `http://127.0.0.1:8848`。
+Engine 默认监听 `http://127.0.0.1:8848`（可用 `PORT` 环境变量修改）。所有端点**无前缀**（直接挂在根路径下）。
 
 ## OpenAPI / Swagger
 
@@ -14,6 +14,10 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 ## 主要端点
 
+### Health
+
+- `GET /health` — 健康检查，返回 `{ "status": "ok" }`
+
 ### Agents
 
 - `GET /agents` — 列出所有 Agent
@@ -24,8 +28,8 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 ### Chat
 
-- `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx` — 获取历史消息
-- WebSocket `/ws/:agentId?sessionId=xxx` — 与单个 Agent 实时对话
+- `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx` — 获取历史消息（`sessionId` 必填）
+- WebSocket `GET /ws/:agentId?sessionId=xxx` — 与单个 Agent 实时对话（sessionId 缺省 `default`）
 
 ### Sessions（群聊）
 
@@ -35,7 +39,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /sessions/:id` — 更新会话
 - `DELETE /sessions/:id` — 删除会话
 - `GET /sessions/:id/messages` — 获取会话历史消息
-- WebSocket `/ws/sessions/:sessionId` — 群聊实时对话
+- WebSocket `GET /ws/sessions/:sessionId` — 群聊实时对话
 
 ### Compute
 
@@ -51,7 +55,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 ### Config
 
-- `GET /config` — 获取系统设置
+- `GET /config` — 获取系统设置（凭据脱敏为 `"***"`）
 - `PUT /config` — 更新系统设置
 - `GET /config/tools` — 列出内置工具
 
@@ -71,6 +75,25 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /scheduler/:agentId/:taskId` — 更新任务
 - `DELETE /scheduler/:agentId/:taskId` — 删除任务
 
+### Plans
+
+- `POST /agents/:agentId/plans` — 创建计划
+- `GET /agents/:agentId/plans` — 列出计划
+- `GET /agents/:agentId/plans/:planId` — 获取计划
+- `POST /agents/:agentId/plans/:planId/run` — 执行
+- `POST /agents/:agentId/plans/:planId/pause` — 暂停
+- `POST /agents/:agentId/plans/:planId/resume` — 恢复
+- `POST /agents/:agentId/plans/:planId/retry` — 重试指定步骤
+
+> 计划存储在内存中，engine 重启后丢失。
+
+### Subagents
+
+- `GET /subagents/background` — 列出后台子代理任务
+- `GET /subagents/background/:taskId` — 查询单个后台任务
+
+> 子代理通过 `dispatch_subagent` 工具创建，无 REST 创建端点。
+
 ### Memory
 
 - `GET /memory/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的记忆
@@ -84,10 +107,39 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 - `GET /skills` — 列出可用 Skill
 
+### Logs
+
+- `GET /logs` — 查询 engine 内存环形缓冲中的日志
+
+## WebSocket 协议
+
+**Client → Server**：
+
+| 帧 | 说明 |
+|---|---|
+| `{ "text": "..." }` | 聊天消息（无 type 字段，最长 10000 字符） |
+| `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` 不可 remember） |
+| `session.set_mode` | 切换 chat / code 模式（仅会话 WS，可带 `projectId`） |
+
+未知 type 帧静默忽略。
+
+**Server → Client**：
+
+| 帧 | 说明 |
+|---|---|
+| `text.delta` / `thinking.delta` | 流式正文 / 推理内容 |
+| `tool.call` / `tool.result` | 工具调用与执行结果 |
+| `step.end` | ReAct 单步结束 |
+| `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
+| `session.mode_changed` | 模式切换确认 |
+| `error` | 错误 |
+
+握手时校验 Origin（无 Origin 的非浏览器客户端放行；`NODE_ENV=e2e` 全放行）。
+
 ## 通用约定
 
 - 所有 REST 响应均为 JSON。
 - 删除操作成功返回 `204 No Content`。
 - 资源不存在返回 `404 Not Found`。
 - 参数校验失败返回 `400 Bad Request`。
-- WebSocket 帧格式为 JSON，具体事件类型见 `services/engine/src/api/ws/handler.ts`。
+- 实现细节见 `services/engine/src/api/routes/` 与 `services/engine/src/api/ws/`。

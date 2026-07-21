@@ -1,5 +1,7 @@
 # Code Review：feat/code-agent-mode → main
 
+> **编者注（2026-07-21）**：本文所述问题的事后状态——B1（proto-loader keepCase）已修复（`services/engine/src/sidecar/client.ts` 现设 `keepCase: true`）；B2/M13 所述前端 CodeWorkspace / Monaco / FileTree 组件已从代码库移除（code 模式仅保留引擎侧 `session.set_mode` + projectRoot 工具），相关条目不再适用于当前代码。
+
 - 日期：2026-07-17
 - 分支：`feat/code-agent-mode`（21 commits） vs 基线 `main`
 - 规模：102 files，+6275/-393

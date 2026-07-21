@@ -1,8 +1,9 @@
 # ContextPipeline v2 设计文档
 
-> 版本：v2-draft | 日期：2026-07-17 | 作者：维克托（为 TS 重写整理）
+> 版本：v2 | 日期：2026-07-17（2026-07-21 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：待实现（TS 重写）
+> 状态：**Phase 1 已实现**（见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 2/3 待实现
+> 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---
 
@@ -335,15 +336,17 @@ return 0.3;                              // 三个月以上保底 30%
 
 ## 五、实施路线
 
-### Phase 1：地基（约 1 周）
+### Phase 1：地基（约 1 周）— ✅ 已完成（2026-07）
 
-- [ ] `token-counter.ts`：准确 token 计数（用 `@dqbd/tiktoken` 或类似）
-- [ ] `context/pipeline.ts`：L1-L6 组装 + 降级循环（参考 Python 逻辑）
-- [ ] `context/layers.ts` + `downgrade.ts`
-- [ ] 单元测试：降级路径全覆盖（L5/L4/L3 逐级）
-- [ ] 集成到 `react/turn.ts`：替换现有的直接 messages 传递
+- [x] `token-counter.ts`：准确 token 计数（实际采用 `@dqbd/tiktoken`，cl100k_base）
+- [x] `context/pipeline.ts`：L1-L6 组装 + 降级循环（参考 Python 逻辑）
+- [x] `context/layers.ts` + `downgrade.ts`（降级顺序 L5 → L4 → L6-ext → L3）
+- [x] `context/truncate.ts`：工具结果按预算 20% 截断（评审 M1 的消化项）
+- [x] `core/pipeline-factory.ts`：`maxContextTokens` 按 Agent 配置注入（评审 M2 的消化项）
+- [x] 单元测试：降级路径全覆盖（L5/L4/L6-ext/L3 逐级，`tests/context/`）
+- [x] 集成到 `react/turn.ts`：替换现有的直接 messages 传递
 
-**验收**：超窗口时不再报错，能按 L5 → L4 → L3 顺序降级。
+**验收**：超窗口时不再报错，能按 L5 → L4 → L6-ext → L3 顺序降级。✅ 已达（13 个 mock 集成测试）
 
 ### Phase 2：话题压缩（约 1 周）
 
@@ -359,7 +362,7 @@ return 0.3;                              // 三个月以上保底 30%
 ### Phase 3：语义检索（约 1 周）
 
 - [ ] 整合 `memoryIndexer` 到 `pipeline.assemble`（L4 层）
-- [ ] 时间衰减打分（`exp(-age_days / 30)`）
+- [ ] 时间衰减打分（分段衰减，见"设计决策 5"）
 - [ ] 跨场景标注（`[来自: 与XX的群聊]`）
 - [ ] 压缩前 memory flush（重要决策/事实写入 memory 文档）
 
