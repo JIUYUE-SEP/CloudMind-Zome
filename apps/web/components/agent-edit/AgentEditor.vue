@@ -129,10 +129,15 @@ async function save() {
   validationError.value = "";
   saveError.value = "";
 
-  if (!agentForm.value.id || !agentForm.value.name) {
+  // 输入阶段不做 trim（避免吃掉名称中的空格），保存校验前统一处理
+  const id = agentForm.value.id.trim();
+  const name = agentForm.value.name.trim();
+  const codename = agentForm.value.codename?.trim();
+  if (!id || !name) {
     validationError.value = "请填写 ID 和名称后再保存";
     return;
   }
+  agentForm.value = { ...agentForm.value, id, name, codename };
 
   saving.value = true;
   try {

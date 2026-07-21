@@ -195,6 +195,24 @@ describe("agents 新建页", () => {
     expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit");
   });
 
+  it("保存前统一 trim：ID/名称的首尾空格被去除", async () => {
+    const { fetchMock, calls } = mockAgentsFetch([]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(AgentsNew);
+    await flushPromises();
+
+    const inputs = wrapper.findAll(".form-section input");
+    await inputs[0].setValue("  new-agent  ");
+    await inputs[1].setValue("  新心智  ");
+    await wrapper.find(".save-btn").trigger("click");
+    await flushPromises();
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body).toMatchObject({ id: "new-agent", name: "新心智" });
+    expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit");
+  });
+
   it("缺少 ID 或名称时提示且不提交", async () => {
     const { fetchMock, calls } = mockAgentsFetch([]);
     vi.stubGlobal("fetch", fetchMock);

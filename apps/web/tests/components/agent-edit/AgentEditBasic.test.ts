@@ -32,6 +32,17 @@ describe("AgentEditBasic", () => {
     expect(last.id).toBe("new-id");
   });
 
+  it("输入阶段不 trim，名称中的空格与结尾空格原样保留", async () => {
+    const wrapper = mount(AgentEditBasic, {
+      props: { agent: { id: "a1", name: "", persona: "", skills: [], tools: [] } },
+    });
+    const nameInput = wrapper.findAll("input")[1];
+    await nameInput.setValue("My Agent ");
+    await nameInput.trigger("input");
+    const last = wrapper.emitted("update")!.at(-1)![0] as { name: string };
+    expect(last.name).toBe("My Agent ");
+  });
+
   it("emits update when a tag is added", async () => {
     const wrapper = mount(AgentEditBasic, {
       props: { agent: { id: "a1", name: "A1", persona: "", skills: [], tools: [] } },
