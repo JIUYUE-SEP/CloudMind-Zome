@@ -28,15 +28,23 @@ export interface DisplayMessage {
  */
 export function useChatRecords() {
   function recordsToDisplay(records: ChatMessageRecord[]): DisplayMessage[] {
-    return records.map((r) => ({
-      id: r.id,
-      role: r.role,
-      text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
-      thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
-      toolCalls: r.toolCalls || [],
-      isStreaming: false,
-      agentId: r.agentId,
-    }));
+    // 群聊用户消息会写入每个成员的仓库，历史合并后出现 N 份同 id 副本，按 id 去重
+    const seen = new Set<string>();
+    const out: DisplayMessage[] = [];
+    for (const r of records) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push({
+        id: r.id,
+        role: r.role,
+        text: r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join(""),
+        thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
+        toolCalls: r.toolCalls || [],
+        isStreaming: false,
+        agentId: r.agentId,
+      });
+    }
+    return out;
   }
 
   return { recordsToDisplay };

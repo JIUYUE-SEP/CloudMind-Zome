@@ -62,4 +62,11 @@ describe("recordsToDisplay", () => {
     expect(out[0]!.agentId).toBeUndefined();
     expect(out[1]!.agentId).toBe("a1");
   });
+
+  it("按消息 id 去重（群聊用户消息在每个成员仓库各存一份）", () => {
+    const { recordsToDisplay } = useChatRecords();
+    const dup = makeRecord("m1");
+    const out = recordsToDisplay([dup, makeRecord("m2", "a1"), { ...dup }, makeRecord("m3", "a2")]);
+    expect(out.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
+  });
 });
