@@ -1,6 +1,6 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "./layers.js";
-import type { ToolSchema } from "./layers.js";
+import type { ToolSchema, SemanticMemory } from "./layers.js";
 import { assembleMessages } from "./assembler.js";
 import { selectNextStep } from "./downgrade.js";
 import { getTokenCounter, type TokenCounter } from "./token-counter.js";
@@ -38,6 +38,8 @@ export interface AssembleInput {
   sourceName?: string;
   /** L5 话题摘要（Phase 2：最近压缩档的渲染文本，已按时间倒序） */
   topicSummaries?: string[];
+  /** L4 语义检索结果（Phase 3：已按 score 降序，降级时优先保留高相关） */
+  semanticMemories?: SemanticMemory[];
 }
 
 export interface AssembleResult {
@@ -71,6 +73,7 @@ export class ContextPipeline {
       l1: input.mindContext,
       l2: input.mentionDesc,
       l3: [...input.history],
+      l4: input.semanticMemories ?? [],
       l5: input.topicSummaries ?? [],
       l6Core: [...input.tools],
       // Phase 1 决策：现有 7 个内置工具全部为 L6-core；L6-ext 预留（MCP 接入后启用）

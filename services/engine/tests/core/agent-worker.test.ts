@@ -8,8 +8,9 @@ import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/types.js";
-import type { IMessageRepository } from "../../src/memory/repositories/types.js";
+import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
+import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { restoreDataDir } from "../helpers/env.js";
 
 const dummyTool: Tool = {
@@ -655,5 +656,86 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       .filter((m) => m.role === "system")
       .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
     expect(systemTexts.some((t) => t.includes("话题摘要"))).toBe(false);
+  });
+});
+
+describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "worker-semantic-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
+  function pastRecord(id: string, text: string, sessionId = "old-session"): ChatMessageRecord {
+    return {
+      id,
+      sessionId,
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function currentUser(id: string, text: string): ChatMessage {
+    return { id, role: "user", content: [{ type: "text", text }], createdAt: new Date().toISOString() };
+  }
+
+  it("L4 注入 assemble：跨场景标注 + 归档排除", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    await repo.append(pastRecord("past-1", "上周聊过的部署方案"));
+    // 已归档的旧消息：索引能命中，但不应进入 L4（摘要在 L5）
+    await repo.append(pastRecord("past-archived", "已归档的旧消息"));
+    await repo.archiveAndRemove(["past-archived"]);
+
+    const indexer = {
+      search: vi.fn(async () => [
+        { id: "past-archived", score: 0.95 },
+        { id: "past-1", score: 0.9 },
+      ]),
+    } as unknown as MemoryIndexer;
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+    });
+
+    worker.enqueue({ id: "j1", messages: [currentUser("u1", "部署方案再聊聊")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const systemTexts = (provider.capturedParams?.messages ?? [])
+      .filter((m) => m.role === "system")
+      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
+    const l4 = systemTexts.find((t) => t.includes("相关片段"));
+    expect(l4).toBeTruthy();
+    expect(l4).toContain("[来自: old-session] 上周聊过的部署方案");
+    expect(systemTexts.some((t) => t.includes("已归档的旧消息"))).toBe(false);
+  });
+
+  it("semanticSearch.enabled=false 时不发起检索", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const search = vi.fn(async () => []);
+    const indexer = { search } as unknown as MemoryIndexer;
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+      semanticSearch: { enabled: false },
+    });
+
+    worker.enqueue({ id: "j1", messages: [currentUser("u1", "你好")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(search).not.toHaveBeenCalled();
   });
 });

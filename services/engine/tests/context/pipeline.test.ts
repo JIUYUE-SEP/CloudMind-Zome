@@ -206,4 +206,47 @@ describe("M3：降级可观测日志", () => {
     expect(logs[0]).toContain("l5:drop");
     expect(logs[1]).toContain("l3:keep-15");
   });
+
+  it("semanticMemories 注入为 L4 system 消息，跨场景带 [来自] 标注", async () => {
+    const pipeline = makePipeline(10000);
+    const result = await pipeline.assemble(
+      makeInput({
+        history: history(1),
+        semanticMemories: [
+          { id: "m1", content: "本场景记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+          { id: "m2", content: "跨场景记忆", score: 0.8, source: "session_x", createdAt: "2026-07-20T00:00:00Z" },
+        ],
+      }),
+    );
+    const l4 = result.messages.find(
+      (m) => m.role === "system" && m.content.some((c) => c.type === "text" && c.text.includes("相关片段")),
+    );
+    expect(l4).toBeTruthy();
+    const text = l4!.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(text).toContain("本场景记忆");
+    expect(text).toContain("[来自: session_x] 跨场景记忆");
+  });
+
+  it("降级时 L4 按 score 降序保留高相关片段", async () => {
+    // 12 条片段（每条内容 10 字符），预算 150 → l4:keep-10 仍超 → l4:keep-5 满足
+    const pipeline = makePipeline(150);
+    const result = await pipeline.assemble(
+      makeInput({
+        history: [],
+        semanticMemories: Array.from({ length: 12 }, (_, i) => ({
+          id: `m${i}`,
+          content: `内容${i}${"x".repeat(6)}`,
+          score: 1 - i * 0.05,
+          createdAt: "2026-07-20T00:00:00Z",
+        })),
+      }),
+    );
+    const text = result.messages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""))
+      .join("");
+    for (let i = 0; i < 5; i++) expect(text).toContain(`内容${i}`);
+    expect(text).not.toContain("内容5");
+    expect(text).not.toContain("内容11");
+  });
 });

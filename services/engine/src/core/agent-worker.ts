@@ -16,6 +16,12 @@ import {
   normalizeTopicCompressionConfig,
   type TopicCompressionConfig,
 } from "../memory/topic/types.js";
+import {
+  normalizeSemanticSearchConfig,
+  SemanticRetriever,
+  type SemanticSearchConfig,
+} from "../context/semantic.js";
+import type { SemanticMemory } from "../context/layers.js";
 
 console.log("[agent-worker] module loaded");
 
@@ -43,6 +49,8 @@ export interface AgentWorkerConfig {
   contextPipeline?: ContextPipeline;
   /** 话题压缩配置（Phase 2）；缺省按 DEFAULT_TOPIC_COMPRESSION_CONFIG（开启） */
   topicCompression?: Partial<TopicCompressionConfig>;
+  /** 语义检索配置（Phase 3）；缺省按 DEFAULT_SEMANTIC_SEARCH_CONFIG（开启） */
+  semanticSearch?: Partial<SemanticSearchConfig>;
 }
 
 export interface Job {
@@ -75,6 +83,8 @@ export class AgentWorker {
   private topicConfig: TopicCompressionConfig;
   private topicTracker: TopicTracker;
   private compressionQueue: CompressionQueue;
+  private semanticConfig: SemanticSearchConfig;
+  private semanticRetriever?: SemanticRetriever;
 
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
@@ -102,6 +112,14 @@ export class AgentWorker {
         throw err;
       }
     });
+    this.semanticConfig = normalizeSemanticSearchConfig(config.semanticSearch);
+    if (config.memoryIndexer) {
+      this.semanticRetriever = new SemanticRetriever(
+        config.memoryIndexer,
+        config.messageRepository,
+        this.semanticConfig,
+      );
+    }
   }
 
   enqueue(job: Job): void {
@@ -181,9 +199,6 @@ export class AgentWorker {
       // L1 人格/skill 内容（pipeline 注入为 system 消息）
       const mindContext = promptParts.join("\n\n");
 
-      // 跨会话语义检索：sidecar 可用时，取与当前用户消息最相关的历史消息补充上下文。
-      // 失败静默降级；检索结果已在历史文件中，不会也不应被再次持久化。
-      let retrieved: ChatMessage[] = [];
       const lastUser = [...job.messages].reverse().find((m) => m.role === "user");
       const lastUserText =
         lastUser?.content
@@ -208,24 +223,25 @@ export class AgentWorker {
         }
       }
 
-      if (this.config.memoryIndexer && job.mode !== "code" && lastUser && lastUserText.trim()) {
+      // L4 语义检索（Phase 3 迁入 SemanticRetriever）：
+      // 结果经 pipeline 注入（参与预算与降级），不再以消息位 prepend。
+      // 失败静默降级；检索结果已在历史文件中，不会也不应被再次持久化。
+      let semanticMemories: SemanticMemory[] = [];
+      if (this.semanticRetriever && job.mode !== "code" && lastUser && lastUserText.trim()) {
         try {
-          const hits = await this.config.memoryIndexer.search(this.config.agentId, lastUserText, 5);
-          const known = new Set(job.messages.map((m) => m.id));
-          const ids = hits.map((h) => h.id).filter((id) => !known.has(id));
-          if (ids.length > 0) {
-            const records = await this.config.messageRepository.getByIds(ids);
-            retrieved = records.map(({ sessionId: _ignored, ...msg }) => msg);
-          }
+          const excludeIds = new Set(job.messages.map((m) => m.id));
+          semanticMemories = await this.semanticRetriever.retrieve(
+            this.config.agentId,
+            lastUserText,
+            excludeIds,
+            sessionId,
+          );
         } catch (err) {
           console.error("semantic retrieval failed", err);
         }
       }
 
-      const messages = [
-        ...retrieved,
-        ...job.messages,
-      ];
+      const messages = [...job.messages];
 
       const turnInput: TurnInput = {
         provider: this.config.provider,
@@ -260,6 +276,7 @@ export class AgentWorker {
             mindContext,
             sourceId: sessionId,
             topicSummaries,
+            semanticMemories,
           },
         },
       };

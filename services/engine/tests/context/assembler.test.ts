@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "../../src/context/layers.js";
+import type { SemanticMemory } from "../../src/context/layers.js";
 import { assembleMessages } from "../../src/context/assembler.js";
 
 function history(n: number): ChatMessage[] {
@@ -12,13 +13,17 @@ function history(n: number): ChatMessage[] {
   }));
 }
 
+function mem(content: string, source?: string): SemanticMemory {
+  return { id: content, content, score: 0.9, source, createdAt: "2026-07-17T00:00:00Z" };
+}
+
 describe("assembleMessages", () => {
   it("按 L1 → L5 → L4 → L2 → L3 顺序组装", () => {
     const layers = createLayers({
       l1: "人格内容",
       l2: "@提醒",
       l3: history(2),
-      l4: ["检索片段"],
+      l4: [mem("检索片段")],
       l5: ["话题摘要"],
     });
     const messages = assembleMessages(layers);
@@ -46,7 +51,7 @@ describe("assembleMessages", () => {
     const layers = createLayers({
       l3: history(1),
       l5: ["摘要A", "摘要B"],
-      l4: ["片段1", "片段2", "片段3"],
+      l4: [mem("片段1"), mem("片段2"), mem("片段3")],
     });
     const messages = assembleMessages(layers);
     const systems = messages.filter((m) => m.role === "system");
@@ -57,6 +62,17 @@ describe("assembleMessages", () => {
     expect(l5Text).toContain("摘要B");
     expect(l4Text).toContain("片段1");
     expect(l4Text).toContain("片段3");
+  });
+
+  it("L4 跨场景片段带 [来自] 标注，同场景不带", () => {
+    const layers = createLayers({
+      l3: history(1),
+      l4: [mem("本场景片段"), mem("跨场景片段", "session_x")],
+    });
+    const messages = assembleMessages(layers);
+    const l4Text = (messages[0].content[0] as { type: "text"; text: string }).text;
+    expect(l4Text).not.toContain("[来自: session_x] 本场景片段");
+    expect(l4Text).toContain("[来自: session_x] 跨场景片段");
   });
 
   it("空字符串的可选层不产生 system 消息", () => {

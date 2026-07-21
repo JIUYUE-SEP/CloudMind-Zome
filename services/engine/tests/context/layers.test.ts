@@ -1,9 +1,14 @@
 import { describe, it, expect } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers, DOWNGRADE_ORDER } from "../../src/context/layers.js";
+import type { SemanticMemory } from "../../src/context/layers.js";
 
 function msg(id: string): ChatMessage {
   return { id, role: "user", content: [{ type: "text", text: "hi" }], createdAt: "2026-07-17T00:00:00Z" };
+}
+
+function mem(content: string): SemanticMemory {
+  return { id: content, content, score: 0.9, createdAt: "2026-07-17T00:00:00Z" };
 }
 
 describe("context layers", () => {
@@ -23,13 +28,13 @@ describe("context layers", () => {
       l1: "人格",
       l2: "@提醒",
       l3: [msg("a")],
-      l4: ["检索片段"],
+      l4: [mem("检索片段")],
       l5: ["话题摘要"],
       l6Core: [{ name: "read_file" }],
       l6Ext: [{ name: "mcp_tool" }],
     });
     expect(layers.l1).toBe("人格");
-    expect(layers.l4).toEqual(["检索片段"]);
+    expect(layers.l4).toEqual([mem("检索片段")]);
     expect(layers.l6Core).toHaveLength(1);
     expect(layers.l6Ext).toHaveLength(1);
   });

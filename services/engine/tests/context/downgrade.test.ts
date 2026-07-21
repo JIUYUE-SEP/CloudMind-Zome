@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "../../src/context/layers.js";
+import type { SemanticMemory } from "../../src/context/layers.js";
 import {
   createDowngradeSteps,
   selectNextStep,
@@ -20,6 +21,15 @@ function strings(n: number, prefix = "s"): string[] {
   return Array.from({ length: n }, (_, i) => `${prefix}${i}`);
 }
 
+function mems(n: number, prefix = "s"): SemanticMemory[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `${prefix}${i}`,
+    content: `${prefix}${i}`,
+    score: 1 - i * 0.01,
+    createdAt: "2026-07-17T00:00:00Z",
+  }));
+}
+
 describe("downgrade 单步行为", () => {
   it("L5 逐条丢弃最旧摘要（数组按时间倒序，最新在前）", () => {
     const layers = createLayers({ l3: [], l5: ["最新", "较旧", "最旧"] });
@@ -35,7 +45,7 @@ describe("downgrade 单步行为", () => {
   });
 
   it("L4 逐级减少：>10 → 10，>5 → 5，>3 → 3，最后丢弃", () => {
-    const layers = createLayers({ l3: [], l4: strings(12) });
+    const layers = createLayers({ l3: [], l4: mems(12) });
     const steps = createDowngradeSteps();
     const byName = (n: string) => steps.find((s) => s.name === n)!;
 
@@ -57,9 +67,9 @@ describe("downgrade 单步行为", () => {
   });
 
   it("L4 保留的是排序靠前的（相关性高的）条目", () => {
-    const layers = createLayers({ l3: [], l4: strings(8) });
+    const layers = createLayers({ l3: [], l4: mems(8) });
     createDowngradeSteps().find((s) => s.name === "l4:keep-5")!.apply(layers);
-    expect(layers.l4).toEqual(strings(5));
+    expect(layers.l4.map((m) => m.content)).toEqual(strings(5));
   });
 
   it("L6-ext 先减半再丢弃", () => {
@@ -118,8 +128,8 @@ describe("downgrade 单步行为", () => {
       l1: "人格",
       l2: "@提醒",
       l3: msgs(30),
-      l4: strings(12),
-      l5: strings(3),
+      l4: mems(12),
+      l5: mems(3).map((m) => m.content),
       l6Core,
       l6Ext: strings(4, "tool"),
     });
@@ -138,8 +148,8 @@ describe("downgrade 顺序（L5 → L4 → L6-ext → L3）", () => {
   it("selectNextStep 重复执行严格按设计顺序降级", () => {
     const layers = createLayers({
       l3: msgs(25),
-      l4: strings(12),
-      l5: strings(2),
+      l4: mems(12),
+      l5: mems(2).map((m) => m.content),
       l6Ext: strings(4, "tool"),
     });
     const sequence: string[] = [];

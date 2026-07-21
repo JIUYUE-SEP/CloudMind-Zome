@@ -25,6 +25,12 @@ export interface AgentConfig {
   topicDetectionWindowMinutes?: number;
   /** 当前话题消息数达到该阈值即关闭并压缩，缺省 20 */
   topicMessageThreshold?: number;
+  /** 语义检索开关（L4），缺省 true（仍需配置 embedder 才生效） */
+  semanticSearchEnabled?: boolean;
+  /** L4 注入条数上限，缺省 10 */
+  semanticTopK?: number;
+  /** L4 最低相关度（向量相似度 × 时间衰减，0-1），缺省 0 不过滤 */
+  semanticMinScore?: number;
   skills: string[];
   tools: string[];
 }

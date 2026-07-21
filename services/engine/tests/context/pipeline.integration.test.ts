@@ -252,7 +252,12 @@ describe("降级顺序", () => {
       l1: "人格",
       l2: "@提醒",
       l3: longHistory(30),
-      l4: Array.from({ length: 12 }, (_, i) => `检索片段 ${i}`),
+      l4: Array.from({ length: 12 }, (_, i) => ({
+        id: `r${i}`,
+        content: `检索片段 ${i}`,
+        score: 0.9 - i * 0.01,
+        createdAt: "2026-07-17T00:00:00Z",
+      })),
       l5: ["话题摘要 A", "话题摘要 B"],
       l6Core: bigTools(2),
       l6Ext: bigTools(4),

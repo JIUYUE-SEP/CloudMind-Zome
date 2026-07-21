@@ -164,6 +164,14 @@ async function main() {
           ? { messageThreshold: agentConfig.topicMessageThreshold }
           : {}),
       },
+      // Phase 3：语义检索配置接 agent 级字段，缺省全开（topK=10 / minScore=0）
+      semanticSearch: {
+        ...(agentConfig.semanticSearchEnabled !== undefined
+          ? { enabled: agentConfig.semanticSearchEnabled }
+          : {}),
+        ...(agentConfig.semanticTopK !== undefined ? { topK: agentConfig.semanticTopK } : {}),
+        ...(agentConfig.semanticMinScore !== undefined ? { minScore: agentConfig.semanticMinScore } : {}),
+      },
     });
     workers.set(agentId, worker);
     return worker;

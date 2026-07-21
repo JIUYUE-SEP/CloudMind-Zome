@@ -3,6 +3,17 @@ import type { ChatMessage } from "@mindcloud/shared";
 /** L6 工具 schema（Phase 1 不依赖内部结构，token 计数按 JSON 序列化） */
 export type ToolSchema = unknown;
 
+/** L4 语义检索结果（Phase 3）：单条记忆片段 */
+export interface SemanticMemory {
+  id: string;
+  content: string;
+  /** 最终相关度 = 向量相似度 × 时间衰减；按降序排列，降级时优先保留前部 */
+  score: number;
+  /** 跨场景来源标注（session id）；与当前场景相同时为空 */
+  source?: string;
+  createdAt: string;
+}
+
 /**
  * 上下文分层（设计文档 docs/design/context-pipeline-v2.md 第二节）。
  *
@@ -17,8 +28,8 @@ export interface ContextLayers {
   l2?: string;
   /** L3 热上下文（当前场景近期消息），降级时从最旧处截断 */
   l3: ChatMessage[];
-  /** L4 语义检索结果（Phase 3 接入；Phase 1 恒空） */
-  l4: string[];
+  /** L4 语义检索结果（Phase 3 接入；按 score 降序，降级保留前部） */
+  l4: SemanticMemory[];
   /** L5 话题摘要（Phase 2 接入；Phase 1 恒空） */
   l5: string[];
   /** L6-core 核心工具描述（文件读写/bash/edit 等基础能力） */

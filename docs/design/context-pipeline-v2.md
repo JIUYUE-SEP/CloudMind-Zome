@@ -2,7 +2,7 @@
 
 > 版本：v2 | 日期：2026-07-17（2026-07-21 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：**Phase 1/2 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 3 待实现
+> 状态：**Phase 1/2/3 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---
@@ -360,11 +360,14 @@ return 0.3;                              // 三个月以上保底 30%
 
 **验收**：长对话后，`_compressed/` 目录有归档，热存储消息数控制在合理范围。
 
-### Phase 3：语义检索（约 1 周）
+### Phase 3：语义检索（约 1 周）— ✅ 已完成（2026-07-22，压缩前 memory flush 除外，留待 Phase 4 评估）
 
-- [ ] 整合 `memoryIndexer` 到 `pipeline.assemble`（L4 层）
-- [ ] 时间衰减打分（分段衰减，见"设计决策 5"）
-- [ ] 跨场景标注（`[来自: 与XX的群聊]`）
+- [x] 整合 `memoryIndexer` 到 `pipeline.assemble`（L4 层：`SemanticMemory[]`，参与预算与降级）
+- [x] 时间衰减打分（分段衰减，见"设计决策 5"；importance 标记待 v2 话题检测启用后接入）
+- [x] 跨场景标注（`[来自: <sessionId>]`，同场景不标注）
+- [x] L4 检索排除已归档话题的原始消息（与 Phase 2 衔接）
+- [x] 检索逻辑从 agent-worker 迁入 `context/semantic.ts`（embedder + sidecar HNSW 仍由 MemoryIndexer 承载）
+- [x] agent 级配置：`semanticSearchEnabled` / `semanticTopK` / `semanticMinScore`
 - [ ] 压缩前 memory flush（重要决策/事实写入 memory 文档）
 
 **验收**：提到过去聊过的话题时，Agent 能"想起"被压缩的细节。
