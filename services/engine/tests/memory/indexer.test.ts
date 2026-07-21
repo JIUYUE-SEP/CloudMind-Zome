@@ -24,11 +24,20 @@ function makeEmbedder(impl?: EmbedderProvider["embed"]): EmbedderProvider {
 }
 
 describe("MemoryIndexer", () => {
-  it("search 正常路径返回命中的 doc id", async () => {
-    const client = makeClient();
+  it("sidecar 距离在出口换算为相似度（similarity = 1 - distance，负值截断为 0）", async () => {
+    const client = makeClient({
+      search: vi.fn(async () => [
+        { id: "close", score: 0.9 }, // 距离 0.9 → 相似度 0.1
+        { id: "near", score: 0.05 }, // 距离 0.05 → 相似度 0.95
+        { id: "far", score: 1.5 }, // 距离 1.5 → 相似度 0（截断）
+      ]),
+    });
     const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
     const hits = await indexer.search("a1", "query", 5);
-    expect(hits).toEqual([{ id: "d1", score: 0.9 }]);
+    expect(hits.map((h) => h.id)).toEqual(["close", "near", "far"]);
+    expect(hits[0]!.score).toBeCloseTo(0.1);
+    expect(hits[1]!.score).toBeCloseTo(0.95);
+    expect(hits[2]!.score).toBe(0);
   });
 
   it("indexMessage 正常路径调用 upsert", async () => {

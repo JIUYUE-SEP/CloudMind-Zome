@@ -48,6 +48,12 @@ export class MemoryIndexer {
     }
   }
 
+  /**
+   * 语义检索：返回命中的 doc id 与相似度（域 [0,1]，越大越相关）。
+   * 注意 sidecar 原始返回的是距离（1 - cosine，域 [0,2]，越小越近），
+   * 在本出口统一换算为 similarity = max(0, 1 - distance)，
+   * 调用方（SemanticRetriever 等）拿到的即为相似度，无需关心底层语义。
+   */
   async search(agentId: string, query: string, topK: number): Promise<{ id: string; score: number }[]> {
     if (!query.trim()) return [];
     if (!(await this.client.isAvailable())) return [];
@@ -57,7 +63,8 @@ export class MemoryIndexer {
         this.embedTimeoutMs,
       );
       if (!vec) return [];
-      return await this.client.search(agentId, vec, topK);
+      const hits = await this.client.search(agentId, vec, topK);
+      return hits.map((h) => ({ id: h.id, score: Math.max(0, 1 - h.score) }));
     } catch {
       return [];
     }

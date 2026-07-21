@@ -77,6 +77,8 @@ export class SidecarClient {
     return res !== undefined;
   }
 
+  // 注意：sidecar 原始返回的是距离（1 - cosine，越小越近），不是相似度。
+  // 相似度换算在 MemoryIndexer.search 出口统一进行，本层原样透传。
   async search(agentId: string, query: number[], topK: number): Promise<{ id: string; score: number }[]> {
     const res = await this.call<{ results?: { doc_id: string; score: number }[] }>(
       "Search",

@@ -60,6 +60,9 @@ function rec(id: string, text: string, createdAt: string, sessionId = "default")
   return { id, sessionId, role: "user", content: [{ type: "text", text }], createdAt };
 }
 
+// 注意：mock 的是 MemoryIndexer 出口——已换算为相似度（大 = 更相关）。
+// sidecar 原始返回是距离（小 = 更近），换算见 src/memory/indexer.ts
+// 与 tests/memory/indexer.test.ts，勿按距离语义写本文件的期望值。
 function makeIndexer(hits: { id: string; score: number }[]): MemoryIndexer {
   return { search: vi.fn(async () => hits) } as unknown as MemoryIndexer;
 }

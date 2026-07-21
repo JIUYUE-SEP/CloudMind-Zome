@@ -216,6 +216,10 @@ msg_id_1, msg_id_2, ...
 3. 按相似度 + 时间衰减打分（Python 用的 `exp(-age_days / 30)`）
 4. 注入为 system 消息："以下是你过去经历过的相关片段：..."
 
+> **score 语义（2026-07-22 review 修订）**：sidecar 原始返回的是**距离**（`1 - cosine`，域 [0,2]，越小越近），
+> `MemoryIndexer.search` 出口统一换算为**相似度**（`max(0, 1 - distance)`，越大越相关）。
+> 排序、minScore、时间衰减全部建立在相似度之上；新增调用方不得直接消费 sidecar 原始 score。
+
 ### 触发时机
 
 在 `react/turn.ts` 的 `runTurn` 入口处：
