@@ -142,7 +142,8 @@ onBeforeUnmount(() => {
 .si-body {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  /* 底部预留 56px 底栏高度，滚动到底时末段内容不被遮挡 */
+  padding: 20px 20px 80px;
 }
 
 .si-hint {

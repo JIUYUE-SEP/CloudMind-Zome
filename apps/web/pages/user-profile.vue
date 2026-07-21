@@ -151,7 +151,8 @@ onBeforeUnmount(() => {
 .up-body {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 20px;
+  /* 底部预留 56px 底栏高度，滚动到底时末段内容不被遮挡 */
+  padding: 24px 20px 80px;
   max-width: 560px;
   margin: 0 auto;
   width: 100%;
