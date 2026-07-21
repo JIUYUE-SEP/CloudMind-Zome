@@ -5,6 +5,7 @@
       <input v-model="name" class="title-input" @change="save" />
       <button class="secondary" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存" }}</button>
       <span v-if="saveState === 'saved'" class="save-ok">已保存</span>
+      <span v-else-if="dirty" class="save-dirty">未保存</span>
       <span v-if="saveState === 'error'" class="save-err">{{ saveError }}</span>
     </header>
     <div v-if="loadError" class="load-error">加载失败：{{ loadError }}</div>
@@ -26,7 +27,6 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
-import { useRoute } from "vue-router";
 import { useBlueprintsStore } from "@/stores/blueprints";
 import { useEngineClient } from "@/composables/useEngineClient";
 import type { Blueprint, BlueprintNode, BlueprintEdge, BlueprintExecution } from "@/composables/useEngineClient";
@@ -47,6 +47,8 @@ const saving = ref(false);
 const saveState = ref<"" | "saved" | "error">("");
 const saveError = ref("");
 const executeError = ref("");
+// 画布有未保存修改时为 true：engine 执行的是服务端已保存版本，执行前必须先落地
+const dirty = ref(false);
 
 const resultText = computed(() => {
   if (!result.value) return "";
@@ -69,6 +71,8 @@ onMounted(async () => {
 function onUpdate(newNodes: BlueprintNode[], newEdges: BlueprintEdge[]) {
   nodes.value = newNodes;
   edges.value = newEdges;
+  dirty.value = true;
+  if (saveState.value === "saved") saveState.value = "";
 }
 
 async function save() {
@@ -83,6 +87,7 @@ async function save() {
       edges: edges.value,
     });
     saveState.value = "saved";
+    dirty.value = false;
   } catch (err) {
     saveState.value = "error";
     saveError.value = err instanceof Error ? err.message : "保存失败";
@@ -93,8 +98,16 @@ async function save() {
 
 async function execute() {
   if (!blueprint.value || running.value) return;
-  running.value = true;
   executeError.value = "";
+  // engine 执行的是服务端已保存版本：有未保存修改时先保存，避免静默跑到旧版本
+  if (dirty.value) {
+    await save();
+    if (saveState.value === "error") {
+      executeError.value = "有未保存的修改且自动保存失败，未执行";
+      return;
+    }
+  }
+  running.value = true;
   try {
     result.value = await store.execute(blueprint.value.id, initialInput.value);
   } catch (err) {
@@ -120,6 +133,11 @@ async function execute() {
 
 .save-ok {
   color: #10b981;
+  font-size: 13px;
+}
+
+.save-dirty {
+  color: var(--mc-warning);
   font-size: 13px;
 }
 
