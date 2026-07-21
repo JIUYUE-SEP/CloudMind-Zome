@@ -158,4 +158,30 @@ describe("Sessions API", () => {
     expect(res.body[1].agentId).toBe("a2");
     await app.close();
   });
+
+  it("dedupes user messages stored in every member repository", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+
+    // 与 session-handler 行为一致：同一条用户消息写入每个成员的仓库
+    const userMsg: ChatMessageRecord = {
+      id: "u1",
+      sessionId: session.id,
+      role: "user",
+      content: [{ type: "text", text: "hi all" }],
+      createdAt: new Date().toISOString(),
+    };
+    await context.getMessageRepository("a1").append(userMsg);
+    await context.getMessageRepository("a2").append({ ...userMsg });
+
+    const res = await request(app.server).get(`/sessions/${session.id}/messages`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe("u1");
+    await app.close();
+  });
 });

@@ -75,10 +75,14 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     if (!session) return reply.status(404).send({ error: "Session not found" });
 
     const messages: unknown[] = [];
+    // 用户消息会写入每个成员的仓库（见 session-handler），合并时按 id 去重
+    const seen = new Set<string>();
     for (const agentId of session.agentIds) {
       const repo = context.getMessageRepository(agentId);
       const agentMessages = await repo.listBySession(id, { limit: limit ? Number(limit) : 100 });
       for (const msg of agentMessages) {
+        if (seen.has(msg.id)) continue;
+        seen.add(msg.id);
         // assistant/tool 消息归属其所在仓库的 Agent，供前端展示发言人；user 消息不属于任何 Agent
         messages.push(msg.role === "user" ? msg : { ...msg, agentId });
       }
