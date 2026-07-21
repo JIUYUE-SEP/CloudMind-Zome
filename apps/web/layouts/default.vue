@@ -17,7 +17,7 @@
       </NuxtLink>
     </nav>
 
-    <footer class="bottom-bar">
+    <footer v-if="showBottomBar" class="bottom-bar">
       <div class="bar-left">
         <button class="bar-avatar" title="个人信息" @click="navigateTo('/user-profile')">
           <span>我</span>
@@ -44,7 +44,7 @@ const route = useRoute();
 
 const navItems: NavItem[] = [
   { label: "行动中心", to: "", placeholder: true },
-  { label: "心智整备", to: "/agents/new" },
+  { label: "心智整备", to: "/agents" },
   { label: "自动委托", to: "", placeholder: true },
   { label: "通讯中枢", to: "/hub" },
   { label: "广播站", to: "", placeholder: true },
@@ -53,6 +53,9 @@ const navItems: NavItem[] = [
 const topLevelPaths = new Set(["/"]);
 
 const showRightNav = computed(() => topLevelPaths.has(route.path));
+
+// 心智整备各页面（列表/新建/编辑）为全宽布局，按原型隐藏底栏
+const showBottomBar = computed(() => !route.path.startsWith("/agents"));
 
 function handleNav(e: Event, item: NavItem) {
   if (item.placeholder) {

@@ -10,6 +10,6 @@ export async function createAgent(page: Page, id: string, name: string) {
   await expect(page.getByLabel("ID")).toHaveValue(id);
   await page.locator(".save-btn").click();
 
-  // 创建成功后页面会跳转到 /agents/{id}
-  await page.waitForURL(`/agents/${id}`);
+  // 创建成功后页面会跳转到 /agents/{id}/edit
+  await page.waitForURL(`/agents/${id}/edit`);
 }
