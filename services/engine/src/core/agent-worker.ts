@@ -139,12 +139,8 @@ export class AgentWorker {
           "# Skills\n\n" + this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
         );
       }
-      // L1 人格/skill 内容（pipeline 注入为 system 消息）；code 模式指令映射为 L1.5
+      // L1 人格/skill 内容（pipeline 注入为 system 消息）
       const mindContext = promptParts.join("\n\n");
-      const personalityDesc =
-        job.mode === "code"
-          ? "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes."
-          : undefined;
 
       // 跨会话语义检索：sidecar 可用时，取与当前用户消息最相关的历史消息补充上下文。
       // 失败静默降级；检索结果已在历史文件中，不会也不应被再次持久化。
@@ -205,7 +201,6 @@ export class AgentWorker {
           input: {
             agentId: this.config.agentId,
             mindContext,
-            personalityDesc,
             sourceId: job.sessionId || this.config.agentId,
           },
         },

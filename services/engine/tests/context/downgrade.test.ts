@@ -123,7 +123,6 @@ describe("downgrade 单步行为", () => {
     const l6Core = [{ name: "read_file" }];
     const layers = createLayers({
       l1: "人格",
-      l1_5: "群聊指令",
       l2: "@提醒",
       l3: msgs(30),
       l4: strings(12),
@@ -137,7 +136,6 @@ describe("downgrade 单步行为", () => {
       step.apply(layers);
     }
     expect(layers.l1).toBe("人格");
-    expect(layers.l1_5).toBe("群聊指令");
     expect(layers.l2).toBe("@提醒");
     expect(layers.l6Core).toBe(l6Core);
   });

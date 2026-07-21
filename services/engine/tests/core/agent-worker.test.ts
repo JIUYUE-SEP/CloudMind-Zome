@@ -185,7 +185,7 @@ describe("AgentWorker", () => {
     consoleSpy.mockRestore();
   });
 
-  it("injects code mode system prompt at the front of messages", async () => {
+  it("code 模式不再注入 code assistant 指令（L1.5 已移除）", async () => {
     const provider = new CapturingProvider();
     const worker = new AgentWorker(makeConfig(provider));
 
@@ -200,11 +200,9 @@ describe("AgentWorker", () => {
 
     const messages = provider.capturedParams?.messages;
     expect(messages).toBeDefined();
-    expect(messages?.[0].role).toBe("system");
-    expect(messages?.[0].content).toEqual([
-      { type: "text", text: "You are in code assistant mode. You can list files, read/write/edit files under the project workspace, and run shell commands. Always explain your intent before making changes." },
-    ]);
-    expect(messages?.[1]).toEqual(userMessage("hi"));
+    // 无 skill prompts 时不存在任何 system 消息，用户消息直接在首位
+    expect(messages?.some((m) => m.role === "system")).toBe(false);
+    expect(messages?.[0]).toEqual(userMessage("hi"));
   });
 
   it("does not inject system prompt in chat mode", async () => {
@@ -228,7 +226,11 @@ describe("AgentWorker", () => {
   it("does not persist system prompt to message repository", async () => {
     const append = vi.fn(async () => {});
     const provider = new CapturingProvider();
-    const worker = new AgentWorker(makeConfig(provider, { append, listBySession: async () => [] }));
+    // L1（skillPrompts）是 L1.5 移除后 system 消息的唯一来源
+    const worker = new AgentWorker({
+      ...makeConfig(provider, { append, listBySession: async () => [] }),
+      skillPrompts: ["# Core Skill\nDo core things."],
+    });
 
     worker.enqueue({
       id: "j-code",

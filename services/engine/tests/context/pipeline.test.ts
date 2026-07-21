@@ -103,18 +103,17 @@ describe("ContextPipeline", () => {
     expect(result.messages.filter((m) => m.role === "user")).toHaveLength(2);
   });
 
-  it("personalityDesc/mentionDesc 映射为 L1.5/L2 system 消息且永不降级", async () => {
+  it("mentionDesc 映射为 L2 system 消息且永不降级", async () => {
     const pipeline = makePipeline(50);
     const result = await pipeline.assemble(
       makeInput({
         mindContext: "人格",
-        personalityDesc: "群聊行为指令",
         mentionDesc: "@提醒",
         history: history(25),
       }),
     );
     const systems = result.messages.filter((m) => m.role === "system");
-    expect(systems).toHaveLength(3); // L1/L1.5/L2 全保留
+    expect(systems).toHaveLength(2); // L1/L2 全保留
   });
 });
 

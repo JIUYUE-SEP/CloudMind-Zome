@@ -10,7 +10,6 @@ describe("context layers", () => {
   it("createLayers 只传 l3 时其余层给安全默认值", () => {
     const layers = createLayers({ l3: [msg("a")] });
     expect(layers.l1).toBe("");
-    expect(layers.l1_5).toBeUndefined();
     expect(layers.l2).toBeUndefined();
     expect(layers.l4).toEqual([]);
     expect(layers.l5).toEqual([]);
@@ -22,7 +21,6 @@ describe("context layers", () => {
   it("createLayers 保留传入的全部层内容", () => {
     const layers = createLayers({
       l1: "人格",
-      l1_5: "群聊指令",
       l2: "@提醒",
       l3: [msg("a")],
       l4: ["检索片段"],
@@ -38,9 +36,8 @@ describe("context layers", () => {
 
   it("降级顺序为 L5 → L4 → L6-ext → L3，且不包含永不压缩层", () => {
     expect(DOWNGRADE_ORDER).toEqual(["l5", "l4", "l6Ext", "l3"]);
-    // L1/L1.5/L2/L6-core 永不出现在降级序列中
+    // L1/L2/L6-core 永不出现在降级序列中
     expect(DOWNGRADE_ORDER).not.toContain("l1");
-    expect(DOWNGRADE_ORDER).not.toContain("l1_5");
     expect(DOWNGRADE_ORDER).not.toContain("l2");
     expect(DOWNGRADE_ORDER).not.toContain("l6Core");
   });

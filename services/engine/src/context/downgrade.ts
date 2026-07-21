@@ -23,7 +23,7 @@ export function truncateHotContext(messages: ChatMessage[], keep: number): ChatM
 }
 
 /**
- * 降级步骤序列（设计决策：L5 → L4 → L6-ext → L3，L1/L1.5/L2/L6-core 永不触碰）。
+ * 降级步骤序列（设计决策：L5 → L4 → L6-ext → L3，L1/L2/L6-core 永不触碰）。
  * 参考 Python 降级伪代码：每步先判断是否可执行，每轮从序列头部重新扫描。
  *
  * L4/L6-ext 数组约定按相关性/优先级降序排列，裁剪保留前部。

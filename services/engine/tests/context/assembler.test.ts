@@ -13,10 +13,9 @@ function history(n: number): ChatMessage[] {
 }
 
 describe("assembleMessages", () => {
-  it("按 L1 → L1.5 → L5 → L4 → L2 → L3 顺序组装", () => {
+  it("按 L1 → L5 → L4 → L2 → L3 顺序组装", () => {
     const layers = createLayers({
       l1: "人格内容",
-      l1_5: "群聊指令",
       l2: "@提醒",
       l3: history(2),
       l4: ["检索片段"],
@@ -25,16 +24,15 @@ describe("assembleMessages", () => {
     const messages = assembleMessages(layers);
 
     const systems = messages.filter((m) => m.role === "system");
-    expect(systems).toHaveLength(5);
+    expect(systems).toHaveLength(4);
     const texts = systems.map((m) => (m.content[0] as { type: "text"; text: string }).text);
     expect(texts[0]).toContain("人格内容");
-    expect(texts[1]).toContain("群聊指令");
-    expect(texts[2]).toContain("话题摘要");
-    expect(texts[3]).toContain("检索片段");
-    expect(texts[4]).toContain("@提醒");
+    expect(texts[1]).toContain("话题摘要");
+    expect(texts[2]).toContain("检索片段");
+    expect(texts[3]).toContain("@提醒");
 
     // L3 历史原样跟在 system 之后
-    expect(messages.slice(5)).toEqual(layers.l3);
+    expect(messages.slice(4)).toEqual(layers.l3);
   });
 
   it("L1 为空、可选层缺省时只组装非空层", () => {
@@ -62,7 +60,7 @@ describe("assembleMessages", () => {
   });
 
   it("空字符串的可选层不产生 system 消息", () => {
-    const layers = createLayers({ l1: "  ", l1_5: "", l3: history(1) });
+    const layers = createLayers({ l1: "  ", l3: history(1) });
     const messages = assembleMessages(layers);
     expect(messages.every((m) => m.role !== "system")).toBe(true);
   });

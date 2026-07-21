@@ -222,12 +222,11 @@ describe("大量工具：L6-core 永不裁剪（L6-ext Phase 1 恒空的预留�
 });
 
 describe("L1 人格文件保留", () => {
-  it("长历史 + 超预算：L1/L1.5/L2 全保留且顺序不变，只截 L3", async () => {
+  it("长历史 + 超预算：L1/L2 全保留且顺序不变，只截 L3", async () => {
     const pipeline = new ContextPipeline({ maxContextTokens: 300, reserveRatio: 0 });
     const result = await pipeline.assemble(
       makeInput({
         mindContext: "人格：你是小云，一个冷静的助手。",
-        personalityDesc: "群聊中少说话，多倾听。",
         mentionDesc: "@小云 被提及，需要回应。",
         history: longHistory(30),
       }),
@@ -235,7 +234,6 @@ describe("L1 人格文件保留", () => {
     const systems = result.messages.filter((m) => m.role === "system");
     expect(systems.map(textOf)).toEqual([
       "人格：你是小云，一个冷静的助手。", // L1
-      "群聊中少说话，多倾听。", // L1.5
       "@小云 被提及，需要回应。", // L2
     ]);
     const users = result.messages.filter((m) => m.role === "user");
@@ -245,14 +243,13 @@ describe("L1 人格文件保留", () => {
 });
 
 describe("降级顺序", () => {
-  it("严格按 L5 → L4 → L6-ext → L3 执行，L1/L1.5/L2/L6-core 永不触碰", () => {
+  it("严格按 L5 → L4 → L6-ext → L3 执行，L1/L2/L6-core 永不触碰", () => {
     // Phase 1 的 ContextPipeline.assemble 内部将 l4/l5/l6Ext 恒置空，
     // 公共 API 无法触达这些层，因此直接用 createLayers + selectNextStep
     // 驱动与 pipeline 相同的降级循环，验证完整序列。
     const counter = getTokenCounter();
     const layers = createLayers({
       l1: "人格",
-      l1_5: "行为指令",
       l2: "@提醒",
       l3: longHistory(30),
       l4: Array.from({ length: 12 }, (_, i) => `检索片段 ${i}`),
@@ -289,7 +286,6 @@ describe("降级顺序", () => {
     ]);
     // 永不压缩的层原样保留
     expect(layers.l1).toBe("人格");
-    expect(layers.l1_5).toBe("行为指令");
     expect(layers.l2).toBe("@提醒");
     expect(layers.l6Core).toHaveLength(2);
     // L3 压到最小档，保留最新

@@ -31,8 +31,6 @@ export interface AssembleInput {
   mindContext: string;
   /** L6 工具定义（Phase 1 全部视为 L6-core，永不裁剪） */
   tools: ToolSchema[];
-  /** L1.5 群聊行为指令 */
-  personalityDesc?: string;
   /** L2 @提及提醒 */
   mentionDesc?: string;
   /** 当前场景 ID（session/group；Phase 3 跨场景标注使用） */
@@ -69,7 +67,6 @@ export class ContextPipeline {
   async assemble(input: AssembleInput): Promise<AssembleResult> {
     const layers = createLayers({
       l1: input.mindContext,
-      l1_5: input.personalityDesc,
       l2: input.mentionDesc,
       l3: [...input.history],
       l6Core: [...input.tools],

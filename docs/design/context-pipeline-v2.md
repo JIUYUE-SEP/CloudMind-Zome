@@ -32,7 +32,6 @@ v2 目标：**重建并简化 Python 时代的上下文管理体系，让 Agent 
 | 层 | 内容 | 优先级 | 可压缩性 |
 |---|---|---|---|
 | L1 | 人格文件（mind files） | 最高 | 永不压缩 |
-| L1.5 | 群聊行为指令（stay-silent 等） | 高 | 永不压缩 |
 | L2 | 群聊发送者前缀 | 高 | 永不压缩 |
 | L3 | 热上下文（当前场景近期消息） | 中 | 可截断（降级时） |
 | L4 | 语义检索结果（跨场景，向量记忆） | 中 | 可减少数量或丢弃 |
@@ -40,7 +39,7 @@ v2 目标：**重建并简化 Python 时代的上下文管理体系，让 Agent 
 | L6-core | 核心工具描述（read/write/edit/bash 等基础工具） | 最高 | 永不压缩 |
 | L6-ext | 扩展工具描述（MCP 工具、subagent 专用工具） | 中 | 可裁剪（按相关性/最近使用） |
 
-**降级顺序**：L5 → L4 → L6-ext → L3。L1/L1.5/L2/L6-core 永不触碰。
+**降级顺序**：L5 → L4 → L6-ext → L3。L1/L2/L6-core 永不触碰。
 
 **L6 分级说明**：Python 原版将 L6 整体视为不可压缩，适用于工具数量少（<20）的场景。当接入 MCP、公共 Skill 池后工具数量可能爆炸（单 MCP 服务器可注册数十个工具，schema 长达数千 token），因此 v2 将 L6 拆分为两级：
 
@@ -56,7 +55,7 @@ v2 目标：**重建并简化 Python 时代的上下文管理体系，让 Agent 
 
 ```
 while True:
-    messages = L1 + L1.5 + L5 + L4 + L2 + L3 + L6
+    messages = L1 + L5 + L4 + L2 + L3 + L6
     total_tokens = estimate(messages) + estimate_tools(L6)
     if total_tokens <= max_context_tokens:
         return messages
@@ -134,7 +133,6 @@ export interface AssembleInput {
   history: ChatMessage[];           // 当前会话完整历史
   mindContext: string;              // L1 人格文件内容
   tools: ToolSchema[];              // L6 工具定义
-  personalityDesc?: string;         // L1.5 群聊行为指令
   mentionDesc?: string;             // @提及提醒
   sourceId: string;                 // 当前场景 ID（session/group）
   sourceName?: string;

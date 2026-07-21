@@ -7,14 +7,12 @@ export type ToolSchema = unknown;
  * 上下文分层（设计文档 docs/design/context-pipeline-v2.md 第二节）。
  *
  * 可压缩性决策（不可变更）：
- * - L1（人格）/ L1.5（群聊行为指令）/ L2（@提及提醒）/ L6-core（核心工具）：永不压缩
+ * - L1（人格）/ L2（@提及提醒）/ L6-core（核心工具）：永不压缩
  * - L5（话题摘要）/ L4（语义检索）/ L6-ext（扩展工具）/ L3（热上下文）：可按降级序列裁剪
  */
 export interface ContextLayers {
   /** L1 人格文件内容（mindContext） */
   l1: string;
-  /** L1.5 群聊行为指令（personalityDesc） */
-  l1_5?: string;
   /** L2 @提及提醒（mentionDesc） */
   l2?: string;
   /** L3 热上下文（当前场景近期消息），降级时从最旧处截断 */
@@ -40,7 +38,6 @@ export function createLayers(
 ): ContextLayers {
   return {
     l1: init.l1 ?? "",
-    l1_5: init.l1_5,
     l2: init.l2,
     l3: init.l3,
     l4: init.l4 ?? [],

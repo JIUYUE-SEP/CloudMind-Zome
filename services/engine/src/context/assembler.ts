@@ -13,7 +13,7 @@ function systemMessage(text: string): ChatMessage {
 
 /**
  * 把分层内容组装为发给 LLM 的 messages。
- * 顺序（Python 伪代码）：L1 + L1.5 + L5 + L4 + L2 + L3；
+ * 顺序（Python 伪代码）：L1 + L5 + L4 + L2 + L3；
  * L6（工具）不走 message 通道，由 pipeline 单独返回。
  *
  * 每个非空层一个 system 消息（便于审计与调试），L3 历史原样尾随。
@@ -23,9 +23,6 @@ export function assembleMessages(layers: ContextLayers): ChatMessage[] {
 
   if (layers.l1.trim()) {
     messages.push(systemMessage(layers.l1));
-  }
-  if (layers.l1_5?.trim()) {
-    messages.push(systemMessage(layers.l1_5));
   }
   if (layers.l5.length > 0) {
     messages.push(
