@@ -184,4 +184,30 @@ describe("Sessions API", () => {
     expect(res.body[0].id).toBe("u1");
     await app.close();
   });
+
+  it("limit applies to the merged total, keeping the newest messages", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+
+    const mk = (id: string, ms: number, role: "user" | "assistant"): ChatMessageRecord => ({
+      id,
+      sessionId: session.id,
+      role,
+      content: [{ type: "text", text: id }],
+      createdAt: new Date(ms).toISOString(),
+    });
+    await context.getMessageRepository("a1").append(mk("old", 1000, "user"));
+    await context.getMessageRepository("a2").append(mk("new", 3000, "assistant"));
+    await context.getMessageRepository("a2").append(mk("mid", 2000, "assistant"));
+
+    const res = await request(app.server).get(`/sessions/${session.id}/messages?limit=2`);
+    expect(res.status).toBe(200);
+    // 总量截断（非 per-agent 各 2 条），保留最新的两条
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["mid", "new"]);
+    await app.close();
+  });
 });

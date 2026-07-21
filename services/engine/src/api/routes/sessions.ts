@@ -74,12 +74,13 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     const session = await context.sessionRepository.get(id);
     if (!session) return reply.status(404).send({ error: "Session not found" });
 
+    const limitNum = limit ? Number(limit) : 100;
     const messages: unknown[] = [];
     // 用户消息会写入每个成员的仓库（见 session-handler），合并时按 id 去重
     const seen = new Set<string>();
     for (const agentId of session.agentIds) {
       const repo = context.getMessageRepository(agentId);
-      const agentMessages = await repo.listBySession(id, { limit: limit ? Number(limit) : 100 });
+      const agentMessages = await repo.listBySession(id, { limit: limitNum });
       for (const msg of agentMessages) {
         if (seen.has(msg.id)) continue;
         seen.add(msg.id);
@@ -88,6 +89,7 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
       }
     }
     messages.sort((a, b) => new Date((a as { createdAt: string }).createdAt).getTime() - new Date((b as { createdAt: string }).createdAt).getTime());
-    return messages;
+    // limit 语义为总量（而非 per-agent 各 limit 条）：合并排序后截取最新的 limitNum 条
+    return messages.slice(-limitNum);
   });
 }
