@@ -78,6 +78,15 @@ describe("ApprovalCard", () => {
     expect(wrapper.emitted("respond")).toBeUndefined();
   });
 
+  it("pending 状态下可重复点击（回执发送失败时可重试）", async () => {
+    const wrapper = mount(ApprovalCard, { props: baseProps });
+    const btn = wrapper.findAll("button").find((b) => b.text() === "允许");
+    await btn!.trigger("click");
+    await btn!.trigger("click");
+    // 无本地闩锁：每次点击都 emit，防重由 store 的 pending 守卫负责
+    expect(wrapper.emitted("respond")!.length).toBe(2);
+  });
+
   it("shows expired status for timed-out card", () => {
     const wrapper = mount(ApprovalCard, {
       props: { ...baseProps, status: "expired" as const },

@@ -70,12 +70,13 @@ const statusText = computed(() => {
   return "已连接";
 });
 
-// 新消息/流式增量时自动滚动到底部（与 ChatView 同一口径）
+// 新消息/流式增量/工具卡片出现时自动滚动到底部（与 ChatView 同一口径）
 watch(
   () => [
     props.messages.length,
     props.messages[props.messages.length - 1]?.text,
     props.messages[props.messages.length - 1]?.thinking,
+    props.messages[props.messages.length - 1]?.toolCalls.length,
   ],
   async () => {
     await nextTick();

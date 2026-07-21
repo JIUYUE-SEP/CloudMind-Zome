@@ -45,11 +45,18 @@ export const useChatStore = defineStore("chat", () => {
       }
     };
 
-    connection = client.connect(agentId, sessionId.value, {
+    // 旧 socket 在关闭握手完成前仍可能触发 onmessage/onclose：
+    // 代际比对，过期连接的帧一律丢弃，防止写脏新会话状态
+    let conn: ReturnType<typeof client.connect>;
+    const stale = () => conn !== connection;
+
+    conn = client.connect(agentId, sessionId.value, {
       onOpen: () => {
+        if (stale()) return;
         isConnected.value = true;
       },
       onTextDelta: (delta) => {
+        if (stale()) return;
         // 防御：非 string 的 delta 帧直接丢弃（engine 侧已校验，这里双重防御）
         if (typeof delta !== "string") {
           console.warn("dropping non-string text.delta frame", delta);
@@ -70,6 +77,7 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onThinkingDelta: (delta) => {
+        if (stale()) return;
         if (typeof delta !== "string") {
           console.warn("dropping non-string thinking.delta frame", delta);
           return;
@@ -80,27 +88,32 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onToolCall: (toolCall) => {
+        if (stale()) return;
         const last = messages.value[messages.value.length - 1];
         if (last && last.role === "assistant") {
           last.toolCalls.push(toolCall);
         }
       },
       onToolResult: (result) => {
+        if (stale()) return;
         // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
         expireApprovalByToolCallId(messages.value, result.toolCallId);
         setToolCallStatus(messages.value, result.toolCallId, "done");
       },
       onApprovalRequest: (request) => {
+        if (stale()) return;
         setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
         messages.value.push(createApprovalMessage(request));
       },
       onTurnEnd: () => {
+        if (stale()) return;
         // 一轮生成结束才复位流式态；step.end 每个 ReAct step 都发，
         // 若在 step 边界复位，工具执行期间输入框会提前解锁
         sealLastAssistant();
         isStreaming.value = false;
       },
       onError: (error) => {
+        if (stale()) return;
         sealLastAssistant();
         isStreaming.value = false;
         messages.value.push({
@@ -113,11 +126,13 @@ export const useChatStore = defineStore("chat", () => {
         });
       },
       onClose: () => {
+        if (stale()) return;
         sealLastAssistant();
         isConnected.value = false;
         isStreaming.value = false;
       },
     });
+    connection = conn;
   }
 
   function send(text: string) {

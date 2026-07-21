@@ -142,4 +142,21 @@ describe("chat store 流式状态以 turn 为界", () => {
     expect(store.isStreaming).toBe(false);
     expect(store.messages.at(-1)!.isStreaming).toBe(false);
   });
+
+  it("过期连接的迟发帧被丢弃，不写脏新会话", async () => {
+    const store = useChatStore();
+    store.connect("a1");
+    await new Promise((r) => setTimeout(r, 0));
+    const oldWs = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+
+    // 切到新连接（旧 socket 的关闭握手尚未完成）
+    store.connect("a2");
+    await new Promise((r) => setTimeout(r, 0));
+
+    oldWs.onmessage?.({ data: JSON.stringify({ type: "text.delta", delta: "旧连接的帧" }) });
+    oldWs.onclose?.();
+
+    expect(store.messages).toEqual([]);
+    expect(store.isConnected).toBe(true);
+  });
 });

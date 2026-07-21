@@ -34,6 +34,9 @@ export function useChatRecords() {
     for (const r of records) {
       if (seen.has(r.id)) continue;
       seen.add(r.id);
+      // tool 结果记录不进气泡：调用已作为徽章挂在 assistant 消息上，
+      // 与实时流式（tool.result 只更新徽章）保持渲染一致
+      if (r.role === "tool") continue;
       out.push({
         id: r.id,
         role: r.role,

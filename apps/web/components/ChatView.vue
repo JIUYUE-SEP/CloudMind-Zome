@@ -67,12 +67,13 @@ watch(
   { immediate: true },
 );
 
-// 流式输出时自动滚动到底部（正文/思考增量都触发）
+// 流式输出时自动滚动到底部（正文/思考/工具卡片增量都触发）
 watch(
   () => [
     chat.messages.length,
     chat.messages[chat.messages.length - 1]?.text,
     chat.messages[chat.messages.length - 1]?.thinking,
+    chat.messages[chat.messages.length - 1]?.toolCalls.length,
   ],
   async () => {
     await nextTick();

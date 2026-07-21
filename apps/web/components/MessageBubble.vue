@@ -69,14 +69,15 @@ function tick() {
   if (displayedLen.value < target) {
     displayedLen.value = Math.min(target, displayedLen.value + CHARS_PER_FRAME);
   }
-  rafId = requestAnimationFrame(tick);
+  // 追平即停；新内容到达时由 watch 重新启动，避免 60fps 空转
+  rafId = displayedLen.value < props.text.length ? requestAnimationFrame(tick) : 0;
 }
 
 watch(
-  () => props.isStreaming,
-  (streaming) => {
+  () => [props.isStreaming, props.text.length],
+  () => {
     cancelAnimationFrame(rafId);
-    if (streaming) {
+    if (props.isStreaming) {
       rafId = requestAnimationFrame(tick);
     } else {
       displayedLen.value = props.text.length;
