@@ -7,7 +7,8 @@
     </header>
 
     <div v-if="compute.error" class="load-error">加载失败：{{ compute.error }}</div>
-    <div v-else-if="!compute.providers.length && !compute.isLoading" class="load-empty">暂无 Provider，点击右上角添加</div>
+    <div v-else-if="compute.isLoading && !compute.providers.length" class="load-empty">加载中...</div>
+    <div v-else-if="!compute.providers.length" class="load-empty">暂无 Provider，点击右上角添加</div>
     <div class="providers">
       <div v-for="provider in compute.providers" :key="provider.id" class="provider-card" @click="editProvider(provider)">
         <h3>{{ provider.displayName }}</h3>
@@ -24,7 +25,13 @@
           class="test-result"
           :class="{ fail: !testResult.ok }"
         >
-          {{ testResult.ok ? "连接成功" : `连接失败: ${testResult.error}` }}
+          {{
+            testResult.ok
+              ? testResult.discovered
+                ? `连接成功（发现 ${testResult.discovered} 个模型）`
+                : "连接成功"
+              : `连接失败: ${testResult.error}`
+          }}
         </p>
       </div>
     </div>
@@ -86,7 +93,7 @@ const showProviderModal = ref(false);
 const editingProvider = ref<Provider | null>(null);
 // 测试连接最长 30s：进行中禁用所有测试按钮防连点，结果与 providerId 绑定防串台
 const testingId = ref<string | null>(null);
-const testResult = ref<{ providerId: string; ok: boolean; error?: string } | null>(null);
+const testResult = ref<{ providerId: string; ok: boolean; error?: string; discovered?: number } | null>(null);
 const saving = ref(false);
 const modalError = ref("");
 const modelError = ref("");
@@ -173,8 +180,8 @@ async function testProvider(id: string) {
   testingId.value = id;
   testResult.value = null;
   try {
-    await compute.testConnection(id);
-    testResult.value = { providerId: id, ok: true };
+    const res = await compute.testConnection(id);
+    testResult.value = { providerId: id, ok: true, discovered: res.discovered?.length };
   } catch (err) {
     testResult.value = {
       providerId: id,
@@ -189,6 +196,11 @@ async function testProvider(id: string) {
 async function addModel() {
   if (!editingProvider.value || !newModel.id) return;
   modelError.value = "";
+  // engine 侧不查重，重复 id 会让 :key 撞车且语义含糊
+  if (editingProvider.value.models.some((m) => m.id === newModel.id)) {
+    modelError.value = `模型 ID 已存在：${newModel.id}`;
+    return;
+  }
   try {
     await compute.addModel(editingProvider.value.id, { ...newModel });
     newModel.id = "";

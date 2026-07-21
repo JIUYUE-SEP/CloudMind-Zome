@@ -47,13 +47,14 @@ export const useSelfImageStore = defineStore("self-image", () => {
     }
   }
 
-  function save() {
-    if (typeof window === "undefined") return;
-    // localStorage 在隐私模式/超配额时会抛错，静默降级为不持久化
+  function save(): boolean {
+    if (typeof window === "undefined") return false;
+    // localStorage 在隐私模式/超配额时会抛错：返回 false 让页面据实显示"保存失败"
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(selfImage.value));
+      return true;
     } catch {
-      // ignore
+      return false;
     }
   }
 

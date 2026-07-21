@@ -39,7 +39,8 @@
               ✎
             </button>
           </div>
-          <div v-if="!agents.list.length && !agents.isLoading && !agents.error" class="comm-empty">暂无心智</div>
+          <div v-if="agents.isLoading && !agents.list.length && !agents.error" class="comm-empty">加载中...</div>
+          <div v-else-if="!agents.list.length && !agents.error" class="comm-empty">暂无心智</div>
         </template>
 
         <template v-if="tab === 'group'">
@@ -57,7 +58,8 @@
               <div class="comm-preview">{{ session.agentIds.length }} 位成员</div>
             </div>
           </div>
-          <div v-if="!groupSessions.length && !sessions.isLoading && !sessions.error" class="comm-empty">暂无群聊</div>
+          <div v-if="sessions.isLoading && !groupSessions.length && !sessions.error" class="comm-empty">加载中...</div>
+          <div v-else-if="!groupSessions.length && !sessions.error" class="comm-empty">暂无群聊</div>
         </template>
       </div>
     </aside>

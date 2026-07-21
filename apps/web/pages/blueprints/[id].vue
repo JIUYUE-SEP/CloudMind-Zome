@@ -9,6 +9,7 @@
       <span v-if="saveState === 'error'" class="save-err">{{ saveError }}</span>
     </header>
     <div v-if="loadError" class="load-error">加载失败：{{ loadError }}</div>
+    <div v-else-if="loading" class="load-error">加载中...</div>
     <template v-else>
       <BlueprintCanvas :nodes="nodes" :edges="edges" @update="onUpdate" @save="save" @execute="execute" />
       <div class="execution-panel">
@@ -36,6 +37,7 @@ const store = useBlueprintsStore();
 const client = useEngineClient();
 
 const blueprint = ref<Blueprint | null>(null);
+const loading = ref(true);
 const name = ref("");
 const nodes = ref<BlueprintNode[]>([]);
 const edges = ref<BlueprintEdge[]>([]);
@@ -62,6 +64,8 @@ onMounted(async () => {
   } catch (err) {
     loadError.value = err instanceof Error ? err.message : "蓝图不存在或加载失败";
     return;
+  } finally {
+    loading.value = false;
   }
   name.value = blueprint.value.name;
   nodes.value = blueprint.value.nodes;

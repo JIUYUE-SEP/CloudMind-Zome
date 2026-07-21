@@ -30,10 +30,15 @@ export const useSettingsStore = defineStore("settings", () => {
     saveState.value = "saving";
     saveError.value = "";
     try {
+      // v-model.number 清空输入会得到 ""：非有限数的字段不下发，
+      // 避免空字符串写进 engine 的 memory 配置（缺省字段由 engine 保留旧值）
+      const memory = Object.fromEntries(
+        Object.entries(settings.value.memory).filter(([, v]) => Number.isFinite(v)),
+      ) as unknown as AppSettings["memory"];
       // "***" 是 GET 掩码：不提交（engine 侧也防御）；空字符串语义是"清除 key"，必须原样提交
       const tavilyApiKey = settings.value.tavilyApiKey;
       await client.updateConfig({
-        memory: settings.value.memory,
+        memory,
         ...(tavilyApiKey !== undefined && tavilyApiKey !== "***" ? { tavilyApiKey } : {}),
       });
       saveState.value = "saved";

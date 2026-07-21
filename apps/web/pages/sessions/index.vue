@@ -25,9 +25,10 @@
       <div v-if="formError" class="form-error">{{ formError }}</div>
     </div>
     <div v-if="sessions.error" class="load-error">加载失败：{{ sessions.error }}</div>
-    <div v-else-if="!sessions.sessions.length && !sessions.isLoading" class="load-empty">暂无群聊</div>
+    <div v-else-if="sessions.isLoading && !groupSessions.length" class="load-empty">加载中...</div>
+    <div v-else-if="!groupSessions.length" class="load-empty">暂无群聊</div>
     <ul class="session-list">
-      <li v-for="session in sessions.sessions" :key="session.id">
+      <li v-for="session in groupSessions" :key="session.id">
         <NuxtLink :to="`/sessions/${session.id}`">
           {{ session.name }} ({{ session.agentIds.length }} 人)
         </NuxtLink>
@@ -37,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useSessionsStore } from "@/stores/sessions";
 import { useAgentsStore } from "@/stores/agents";
 
@@ -48,6 +49,9 @@ const selectedAgentId = ref("");
 const creating = ref(false);
 const formError = ref("");
 const newSession = ref<{ name: string; agentIds: string[] }>({ name: "", agentIds: [] });
+
+// 本页只展示群聊（与 hub 的口径一致），intermind 等其他类型不混入
+const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
 
 onMounted(() => {
   sessions.load();

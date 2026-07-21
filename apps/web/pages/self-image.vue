@@ -81,8 +81,7 @@ watch(
     saveStatus.value = "保存中…";
     if (timeout) clearTimeout(timeout);
     timeout = setTimeout(() => {
-      store.save();
-      saveStatus.value = "已保存";
+      saveStatus.value = store.save() ? "已保存" : "保存失败";
     }, 300);
   },
   { deep: true }

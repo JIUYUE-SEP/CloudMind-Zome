@@ -47,10 +47,9 @@ export const useChatStore = defineStore("chat", () => {
 
     // 旧 socket 在关闭握手完成前仍可能触发 onmessage/onclose：
     // 代际比对，过期连接的帧一律丢弃，防止写脏新会话状态
-    let conn: ReturnType<typeof client.connect>;
     const stale = () => conn !== connection;
 
-    conn = client.connect(agentId, sessionId.value, {
+    const conn = client.connect(agentId, sessionId.value, {
       onOpen: () => {
         if (stale()) return;
         isConnected.value = true;

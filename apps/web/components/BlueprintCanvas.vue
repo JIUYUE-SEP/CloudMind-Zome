@@ -85,6 +85,7 @@
           参数 (JSON)
           <textarea v-model="toolArgs" rows="3"></textarea>
         </label>
+        <div v-if="argsError" class="args-error">{{ argsError }}</div>
       </template>
       <button @click="applyConfig">应用</button>
       <button class="danger" @click="deleteSelected">删除节点</button>
@@ -135,6 +136,7 @@ const llmAgentId = ref("");
 const llmPrompt = ref("");
 const toolName = ref("");
 const toolArgs = ref("{}");
+const argsError = ref("");
 
 function nodeLabel(node: BlueprintNode): string {
   const name = node.config?.name as string | undefined;
@@ -163,8 +165,11 @@ function applyConfig() {
     config.toolName = toolName.value;
     try {
       config.arguments = JSON.parse(toolArgs.value);
+      argsError.value = "";
     } catch {
-      config.arguments = {};
+      // 不静默置 {}：保留节点既有配置，提示用户修正后重试
+      argsError.value = "参数 JSON 格式错误，本次修改未应用";
+      return;
     }
   }
   selectedNode.value.config = config;
@@ -425,5 +430,11 @@ function portY(nodeId: string): number {
 .config-panel button.danger {
   background: #ff5c5c;
   color: white;
+}
+
+.args-error {
+  font-size: 12px;
+  color: var(--mc-danger);
+  margin-top: 6px;
 }
 </style>
