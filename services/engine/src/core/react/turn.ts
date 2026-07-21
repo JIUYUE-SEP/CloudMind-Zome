@@ -96,6 +96,10 @@ export async function runTurn(
     }
   }
 
+  // turn 级结束帧：与 step.end（每个 loop step 都发）区分，
+  // 前端只在收到本帧时才复位"生成中"状态，避免工具执行期间输入框提前解锁
+  emit({ type: "turn.end" });
+
   return {
     messages,
     assistantMessage: assistantMessage!,

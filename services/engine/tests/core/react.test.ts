@@ -95,6 +95,41 @@ describe("runTurn", () => {
 
     expect(events.some((e) => e.type === "text.delta")).toBe(true);
     expect(events.some((e) => e.type === "step.end")).toBe(true);
+    // turn.end 在循环结束后发出且只发一次
+    expect(events.at(-1)?.type).toBe("turn.end");
+    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
+  });
+
+  it("多步 ReAct：每步发 step.end，整轮只发一次 turn.end", async () => {
+    const provider = new ToolThenStopProvider();
+    const events: LLMEvent[] = [];
+
+    await runTurn(
+      {
+        provider,
+        model: "tool-then-stop",
+        messages: [userMessage("call dummy")],
+        tools: [
+          {
+            type: "function",
+            function: { name: "dummy", description: "dummy", parameters: {} },
+          },
+        ],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["dummy", dummyTool]]),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+      },
+      (e) => events.push(e)
+    );
+
+    // tool_use step + final stop step = 2 个 step.end，turn.end 只在末尾一次
+    expect(events.filter((e) => e.type === "step.end")).toHaveLength(2);
+    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("turn.end");
   });
 
   it("executes a single tool call and continues", async () => {

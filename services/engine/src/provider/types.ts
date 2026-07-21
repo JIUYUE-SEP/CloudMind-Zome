@@ -28,12 +28,22 @@ export interface StepEndEvent {
   finishReason?: string;
 }
 
+/**
+ * 一轮（turn）结束：由 runTurn 在 ReAct 循环退出后发出（含 maxSteps 耗尽）。
+ * 与 step.end 区分——后者每个 loop step 都会发，tool_use 时循环继续；
+ * 前端应只在 turn.end / error / close 时复位"生成中"状态。
+ */
+export interface TurnEndEvent {
+  type: "turn.end";
+}
+
 export type LLMEvent =
   | TextDeltaEvent
   | ThinkingDeltaEvent
   | ToolCallEvent
   | ToolResultEvent
-  | StepEndEvent;
+  | StepEndEvent
+  | TurnEndEvent;
 
 export interface LLMChatParams {
   model: string;
