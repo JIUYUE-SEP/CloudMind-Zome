@@ -56,7 +56,6 @@ describe("ContextPipeline", () => {
       maxContextTokens: 80000,
       reserveRatio: 0.1,
       hotMemoryCount: 2,
-      semanticCandidateCount: 10,
     });
     const pipeline = new ContextPipeline({}, new FakeCounter());
     expect(pipeline.budgetTokens).toBe(72000);

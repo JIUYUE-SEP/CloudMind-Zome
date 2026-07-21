@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -56,6 +56,18 @@ describe("normalizeSemanticSearchConfig", () => {
   it("minScore 超出 [0,1] 被截断", () => {
     expect(normalizeSemanticSearchConfig({ minScore: -0.5 }).minScore).toBe(0);
     expect(normalizeSemanticSearchConfig({ minScore: 2 }).minScore).toBe(1);
+  });
+
+  it("NaN 与非法输入被归一", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(normalizeSemanticSearchConfig({ topK: Number.NaN }).topK).toBe(
+      DEFAULT_SEMANTIC_SEARCH_CONFIG.topK,
+    );
+    expect(warn).toHaveBeenCalledOnce();
+    expect(normalizeSemanticSearchConfig({ minScore: Number.NaN }).minScore).toBe(0);
+    expect(normalizeSemanticSearchConfig({ topK: 4.7 }).topK).toBe(4);
+    expect(normalizeSemanticSearchConfig({ topK: 1 }).topK).toBe(1);
+    expect(normalizeSemanticSearchConfig({ minScore: 1 }).minScore).toBe(1);
   });
 });
 
@@ -204,5 +216,25 @@ describe("SemanticRetriever", () => {
     const repo = makeRepo([]);
     const r = new SemanticRetriever(indexer, repo, config);
     expect(await r.retrieve("a1", "q", new Set(), "default")).toEqual([]);
+  });
+
+  it("注入内容按 2000 字符截断（与索引侧一致）", async () => {
+    const indexer = makeIndexer([{ id: "big", score: 0.9 }]);
+    const repo = makeRepo([rec("big", "x".repeat(5000), new Date(NOW).toISOString())]);
+    const r = new SemanticRetriever(indexer, repo, config);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+    expect(out).toHaveLength(1);
+    expect(out[0]!.content).toHaveLength(2000);
+  });
+
+  it("索引命中但 repo 查无此条：静默跳过", async () => {
+    const indexer = makeIndexer([
+      { id: "ghost", score: 0.99 },
+      { id: "real", score: 0.8 },
+    ]);
+    const repo = makeRepo([rec("real", "存在", new Date(NOW).toISOString())]);
+    const r = new SemanticRetriever(indexer, repo, config);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+    expect(out.map((m) => m.id)).toEqual(["real"]);
   });
 });

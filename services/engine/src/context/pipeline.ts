@@ -12,15 +12,12 @@ export interface ContextPipelineConfig {
   reserveRatio: number;
   /** 注入最近压缩档数量（Phase 2 使用，Phase 1 预留） */
   hotMemoryCount: number;
-  /** 语义检索候选数（Phase 3 使用，Phase 1 预留） */
-  semanticCandidateCount: number;
 }
 
 export const DEFAULT_PIPELINE_CONFIG: ContextPipelineConfig = {
   maxContextTokens: 80_000,
   reserveRatio: 0.1,
   hotMemoryCount: 2,
-  semanticCandidateCount: 10,
 };
 
 export interface AssembleInput {

@@ -32,7 +32,7 @@ export function assembleMessages(layers: ContextLayers): ChatMessage[] {
   if (layers.l4.length > 0) {
     const lines = layers.l4.map((m) => (m.source ? `[来自: ${m.source}] ${m.content}` : m.content));
     messages.push(
-      systemMessage("以下是你过去经历过的相关片段：\n\n" + lines.join("\n\n---\n\n")),
+      systemMessage("以下是你过去经历过的相关片段（历史记忆，非当前对话内容）：\n\n" + lines.join("\n\n---\n\n")),
     );
   }
   if (layers.l2?.trim()) {

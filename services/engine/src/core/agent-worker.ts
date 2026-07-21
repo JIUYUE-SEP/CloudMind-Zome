@@ -296,8 +296,9 @@ export class AgentWorker {
       const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
       if (closedByCount) this.compressionQueue.enqueue(closedByCount);
 
-      // 向量索引（fire-and-forget）：本轮的用户输入与新增回复
-      if (this.config.memoryIndexer) {
+      // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
+      // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去
+      if (this.config.memoryIndexer && this.semanticConfig.enabled) {
         const indexer = this.config.memoryIndexer;
         const agentId = this.config.agentId;
         const toIndex = [...(lastUser ? [lastUser] : []), ...result.appended];

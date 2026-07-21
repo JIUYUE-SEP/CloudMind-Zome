@@ -26,11 +26,13 @@ export function normalizeSemanticSearchConfig(
   partial: Partial<SemanticSearchConfig> = {},
 ): SemanticSearchConfig {
   const config = { ...DEFAULT_SEMANTIC_SEARCH_CONFIG, ...partial };
-  if (config.topK < 1) {
+  // NaN 会穿透一切比较（search(top_k=NaN) 到 gRPC 行为未定义）；非整数取整
+  if (!Number.isFinite(config.topK) || config.topK < 1) {
     console.warn(`[semantic] topK=${config.topK} 非法，已按默认 ${DEFAULT_SEMANTIC_SEARCH_CONFIG.topK} 处理`);
     config.topK = DEFAULT_SEMANTIC_SEARCH_CONFIG.topK;
   }
-  if (config.minScore < 0) config.minScore = 0;
+  config.topK = Math.floor(config.topK);
+  if (!Number.isFinite(config.minScore) || config.minScore < 0) config.minScore = 0;
   if (config.minScore > 1) config.minScore = 1;
   return config;
 }
@@ -48,12 +50,16 @@ export function timeDecay(createdAt: string, now: number = Date.now()): number {
   return 0.3;
 }
 
+/** 与索引侧一致的注入截断（indexer.ts MAX_INDEX_CHARS）：tool 大文本不会全量进 L4 */
+const MAX_INJECT_CHARS = 2000;
+
 function recordText(record: ChatMessageRecord): string {
   return record.content
     .filter((c): c is { type: "text"; text: string } => c.type === "text")
     .map((c) => c.text)
     .join("")
-    .trim();
+    .trim()
+    .slice(0, MAX_INJECT_CHARS);
 }
 
 /**
