@@ -109,7 +109,9 @@ export class AgentWorker {
         if (msg.role === "user") {
           await this.config.messageRepository
             .append({
-              id: randomUUID(),
+              // 保留原消息 id（与 ws 路径对齐）：话题压缩的 archiveAndRemove
+              // 按 tracker 记录的 id 匹配热存储，另造 id 会导致永远无法归档
+              id: msg.id || randomUUID(),
               sessionId: job.sessionId,
               role: "user",
               content: msg.content,

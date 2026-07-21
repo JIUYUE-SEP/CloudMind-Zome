@@ -150,7 +150,8 @@ describe("AgentWorker", () => {
 
     expect(append).toHaveBeenCalledTimes(1);
     expect(append).toHaveBeenCalledWith(
-      expect.objectContaining({ role: "user", sessionId: "sess-1", content: [{ type: "text", text: "hi" }] })
+      // 保留原消息 id：话题压缩按此 id 归档，另造 id 会永远无法清理热存储
+      expect.objectContaining({ id: "1", role: "user", sessionId: "sess-1", content: [{ type: "text", text: "hi" }] })
     );
     expect(enqueueSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "sched-1", sessionId: "sess-1" }));
   });
@@ -538,6 +539,11 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       topicCompression: { messageThreshold: 4 },
     });
 
+    // 模拟 ws/scheduler 路径：user 消息以相同 id 先持久化——
+    // 持久化 id 与 job 消息 id 不一致是真实出现过的归档失配 bug（review M2）
+    await repo.append({ ...seqMessage("u1", "第一个问题", 0), sessionId: "agent-1" });
+    await repo.append({ ...seqMessage("u2", "第二个问题", 1), sessionId: "agent-1" });
+
     // j1：u1 + a1；j2：u2 + a2 → tracker 累计 4 条（阈值），触发关闭压缩
     worker.enqueue({ id: "j1", messages: [seqMessage("u1", "第一个问题", 0)], onEvent: () => {} });
     worker.enqueue({ id: "j2", messages: [seqMessage("u2", "第二个问题", 1)], onEvent: () => {} });
@@ -551,12 +557,11 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       expect(files.filter((f) => f.endsWith(".md"))).toHaveLength(1);
     });
 
-    // 热存储中的 assistant 消息被归档清理（u1/u2 未经过 worker 持久化）
+    // 热存储中的 user/assistant 消息全部被归档清理
     expect(await repo.listBySession("agent-1")).toHaveLength(0);
+    // 归档完整可恢复（含 user 消息：验证持久化 id 与 tracker 记录 id 一致）
     const archived = await repo.getArchivedByIds(["u1", "u2"]);
-    expect(archived.length).toBeGreaterThanOrEqual(0); // 归档恢复通道可用
-    const archivedAssistant = await repo.listBySession("agent-1");
-    expect(archivedAssistant).toHaveLength(0);
+    expect(archived.map((m) => m.id).sort()).toEqual(["u1", "u2"]);
 
     // j3：assemble 注入最近压缩档（L5 system 消息进入 provider 参数）
     worker.enqueue({ id: "j3", messages: [seqMessage("u3", "新话题", 2)], onEvent: () => {} });
