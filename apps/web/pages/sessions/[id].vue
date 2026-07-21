@@ -53,31 +53,34 @@ const isConnected = ref(false);
 const notFound = ref(false);
 let connection: ReturnType<typeof client.connectSession> | null = null;
 
+// 组件卸载在途：后续 await 返回后不得落地数据或建立连接
+let alive = true;
+
 onMounted(async () => {
   // store 内部已捕获加载错误并写入 error：列表没拉下来时不做存在性判断，继续尝试连接
   await sessions.load();
   await agents.load();
+  if (!alive) return;
   session.value = sessions.sessions.find((s) => s.id === sessionId.value);
   if (!sessions.error && !session.value) {
     notFound.value = true;
     return;
   }
   try {
-    await loadMessages();
+    const records = await client.getSessionMessages(sessionId.value, 100);
+    if (!alive) return;
+    messages.value = recordsToDisplay(records);
   } catch {
     // 历史加载失败则从空会话开始
   }
+  if (!alive) return;
   connect();
 });
 
 onUnmounted(() => {
+  alive = false;
   connection?.close();
 });
-
-async function loadMessages() {
-  const records = await client.getSessionMessages(sessionId.value, 100);
-  messages.value = recordsToDisplay(records);
-}
 
 function connect() {
   if (connection) connection.close();

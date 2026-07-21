@@ -101,7 +101,7 @@ import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type Session } from "@/composables/useEngineClient";
-import { useChatRecords } from "@/composables/useChatRecords";
+import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
 import { useGroupChatStream } from "@/composables/useGroupChatStream";
 import {
   findPendingApproval,
@@ -170,18 +170,24 @@ async function selectGroup(session: Session) {
   sessionProjectId.value = session.projectId;
   // 先断旧连接，await 期间旧会话的 delta 不会串进新会话
   closeGroupConnection();
-  await loadGroupMessages(session.id);
+  const msgs = await fetchGroupMessages(session.id);
+  // await 期间又选了别的会话/私聊：过期的历史结果不得覆盖当前消息列表
   if (seq !== groupSelectSeq) return;
+  if (msgs) {
+    groupMessages.value = msgs;
+  } else {
+    groupMessages.value = [];
+    pushGroupError("历史消息加载失败");
+  }
   connectGroup(session.id);
 }
 
-async function loadGroupMessages(sessionId: string) {
+async function fetchGroupMessages(sessionId: string): Promise<DisplayMessage[] | null> {
   try {
     const records = await client.getSessionMessages(sessionId, 100);
-    groupMessages.value = recordsToDisplay(records);
+    return recordsToDisplay(records);
   } catch {
-    groupMessages.value = [];
-    pushGroupError("历史消息加载失败");
+    return null;
   }
 }
 

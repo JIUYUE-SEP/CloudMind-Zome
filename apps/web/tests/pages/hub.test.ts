@@ -148,4 +148,61 @@ describe("Hub page group chat code mode", () => {
       (wrapper.vm as unknown as { sessionProjectId?: string }).sessionProjectId,
     ).toBe("s1");
   });
+
+  it("快速切换群聊时，先选会话的迟到历史不覆盖后选会话", async () => {
+    const s2 = { ...groupSession, id: "s2", name: "Team2" };
+    const record = (id: string, text: string) => ({
+      id,
+      role: "assistant",
+      content: [{ type: "text", text }],
+      createdAt: "",
+    });
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes("/sessions/s1/messages")) {
+        // s1 的历史慢返回：切到 s2 之后才 resolve
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                json: () => Promise.resolve([record("old-s1", "S1 历史")]),
+              } as unknown as Response),
+            40,
+          ),
+        );
+      }
+      if (url.includes("/sessions/s2/messages")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([record("new-s2", "S2 历史")]),
+        } as unknown as Response);
+      }
+      if (url.includes("/sessions") && !url.includes("/messages")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([groupSession, s2]),
+        } as unknown as Response);
+      }
+      return mockFetch(url);
+    }) as unknown as typeof globalThis.fetch;
+
+    const wrapper = await mountHub();
+    await flushPromises();
+    const groupTab = wrapper.findAll(".comm-mode-btn").find((el) => el.text() === "群聊");
+    await groupTab!.trigger("click");
+    await flushPromises();
+
+    // 先选 s1（历史加载在途），立刻改选 s2
+    const items = wrapper.findAll(".comm-item");
+    await items.find((el) => el.text().includes("Team"))!.trigger("click");
+    await items.find((el) => el.text().includes("Team2"))!.trigger("click");
+
+    // 等 s1 的慢响应也返回后断言：消息列表只有 s2 的历史
+    await new Promise((r) => setTimeout(r, 80));
+    await flushPromises();
+
+    const msgs = (wrapper.vm as unknown as { groupMessages: { id: string; text: string }[] })
+      .groupMessages;
+    expect(msgs.map((m) => m.id)).toEqual(["new-s2"]);
+  });
 });

@@ -18,12 +18,16 @@ export const useChatStore = defineStore("chat", () => {
   const isConnected = ref(false);
   const isStreaming = ref(false);
   let connection: ReturnType<typeof client.connect> | null = null;
+  // 历史加载代际：每次加载/断连自增，迟到的过期响应不得覆盖当前会话
+  let loadSeq = 0;
   // Date.now() 同毫秒会撞 id（v-for key 冲突），挂自增序号
   let msgSeq = 0;
   const nextMsgId = (prefix: string) => `${prefix}_${Date.now()}_${msgSeq++}`;
 
   async function loadMessages(agentId: string) {
+    const seq = ++loadSeq;
     const records = await client.getMessages(agentId, sessionId.value, 100);
+    if (seq !== loadSeq) return;
     messages.value = recordsToDisplay(records);
   }
 
@@ -154,6 +158,8 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   function disconnect() {
+    // 作废在途的历史加载：否则切走后迟到的响应会把消息列表写回已离开的会话
+    loadSeq++;
     connection?.close();
     connection = null;
     isConnected.value = false;
