@@ -152,7 +152,10 @@ describe("Sessions API", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
     expect(res.body[0].id).toBe("m1");
+    expect(res.body[0].agentId).toBeUndefined();
     expect(res.body[1].id).toBe("m2");
+    // assistant 消息标注归属 Agent，user 消息不标注
+    expect(res.body[1].agentId).toBe("a2");
     await app.close();
   });
 });

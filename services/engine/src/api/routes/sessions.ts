@@ -78,7 +78,10 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     for (const agentId of session.agentIds) {
       const repo = context.getMessageRepository(agentId);
       const agentMessages = await repo.listBySession(id, { limit: limit ? Number(limit) : 100 });
-      messages.push(...agentMessages);
+      for (const msg of agentMessages) {
+        // assistant/tool 消息归属其所在仓库的 Agent，供前端展示发言人；user 消息不属于任何 Agent
+        messages.push(msg.role === "user" ? msg : { ...msg, agentId });
+      }
     }
     messages.sort((a, b) => new Date((a as { createdAt: string }).createdAt).getTime() - new Date((b as { createdAt: string }).createdAt).getTime());
     return messages;
