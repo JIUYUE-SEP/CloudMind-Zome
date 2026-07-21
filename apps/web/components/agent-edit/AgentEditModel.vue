@@ -102,8 +102,9 @@ const proxyProviderId = computed({
 const proxyModelId = computed({
   get: () => props.agent.modelId || props.agent.model || "",
   set: (value: string) => {
+    // 选定 modelId 时同时清掉遗留 model 字段，避免配置里新旧两个字段并存
     if (value) {
-      emit("update", { modelId: value });
+      emit("update", { modelId: value, model: undefined });
     } else {
       emit("update", { modelId: undefined, model: undefined });
     }

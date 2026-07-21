@@ -1,12 +1,11 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref } from "vue";
 import type { AgentConfig } from "@mindcloud/shared";
 import { useEngineClient } from "@/composables/useEngineClient";
 
 export const useAgentsStore = defineStore("agents", () => {
   const client = useEngineClient();
   const list = ref<AgentConfig[]>([]);
-  const currentId = ref<string | null>(null);
   const isLoading = ref(false);
   const error = ref("");
 
@@ -38,14 +37,7 @@ export const useAgentsStore = defineStore("agents", () => {
   async function remove(id: string) {
     await client.deleteAgent(id);
     list.value = list.value.filter((a) => a.id !== id);
-    if (currentId.value === id) currentId.value = null;
   }
 
-  function select(id: string) {
-    currentId.value = id;
-  }
-
-  const current = computed(() => list.value.find((a) => a.id === currentId.value));
-
-  return { list, currentId, current, isLoading, error, load, create, update, remove, select };
+  return { list, isLoading, error, load, create, update, remove };
 });

@@ -192,7 +192,7 @@ describe("agents 新建页", () => {
     const post = calls.find((c) => c.method === "POST");
     expect(post?.url).toMatch(/\/agents$/);
     expect(post?.body).toMatchObject({ id: "new-agent", name: "新心智" });
-    expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit");
+    expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit", { replace: true });
   });
 
   it("非法 ID 被前端预校验拦截，不提交", async () => {
@@ -227,7 +227,7 @@ describe("agents 新建页", () => {
 
     const post = calls.find((c) => c.method === "POST");
     expect(post?.body).toMatchObject({ id: "new-agent", name: "新心智" });
-    expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit");
+    expect(navigateToMock).toHaveBeenCalledWith("/agents/new-agent/edit", { replace: true });
   });
 
   it("缺少 ID 或名称时提示且不提交", async () => {

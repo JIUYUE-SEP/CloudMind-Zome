@@ -142,6 +142,16 @@ function retryLoad() {
 
 watch(() => [sourceAgent.value, isNew.value], syncAgent, { immediate: true });
 
+// agentId 切换（/agents/a/edit → /agents/b/edit 组件复用）时复位脏标记并重新装载，
+// 否则 A 的未保存表单会被保存到 B
+watch(
+  () => props.agentId,
+  () => {
+    formDirty = false;
+    syncAgent();
+  },
+);
+
 function onUpdate(patch: Partial<AgentConfig>) {
   formDirty = true;
   agentForm.value = { ...agentForm.value, ...patch };
@@ -173,7 +183,8 @@ async function save() {
     if (isNew.value) {
       const created = await agents.create(agentForm.value);
       formDirty = false;
-      navigateTo(`/agents/${created.id}/edit`);
+      // replace：新建页已消费完毕，后退不应回到可重复提交的表单
+      navigateTo(`/agents/${encodeURIComponent(created.id)}/edit`, { replace: true });
     } else {
       if (!props.agentId) return;
       await agents.update(props.agentId, agentForm.value);

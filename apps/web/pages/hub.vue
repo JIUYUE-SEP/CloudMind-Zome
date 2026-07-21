@@ -34,7 +34,7 @@
             <button
               class="edit-agent-btn"
               title="编辑"
-              @click.stop="navigateTo('/agents/' + agent.id + '/edit')"
+              @click.stop="navigateTo('/agents/' + encodeURIComponent(agent.id) + '/edit')"
             >
               ✎
             </button>

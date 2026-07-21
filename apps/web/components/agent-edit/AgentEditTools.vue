@@ -16,6 +16,16 @@
         </div>
       </label>
     </div>
+    <!-- 已勾选但不在可选列表（engine 已下架或列表加载失败）的工具：保留可见，可取消勾选 -->
+    <div v-if="missingTools.length" class="tools-list">
+      <label v-for="name in missingTools" :key="name" class="tool-item missing">
+        <input type="checkbox" checked @change="toggle(name)" />
+        <div class="tool-info">
+          <div class="tool-name">{{ name }}</div>
+          <div class="tool-meta">已下架</div>
+        </div>
+      </label>
+    </div>
   </div>
 </template>
 
@@ -38,6 +48,11 @@ const loading = ref(false);
 const error = ref("");
 
 const selected = computed(() => new Set(props.agent.tools || []));
+
+// 已勾选但不在 engine 可选列表里的工具（下架或列表加载失败）
+const missingTools = computed(() =>
+  [...selected.value].filter((name) => !tools.value.some((t) => t.name === name)),
+);
 
 onMounted(async () => {
   loading.value = true;
@@ -106,6 +121,11 @@ function toggle(name: string) {
 
 .tool-item:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.tool-item.missing {
+  border-style: dashed;
+  opacity: 0.75;
 }
 
 .tool-item input[type="checkbox"] {

@@ -13,7 +13,10 @@
     <div v-if="agents.isLoading && !agents.list.length" class="empty-state">
       <div class="empty-text">加载中...</div>
     </div>
-    <div v-else-if="agents.error" class="error-message">加载失败：{{ agents.error }}</div>
+    <div v-else-if="agents.error && !agents.list.length" class="error-message">
+      加载失败：{{ agents.error }}
+      <button class="retry-btn" @click="agents.load()">重试</button>
+    </div>
     <div v-else-if="!agents.list.length" class="empty-state">
       <div class="empty-icon">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -29,7 +32,13 @@
       <div class="empty-hint">点击"新建心智"创建你的第一个数字生命</div>
     </div>
 
-    <div v-else class="agent-grid">
+    <template v-else>
+      <!-- 刷新失败但手里有数据：顶部错误条 + 保留列表，不整页替换 -->
+      <div v-if="agents.error" class="error-message">
+        刷新失败：{{ agents.error }}
+        <button class="retry-btn" @click="agents.load()">重试</button>
+      </div>
+      <div class="agent-grid">
       <div
         v-for="a in agents.list"
         :key="a.id"
@@ -55,7 +64,8 @@
           <button class="action-btn danger" @click.stop="onDelete(a)">删除</button>
         </div>
       </div>
-    </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -83,7 +93,7 @@ function avatarStyle(a: AgentConfig) {
 }
 
 function openEdit(id: string) {
-  navigateTo(`/agents/${id}/edit`);
+  navigateTo(`/agents/${encodeURIComponent(id)}/edit`);
 }
 
 async function onDelete(a: AgentConfig) {
@@ -285,6 +295,17 @@ async function onDelete(a: AgentConfig) {
 .empty-hint {
   font-size: 13px;
   color: var(--mc-text-tertiary);
+}
+
+.retry-btn {
+  margin-left: 12px;
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .error-message {
