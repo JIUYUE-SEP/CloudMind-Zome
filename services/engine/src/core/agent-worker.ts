@@ -11,7 +11,7 @@ import { ContextPipeline } from "../context/pipeline.js";
 import { TopicTracker } from "../memory/topic/tracker.js";
 import { CompressionQueue } from "../memory/topic/queue.js";
 import { compressTopic } from "../memory/topic/compressor.js";
-import { latestSummaries, writeCompressedTopic } from "../memory/topic/store.js";
+import { latestSummaries, removeCompressedTopic, writeCompressedTopic } from "../memory/topic/store.js";
 import {
   DEFAULT_TOPIC_COMPRESSION_CONFIG,
   type TopicCompressionConfig,
@@ -93,7 +93,14 @@ export class AgentWorker {
         this.topicConfig.compressionModel || this.config.model,
       );
       await writeCompressedTopic(this.config.agentId, compressed);
-      await this.config.messageRepository.archiveAndRemove(compressed.msgIds);
+      try {
+        await this.config.messageRepository.archiveAndRemove(compressed.msgIds);
+      } catch (err) {
+        // 归档失败而压缩档已生效会导致"摘要 + 原文"重复注入：
+        // 隔离压缩档（消息留在热存储，由队列告警记录），保证上下文不重复
+        await removeCompressedTopic(this.config.agentId, compressed.topicId);
+        throw err;
+      }
     });
   }
 

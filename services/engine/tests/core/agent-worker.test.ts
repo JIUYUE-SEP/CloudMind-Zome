@@ -604,6 +604,37 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     ).toEqual([]);
   });
 
+  it("归档失败时隔离压缩档：摘要/原文不重复，消息留在热存储", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const failingRepo = Object.create(repo) as IMessageRepository;
+    failingRepo.archiveAndRemove = async () => {
+      throw new Error("disk full");
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: failingRepo,
+      topicCompression: { messageThreshold: 4 },
+    });
+
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "问题一", 0)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "问题二", 1)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 队列捕获归档失败并告警
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+
+    // 压缩档被隔离删除，不会与热存储原文重复注入
+    expect(
+      await fs.readdir(path.join(tmpDir, "agents", "agent-1", "_compressed")).catch(() => []),
+    ).toEqual([]);
+    // 原始消息完整保留在热存储
+    expect((await repo.listBySession("agent-1")).length).toBe(2);
+    warn.mockRestore();
+  });
+
   it("enabled=false 时不产出压缩档也不注入 L5", async () => {
     const provider = new CapturingProvider();
     const repo = new MessageRepository("agent-1");

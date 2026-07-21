@@ -49,6 +49,11 @@ export async function writeCompressedTopic(
   return filePath;
 }
 
+/** 删除压缩档（归档失败时隔离用：避免"摘要已注入 + 原文仍在热存储"的重复） */
+export async function removeCompressedTopic(agentId: string, topicId: string): Promise<void> {
+  await fs.unlink(path.join(compressedDir(agentId), `${topicId}.md`)).catch(() => {});
+}
+
 interface ParsedCompressedFile {
   compressedAt: string;
   text: string;
