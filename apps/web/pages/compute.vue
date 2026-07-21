@@ -14,9 +14,18 @@
         <p>{{ provider.baseUrl }}</p>
         <p>模型数: {{ provider.models.length }}</p>
         <div class="actions">
-          <button @click.stop="testProvider(provider.id)">测试连接</button>
+          <button :disabled="testingId !== null" @click.stop="testProvider(provider.id)">
+            {{ testingId === provider.id ? "测试中..." : "测试连接" }}
+          </button>
           <button @click.stop="removeProvider(provider.id)">删除</button>
         </div>
+        <p
+          v-if="testResult && testResult.providerId === provider.id"
+          class="test-result"
+          :class="{ fail: !testResult.ok }"
+        >
+          {{ testResult.ok ? "连接成功" : `连接失败: ${testResult.error}` }}
+        </p>
       </div>
     </div>
 
@@ -64,10 +73,6 @@
       </div>
       <div v-if="modelError" class="op-error">{{ modelError }}</div>
     </div>
-
-    <div v-if="testResult" class="test-result">
-      <p>{{ testResult.ok ? "连接成功" : `连接失败: ${testResult.error}` }}</p>
-    </div>
   </div>
 </template>
 
@@ -79,7 +84,9 @@ import type { Provider, ModelInfo } from "@/composables/useEngineClient";
 const compute = useComputeStore();
 const showProviderModal = ref(false);
 const editingProvider = ref<Provider | null>(null);
-const testResult = ref<{ ok: boolean; error?: string } | null>(null);
+// 测试连接最长 30s：进行中禁用所有测试按钮防连点，结果与 providerId 绑定防串台
+const testingId = ref<string | null>(null);
+const testResult = ref<{ providerId: string; ok: boolean; error?: string } | null>(null);
 const saving = ref(false);
 const modalError = ref("");
 const modelError = ref("");
@@ -162,11 +169,20 @@ async function removeProvider(id: string) {
 }
 
 async function testProvider(id: string) {
+  if (testingId.value !== null) return;
+  testingId.value = id;
   testResult.value = null;
   try {
-    testResult.value = await compute.testConnection(id);
+    await compute.testConnection(id);
+    testResult.value = { providerId: id, ok: true };
   } catch (err) {
-    testResult.value = { ok: false, error: err instanceof Error ? err.message : "测试失败" };
+    testResult.value = {
+      providerId: id,
+      ok: false,
+      error: err instanceof Error ? err.message : "测试失败",
+    };
+  } finally {
+    testingId.value = null;
   }
 }
 
@@ -325,10 +341,16 @@ header h1 {
 }
 
 .test-result {
-  margin-top: 16px;
+  margin: 10px 0 0;
   padding: 12px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  color: var(--mc-success);
+}
+
+.test-result.fail {
+  color: var(--mc-danger);
 }
 
 button {
