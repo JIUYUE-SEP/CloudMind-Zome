@@ -5,10 +5,10 @@
       <h1 class="page-title">{{ isNew ? "新建心智" : "编辑心智" }}</h1>
       <span v-if="!isNew" class="agent-id-badge">{{ agentId }}</span>
       <div class="back-bar-actions">
-        <button v-if="!isNew" class="danger-btn" :disabled="saving || deleting" @click="onDelete">
+        <button v-if="!isNew" class="danger-btn" :disabled="saving || deleting || formLocked" @click="onDelete">
           {{ deleting ? "删除中..." : "删除心智" }}
         </button>
-        <button class="save-btn" :disabled="saving || deleting" @click="save">
+        <button class="save-btn" :disabled="saving || deleting || formLocked" @click="save">
           {{ saving ? "保存中..." : "保存" }}
         </button>
       </div>
@@ -16,9 +16,14 @@
 
     <div v-if="validationError" class="error-message">{{ validationError }}</div>
     <div v-if="saveError" class="error-message">{{ saveError }}</div>
+    <div v-if="editLoadError" class="error-message">
+      加载失败：{{ agents.error }}
+      <button class="retry-btn" @click="retryLoad">重试</button>
+    </div>
 
     <div v-if="notFound" class="error-message">未找到该心智，可能已被删除。</div>
     <template v-else>
+      <div v-if="!isNew && !loadDone" class="loading-hint">加载中...</div>
       <div class="tabs">
         <button
           v-for="tab in tabs"
@@ -30,9 +35,10 @@
           {{ tab.label }}
         </button>
       </div>
-      <div class="form-section">
+      <!-- 数据未加载完成时禁用表单：防止在空表单上编辑后保存，覆盖服务端原有配置 -->
+      <fieldset class="form-section" :disabled="formLocked">
         <Component :is="currentComponent" :agent="agentForm" :is-new="isNew" @update="onUpdate" />
-      </div>
+      </fieldset>
     </template>
   </div>
 </template>
@@ -83,6 +89,18 @@ const notFound = computed(
   () => !isNew.value && loadDone.value && !agents.error && !sourceAgent.value,
 );
 
+// 编辑模式下源数据未就位（加载中或加载失败）时锁定表单与保存/删除：
+// 否则用户在空表单上的输入会把服务端原有的 persona/skills/tools 覆盖掉
+const formLocked = computed(() => !isNew.value && !sourceAgent.value);
+
+const editLoadError = computed(() => !isNew.value && loadDone.value && !!agents.error);
+
+async function loadAgents() {
+  loadDone.value = false;
+  await agents.load();
+  loadDone.value = true;
+}
+
 const agentForm = ref<AgentConfig>(buildEmptyAgent());
 // 用户开始编辑后置脏，列表刷新（agents.load）不再覆盖未保存的输入
 let formDirty = false;
@@ -113,10 +131,11 @@ function syncAgent() {
   }
 }
 
-onMounted(async () => {
-  await agents.load();
-  loadDone.value = true;
-});
+onMounted(loadAgents);
+
+function retryLoad() {
+  loadAgents();
+}
 
 watch(() => [sourceAgent.value, isNew.value], syncAgent, { immediate: true });
 
@@ -128,6 +147,9 @@ function onUpdate(patch: Partial<AgentConfig>) {
 async function save() {
   validationError.value = "";
   saveError.value = "";
+
+  // 数据未加载完成，禁止保存（防空表单覆盖服务端配置）
+  if (formLocked.value) return;
 
   // 输入阶段不做 trim（避免吃掉名称中的空格），保存校验前统一处理
   const id = agentForm.value.id.trim();
@@ -289,8 +311,30 @@ async function onDelete() {
   border: 1px solid var(--mc-border);
   border-radius: 12px;
   padding: 24px;
-  margin-bottom: 20px;
+  margin: 0 0 20px;
+  min-width: 0;
   max-width: 720px;
+}
+
+.form-section:disabled {
+  opacity: 0.6;
+}
+
+.loading-hint {
+  color: var(--mc-text-tertiary);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.retry-btn {
+  margin-left: 12px;
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .error-message {

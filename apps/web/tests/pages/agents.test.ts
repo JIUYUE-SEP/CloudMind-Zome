@@ -291,6 +291,58 @@ describe("agents 编辑页", () => {
     expect(navigateToMock).toHaveBeenCalledWith("/agents");
   });
 
+  it("数据加载完成前表单禁用且禁止保存，加载完成后解锁", async () => {
+    let resolveAgents: ((r: unknown) => void) | undefined;
+    const { fetchMock, calls } = mockAgentsFetch([agentA]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method || "GET";
+        if (url.endsWith("/agents") && method === "GET") {
+          // 挂起列表请求，模拟 engine 响应慢
+          return new Promise((resolve) => {
+            resolveAgents = resolve;
+          });
+        }
+        return fetchMock(input, init);
+      }) as unknown as typeof fetch,
+    );
+
+    routeParams.id = "a1";
+    const wrapper = mount(AgentEdit);
+    await flushPromises();
+
+    // 加载中：表单 fieldset 禁用，点保存不提交
+    expect(wrapper.find("fieldset.form-section").attributes("disabled")).toBeDefined();
+    await wrapper.find(".save-btn").trigger("click");
+    await flushPromises();
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+
+    // 加载完成：解锁并填入数据
+    resolveAgents!({ ok: true, json: () => Promise.resolve([agentA]) });
+    await flushPromises();
+    expect(wrapper.find("fieldset.form-section").attributes("disabled")).toBeUndefined();
+    expect(wrapper.text()).not.toContain("加载中...");
+  });
+
+  it("加载失败时显示错误与重试，表单保持禁用", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) } as unknown as Response),
+      ) as unknown as typeof fetch,
+    );
+
+    routeParams.id = "a1";
+    const wrapper = mount(AgentEdit);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("加载失败");
+    expect(wrapper.find(".retry-btn").exists()).toBe(true);
+    expect(wrapper.find("fieldset.form-section").attributes("disabled")).toBeDefined();
+  });
+
   it("ID 不存在时显示未找到", async () => {
     const { fetchMock } = mockAgentsFetch([]);
     vi.stubGlobal("fetch", fetchMock);
