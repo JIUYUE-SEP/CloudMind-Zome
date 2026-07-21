@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
+import { setToolCallStatus, useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
+import type { ChatMessageRecord } from "@/composables/useEngineClient";
 
 function makeMessages(): DisplayMessage[] {
   return [
@@ -41,5 +42,24 @@ describe("setToolCallStatus", () => {
   it("找不到 toolCallId 时静默跳过", () => {
     const messages = makeMessages();
     expect(() => setToolCallStatus(messages, "nope", "done")).not.toThrow();
+  });
+});
+
+describe("recordsToDisplay", () => {
+  function makeRecord(id: string, agentId?: string): ChatMessageRecord {
+    return {
+      id,
+      role: agentId ? "assistant" : "user",
+      content: [{ type: "text", text: `msg-${id}` }],
+      createdAt: "2026-07-21T00:00:00.000Z",
+      ...(agentId ? { agentId } : {}),
+    };
+  }
+
+  it("保留 engine 标注的 agentId 归属", () => {
+    const { recordsToDisplay } = useChatRecords();
+    const out = recordsToDisplay([makeRecord("m1"), makeRecord("m2", "a1")]);
+    expect(out[0]!.agentId).toBeUndefined();
+    expect(out[1]!.agentId).toBe("a1");
   });
 });

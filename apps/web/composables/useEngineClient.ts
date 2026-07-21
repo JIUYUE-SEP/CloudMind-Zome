@@ -8,6 +8,8 @@ export interface ChatMessageRecord {
   content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
   toolCalls?: { toolCallId: string; name: string; arguments: unknown }[];
   toolCallId?: string;
+  // 群聊历史：assistant/tool 消息归属的 Agent（engine 合并各成员仓库时标注）；user 消息不带
+  agentId?: string;
   createdAt: string;
 }
 
@@ -116,8 +118,9 @@ export interface EngineClientOptions {
 
 export interface WebSocketHandlers {
   onOpen?: () => void;
-  onTextDelta?: (delta: string) => void;
-  onThinkingDelta?: (delta: string) => void;
+  // 群聊帧会额外携带 agentId（多 Agent 并发流式靠它分槽）；私聊帧为 undefined
+  onTextDelta?: (delta: string, agentId?: string) => void;
+  onThinkingDelta?: (delta: string, agentId?: string) => void;
   onToolCall?: (toolCall: { toolCallId: string; name: string; arguments: unknown }) => void;
   onToolResult?: (result: { toolCallId: string; output: unknown }) => void;
   // 危险工具审批请求（群聊帧会额外携带 agentId）
@@ -128,7 +131,7 @@ export interface WebSocketHandlers {
     arguments: unknown;
     agentId?: string;
   }) => void;
-  onStepEnd?: (finishReason?: string) => void;
+  onStepEnd?: (finishReason?: string, agentId?: string) => void;
   onError?: (error: string) => void;
   onClose?: () => void;
   onModeChanged?: (mode: ChatMode, projectId?: string) => void;
@@ -524,10 +527,10 @@ export function useEngineClient(options?: EngineClientOptions) {
         const data = JSON.parse(event.data);
         switch (data.type) {
           case "text.delta":
-            handlers.onTextDelta?.(data.delta);
+            handlers.onTextDelta?.(data.delta, data.agentId);
             break;
           case "thinking.delta":
-            handlers.onThinkingDelta?.(data.delta);
+            handlers.onThinkingDelta?.(data.delta, data.agentId);
             break;
           case "tool.call":
             handlers.onToolCall?.(data);
@@ -539,7 +542,7 @@ export function useEngineClient(options?: EngineClientOptions) {
             handlers.onApprovalRequest?.(data);
             break;
           case "step.end":
-            handlers.onStepEnd?.(data.finishReason);
+            handlers.onStepEnd?.(data.finishReason, data.agentId);
             break;
           case "session.mode_changed":
             handlers.onModeChanged?.(data.mode, data.projectId);

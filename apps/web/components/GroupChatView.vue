@@ -20,14 +20,18 @@
           :agent-name="msg.approval.agentId ? agentName(msg.approval.agentId) : undefined"
           @respond="onApprovalRespond"
         />
-        <MessageBubble
-          v-else
-          :role="msg.role"
-          :text="msg.text"
-          :thinking="msg.thinking"
-          :tool-calls="msg.toolCalls"
-          :is-streaming="msg.isStreaming"
-        />
+        <div v-else class="msg-row">
+          <div v-if="msg.role === 'assistant' && msg.agentId" class="speaker">
+            @{{ agentName(msg.agentId) }}
+          </div>
+          <MessageBubble
+            :role="msg.role"
+            :text="msg.text"
+            :thinking="msg.thinking"
+            :tool-calls="msg.toolCalls"
+            :is-streaming="msg.isStreaming"
+          />
+        </div>
       </template>
     </div>
     <div class="status">{{ statusText }}</div>
@@ -118,6 +122,12 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
+}
+.speaker {
+  font-size: 12px;
+  color: var(--mc-accent);
+  margin: 8px 0 2px;
+  opacity: 0.8;
 }
 .status {
   padding: 4px 12px;

@@ -101,12 +101,11 @@ import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type Session } from "@/composables/useEngineClient";
-import { useChatRecords, setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
+import { useChatRecords } from "@/composables/useChatRecords";
+import { useGroupChatStream } from "@/composables/useGroupChatStream";
 import {
-  createApprovalMessage,
   findPendingApproval,
   settleApproval,
-  expireApprovalByToolCallId,
   type ApprovalResponsePayload,
 } from "@/utils/approval";
 import BackButton from "@/components/BackButton.vue";
@@ -124,18 +123,20 @@ const selectedAgentId = ref<string>("");
 const selectedType = ref<"private" | "group" | "">("");
 
 const selectedSession = ref<Session | undefined>(undefined);
-const groupMessages = ref<DisplayMessage[]>([]);
+const {
+  messages: groupMessages,
+  isStreaming: groupIsStreaming,
+  handlers: groupHandlers,
+  pushUserMessage: pushGroupUserMessage,
+  pushError: pushGroupError,
+  resetStreamState: resetGroupStream,
+} = useGroupChatStream();
 const groupIsConnected = ref(false);
-const groupIsStreaming = ref(false);
 const sessionMode = ref<ChatMode>("chat");
 const sessionProjectId = ref<string | undefined>(undefined);
 let groupConnection: ReturnType<typeof client.connectSession> | null = null;
 
 const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
-
-// Date.now() 同毫秒会撞 id（v-for key 冲突），挂自增序号
-let msgSeq = 0;
-const nextMsgId = (prefix: string) => `${prefix}_${Date.now()}_${msgSeq++}`;
 
 onMounted(() => {
   agents.load();
@@ -179,16 +180,8 @@ async function loadGroupMessages(sessionId: string) {
     const records = await client.getSessionMessages(sessionId, 100);
     groupMessages.value = recordsToDisplay(records);
   } catch {
-    groupMessages.value = [
-      {
-        id: nextMsgId("err"),
-        role: "assistant",
-        text: "历史消息加载失败",
-        thinking: "",
-        toolCalls: [],
-        isStreaming: false,
-      },
-    ];
+    groupMessages.value = [];
+    pushGroupError("历史消息加载失败");
   }
 }
 
@@ -204,71 +197,14 @@ function connectGroup(sessionId: string) {
         sessionMode.value = "code";
       }
     },
-    onTextDelta: (delta) => {
-      const last = groupMessages.value[groupMessages.value.length - 1];
-      if (last && last.role === "assistant" && last.isStreaming) {
-        last.text += delta;
-      } else {
-        groupMessages.value.push({
-          id: nextMsgId("stream"),
-          role: "assistant",
-          text: delta,
-          thinking: "",
-          toolCalls: [],
-          isStreaming: true,
-        });
-      }
-    },
-    onThinkingDelta: (delta) => {
-      const last = groupMessages.value[groupMessages.value.length - 1];
-      if (last && last.role === "assistant" && last.isStreaming) {
-        last.thinking += delta;
-      }
-    },
-    onToolCall: (toolCall) => {
-      const last = groupMessages.value[groupMessages.value.length - 1];
-      if (last && last.role === "assistant") {
-        last.toolCalls.push(toolCall);
-      }
-    },
-    onToolResult: (result) => {
-      // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
-      expireApprovalByToolCallId(groupMessages.value, result.toolCallId);
-      setToolCallStatus(groupMessages.value, result.toolCallId, "done");
-    },
-    onApprovalRequest: (request) => {
-      setToolCallStatus(groupMessages.value, request.toolCallId, "awaiting-approval");
-      groupMessages.value.push(createApprovalMessage(request));
-    },
-    onStepEnd: () => {
-      const last = groupMessages.value[groupMessages.value.length - 1];
-      if (last && last.role === "assistant") {
-        last.isStreaming = false;
-      }
-      groupIsStreaming.value = false;
-    },
+    ...groupHandlers,
     onModeChanged: (mode, projectId) => {
       sessionMode.value = mode;
       sessionProjectId.value = projectId;
     },
-    onError: (error) => {
-      const last = groupMessages.value[groupMessages.value.length - 1];
-      if (last && last.role === "assistant") {
-        last.isStreaming = false;
-      }
-      groupIsStreaming.value = false;
-      groupMessages.value.push({
-        id: nextMsgId("err"),
-        role: "assistant",
-        text: `Error: ${error}`,
-        thinking: "",
-        toolCalls: [],
-        isStreaming: false,
-      });
-    },
     onClose: () => {
       groupIsConnected.value = false;
-      groupIsStreaming.value = false;
+      resetGroupStream();
     },
   });
 }
@@ -277,21 +213,14 @@ function closeGroupConnection() {
   groupConnection?.close();
   groupConnection = null;
   groupIsConnected.value = false;
-  groupIsStreaming.value = false;
+  resetGroupStream();
 }
 
 function setMode(mode: ChatMode) {
   const projectId = mode === "code" ? selectedSession.value?.id : sessionProjectId.value;
   const sent = groupConnection?.setMode(mode, projectId);
   if (!sent) {
-    groupMessages.value.push({
-      id: nextMsgId("err"),
-      role: "assistant",
-      text: "切换模式失败：连接未就绪",
-      thinking: "",
-      toolCalls: [],
-      isStreaming: false,
-    });
+    pushGroupError("切换模式失败：连接未就绪");
     return;
   }
   sessionMode.value = mode;
@@ -301,25 +230,10 @@ function onGroupSend(text: string) {
   if (!groupConnection) return;
   const sent = groupConnection.send(text);
   if (!sent) {
-    groupMessages.value.push({
-      id: nextMsgId("err"),
-      role: "assistant",
-      text: "发送失败：连接未就绪，请稍后重试",
-      thinking: "",
-      toolCalls: [],
-      isStreaming: false,
-    });
+    pushGroupError("发送失败：连接未就绪，请稍后重试");
     return;
   }
-  groupMessages.value.push({
-    id: nextMsgId("u"),
-    role: "user",
-    text,
-    thinking: "",
-    toolCalls: [],
-    isStreaming: false,
-  });
-  groupIsStreaming.value = true;
+  pushGroupUserMessage(text);
 }
 
 // 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问
@@ -336,14 +250,7 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
     settleApproval(groupMessages.value, payload.approvalId, payload.approved ? "approved" : "denied");
   } else {
     // 发送失败必须让用户感知：卡片闩锁已置位，静默失败会把卡片锁成死态
-    groupMessages.value.push({
-      id: nextMsgId("err"),
-      role: "assistant",
-      text: "审批回执发送失败：连接未就绪，请重试",
-      thinking: "",
-      toolCalls: [],
-      isStreaming: false,
-    });
+    pushGroupError("审批回执发送失败：连接未就绪，请重试");
   }
 }
 </script>

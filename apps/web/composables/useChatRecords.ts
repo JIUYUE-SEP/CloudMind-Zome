@@ -17,6 +17,8 @@ export interface DisplayMessage {
   thinking: string;
   toolCalls: DisplayToolCall[];
   isStreaming: boolean;
+  // 群聊中该消息归属的 Agent（历史来自 engine 标注，流式来自帧携带）；私聊/user 消息为空
+  agentId?: string;
   approval?: ApprovalInfo;
 }
 
@@ -33,6 +35,7 @@ export function useChatRecords() {
       thinking: r.content.filter((c): c is { type: "think"; think: string } => c.type === "think").map((c) => c.think).join(""),
       toolCalls: r.toolCalls || [],
       isStreaming: false,
+      agentId: r.agentId,
     }));
   }
 

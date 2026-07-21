@@ -48,13 +48,27 @@ describe("useEngineClient WS 帧路由", () => {
     expect(onTextDelta).toHaveBeenCalledWith("正文");
   });
 
-  it("connectSession: thinking.delta 帧同样路由", () => {
+  it("connectSession: thinking.delta 帧同样路由，并透出群聊帧携带的 agentId", () => {
     const client = useEngineClient();
     const onThinkingDelta = vi.fn();
-    client.connectSession("session-1", { onThinkingDelta });
+    const onTextDelta = vi.fn();
+    const onStepEnd = vi.fn();
+    client.connectSession("session-1", { onThinkingDelta, onTextDelta, onStepEnd });
 
-    lastSocket().onmessage?.({ data: JSON.stringify({ type: "thinking.delta", delta: "群聊思考" }) });
-    expect(onThinkingDelta).toHaveBeenCalledWith("群聊思考");
+    lastSocket().onmessage?.({
+      data: JSON.stringify({ type: "thinking.delta", delta: "群聊思考", agentId: "a1" }),
+    });
+    expect(onThinkingDelta).toHaveBeenCalledWith("群聊思考", "a1");
+
+    lastSocket().onmessage?.({ data: JSON.stringify({ type: "text.delta", delta: "正文", agentId: "a2" }) });
+    expect(onTextDelta).toHaveBeenCalledWith("正文", "a2");
+
+    lastSocket().onmessage?.({ data: JSON.stringify({ type: "step.end", agentId: "a1" }) });
+    expect(onStepEnd).toHaveBeenCalledWith(undefined, "a1");
+
+    // 私聊帧不带 agentId 时为 undefined
+    lastSocket().onmessage?.({ data: JSON.stringify({ type: "text.delta", delta: "无归属" }) });
+    expect(onTextDelta).toHaveBeenCalledWith("无归属", undefined);
   });
 
   it("旧的 think.delta 帧名不再路由（engine 只发 thinking.delta）", () => {
