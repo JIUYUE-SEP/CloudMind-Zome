@@ -28,16 +28,34 @@ function findProtoPath(): string | undefined {
 
 const AVAILABILITY_CACHE_MS = 10_000;
 
-// proto-loader 生成的动态客户端没有类型定义
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/** proto-loader 生成的动态客户端没有类型定义，这里只声明实际用到的三个方法 */
+interface ZomeSidecarGrpc {
+  Health(
+    req: Record<string, never>,
+    opts: { deadline: number },
+    cb: (err: unknown, res: unknown) => void,
+  ): void;
+  Upsert(
+    req: { agent_id: string; doc_id: string; embedding: number[] },
+    opts: { deadline: number },
+    cb: (err: unknown, res: unknown) => void,
+  ): void;
+  Search(
+    req: { agent_id: string; query: number[]; top_k: number },
+    opts: { deadline: number },
+    cb: (err: unknown, res: unknown) => void,
+  ): void;
+}
+
+type GrpcMethod = keyof ZomeSidecarGrpc;
 
 export class SidecarClient {
-  private client: any;
+  private client?: ZomeSidecarGrpc;
   private availability: { at: number; ok: boolean } = { at: 0, ok: false };
 
   constructor(private addr: string = process.env.ZOME_SIDECAR_ADDR || "127.0.0.1:50051") {}
 
-  private getClient(): any {
+  private getClient(): ZomeSidecarGrpc | undefined {
     if (this.client) return this.client;
     const protoPath = findProtoPath();
     if (!protoPath) return undefined;
@@ -45,8 +63,12 @@ export class SidecarClient {
       // keepCase：proto 字段是 snake_case（agent_id/doc_id/top_k），proto-loader
       // 默认转 camelCase 会导致请求键被整体丢弃、响应读错字段，Upsert/Search 静默失效
       const def = protoLoader.loadSync(protoPath, { longs: Number, defaults: true, keepCase: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 动态包定义，唯一收窄点
       const pkg = grpc.loadPackageDefinition(def) as any;
-      this.client = new pkg.zome.ZomeSidecar(this.addr, grpc.credentials.createInsecure());
+      this.client = new pkg.zome.ZomeSidecar(
+        this.addr,
+        grpc.credentials.createInsecure(),
+      ) as ZomeSidecarGrpc;
       return this.client;
     } catch (err) {
       console.error("failed to load sidecar proto", err);
@@ -54,14 +76,15 @@ export class SidecarClient {
     }
   }
 
-  private call<TRes>(method: string, req: unknown, deadlineMs = 3000, quiet = false): Promise<TRes | undefined> {
+  private call<TRes>(method: GrpcMethod, req: Parameters<ZomeSidecarGrpc[GrpcMethod]>[0], deadlineMs = 3000, quiet = false): Promise<TRes | undefined> {
     const client = this.getClient();
     if (!client) return Promise.resolve(undefined);
     return new Promise((resolve) => {
       client[method](
-        req,
+        // 各方法 req 类型不同，union 传入在运行时无差别（grpc-js 直接序列化）
+        req as never,
         { deadline: Date.now() + deadlineMs },
-        (err: unknown, res: TRes) => {
+        (err: unknown, res: unknown) => {
           if (err) {
             // 统一降级点：返回值契约不变（undefined），但错误必须可观测。
             // Health 走 quiet：它由 isAvailable 每 10s 轮询，可用性翻转时在
@@ -70,7 +93,7 @@ export class SidecarClient {
             resolve(undefined);
             return;
           }
-          resolve(res);
+          resolve(res as TRes);
         },
       );
     });
