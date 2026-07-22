@@ -59,6 +59,13 @@ export async function removeCompressedTopic(agentId: string, topicId: string): P
 }
 
 /**
+ * archivedMessageIds 的按档缓存：压缩档一经写入不再变化（topicId 唯一、单档原子写），
+ * 以 (mtimeMs, size) 指纹兜底外部改动。L4 每轮都调 archivedMessageIds，
+ * 命中时只付 readdir + stat，不再每轮全量读所有 .md 内容。
+ */
+const archivedIdsCache = new Map<string, { mtimeMs: number; size: number; ids: string[] }>();
+
+/**
  * 已压缩话题的原始消息 id 全集（L4 归档排除用）：
  * 读全部压缩档的 "## Messages Archived" 段，避免每轮全量读 messages_archived.jsonl
  * （归档文件只增不减；压缩档 frontmatter 体积小得多）。
@@ -67,25 +74,39 @@ export async function removeCompressedTopic(agentId: string, topicId: string): P
  */
 export async function archivedMessageIds(agentId: string): Promise<Set<string>> {
   const ids = new Set<string>();
+  const dir = compressedDir(agentId);
   let files: string[];
   try {
-    files = await fs.readdir(compressedDir(agentId));
+    files = await fs.readdir(dir);
   } catch {
     return ids;
   }
+  const present = new Set<string>();
   for (const file of files) {
     if (!file.endsWith(".md")) continue;
+    const filePath = path.join(dir, file);
+    present.add(filePath);
     try {
-      const raw = await fs.readFile(path.join(compressedDir(agentId), file), "utf-8");
-      const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
-      if (!section) continue;
-      for (const id of section.split(",")) {
-        const trimmed = id.trim();
-        if (trimmed) ids.add(trimmed);
+      const stat = await fs.stat(filePath);
+      const cached = archivedIdsCache.get(filePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        for (const id of cached.ids) ids.add(id);
+        continue;
       }
+      const raw = await fs.readFile(filePath, "utf-8");
+      const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
+      const fileIds = section
+        ? section.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+      archivedIdsCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, ids: fileIds });
+      for (const id of fileIds) ids.add(id);
     } catch (err) {
       console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
     }
+  }
+  // 清理已删除压缩档的缓存项（removeCompressedTopic / 外部清理），避免无限增长
+  for (const key of archivedIdsCache.keys()) {
+    if (path.dirname(key) === dir && !present.has(key)) archivedIdsCache.delete(key);
   }
   return ids;
 }

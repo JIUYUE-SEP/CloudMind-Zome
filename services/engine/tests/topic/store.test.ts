@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { writeCompressedTopic, latestSummaries, compressedDir } from "../../src/memory/topic/store.js";
+import { writeCompressedTopic, latestSummaries, compressedDir, archivedMessageIds, removeCompressedTopic } from "../../src/memory/topic/store.js";
 import type { CompressedTopic } from "../../src/memory/topic/types.js";
 import { restoreDataDir } from "../helpers/env.js";
 
@@ -95,5 +95,33 @@ describe("topic store", () => {
   it("count<=0 时不读取目录直接返回空", async () => {
     await writeCompressedTopic("a1", makeTopic());
     expect(await latestSummaries("a1", 0)).toEqual([]);
+  });
+
+  it("archivedMessageIds 汇总全部压缩档的消息 id，重复调用结果一致", async () => {
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_1000_aaaa", msgIds: ["m1", "m2"] }));
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_2000_bbbb", msgIds: ["m3"] }));
+
+    const first = await archivedMessageIds("a1");
+    expect(first).toEqual(new Set(["m1", "m2", "m3"]));
+    // 第二次走缓存路径，结果必须一致
+    const second = await archivedMessageIds("a1");
+    expect(second).toEqual(first);
+  });
+
+  it("archivedMessageIds：新写压缩档后 id 集合更新", async () => {
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_1000_aaaa", msgIds: ["m1"] }));
+    expect(await archivedMessageIds("a1")).toEqual(new Set(["m1"]));
+
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_2000_bbbb", msgIds: ["m2"] }));
+    expect(await archivedMessageIds("a1")).toEqual(new Set(["m1", "m2"]));
+  });
+
+  it("archivedMessageIds：压缩档删除后 id 集合收缩", async () => {
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_1000_aaaa", msgIds: ["m1"] }));
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_2000_bbbb", msgIds: ["m2"] }));
+    expect(await archivedMessageIds("a1")).toEqual(new Set(["m1", "m2"]));
+
+    await removeCompressedTopic("a1", "tp_2000_bbbb");
+    expect(await archivedMessageIds("a1")).toEqual(new Set(["m1"]));
   });
 });
