@@ -26,6 +26,20 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /agents/:id` — 更新 Agent
 - `DELETE /agents/:id` — 删除 Agent
 
+**Agent 配置项（`AgentConfig`，创建/更新时可传的可选字段）**：
+
+| 字段 | 类型 | 缺省 | 说明 |
+|---|---|---|---|
+| `maxContextTokens` | number | 80000 | 上下文窗口总预算（32k/128k 窗口模型应显式配置） |
+| `compressionModel` | string | 主模型 | 话题压缩模型；压缩失败不 fallback 主模型 |
+| `topicDetectionWindowMinutes` | number | 30 | 话题检测时间窗（分钟），超过视为新话题 |
+| `topicMessageThreshold` | number | 20 | 当前话题消息数达到该值即关闭并压缩 |
+| `semanticSearchEnabled` | boolean | true | 语义检索（L4）开关，同时门控检索与 embed 索引 |
+| `semanticTopK` | number | 10 | L4 注入条数上限 |
+| `semanticMinScore` | number | 0 | L4 最低相关度（相似度 × 时间衰减，0-1） |
+
+> 非法取值（如 `topicMessageThreshold < 4`、`semanticTopK < 1`）由引擎 clamp 并 warn。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
+
 ### Chat
 
 - `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx` — 获取历史消息（`sessionId` 必填）
@@ -38,7 +52,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /sessions/:id` — 获取会话
 - `PUT /sessions/:id` — 更新会话
 - `DELETE /sessions/:id` — 删除会话
-- `GET /sessions/:id/messages` — 获取会话历史消息
+- `GET /sessions/:id/messages?limit=xxx` — 获取会话历史消息（合并各成员仓库：按消息 id 去重，assistant/tool 消息带 `agentId` 归属标注，`limit` 为合并后总量）
 - WebSocket `GET /ws/sessions/:sessionId` — 群聊实时对话
 
 ### Compute
@@ -127,11 +141,12 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 | 帧 | 说明 |
 |---|---|
-| `text.delta` / `thinking.delta` | 流式正文 / 推理内容 |
-| `tool.call` / `tool.result` | 工具调用与执行结果 |
-| `step.end` | ReAct 单步结束 |
+| `text.delta` / `thinking.delta` | 流式正文 / 推理内容（群聊帧带 `agentId`） |
+| `tool.call` / `tool.result` | 工具调用与执行结果（群聊帧带 `agentId`） |
+| `step.end` | ReAct 单步结束（每个 step 都发，tool_use 时循环继续） |
+| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态） |
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
-| `session.mode_changed` | 模式切换确认 |
+| `session.mode_changed` | 模式切换确认（仅会话 WS） |
 | `error` | 错误 |
 
 握手时校验 Origin（无 Origin 的非浏览器客户端放行；`NODE_ENV=e2e` 全放行）。
