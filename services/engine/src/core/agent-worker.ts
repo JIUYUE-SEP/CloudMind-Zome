@@ -21,7 +21,7 @@ import {
   SemanticRetriever,
   type SemanticSearchConfig,
 } from "../context/semantic.js";
-import type { SemanticMemory } from "../context/layers.js";
+import type { SemanticMemory, TopicSummary } from "../context/layers.js";
 
 console.log("[agent-worker] module loaded");
 
@@ -213,19 +213,22 @@ export class AgentWorker {
         if (closed) this.compressionQueue.enqueue(closed);
       }
 
-      // L5 话题摘要：最近压缩档注入组装（读取失败按空处理，不阻塞对话）
-      let topicSummaries: string[] = [];
+      // L5 话题摘要：最近压缩档注入组装（读取失败按空处理并明确告知，不静默降级）
+      let retrievalFailed = false;
+      let topicSummaries: TopicSummary[] = [];
       if (this.topicConfig.enabled) {
         try {
           topicSummaries = await latestSummaries(this.config.agentId, this.topicConfig.hotMemoryCount);
         } catch (err) {
           console.warn("[topic] 压缩档读取失败，L5 按空处理", err);
+          retrievalFailed = true;
         }
       }
 
       // L4 语义检索（Phase 3 迁入 SemanticRetriever）：
       // 结果经 pipeline 注入（参与预算与降级），不再以消息位 prepend。
-      // 失败静默降级；检索结果已在历史文件中，不会也不应被再次持久化。
+      // 失败不静默：retrievalFailed 让组装层尾随"记忆检索暂时不可用"的明确告知；
+      // 检索结果已在历史文件中，不会也不应被再次持久化。
       let semanticMemories: SemanticMemory[] = [];
       if (this.semanticRetriever && job.mode !== "code" && lastUser && lastUserText.trim()) {
         try {
@@ -238,6 +241,7 @@ export class AgentWorker {
           );
         } catch (err) {
           console.error("semantic retrieval failed", err);
+          retrievalFailed = true;
         }
       }
 
@@ -277,6 +281,7 @@ export class AgentWorker {
             sourceId: sessionId,
             topicSummaries,
             semanticMemories,
+            retrievalFailed,
           },
         },
       };

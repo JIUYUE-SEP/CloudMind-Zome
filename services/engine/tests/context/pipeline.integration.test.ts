@@ -258,7 +258,10 @@ describe("降级顺序", () => {
         score: 0.9 - i * 0.01,
         createdAt: "2026-07-17T00:00:00Z",
       })),
-      l5: ["话题摘要 A", "话题摘要 B"],
+      l5: [
+        { id: "tp_a", label: "话题摘要 A", text: "话题摘要 A", createdAt: "2026-07-17T00:00:00Z" },
+        { id: "tp_b", label: "话题摘要 B", text: "话题摘要 B", createdAt: "2026-07-16T00:00:00Z" },
+      ],
       l6Core: bigTools(2),
       l6Ext: bigTools(4),
     });

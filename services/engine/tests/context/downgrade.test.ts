@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "../../src/context/layers.js";
-import type { SemanticMemory } from "../../src/context/layers.js";
+import type { SemanticMemory, TopicSummary } from "../../src/context/layers.js";
 import {
   createDowngradeSteps,
   selectNextStep,
@@ -30,15 +30,31 @@ function mems(n: number, prefix = "s"): SemanticMemory[] {
   }));
 }
 
+function topics(n: number, prefix = "s"): TopicSummary[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `${prefix}${i}`,
+    label: `${prefix}${i}`,
+    text: `${prefix}${i}`,
+    createdAt: "2026-07-17T00:00:00Z",
+  }));
+}
+
 describe("downgrade 单步行为", () => {
   it("L5 逐条丢弃最旧摘要（数组按时间倒序，最新在前）", () => {
-    const layers = createLayers({ l3: [], l5: ["最新", "较旧", "最旧"] });
+    const layers = createLayers({
+      l3: [],
+      l5: [
+        { id: "t2", label: "最新", text: "最新", createdAt: "2026-07-17T00:00:00Z" },
+        { id: "t1", label: "较旧", text: "较旧", createdAt: "2026-07-16T00:00:00Z" },
+        { id: "t0", label: "最旧", text: "最旧", createdAt: "2026-07-15T00:00:00Z" },
+      ],
+    });
     const step = createDowngradeSteps().find((s) => s.name === "l5:drop-oldest")!;
     expect(step.applicable(layers)).toBe(true);
     step.apply(layers);
-    expect(layers.l5).toEqual(["最新", "较旧"]);
+    expect(layers.l5.map((t) => t.text)).toEqual(["最新", "较旧"]);
     step.apply(layers);
-    expect(layers.l5).toEqual(["最新"]);
+    expect(layers.l5.map((t) => t.text)).toEqual(["最新"]);
     step.apply(layers);
     expect(layers.l5).toEqual([]);
     expect(step.applicable(layers)).toBe(false);
@@ -129,7 +145,7 @@ describe("downgrade 单步行为", () => {
       l2: "@提醒",
       l3: msgs(30),
       l4: mems(12),
-      l5: mems(3).map((m) => m.content),
+      l5: topics(3),
       l6Core,
       l6Ext: strings(4, "tool"),
     });
@@ -149,7 +165,7 @@ describe("downgrade 顺序（L5 → L4 → L6-ext → L3）", () => {
     const layers = createLayers({
       l3: msgs(25),
       l4: mems(12),
-      l5: mems(2).map((m) => m.content),
+      l5: topics(2),
       l6Ext: strings(4, "tool"),
     });
     const sequence: string[] = [];

@@ -5,7 +5,17 @@ import {
   DEFAULT_PIPELINE_CONFIG,
   type AssembleInput,
 } from "../../src/context/pipeline.js";
+import type { TopicSummary } from "../../src/context/layers.js";
 import type { TokenCounter } from "../../src/context/token-counter.js";
+
+function textOf(m: ChatMessage): string {
+  return m.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+}
+
+function topicSummary(id: string, text: string): TopicSummary {
+  // createdAt 早于 history(2026-07-17)：归并后摘要消息排在历史之前
+  return { id, label: id, text, createdAt: "2026-07-10T00:00:00Z" };
+}
 
 /** 确定性假计数器：1 字符 = 1 "token"，便于精确控制预算 */
 class FakeCounter implements TokenCounter {
@@ -114,41 +124,35 @@ describe("ContextPipeline", () => {
     expect(systems).toHaveLength(2); // L1/L2 全保留
   });
 
-  it("topicSummaries 注入为 L5 system 消息，位于历史之前", async () => {
+  it("topicSummaries 伪装成 user 历史消息注入（自然化、非 system 元信息）", async () => {
     const pipeline = makePipeline(10000);
     const result = await pipeline.assemble(
       makeInput({
         history: history(2),
-        topicSummaries: ["[话题摘要] 旧话题A", "[话题摘要] 旧话题B"],
+        topicSummaries: [topicSummary("旧话题A", "旧话题A的摘要"), topicSummary("旧话题B", "旧话题B的摘要")],
       }),
     );
-    const l5 = result.messages.find(
-      (m) => m.role === "system" && m.content.some((c) => c.type === "text" && c.text.includes("以下是过去话题的摘要")),
-    );
-    expect(l5).toBeTruthy();
-    const text = l5!.content.map((c) => (c.type === "text" ? c.text : "")).join("");
-    expect(text).toContain("旧话题A");
-    expect(text).toContain("旧话题B");
-    // L5 在 L3 历史之前
-    expect(result.messages.indexOf(l5!)).toBeLessThan(
-      result.messages.findIndex((m) => m.role === "user"),
-    );
+    expect(result.messages.every((m) => m.role !== "system")).toBe(true);
+    const users = result.messages.filter((m) => m.role === "user").map(textOf);
+    expect(users.some((t) => t.includes("用户之前聊过") && t.includes("旧话题A的摘要"))).toBe(true);
+    expect(users.some((t) => t.includes("旧话题B的摘要"))).toBe(true);
+    // 摘要 createdAt(07-10) 早于 history(07-17)：按时间归并排在历史之前
+    const topicIdx = result.messages.findIndex((m) => m.id === "topic-旧话题A");
+    const historyIdx = result.messages.findIndex((m) => m.id === "h0");
+    expect(topicIdx).toBeGreaterThanOrEqual(0);
+    expect(topicIdx).toBeLessThan(historyIdx);
   });
 
   it("超预算时先丢 L5 再截 L3：丢弃摘要后满足预算则历史完整保留", async () => {
-    // l3：5 条 × 13 = 65；l5 摘要约 77；预算 100 → 丢 L5 后 65 ≤ 100
+    // l3：5 条 × 13 = 65；l5 摘要消息约 100；预算 100 → 丢 L5 后 65 ≤ 100
     const pipeline = makePipeline(100);
     const result = await pipeline.assemble(
       makeInput({
         history: history(5),
-        topicSummaries: ["S".repeat(60)],
+        topicSummaries: [topicSummary("tp1", "S".repeat(60))],
       }),
     );
-    expect(
-      result.messages.some(
-        (m) => m.role === "system" && m.content.some((c) => c.type === "text" && c.text.includes("以下是过去话题的摘要")),
-      ),
-    ).toBe(false);
+    expect(result.messages.some((m) => m.id === "topic-tp1")).toBe(false);
     expect(result.messages.filter((m) => m.role === "user")).toHaveLength(5);
   });
 });
@@ -195,9 +199,9 @@ describe("M3：降级可观测日志", () => {
   it("降级顺序：l5:drop 先于 l3 截断", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    // l3：25 条 × 13 = 325；l5 ≈ 77；预算 300 → l5:drop（325 仍超）→ l3:keep-15（195）满足
+    // l3：25 条 × 13 = 325；l5 ≈ 100；预算 300 → l5:drop（325 仍超）→ l3:keep-15（195）满足
     const result = await makePipeline(300).assemble(
-      makeInput({ history: history(25), topicSummaries: ["S".repeat(60)] }),
+      makeInput({ history: history(25), topicSummaries: [topicSummary("tp1", "S".repeat(60))] }),
     );
     expect(result.messages.filter((m) => m.role === "user")).toHaveLength(15);
     const logs = debug.mock.calls.map((c) => String(c[0]));
@@ -205,7 +209,7 @@ describe("M3：降级可观测日志", () => {
     expect(logs[1]).toContain("l3:keep-15");
   });
 
-  it("semanticMemories 注入为 L4 system 消息，跨场景带 [来自] 标注", async () => {
+  it("semanticMemories 伪装成 user 历史消息，跨场景自然化标注", async () => {
     const pipeline = makePipeline(10000);
     const result = await pipeline.assemble(
       makeInput({
@@ -216,18 +220,18 @@ describe("M3：降级可观测日志", () => {
         ],
       }),
     );
-    const l4 = result.messages.find(
-      (m) => m.role === "system" && m.content.some((c) => c.type === "text" && c.text.includes("相关片段")),
-    );
-    expect(l4).toBeTruthy();
-    const text = l4!.content.map((c) => (c.type === "text" ? c.text : "")).join("");
-    expect(text).toContain("本场景记忆");
-    expect(text).toContain("[来自: session_x] 跨场景记忆");
+    expect(result.messages.every((m) => m.role !== "system")).toBe(true);
+    const users = result.messages.filter((m) => m.role === "user").map(textOf);
+    expect(users.some((t) => t.includes("用户之前提到过") && t.includes("本场景记忆"))).toBe(true);
+    expect(users.some((t) => t.includes("另一个对话") && t.includes("跨场景记忆"))).toBe(true);
+    // 不再有 [来自: ...] 元信息标注
+    expect(users.join("")).not.toContain("[来自:");
   });
 
   it("降级时 L4 按 score 降序保留高相关片段", async () => {
-    // 12 条片段（每条内容 10 字符），预算 150 → l4:keep-10 仍超 → l4:keep-5 满足
-    const pipeline = makePipeline(150);
+    // 12 条片段：m10(0.5)/m11(0.45) 被置信度过滤，剩 10 条（6 high + 4 fuzzy）。
+    // 预算 300：10 条 ≈ 600 超 → l4:keep-5（5 条 high ≈ 245）满足
+    const pipeline = makePipeline(300);
     const result = await pipeline.assemble(
       makeInput({
         history: [],
@@ -239,12 +243,117 @@ describe("M3：降级可观测日志", () => {
         })),
       }),
     );
-    const text = result.messages
-      .filter((m) => m.role === "system")
-      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""))
-      .join("");
+    const text = result.messages.map(textOf).join("");
     for (let i = 0; i < 5; i++) expect(text).toContain(`内容${i}`);
     expect(text).not.toContain("内容5");
     expect(text).not.toContain("内容11");
+  });
+});
+
+describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存前缀", () => {
+  it("score ≤ 0.5 的记忆被过滤，不参与注入", async () => {
+    const pipeline = makePipeline(10000);
+    const result = await pipeline.assemble(
+      makeInput({
+        semanticMemories: [
+          { id: "low", content: "低相关记忆", score: 0.5, createdAt: "2026-07-20T00:00:00Z" },
+          { id: "high", content: "高相关记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+        ],
+      }),
+    );
+    const all = result.messages.map(textOf).join("");
+    expect(all).not.toContain("低相关记忆");
+    expect(all).toContain("高相关记忆");
+  });
+
+  it("多轮去重：同一会话已注入的记忆与摘要不重复注入", async () => {
+    const pipeline = makePipeline(10000);
+    const input = makeInput({
+      sourceId: "sess-1",
+      semanticMemories: [
+        { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+      ],
+      topicSummaries: [topicSummary("tp1", "摘要一")],
+    });
+    const first = await pipeline.assemble(input);
+    expect(first.messages.map(textOf).join("")).toContain("记忆一");
+    expect(first.messages.map(textOf).join("")).toContain("摘要一");
+
+    const second = await pipeline.assemble(input);
+    const all = second.messages.map(textOf).join("");
+    expect(all).not.toContain("记忆一");
+    expect(all).not.toContain("摘要一");
+  });
+
+  it("去重按会话隔离：新会话可再次注入同一记忆", async () => {
+    const pipeline = makePipeline(10000);
+    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [memory] }));
+    const other = await pipeline.assemble(makeInput({ sourceId: "sess-2", semanticMemories: [memory] }));
+    expect(other.messages.map(textOf).join("")).toContain("记忆一");
+  });
+
+  it("被降级丢弃的记忆不计入已注入，下一轮预算宽裕时仍可注入", async () => {
+    const pipeline = makePipeline(150);
+    const memory = { id: "m1", content: "珍贵记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    // 第一轮：25 条 history 挤爆预算，L4 走 l4:drop 被整体丢弃
+    const squeezed = await pipeline.assemble(
+      makeInput({ history: history(25), semanticMemories: [memory] }),
+    );
+    expect(squeezed.messages.map(textOf).join("")).not.toContain("珍贵记忆");
+    // 第二轮：history 变短，预算宽裕 → 记忆应注入（未被误标记为已注入）
+    const relaxed = await pipeline.assemble(
+      makeInput({ history: history(2), semanticMemories: [memory] }),
+    );
+    expect(relaxed.messages.map(textOf).join("")).toContain("珍贵记忆");
+  });
+
+  it("检索失败透传：尾随 system 消息明确告知", async () => {
+    const pipeline = makePipeline(10000);
+    const result = await pipeline.assemble(
+      makeInput({ history: history(1), retrievalFailed: true }),
+    );
+    const last = result.messages.at(-1)!;
+    expect(last.role).toBe("system");
+    expect(textOf(last)).toContain("记忆检索暂时不可用");
+    // 固定前缀不被污染：失败提示在 messages 末尾
+    expect(result.messages.findIndex((m) => m.id === "h0")).toBeLessThan(
+      result.messages.length - 1,
+    );
+  });
+
+  it("缓存前缀稳定：L4/L5/历史变化不改变头部 system 消息内容与位置", async () => {
+    const pipeline = makePipeline(10000);
+    const base = { mindContext: "人格内容", mentionDesc: "@提醒" };
+    const r1 = await pipeline.assemble(
+      makeInput({
+        ...base,
+        sourceId: "s1",
+        history: history(2),
+        semanticMemories: [
+          { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+        ],
+      }),
+    );
+    const r2 = await pipeline.assemble(
+      makeInput({
+        ...base,
+        sourceId: "s2",
+        history: history(3),
+        semanticMemories: [
+          { id: "m2", content: "完全不同的记忆", score: 0.95, createdAt: "2026-07-21T00:00:00Z" },
+        ],
+        topicSummaries: [topicSummary("tp9", "另一个摘要")],
+      }),
+    );
+    // 头部两条 system（L1/L2）内容与位置完全一致 → 前缀缓存命中
+    expect(r1.messages[0].role).toBe("system");
+    expect(textOf(r1.messages[0])).toBe("人格内容");
+    expect(r1.messages[1].role).toBe("system");
+    expect(textOf(r1.messages[1])).toBe("@提醒");
+    expect(textOf(r2.messages[0])).toBe(textOf(r1.messages[0]));
+    expect(textOf(r2.messages[1])).toBe(textOf(r1.messages[1]));
+    expect(r2.messages[0].role).toBe("system");
+    expect(r2.messages[1].role).toBe("system");
   });
 });

@@ -1,8 +1,9 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "./layers.js";
-import type { ToolSchema, SemanticMemory } from "./layers.js";
+import type { ToolSchema, SemanticMemory, TopicSummary, ContextLayers } from "./layers.js";
 import { assembleMessages } from "./assembler.js";
 import { selectNextStep } from "./downgrade.js";
+import { CONFIDENCE_DROP } from "./recall.js";
 import { getTokenCounter, type TokenCounter } from "./token-counter.js";
 
 export interface ContextPipelineConfig {
@@ -27,13 +28,15 @@ export interface AssembleInput {
   tools: ToolSchema[];
   /** L2 @提及提醒 */
   mentionDesc?: string;
-  /** 当前场景 ID（session/group；Phase 3 跨场景标注使用） */
+  /** 当前场景 ID（session/group；Phase 3 跨场景标注与多轮去重分键使用） */
   sourceId: string;
   sourceName?: string;
-  /** L5 话题摘要（Phase 2：最近压缩档的渲染文本，已按时间倒序） */
-  topicSummaries?: string[];
-  /** L4 语义检索结果（Phase 3：已按 score 降序，降级时优先保留高相关） */
+  /** L5 话题摘要（最近压缩档的结构化条目，已按时间倒序） */
+  topicSummaries?: TopicSummary[];
+  /** L4 语义检索结果（已按 score 降序，降级时优先保留高相关） */
   semanticMemories?: SemanticMemory[];
+  /** 记忆检索本轮失败：组装时尾随 system 消息明确告知（诚实透明） */
+  retrievalFailed?: boolean;
 }
 
 export interface AssembleResult {
@@ -42,13 +45,21 @@ export interface AssembleResult {
   tools: ToolSchema[];
 }
 
+/** 多轮去重状态的会话数上限（FIFO 逐出最旧会话，防长驻进程无界增长） */
+const MAX_DEDUP_SESSIONS = 64;
+
 /**
- * ContextPipeline v2（Phase 1）：L1-L6 组装 + 降级循环。
+ * ContextPipeline v2（最终设计）：L1-L6 组装 + 降级循环 + 多轮去重。
  * 每轮 assemble：先按当前层内容组装并计数，超预算则执行下一个降级步骤
  * （L5 → L4 → L6-ext → L3），直到满足预算或无可再降（兜底按现状返回）。
+ *
+ * 多轮去重（设计决策 5）：同一会话（sourceId）已注入的记忆/摘要 id 记录在案，
+ * 后续轮次不再注入；只标记"实际进了 messages"的条目——被降级丢弃的不误标。
  */
 export class ContextPipeline {
   private config: ContextPipelineConfig;
+  /** 会话 → 已注入条目 id（`mem:`/`topic:` 前缀防跨类碰撞） */
+  private injectedBySource = new Map<string, Set<string>>();
 
   constructor(
     config: Partial<ContextPipelineConfig> = {},
@@ -62,24 +73,51 @@ export class ContextPipeline {
     return Math.floor(this.config.maxContextTokens * (1 - this.config.reserveRatio));
   }
 
+  private seenSet(sourceId: string): Set<string> {
+    let seen = this.injectedBySource.get(sourceId);
+    if (!seen) {
+      if (this.injectedBySource.size >= MAX_DEDUP_SESSIONS) {
+        // Map 按插入序迭代：删最旧的会话条目
+        const oldest = this.injectedBySource.keys().next().value;
+        if (oldest !== undefined) this.injectedBySource.delete(oldest);
+      }
+      seen = new Set<string>();
+      this.injectedBySource.set(sourceId, seen);
+    }
+    return seen;
+  }
+
+  /** 只记录本轮实际注入（降级后仍在层内）的条目 */
+  private markInjected(sourceId: string, layers: ContextLayers): void {
+    if (layers.l4.length === 0 && layers.l5.length === 0) return;
+    const seen = this.seenSet(sourceId);
+    for (const m of layers.l4) seen.add(`mem:${m.id}`);
+    for (const t of layers.l5) seen.add(`topic:${t.id}`);
+  }
+
   async assemble(input: AssembleInput): Promise<AssembleResult> {
+    const seen = this.seenSet(input.sourceId);
     const layers = createLayers({
       l1: input.mindContext,
       l2: input.mentionDesc,
       l3: [...input.history],
-      l4: input.semanticMemories ?? [],
-      l5: input.topicSummaries ?? [],
+      // 置信度控制（设计决策 4）：≤ 0.5 直接丢弃；多轮去重：已注入 id 跳过
+      l4: (input.semanticMemories ?? []).filter(
+        (m) => m.score > CONFIDENCE_DROP && !seen.has(`mem:${m.id}`),
+      ),
+      l5: (input.topicSummaries ?? []).filter((t) => !seen.has(`topic:${t.id}`)),
       l6Core: [...input.tools],
       // Phase 1 决策：现有 7 个内置工具全部为 L6-core；L6-ext 预留（MCP 接入后启用）
       l6Ext: [],
     });
 
     for (;;) {
-      const messages = assembleMessages(layers);
+      const messages = assembleMessages(layers, { retrievalFailed: input.retrievalFailed });
       const tools = [...layers.l6Core, ...layers.l6Ext];
       const total =
         this.counter.countMessages(messages) + this.counter.countTools(tools);
       if (total <= this.budgetTokens) {
+        this.markInjected(input.sourceId, layers);
         return { messages, tools };
       }
       const step = selectNextStep(layers);
@@ -90,6 +128,7 @@ export class ContextPipeline {
           `[ContextPipeline] agent=${input.agentId} 预算不足且无可再降层，按现状返回：` +
             `total=${total} budget=${this.budgetTokens} l3=${layers.l3.length}`,
         );
+        this.markInjected(input.sourceId, layers);
         return { messages, tools };
       }
       step.apply(layers);

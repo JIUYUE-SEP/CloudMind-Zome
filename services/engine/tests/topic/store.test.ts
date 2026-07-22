@@ -63,20 +63,24 @@ describe("topic store", () => {
 
     const two = await latestSummaries("a1", 2);
     expect(two).toHaveLength(2);
-    expect(two[0]).toContain("最新话题");
-    expect(two[1]).toContain("中间话题");
+    expect(two[0].label).toBe("最新话题");
+    expect(two[1].label).toBe("中间话题");
 
     const all = await latestSummaries("a1", 10);
     expect(all).toHaveLength(3);
   });
 
-  it("注入文本包含主题、摘要与关键结论", async () => {
-    await writeCompressedTopic("a1", makeTopic());
-    const [text] = await latestSummaries("a1", 1);
-    expect(text).toContain("[话题摘要] 前端状态管理");
-    expect(text).toContain("话题主题：前端状态管理");
-    expect(text).toContain("关键结论");
-    expect(text).toContain("决定用 Zustand");
+  it("结构化条目：id/label/text/createdAt 齐全，支撑自然化注入与去重", async () => {
+    await writeCompressedTopic("a1", makeTopic({ topicId: "tp_4000_dddd" }));
+    const [entry] = await latestSummaries("a1", 1);
+    expect(entry.id).toBe("tp_4000_dddd");
+    expect(entry.label).toBe("前端状态管理");
+    expect(entry.createdAt).toBe("2026-07-21T10:00:00.000Z");
+    // text 为摘要正文（不含 [话题摘要] 元信息包装——自然化由注入侧负责）
+    expect(entry.text).not.toContain("[话题摘要]");
+    expect(entry.text).toContain("话题主题：前端状态管理");
+    expect(entry.text).toContain("关键结论");
+    expect(entry.text).toContain("决定用 Zustand");
   });
 
   it("损坏的压缩档跳过不中断", async () => {
@@ -85,7 +89,7 @@ describe("topic store", () => {
 
     const result = await latestSummaries("a1", 5);
     expect(result).toHaveLength(1);
-    expect(result[0]).toContain("好档");
+    expect(result[0].label).toBe("好档");
   });
 
   it("目录不存在时返回空数组", async () => {

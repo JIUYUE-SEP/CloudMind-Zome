@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers, DOWNGRADE_ORDER } from "../../src/context/layers.js";
-import type { SemanticMemory } from "../../src/context/layers.js";
+import type { SemanticMemory, TopicSummary } from "../../src/context/layers.js";
 
 function msg(id: string): ChatMessage {
   return { id, role: "user", content: [{ type: "text", text: "hi" }], createdAt: "2026-07-17T00:00:00Z" };
@@ -9,6 +9,10 @@ function msg(id: string): ChatMessage {
 
 function mem(content: string): SemanticMemory {
   return { id: content, content, score: 0.9, createdAt: "2026-07-17T00:00:00Z" };
+}
+
+function topic(text: string): TopicSummary {
+  return { id: `tp_${text}`, label: text, text, createdAt: "2026-07-17T00:00:00Z" };
 }
 
 describe("context layers", () => {
@@ -29,7 +33,7 @@ describe("context layers", () => {
       l2: "@提醒",
       l3: [msg("a")],
       l4: [mem("检索片段")],
-      l5: ["话题摘要"],
+      l5: [topic("话题摘要")],
       l6Core: [{ name: "read_file" }],
       l6Ext: [{ name: "mcp_tool" }],
     });

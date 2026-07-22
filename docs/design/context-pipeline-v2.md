@@ -106,7 +106,8 @@ services/engine/src/context/
 ├── layers.ts              # L1-L6 类型定义与 DOWNGRADE_ORDER
 ├── downgrade.ts           # 降级步骤
 ├── token-counter.ts       # 准确 token 计数（@dqbd/tiktoken，cl100k_base）
-├── assembler.ts           # 组装 messages 为 LLM 输入
+├── assembler.ts           # 组装 messages 为 LLM 输入（L1/L2 固定前缀 + L4/L5 伪装历史时间归并）
+├── recall.ts              # 记忆自然化（Phase 5：第三人称/置信度分档/时间渲染/长度控制/失败告知）
 ├── semantic.ts            # L4 语义检索器（Phase 3）
 └── truncate.ts            # 工具结果按预算 20% 截断
 
@@ -220,7 +221,9 @@ msg_id_1, msg_id_2, ...
 1. 每轮 assemble 时，取最新 user 消息作为 query
 2. 调用 `indexer.search(query, top_k=10)`
 3. 按相似度 + 时间衰减打分（Python 用的 `exp(-age_days / 30)`）
-4. 注入为 system 消息："以下是你过去经历过的相关片段：..."
+4. ~~注入为 system 消息："以下是你过去经历过的相关片段：..."~~
+   **（2026-07-22 最终设计修订）**：不再以 system 元信息注入，改为伪装成 user 历史消息
+   自然化注入（第三人称改写 + 原始时间戳 + 置信度分档 + 多轮去重），见"Phase 5"。
 
 > **score 语义（2026-07-22 review 修订）**：sidecar 原始返回的是**距离**（`1 - cosine`，域 [0,2]，越小越近），
 > `MemoryIndexer.search` 出口统一换算为**相似度**（`max(0, 1 - distance)`，越大越相关）。
@@ -391,6 +394,31 @@ return 0.3;                              // 三个月以上保底 30%
 - [ ] 双程压缩（grok-build two-pass）
 - [ ] 差异化保留（high 重要话题保留更多轮数）
 - [ ] 用户可审计接口（查看 `_compressed/` 列表、恢复归档）
+
+### Phase 5：记忆检索最终设计（2026-07-22）— ✅ 已完成
+
+**核心目标**：无缝融入（模型察觉不到是检索，像自然想起）、诚实透明（检索失败明确告知）、时间真实（保留原始时间戳）。
+
+**整体结构**：
+
+```
+System Prompt（固定，前缀缓存命中）：L1 人格 + L2 @提及提醒（相邻头部，L6-core 走 tools 通道）
+Messages（动态，自然对话流）：L4/L5 伪装成的 user 历史消息 与 L3 真实历史
+  按 createdAt 归并穿插 → 当前 user 输入 → 当前 assistant 回复
+检索失败：尾随 system 消息 "[记忆检索暂时不可用] ..."（不伪装）
+```
+
+- [x] L4/L5 从 system 元信息移到 messages（`context/recall.ts` 自然化 + `assembler.ts` 时间归并），不破坏 L1/L2 固定前缀
+- [x] 第三人称改写（"用户之前提到过…"，避免"你/我/我们"亲密错觉）；跨场景命中自然化标注（"在另一个对话里"）
+- [x] 时间真实：伪装消息 `createdAt` 保留原始时间戳，正文渲染 `[YYYY-MM-DD HH:mm · N天前]`，心智可算时间差
+- [x] 置信度分档（`classifyScore`）：> 0.7 正常注入；(0.5, 0.7] 模糊化（"好像提到过…这段记忆有些模糊"）；≤ 0.5 丢弃
+- [x] 多轮去重：pipeline 按 sourceId 记录已注入 id（`mem:`/`topic:` 前缀，64 会话 FIFO），只标记降级后实际注入的条目；新会话隔离
+- [x] 检索失败明确告知：L4 检索/L5 压缩档读取失败 → `retrievalFailed` → 尾随 system 消息（agent-worker 接线）
+- [x] 长度控制：单条 > 500 字符摘要化（保留首尾、标注中段省略字数）
+- [x] 与话题压缩衔接：`latestSummaries` 返回结构化 `TopicSummary{id,label,text,createdAt}`；已归档原文仍被 L4 排除（不变）
+- [x] 降级策略不变：L5 → L4 → L6-ext → L3
+
+**验收**：`tests/context/recall.test.ts`（17 例）+ assembler/pipeline/agent-worker 集成用例——自然融入（无 system 元信息）、第三人称、时间戳保留、失败告知、多轮不重复、头部前缀跨轮一致（缓存命中）。
 
 ---
 

@@ -14,6 +14,18 @@ export interface SemanticMemory {
   createdAt: string;
 }
 
+/** L5 话题摘要（结构化）：自然化注入与多轮去重的最小信息集 */
+export interface TopicSummary {
+  /** 压缩档 topicId（多轮去重键） */
+  id: string;
+  /** 话题主题（LLM 生成或兜底"（未命名话题）"） */
+  label: string;
+  /** 摘要正文（summary + 关键结论，不含 label 与元信息包装） */
+  text: string;
+  /** 压缩时间：注入消息的时间戳来源（时间真实，心智可算时间差） */
+  createdAt: string;
+}
+
 /**
  * 上下文分层（设计文档 docs/design/context-pipeline-v2.md 第二节）。
  *
@@ -28,10 +40,10 @@ export interface ContextLayers {
   l2?: string;
   /** L3 热上下文（当前场景近期消息），降级时从最旧处截断 */
   l3: ChatMessage[];
-  /** L4 语义检索结果（Phase 3 接入；按 score 降序，降级保留前部） */
+  /** L4 语义检索结果（按 score 降序，降级保留前部；伪装成历史消息注入 messages） */
   l4: SemanticMemory[];
-  /** L5 话题摘要（Phase 2 接入；Phase 1 恒空） */
-  l5: string[];
+  /** L5 话题摘要（按时间倒序，最新在前；伪装成历史消息注入 messages） */
+  l5: TopicSummary[];
   /** L6-core 核心工具描述（文件读写/bash/edit 等基础能力） */
   l6Core: ToolSchema[];
   /** L6-ext 扩展工具描述（MCP/subagent 专用等；Phase 1 恒空，预留裁剪槽位） */

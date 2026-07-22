@@ -564,14 +564,14 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     const archived = await repo.getArchivedByIds(["u1", "u2"]);
     expect(archived.map((m) => m.id).sort()).toEqual(["u1", "u2"]);
 
-    // j3：assemble 注入最近压缩档（L5 system 消息进入 provider 参数）
+    // j3：assemble 注入最近压缩档（L5 伪装成 user 历史消息进入 provider 参数）
     worker.enqueue({ id: "j3", messages: [seqMessage("u3", "新话题", 2)], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
-    const systemTexts = (provider.capturedParams?.messages ?? [])
-      .filter((m) => m.role === "system")
+    const userTexts = (provider.capturedParams?.messages ?? [])
+      .filter((m) => m.role === "user")
       .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
-    expect(systemTexts.some((t) => t.includes("话题摘要"))).toBe(true);
+    expect(userTexts.some((t) => t.includes("用户之前聊过"))).toBe(true);
   });
 
   it("短话题不调用 LLM：仅归档、不产生压缩档", async () => {
@@ -652,10 +652,9 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
 
     const dir = path.join(tmpDir, "agents", "agent-1", "_compressed");
     expect(await fs.readdir(dir).catch(() => null)).toBeNull();
-    const systemTexts = (provider.capturedParams?.messages ?? [])
-      .filter((m) => m.role === "system")
+    const allTexts = (provider.capturedParams?.messages ?? [])
       .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
-    expect(systemTexts.some((t) => t.includes("话题摘要"))).toBe(false);
+    expect(allTexts.some((t) => t.includes("用户之前聊过"))).toBe(false);
   });
 });
 
@@ -688,7 +687,7 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     return { id, role: "user", content: [{ type: "text", text }], createdAt: new Date().toISOString() };
   }
 
-  it("L4 注入 assemble：跨场景标注 + 归档排除", async () => {
+  it("L4 注入 assemble：自然化第三人称 + 跨场景标注 + 归档排除", async () => {
     const provider = new CapturingProvider();
     const repo = new MessageRepository("agent-1");
     await repo.append(pastRecord("past-1", "上周聊过的部署方案"));
@@ -712,13 +711,86 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     worker.enqueue({ id: "j1", messages: [currentUser("u1", "部署方案再聊聊")], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
-    const systemTexts = (provider.capturedParams?.messages ?? [])
-      .filter((m) => m.role === "system")
+    const captured = provider.capturedParams?.messages ?? [];
+    const userTexts = captured
+      .filter((m) => m.role === "user")
       .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
-    const l4 = systemTexts.find((t) => t.includes("相关片段"));
-    expect(l4).toBeTruthy();
-    expect(l4).toContain("[来自: old-session] 上周聊过的部署方案");
-    expect(systemTexts.some((t) => t.includes("已归档的旧消息"))).toBe(false);
+    // 伪装成 user 历史消息：第三人称 + 跨场景自然化标注
+    const recalled = userTexts.find((t) => t.includes("用户之前"));
+    expect(recalled).toBeTruthy();
+    expect(recalled).toContain("另一个对话");
+    expect(recalled).toContain("上周聊过的部署方案");
+    // 不再有 system 元信息消息，归档原文不注入
+    expect(captured.every((m) => m.role !== "system")).toBe(true);
+    expect(userTexts.some((t) => t.includes("已归档的旧消息"))).toBe(false);
+  });
+
+  it("多轮去重：同一会话第二轮不再注入同一记忆，新会话可再次注入", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    await repo.append(pastRecord("past-1", "上周聊过的部署方案"));
+    const indexer = {
+      search: vi.fn(async () => [{ id: "past-1", score: 0.9 }]),
+    } as unknown as MemoryIndexer;
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+    });
+
+    const recalledIn = () =>
+      (provider.capturedParams?.messages ?? [])
+        .filter((m) => m.role === "user")
+        .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""))
+        .some((t) => t.includes("上周聊过的部署方案"));
+
+    worker.enqueue({ id: "j1", sessionId: "sess-1", messages: [currentUser("u1", "部署方案再聊聊")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(recalledIn()).toBe(true);
+
+    // 同一会话第二轮：已注入的记忆不重复注入
+    worker.enqueue({ id: "j2", sessionId: "sess-1", messages: [currentUser("u2", "接着说")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(recalledIn()).toBe(false);
+
+    // 新会话：同一记忆可再次注入
+    worker.enqueue({ id: "j3", sessionId: "sess-2", messages: [currentUser("u3", "部署方案呢")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(recalledIn()).toBe(true);
+  });
+
+  it("检索失败：尾随 system 消息明确告知记忆检索不可用", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const indexer = {
+      search: vi.fn(async () => {
+        throw new Error("sidecar unavailable");
+      }),
+    } as unknown as MemoryIndexer;
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+    });
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    worker.enqueue({ id: "j1", messages: [currentUser("u1", "你好")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const captured = provider.capturedParams?.messages ?? [];
+    // 注意 capturedParams.messages 与 LLM 收到的数组同引用，turn 结束后
+    // 末尾已被 push assistant 回复——失败提示应位于最后一条 user 消息之后
+    const notice = captured.find(
+      (m) =>
+        m.role === "system" &&
+        m.content.some((c) => c.type === "text" && c.text.includes("记忆检索暂时不可用")),
+    );
+    expect(notice).toBeTruthy();
+    const lastUserIdx = captured.map((m) => m.role).lastIndexOf("user");
+    expect(captured.indexOf(notice!)).toBeGreaterThan(lastUserIdx);
+    error.mockRestore();
   });
 
   it("semanticSearch.enabled=false 时不发起检索", async () => {

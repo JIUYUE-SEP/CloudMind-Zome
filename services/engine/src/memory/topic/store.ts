@@ -3,6 +3,7 @@ import path from "node:path";
 import { getAgentDir } from "../../config/paths.js";
 import { renameWithRetry } from "../document-store.js";
 import type { CompressedTopic } from "./types.js";
+import type { TopicSummary } from "../../context/layers.js";
 
 export function compressedDir(agentId: string): string {
   return path.join(getAgentDir(agentId), "_compressed");
@@ -112,12 +113,15 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
 }
 
 interface ParsedCompressedFile {
+  topicId: string;
+  label: string;
   compressedAt: string;
+  /** 摘要正文：summary + 关键结论（不含 label 与元信息包装） */
   text: string;
 }
 
-/** 解析压缩档，渲染为 L5 注入文本；frontmatter 损坏时返回 null（单档跳过） */
-function parseCompressedFile(raw: string): ParsedCompressedFile | null {
+/** 解析压缩档为结构化条目；frontmatter 损坏时返回 null（单档跳过） */
+function parseCompressedFile(raw: string, fallbackId: string): ParsedCompressedFile | null {
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!fmMatch) return null;
   const fm: Record<string, string> = {};
@@ -131,21 +135,26 @@ function parseCompressedFile(raw: string): ParsedCompressedFile | null {
   const body = fmMatch[2]!;
   const summary = body.match(/## Summary\n\n([\s\S]*?)(?=\n## )/)?.[1]?.trim() ?? "";
   const keyPointsBlock = body.match(/## Key Points\n\n([\s\S]*?)(?=\n## |$)/)?.[1]?.trim() ?? "";
-  const label = fm["label"] || "（未命名话题）";
 
-  const parts = [`[话题摘要] ${label}（${compressedAt.slice(0, 10)}）`];
+  const parts: string[] = [];
   if (summary) parts.push(summary);
   if (keyPointsBlock) parts.push(`关键结论：\n${keyPointsBlock}`);
-  return { compressedAt, text: parts.join("\n") };
+  return {
+    topicId: fm["topic_id"] || fallbackId,
+    label: fm["label"] || "（未命名话题）",
+    compressedAt,
+    text: parts.join("\n"),
+  };
 }
 
 /**
- * 读取最近 count 个压缩档，渲染为 L5 注入文本。
+ * 读取最近 count 个压缩档，返回结构化 L5 条目（id/label/text/createdAt）。
+ * 自然化改写与时间渲染由注入侧（context/recall.ts）负责，本层只供数据。
  * topicId 自带时间戳前缀（tp_<Date.now()>），文件名倒序即时间倒序：
  * 先按文件名取前 N 个再读内容，避免每轮全量扫描目录。
  * 目录不存在/单档损坏不中断，最多返回空数组。
  */
-export async function latestSummaries(agentId: string, count: number): Promise<string[]> {
+export async function latestSummaries(agentId: string, count: number): Promise<TopicSummary[]> {
   if (count <= 0) return [];
   let files: string[];
   try {
@@ -158,12 +167,12 @@ export async function latestSummaries(agentId: string, count: number): Promise<s
     .sort()
     .reverse()
     .slice(0, count);
-  const parsed: string[] = [];
+  const parsed: TopicSummary[] = [];
   for (const file of candidates) {
     try {
       const raw = await fs.readFile(path.join(compressedDir(agentId), file), "utf-8");
-      const p = parseCompressedFile(raw);
-      if (p) parsed.push(p.text);
+      const p = parseCompressedFile(raw, file.replace(/\.md$/, ""));
+      if (p) parsed.push({ id: p.topicId, label: p.label, text: p.text, createdAt: p.compressedAt });
     } catch (err) {
       console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
     }
