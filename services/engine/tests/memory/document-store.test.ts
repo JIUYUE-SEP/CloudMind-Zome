@@ -41,4 +41,70 @@ describe("DocumentStore", () => {
     const lines = await store.readLines();
     expect(lines).toEqual([{ v: 2 }]);
   });
+
+  it("读缓存：重复读结果一致，append 后缓存失效读到新数据", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    await store.appendLine({ v: 1 });
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }]);
+    // 第二次读命中缓存（无法直接观测，但至少结果必须一致）
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }]);
+    await store.appendLine({ v: 2 });
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }, { v: 2 }]);
+  });
+
+  it("读缓存：进程外直接改文件（绕过 DocumentStore）后读到新数据", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    await store.appendLine({ v: 1 });
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }]);
+    // 模拟外部进程直写（尺寸变化保证 stat 指纹失效）
+    await fs.writeFile(store.filePath, '{"v":10}\n{"v":20}\n', "utf-8");
+    await expect(store.readLines()).resolves.toEqual([{ v: 10 }, { v: 20 }]);
+  });
+
+  it("读缓存：命中返回深拷贝，调用方原地修改不污染后续读取", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    await store.appendLine({ v: 1 });
+    await store.appendLine({ v: 2 });
+    const first = await store.readLines();
+    first.splice(0, first.length); // 原地清空返回数组
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }, { v: 2 }]);
+  });
+
+  it("读缓存：调用方原地修改记录字段，不污染缓存（scheduler runTask 模式）", async () => {
+    // 回归背景：scheduler runTask 直接给 list() 返回的记录写字段再 update 回写；
+    // 若缓存与返回值共享引用，内存改动会绕过写路径被后续读取看到（写还未落盘）
+    const store = new DocumentStore<{ v: number; tag?: string }>(path.join(tmpDir, "data.jsonl"));
+    await store.appendLine({ v: 1 });
+    const records = await store.readLines();
+    records[0]!.tag = "mutated-in-memory";
+    const reread = await store.readLines();
+    expect(reread).toEqual([{ v: 1 }]);
+    expect(reread[0]!.tag).toBeUndefined();
+  });
+
+  it("读缓存：offset/limit 在缓存命中时语义不变", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    for (const v of [1, 2, 3, 4]) await store.appendLine({ v });
+    await expect(store.readLines({ offset: 1, limit: 2 })).resolves.toEqual([{ v: 2 }, { v: 3 }]);
+    // 第二次走缓存路径，结果必须一致
+    await expect(store.readLines({ offset: 1, limit: 2 })).resolves.toEqual([{ v: 2 }, { v: 3 }]);
+    await expect(store.readLines({ limit: 2 })).resolves.toEqual([{ v: 1 }, { v: 2 }]);
+  });
+
+  it("读缓存：同尺寸覆写（writeLines 相同字节数）也必须失效", async () => {
+    // 回归背景：同尺寸写入可能 mtime 也相同（ms 精度），仅靠 stat 指纹会读到旧缓存
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    await store.writeLines([{ v: 1 }]);
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }]);
+    await store.writeLines([{ v: 2 }]); // 与上一行字节数完全相同
+    await expect(store.readLines()).resolves.toEqual([{ v: 2 }]);
+  });
+
+  it("读缓存：文件删除后返回空且不复活陈旧数据", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    await store.appendLine({ v: 1 });
+    await expect(store.readLines()).resolves.toEqual([{ v: 1 }]);
+    await fs.rm(store.filePath);
+    await expect(store.readLines()).resolves.toEqual([]);
+  });
 });

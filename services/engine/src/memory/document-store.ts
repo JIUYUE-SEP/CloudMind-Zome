@@ -8,6 +8,15 @@ import { createInterface } from "node:readline";
 const writeQueues = new Map<string, Promise<void>>();
 
 /**
+ * 读缓存：JSONL 仓库（messages/memories/actions 等）的读取都是"全量读入再过滤"，
+ * 且同一轮对话会对同一文件读多次（如 L3 listBySession + L4 getByIds）。
+ * 双重失效：进程内写在三个写路径上主动 delete（同尺寸同 mtime 的写无法靠 stat 区分）；
+ * 进程外直写由 (mtimeMs, size) 指纹兜底。命中时省掉整文件的读取+逐行 JSON.parse。
+ * 缓存条数按文件数计（很少），体积与文件本身同阶——热存储有界性由话题压缩保证。
+ */
+const readCache = new Map<string, { mtimeMs: number; size: number; records: object[] }>();
+
+/**
  * Windows 上 rename 覆盖一个正被并发读取（读句柄未释放）的目标文件会 EPERM
  * （典型：scheduler 写回 scheduler.jsonl 时 API/轮询正在 readLines）。
  * 句柄占用是瞬时的，短暂退避重试即可；POSIX 下 rename 本就允许覆盖，一次成功。
@@ -63,6 +72,7 @@ export class DocumentStore<T extends object> {
     const tmpPath = `${this.filePath}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
     await renameWithRetry(tmpPath, this.filePath);
+    readCache.delete(this.filePath);
   }
 
   async writeJson(data: T): Promise<void> {
@@ -73,6 +83,7 @@ export class DocumentStore<T extends object> {
     const line = JSON.stringify(record) + "\n";
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     await fs.appendFile(this.filePath, line, "utf-8");
+    readCache.delete(this.filePath);
   }
 
   async appendLine(record: T): Promise<void> {
@@ -85,6 +96,7 @@ export class DocumentStore<T extends object> {
     const tmpPath = `${this.filePath}.tmp`;
     await fs.writeFile(tmpPath, content);
     await renameWithRetry(tmpPath, this.filePath);
+    readCache.delete(this.filePath);
   }
 
   async writeLines(records: T[]): Promise<void> {
@@ -109,23 +121,30 @@ export class DocumentStore<T extends object> {
     if (stat && stat.size > 100 * 1024 * 1024) {
       throw new Error(`File too large: ${this.filePath}`);
     }
-    const results: T[] = [];
+    if (!stat) {
+      // 文件不存在：同时清掉可能的陈旧缓存，避免删除后复活旧数据
+      readCache.delete(this.filePath);
+      return [];
+    }
     const offset = options?.offset ?? 0;
     const limit = options?.limit ?? Infinity;
+    const end = limit === Infinity ? undefined : offset + limit;
+    const cached = readCache.get(this.filePath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      // 深拷贝：调用方可能原地修改记录（如 scheduler runTask 直接给记录写字段），
+      // 缓存对象绝不能与任何一次返回值共享引用，否则内存改动会绕过写路径"污染"后续读取
+      return structuredClone((cached.records as T[]).slice(offset, end));
+    }
+    // 缓存未命中：全量解析并回填缓存，offset/limit 在内存中应用（语义与提前停读一致）
+    const results: T[] = [];
     let handle: fs.FileHandle | undefined;
     try {
       handle = await fs.open(this.filePath, "r");
       const stream = handle.createReadStream();
       const rl = createInterface({ input: stream });
-      let skipped = 0;
       try {
         for await (const line of rl) {
           if (!line.trim()) continue;
-          if (skipped < offset) {
-            skipped++;
-            continue;
-          }
-          if (results.length >= limit) break;
           try {
             results.push(JSON.parse(line) as T);
           } catch (err) {
@@ -135,7 +154,9 @@ export class DocumentStore<T extends object> {
       } finally {
         rl.close();
       }
-      return results;
+      readCache.set(this.filePath, { mtimeMs: stat.mtimeMs, size: stat.size, records: results });
+      // 同样深拷贝返回：缓存持有 results 本身，返回值必须是独立副本
+      return structuredClone(results.slice(offset, end));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
