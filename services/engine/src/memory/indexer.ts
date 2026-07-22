@@ -44,7 +44,7 @@ export class MemoryIndexer {
       );
       if (vec) await this.client.upsert(agentId, docId, vec);
     } catch (err) {
-      console.error("memory index failed", err);
+      console.warn("[memory] 索引写入失败，已跳过（不影响主链路）", err);
     }
   }
 
@@ -65,7 +65,8 @@ export class MemoryIndexer {
       if (!vec) return [];
       const hits = await this.client.search(agentId, vec, topK);
       return hits.map((h) => ({ id: h.id, score: Math.max(0, 1 - h.score) }));
-    } catch {
+    } catch (err) {
+      console.warn("[memory] 语义检索失败，按空结果降级", err);
       return [];
     }
   }

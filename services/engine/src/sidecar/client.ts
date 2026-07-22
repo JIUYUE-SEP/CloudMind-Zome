@@ -7,6 +7,8 @@ import protoLoader from "@grpc/proto-loader";
  * Rust sidecar（zome-sidecar）的 gRPC 客户端。
  * sidecar 只在 Tauri 桌面环境运行，纯 `pnpm dev` 下不存在——
  * 因此所有调用都优雅降级（返回 undefined/[]），绝不让聊天主链路失败。
+ * 降级不等于静默：失败在统一出口记 warn（Health 轮询只在可用性翻转时记），
+ * 故障可观测但不刷屏。
  */
 
 function findProtoPath(): string | undefined {
@@ -52,14 +54,24 @@ export class SidecarClient {
     }
   }
 
-  private call<TRes>(method: string, req: unknown, deadlineMs = 3000): Promise<TRes | undefined> {
+  private call<TRes>(method: string, req: unknown, deadlineMs = 3000, quiet = false): Promise<TRes | undefined> {
     const client = this.getClient();
     if (!client) return Promise.resolve(undefined);
     return new Promise((resolve) => {
       client[method](
         req,
         { deadline: Date.now() + deadlineMs },
-        (err: unknown, res: TRes) => resolve(err ? undefined : res),
+        (err: unknown, res: TRes) => {
+          if (err) {
+            // 统一降级点：返回值契约不变（undefined），但错误必须可观测。
+            // Health 走 quiet：它由 isAvailable 每 10s 轮询，可用性翻转时在
+            // isAvailable 里记一次，避免 sidecar 缺席时日志刷屏
+            if (!quiet) console.warn(`[sidecar] ${method} 调用失败，按不可用降级`, err);
+            resolve(undefined);
+            return;
+          }
+          resolve(res);
+        },
       );
     });
   }
@@ -67,9 +79,14 @@ export class SidecarClient {
   async isAvailable(): Promise<boolean> {
     const now = Date.now();
     if (now - this.availability.at < AVAILABILITY_CACHE_MS) return this.availability.ok;
-    const res = await this.call("Health", {}, 1000);
-    this.availability = { at: now, ok: res !== undefined };
-    return this.availability.ok;
+    const res = await this.call("Health", {}, 1000, true);
+    const ok = res !== undefined;
+    // 只在可用性翻转时记日志（首次探测不记：纯 pnpm dev 下 sidecar 本就不存在）
+    if (this.availability.at !== 0 && ok !== this.availability.ok) {
+      console.warn(`[sidecar] 可用性变化：${this.availability.ok ? "可用" : "不可用"} -> ${ok ? "可用" : "不可用"}`);
+    }
+    this.availability = { at: now, ok };
+    return ok;
   }
 
   async upsert(agentId: string, docId: string, embedding: number[]): Promise<boolean> {
