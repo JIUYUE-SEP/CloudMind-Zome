@@ -90,13 +90,18 @@ pub async fn spawn_node_engine() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn is_node_healthy() -> bool {
-    let client = reqwest::Client::builder()
+/// is_node_healthy 被 gRPC Health 高频调用（engine 侧最多每 10s 一次），
+/// 复用单个 client 避免每次新建连接池。
+static HEALTH_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
-        .unwrap_or_default();
+        .unwrap_or_default()
+});
+
+pub async fn is_node_healthy() -> bool {
     matches!(
-        client.get(HEALTH_URL).send().await,
+        HEALTH_CLIENT.get(HEALTH_URL).send().await,
         Ok(resp) if resp.status().is_success()
     )
 }
