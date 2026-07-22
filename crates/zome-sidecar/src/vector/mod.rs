@@ -23,16 +23,23 @@ pub struct VectorIndexState {
     dir: PathBuf,
     docs: HashMap<String, Vec<f32>>,
     index: Option<HnswMap<Embedding, String>>,
+    /// 有未入索引的 upsert：search 前惰性重建一次，避免每条消息 O(n) 重建
+    dirty: bool,
 }
 
 impl VectorIndexState {
     pub async fn upsert(&mut self, doc_id: &str, embedding: &[f32]) {
         self.docs.insert(doc_id.to_string(), embedding.to_vec());
-        self.index = build_map(&self.docs);
-        self.persist().await;
+        self.dirty = true;
+        self.persist_append(doc_id, embedding).await;
     }
 
-    pub fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
+    pub fn search(&mut self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
+        // 惰性重建：一轮对话 N 次 upsert 只在此重建一次（原每次 upsert 全量重建）
+        if self.dirty {
+            self.index = build_map(&self.docs);
+            self.dirty = false;
+        }
         if let Some(index) = &self.index {
             let point = Embedding(query.to_vec());
             let mut search = Search::default();
@@ -66,38 +73,36 @@ impl VectorIndexState {
         scored.into_iter().take(top_k).collect()
     }
 
-    async fn persist(&self) {
+    /// 追加单行持久化（原每次 upsert 全量重写 + fsync，一轮对话 N 条消息即 N 次全量落盘）。
+    /// 文件为 append-only：同 doc_id 后行覆盖前行（加载时按行序 insert 去重）。
+    /// 不逐条 fsync——嵌入索引是从消息派生的冗余数据，OS 级崩溃丢失少量尾部可接受；
+    /// 失败仅告警，不影响主链路。
+    async fn persist_append(&self, doc_id: &str, embedding: &[f32]) {
         let path = self.dir.join("embeddings.jsonl");
-        let tmp = self.dir.join("embeddings.jsonl.tmp");
-
-        let mut lines = Vec::new();
-        for (doc_id, embedding) in &self.docs {
-            if let Ok(line) = serde_json::to_string(&Record {
-                doc_id: doc_id.clone(),
-                embedding: embedding.clone(),
-            }) {
-                lines.push(line);
+        let line = match serde_json::to_string(&Record {
+            doc_id: doc_id.to_string(),
+            embedding: embedding.to_vec(),
+        }) {
+            Ok(l) => l + "\n",
+            Err(e) => {
+                tracing::warn!("embedding serialize failed for {}: {}", doc_id, e);
+                return;
             }
-        }
-
-        let content = lines.join("\n");
-        let Some(parent) = tmp.parent() else {
-            return;
         };
-        if fs::create_dir_all(parent).await.is_err() {
+        if let Err(e) = fs::create_dir_all(&self.dir).await {
+            tracing::warn!("embedding dir create failed: {}", e);
             return;
         }
-        let mut file = match fs::File::create(&tmp).await {
+        let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path).await {
             Ok(f) => f,
-            Err(_) => return,
+            Err(e) => {
+                tracing::warn!("embedding file open failed: {}", e);
+                return;
+            }
         };
-        if file.write_all(content.as_bytes()).await.is_err() {
-            return;
+        if let Err(e) = file.write_all(line.as_bytes()).await {
+            tracing::warn!("embedding append failed for {}: {}", doc_id, e);
         }
-        if file.sync_all().await.is_err() {
-            return;
-        }
-        fs::rename(tmp, path).await.ok();
     }
 }
 
@@ -143,7 +148,12 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
     }
 
     let index = build_map(&docs);
-    let state = Arc::new(RwLock::new(VectorIndexState { dir, docs, index }));
+    let state = Arc::new(RwLock::new(VectorIndexState {
+        dir,
+        docs,
+        index,
+        dirty: false,
+    }));
     cache.insert(agent_id, Arc::clone(&state));
     Ok(state)
 }
