@@ -58,7 +58,7 @@ export const bashTool: Tool = {
         settled = true;
         resolve(result);
       };
-      const onData = (data: Buffer) => {
+      const onData = () => {
         // 边收边查，超限立即杀进程，避免海量输出撑爆内存
         if (stdout.length + stderr.length > MAX_OUTPUT_LENGTH) {
           child.kill("SIGKILL");
@@ -69,8 +69,8 @@ export const bashTool: Tool = {
           });
         }
       };
-      child.stdout?.on("data", (data) => { stdout += data.toString(); onData(data); });
-      child.stderr?.on("data", (data) => { stderr += data.toString(); onData(data); });
+      child.stdout?.on("data", (data) => { stdout += data.toString(); onData(); });
+      child.stderr?.on("data", (data) => { stderr += data.toString(); onData(); });
       child.on("error", (err) => settle({ success: false, error: String(err) }));
       child.on("close", (code) => {
         const combined = stdout + stderr;

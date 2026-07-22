@@ -86,9 +86,4 @@ export class SidecarClient {
     );
     return (res?.results ?? []).map((r) => ({ id: r.doc_id, score: r.score }));
   }
-
-  async countTokens(text: string, model: string): Promise<number | undefined> {
-    const res = await this.call<{ count: number }>("CountTokens", { text, model });
-    return res?.count;
-  }
 }

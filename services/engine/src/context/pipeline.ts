@@ -10,14 +10,11 @@ export interface ContextPipelineConfig {
   maxContextTokens: number;
   /** 预留给输出的比例，默认 0.1（10% buffer，宁可保守不可溢出） */
   reserveRatio: number;
-  /** 注入最近压缩档数量（Phase 2 使用，Phase 1 预留） */
-  hotMemoryCount: number;
 }
 
 export const DEFAULT_PIPELINE_CONFIG: ContextPipelineConfig = {
   maxContextTokens: 80_000,
   reserveRatio: 0.1,
-  hotMemoryCount: 2,
 };
 
 export interface AssembleInput {

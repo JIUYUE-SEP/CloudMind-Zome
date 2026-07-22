@@ -124,9 +124,10 @@ services/engine/src/memory/topic/
 // context/pipeline.ts
 export interface ContextPipelineConfig {
   maxContextTokens: number;        // 默认 80000
-  reserveRatio: number;             // 默认 0.1（保留 10% 给输出）
-  hotMemoryCount: number;           // 默认 2（注入最近 2 个压缩档）
-  // 注：设计稿原有的 semanticCandidateCount 未采用——Phase 3 实际候选数为
+  reserveRatio: number;            // 默认 0.1（保留 10% 给输出）
+  // 注：设计稿原有的 hotMemoryCount 已移除——该字段在管线内从未被读取，
+  // 实际生效的是 TopicCompressionConfig.hotMemoryCount（topic/types.ts，默认 2）；
+  // semanticCandidateCount 亦未采用——Phase 3 实际候选数为
   // SemanticRetriever 的 topK*2（agent 级 semanticTopK 配置，默认 10）
 }
 

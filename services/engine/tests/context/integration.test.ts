@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { z } from "zod";
 import type { ChatMessage } from "@mindcloud/shared";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { runTurn, type TurnInput } from "../../src/core/react/turn.js";

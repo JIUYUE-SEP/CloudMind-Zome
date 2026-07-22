@@ -10,7 +10,6 @@ function makeClient(overrides: Partial<SidecarClient> = {}): SidecarClient {
     isAvailable: async () => true,
     upsert: vi.fn(async () => true),
     search: vi.fn(async () => [{ id: "d1", score: 0.9 }]),
-    countTokens: async () => 1,
     ...overrides,
   } as unknown as SidecarClient;
 }
