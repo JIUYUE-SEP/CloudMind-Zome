@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import { compressTopic } from "../../src/memory/topic/compressor.js";
@@ -96,5 +96,31 @@ describe("compressTopic", () => {
     await expect(compressTopic(makeSegment(), new FailingProvider(), "m")).rejects.toThrow(
       "provider down",
     );
+  });
+
+  it("超时不仅 reject，还会 return 迭代器中止底层流", async () => {
+    // 回归背景：原实现超时只 reject 外层 Promise，生成器继续空转泄漏 HTTP 连接
+    class SlowProvider implements LLMProvider {
+      name = "slow";
+      closed = false;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        try {
+          for (let i = 0; i < 1_000_000; i++) {
+            yield { type: "text.delta", delta: "x" };
+            await new Promise((r) => setTimeout(r, 5)); // 慢速但活跃的流
+          }
+        } finally {
+          this.closed = true; // 迭代器被 return() 时生成器在此处收尾
+        }
+      }
+    }
+    const provider = new SlowProvider();
+    await expect(compressTopic(makeSegment(), provider, "m", 30)).rejects.toThrow(
+      "compress timeout",
+    );
+    await vi.waitFor(() => expect(provider.closed).toBe(true), { timeout: 1000, interval: 5 });
   });
 });
