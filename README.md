@@ -29,9 +29,9 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
 - **工具调用** — ReActLoop 调用 7 个内置工具：read_file / write_file / edit_file / list_files / bash / run_command / dispatch_subagent；写类工具需人工审批
-- **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级
-- **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）
-- **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
+- **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级；话题压缩归档（L5 摘要注入）与 L4 语义检索已接入管线（Phase 1–3）
+- **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
+- **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
 - **Skill 系统** — 基于 SKILL.md 的技能加载（内置目录 / 全局目录 / Agent 私有目录），内容注入 system prompt
 - **Plan / Subagent** — 计划管理（REST，内存态）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent）
 - **定时任务** — Cron 调度，到点自动给 Agent 派发任务
@@ -188,7 +188,9 @@ MindCloud-Zome/
 ├── skills/                # 全局 Skill 目录
 └── agents/{agentId}/      # 每个 Agent 的私有工作区
     ├── agent.json         # Agent 配置
-    ├── messages.jsonl     # 会话消息
+    ├── messages.jsonl     # 会话消息（热存储）
+    ├── messages_archived.jsonl  # 已归档消息（话题压缩后移入，可恢复）
+    ├── _compressed/       # 话题压缩档（markdown + frontmatter）
     ├── memories.jsonl     # 长期记忆
     ├── actions.jsonl      # 动作记录
     ├── llm_calls.jsonl    # LLM 调用记录
