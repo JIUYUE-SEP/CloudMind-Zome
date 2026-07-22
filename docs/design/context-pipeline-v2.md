@@ -1,6 +1,6 @@
 # ContextPipeline v2 设计文档
 
-> 版本：v2 | 日期：2026-07-17（2026-07-21 更新状态） | 作者：维克托（为 TS 重写整理）
+> 版本：v2 | 日期：2026-07-17（2026-07-22 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
 > 状态：**Phase 1/2/3 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
@@ -103,19 +103,23 @@ while True:
 ```
 services/engine/src/context/
 ├── pipeline.ts            # 主 ContextPipeline 类
-├── layers.ts              # L1-L6 类型定义与优先级
-├── downgrade.ts           # 降级策略
-├── token-counter.ts       # 准确 token 计数（基于 gpt-tokenizer 或类似）
+├── layers.ts              # L1-L6 类型定义与 DOWNGRADE_ORDER
+├── downgrade.ts           # 降级步骤
+├── token-counter.ts       # 准确 token 计数（@dqbd/tiktoken，cl100k_base）
 ├── assembler.ts           # 组装 messages 为 LLM 输入
-└── __tests__/
+├── semantic.ts            # L4 语义检索器（Phase 3）
+└── truncate.ts            # 工具结果按预算 20% 截断
 
 services/engine/src/memory/topic/
 ├── detector.ts            # 话题切换检测（规则版 v1，LLM 版 v2）
-├── context.ts             # TopicContext（话题树）
-├── trigger.ts             # 压缩触发
+├── tracker.ts             # TopicTracker（话题跟踪/边界判定）
 ├── compressor.ts          # 单程压缩器（LLM 摘要）
-├── worker.ts              # 后台 worker（Node EventEmitter / setImmediate）
-└── __tests__/
+├── queue.ts               # 后台串行压缩队列（fire-and-forget）
+├── store.ts               # _compressed/ 读写、archivedMessageIds（按档缓存）
+└── types.ts               # TopicCompressionConfig 与归一化
+
+services/engine/src/memory/
+└── reconcile.ts           # 启动对账（补归档孤儿消息，ZOME_STARTUP_RECONCILE 开关）
 ```
 
 ### 核心接口（TS）
@@ -285,6 +289,8 @@ compression:
 
 **理由**：压缩是体力活，不需要创造力；指定模型避免数据泄露风险。
 
+> **实现修订（2026-07-22）**：`compressionModel` 实际为可选字段，未配置时缺省用主模型（`agent-worker.ts`）；`fallback_to_main: false` 已按设计实现——压缩失败不回退重试，原始消息留在热存储。
+
 ### 3. 压缩档格式：markdown + frontmatter + embedding_id
 
 **决策**：frontmatter 增加 `embedding_id` 字段，关联向量数据库。
@@ -363,6 +369,7 @@ return 0.3;                              // 三个月以上保底 30%
 - [x] 压缩档落盘 `_compressed/*.md`（frontmatter 预留 embedding_id，Phase 3 接入）
 - [x] 热存储清理（`archiveAndRemove`：先归档 `messages_archived.jsonl` 再移除，可恢复）
 - [x] L5 注入：`pipeline.assemble` 的 `topicSummaries` 输入，agent-worker 接线与 agent 级配置（`compressionModel` / `topicDetectionWindowMinutes` / `topicMessageThreshold`）
+- [x] 启动对账（`memory/reconcile.ts`，2026-07-22）：engine 启动时对账"压缩档 msg_ids ∩ 热存储"，补归档"压缩档已写入但 archiveAndRemove 未完成"的孤儿消息；`ZOME_STARTUP_RECONCILE=false` 关闭，默认开启；不覆盖退出时仍在未关闭话题中的消息
 
 **验收**：长对话后，`_compressed/` 目录有归档，热存储消息数控制在合理范围。
 
