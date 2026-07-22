@@ -7,8 +7,9 @@ export { MIN_SEGMENT_MESSAGES };
 
 /**
  * per-agent 话题跟踪（TopicContext 的规则版）。
- * 状态只存内存。已知取舍：进程重启后 tracker 状态清空，重启前的未压缩
- * 消息成为孤儿——留在热存储且不再被追溯归档（当前不做启动对账）。
+ * 状态只存内存。已知取舍：进程重启后 tracker 状态清空，重启前仍在未关闭
+ * 话题里的消息成为孤儿——没有压缩档指向它们，启动对账（memory/reconcile.ts）
+ * 只能补归档"已有压缩档但 archiveAndRemove 未完成"的消息，覆盖不到这一类。
  * sourceId 随调用传入：同一 agent 可能跨多个会话，segment 记录关闭时所在场景。
  */
 export class TopicTracker {

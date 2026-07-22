@@ -20,6 +20,7 @@ import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
+import { reconcileHotStorage } from "./memory/reconcile.js";
 import { PlanManager } from "./plan/manager.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
@@ -248,6 +249,24 @@ async function main() {
   };
 
   const scheduler = new Scheduler(context, { pollIntervalMs: 5000 });
+
+  // 启动对账（Phase 2 M3）：补归档"已有压缩档但仍留在热存储"的孤儿消息。
+  // 在 scheduler/worker 产生新流量前完成；单 agent 失败只记 warn，不阻断启动。
+  // ZOME_STARTUP_RECONCILE=false 可关闭（手动管理热存储的场景）。
+  if (process.env.ZOME_STARTUP_RECONCILE !== "false") {
+    const agents = await agentRepository.list();
+    for (const agent of agents) {
+      try {
+        const count = await reconcileHotStorage(agent.id, new MessageRepository(agent.id));
+        if (count > 0) {
+          console.log(`[reconcile] agent=${agent.id} 补归档孤儿消息 ${count} 条`);
+        }
+      } catch (err) {
+        console.warn(`[reconcile] agent=${agent.id} 对账失败，跳过（不阻断启动）`, err);
+      }
+    }
+  }
+
   scheduler.start();
 
   const app = await createServer(context);
