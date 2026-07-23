@@ -2,7 +2,7 @@
 
 > 版本：v2 | 日期：2026-07-17（2026-07-22 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：**Phase 1/2/3 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
+> 状态：**Phase 1/2/3/5/6 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---
@@ -121,6 +121,9 @@ services/engine/src/memory/topic/
 
 services/engine/src/memory/
 └── reconcile.ts           # 启动对账（补归档孤儿消息，ZOME_STARTUP_RECONCILE 开关）
+
+services/engine/src/mind/
+└── mind-files.ts          # SOUL.md（人格核心 → L1）/ MIND.md（经验档案，## 分块按需检索 → L3 后）Phase 6
 ```
 
 ### 核心接口（TS）
@@ -419,6 +422,25 @@ Messages（动态，自然对话流）：L4/L5 伪装成的 user 历史消息 �
 - [x] 降级策略不变：L5 → L4 → L6-ext → L3
 
 **验收**：`tests/context/recall.test.ts`（17 例）+ assembler/pipeline/agent-worker 集成用例——自然融入（无 system 元信息）、第三人称、时间戳保留、失败告知、多轮不重复、头部前缀跨轮一致（缓存命中）。
+
+### Phase 6：SOUL.md / MIND.md（2026-07-23）— ✅ 基础框架已实现
+
+**核心设定**：SOUL.md 是人格核心（你是谁、性格、价值观、说话方式），MIND.md 是能力档案（动态经验，## 标题分块）。两文件位于 `agents/{agentId}/`，新建 Agent 时生成默认文件（SOUL 默认模板 + MIND 占位一行"我是新心智，还在学习中"）。
+
+**注入结构**：
+
+```
+System Prompt（固定，缓存命中）：L1 = SOUL.md + skill 内容（SOUL 在前，不含 MIND.md）→ L2 @提及提醒
+Messages（动态）：L4/L5 伪装 user 历史与 L3 按时间归并 → MIND.md 命中块伪装 assistant 历史消息（热上下文之后）→ 当前 user
+```
+
+- [x] `src/mind/mind-files.ts`：SOUL 加载（缺失/读取失败用默认模板）、MIND 解析（## 分块，前言不入块）、规则版检索（英文按词 + 中文 bigram 命中打分，上限 3 块，平分保持文件顺序）、`ensureMindFiles`（新建 Agent 默认文件，已存在不覆盖）
+- [x] L1 组装：agent-worker 把 SOUL 置于 skill 内容之前，MIND.md 不进 L1
+- [x] MIND 注入：`ContextLayers.mind` + `recall.mindToMessage`（第一人称"我记得自己积累过这些经验"），assembler 显式追加在热上下文之后；命中才注入，空档静默跳过
+- [x] Phase 1 不参与降级与多轮去重（量小；与个人格同为"自我"连续性）；缓存前缀跨轮字节一致
+- [ ] 后续扩展：MIND.md 详细生成逻辑（从话题压缩提取经验）、后台 LLM 判断自动更新 MIND.md、embedding 版检索
+
+**验收**：`tests/mind/mind-files.test.ts`（13 例）+ `tests/context/pipeline-mind.test.ts` + assembler/agent-worker/api 集成用例——SOUL 加载与兜底、MIND 解析与话题检索、L1 不含 MIND、注入位置在热上下文之后、缓存前缀稳定、新建 Agent 默认文件落盘。
 
 ---
 

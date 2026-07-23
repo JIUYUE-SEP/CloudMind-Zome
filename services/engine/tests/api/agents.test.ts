@@ -15,6 +15,8 @@ import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
+import { getAgentDir } from "../../src/config/paths.js";
+import { DEFAULT_SOUL_TEMPLATE, DEFAULT_MIND_CONTENT } from "../../src/mind/mind-files.js";
 
 async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "api-test-"));
@@ -80,6 +82,18 @@ describe("Agent API", () => {
     const getRes = await request(app.server).get("/agents/a1");
     expect(getRes.status).toBe(200);
     expect(getRes.body.name).toBe("A1");
+    await app.close();
+  });
+
+  it("creates default SOUL.md and MIND.md for a new agent", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    const createRes = await request(app.server).post("/agents").send(agent);
+    expect(createRes.status).toBe(200);
+
+    const dir = getAgentDir("a1");
+    expect(await fs.readFile(path.join(dir, "SOUL.md"), "utf-8")).toBe(DEFAULT_SOUL_TEMPLATE);
+    expect(await fs.readFile(path.join(dir, "MIND.md"), "utf-8")).toBe(DEFAULT_MIND_CONTENT);
     await app.close();
   });
 

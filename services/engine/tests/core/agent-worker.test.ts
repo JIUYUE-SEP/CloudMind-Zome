@@ -12,6 +12,7 @@ import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/rep
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { restoreDataDir } from "../helpers/env.js";
+import { DEFAULT_SOUL_TEMPLATE } from "../../src/mind/mind-files.js";
 
 const dummyTool: Tool = {
   name: "dummy",
@@ -77,6 +78,21 @@ function userMessage(text: string): ChatMessage {
 }
 
 describe("AgentWorker", () => {
+  // SOUL.md 从数据目录读取：隔离到临时目录，保证 L1 断言不受宿主机已有 agent 数据影响
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "worker-base-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
   it("processes a job and emits streaming events", async () => {
     const worker = new AgentWorker(makeConfig());
     const events: LLMEvent[] = [];
@@ -207,12 +223,17 @@ describe("AgentWorker", () => {
 
     const messages = provider.capturedParams?.messages;
     expect(messages).toBeDefined();
-    // 无 skill prompts 时不存在任何 system 消息，用户消息直接在首位
-    expect(messages?.some((m) => m.role === "system")).toBe(false);
-    expect(messages?.[0]).toEqual(userMessage("hi"));
+    // L1（SOUL 默认模板）是唯一 system 消息——没有 L1.5 code assistant 指令；
+    // 用户消息紧随其后
+    const systems = messages!.filter((m) => m.role === "system");
+    expect(systems).toHaveLength(1);
+    expect(systems[0].content).toEqual([
+      { type: "text", text: DEFAULT_SOUL_TEMPLATE.trim() },
+    ]);
+    expect(messages?.[1]).toEqual(userMessage("hi"));
   });
 
-  it("does not inject system prompt in chat mode", async () => {
+  it("chat 模式注入 SOUL 人格为 L1 system 消息", async () => {
     const provider = new CapturingProvider();
     const worker = new AgentWorker(makeConfig(provider));
 
@@ -226,14 +247,18 @@ describe("AgentWorker", () => {
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
     const messages = provider.capturedParams?.messages;
-    expect(messages?.[0].role).not.toBe("system");
-    expect(messages?.[0]).toEqual(userMessage("hi"));
+    // L1 人格常驻：SOUL（缺失时为默认模板）作为头部 system 消息，用户消息紧随其后
+    expect(messages?.[0].role).toBe("system");
+    expect(messages?.[0].content).toEqual([
+      { type: "text", text: DEFAULT_SOUL_TEMPLATE.trim() },
+    ]);
+    expect(messages?.[1]).toEqual(userMessage("hi"));
   });
 
   it("does not persist system prompt to message repository", async () => {
     const append = vi.fn(async () => {});
     const provider = new CapturingProvider();
-    // L1（skillPrompts）是 L1.5 移除后 system 消息的唯一来源
+    // L1（SOUL + skillPrompts）是 L1.5 移除后 system 消息的唯一来源
     const worker = new AgentWorker({
       ...makeConfig(provider, { append, listBySession: async () => [] }),
       skillPrompts: ["# Core Skill\nDo core things."],
@@ -319,8 +344,12 @@ describe("AgentWorker", () => {
 
     const messages = provider.capturedParams?.messages;
     expect(messages?.[0].role).toBe("system");
+    // L1 = SOUL（默认模板）+ skill 内容，SOUL 在前
     expect(messages?.[0].content).toEqual([
-      { type: "text", text: "# Skills\n\n# Core Skill\nDo core things." },
+      {
+        type: "text",
+        text: `${DEFAULT_SOUL_TEMPLATE.trim()}\n\n# Skills\n\n# Core Skill\nDo core things.`,
+      },
     ]);
   });
 
@@ -720,8 +749,14 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     expect(recalled).toBeTruthy();
     expect(recalled).toContain("另一个对话");
     expect(recalled).toContain("上周聊过的部署方案");
-    // 不再有 system 元信息消息，归档原文不注入
-    expect(captured.every((m) => m.role !== "system")).toBe(true);
+    // L4 以伪装 user 消息自然化注入：system 消息只有 L1 人格（SOUL 默认模板），
+    // 不再有记忆检索的 system 元信息；归档原文不注入
+    const systemTexts = captured
+      .filter((m) => m.role === "system")
+      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
+    expect(systemTexts).toHaveLength(1);
+    expect(systemTexts[0]).toContain("数字心智");
+    expect(systemTexts[0]).not.toContain("部署方案");
     expect(userTexts.some((t) => t.includes("已归档的旧消息"))).toBe(false);
   });
 
@@ -809,5 +844,79 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     worker.enqueue({ id: "j1", messages: [currentUser("u1", "你好")], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
     expect(search).not.toHaveBeenCalled();
+  });
+});
+
+describe("AgentWorker SOUL/MIND 集成", () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  function textOf(m: ChatMessage): string {
+    return m.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+  }
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "worker-mind-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
+  async function writeAgentFile(name: string, content: string): Promise<void> {
+    const dir = path.join(tmpDir, "agents", "agent-1");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, name), content, "utf-8");
+  }
+
+  it("L1 = SOUL.md + skill 内容（SOUL 在前）；MIND.md 命中块注入热上下文之后", async () => {
+    await writeAgentFile("SOUL.md", "# 人格\n我是测试人格。");
+    await writeAgentFile(
+      "MIND.md",
+      "## 状态管理\n决定使用 Zustand。\n\n## 饮食偏好\n指挥官不吃辣。",
+    );
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      skillPrompts: ["SKILL 全文内容"],
+    });
+
+    worker.enqueue({ id: "j1", messages: [userMessage("状态管理怎么定？")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const captured = provider.capturedParams?.messages ?? [];
+    // L1：头部 system 消息 = SOUL + skill，SOUL 在前；不含 MIND 内容
+    const systems = captured.filter((m) => m.role === "system");
+    expect(systems).toHaveLength(1);
+    const l1 = textOf(systems[0]);
+    expect(l1.indexOf("我是测试人格。")).toBeGreaterThanOrEqual(0);
+    expect(l1.indexOf("SKILL 全文内容")).toBeGreaterThan(l1.indexOf("我是测试人格。"));
+    expect(l1).not.toContain("Zustand");
+    expect(l1).not.toContain("不吃辣");
+
+    // MIND 命中块：assistant 消息，含相关块、不含无关块，位于热上下文（当前 user）之后
+    const mind = captured.find((m) => m.role === "assistant" && textOf(m).includes("Zustand"));
+    expect(mind).toBeTruthy();
+    expect(textOf(mind!)).toContain("状态管理");
+    expect(textOf(mind!)).not.toContain("不吃辣");
+    const userIdx = captured.findIndex((m) => m.role === "user" && textOf(m).includes("状态管理怎么定"));
+    expect(captured.indexOf(mind!)).toBeGreaterThan(userIdx);
+  });
+
+  it("SOUL.md 缺失时 L1 用默认模板；MIND.md 缺失时不注入经验消息", async () => {
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+
+    worker.enqueue({ id: "j1", messages: [userMessage("状态管理怎么定？")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const captured = provider.capturedParams?.messages ?? [];
+    const systems = captured.filter((m) => m.role === "system");
+    expect(systems).toHaveLength(1);
+    expect(textOf(systems[0])).toContain("数字心智"); // 默认模板内容
+    expect(captured.find((m) => m.id === "mind-recall")).toBeUndefined();
   });
 });

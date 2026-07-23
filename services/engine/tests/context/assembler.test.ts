@@ -3,6 +3,7 @@ import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "../../src/context/layers.js";
 import type { SemanticMemory, TopicSummary } from "../../src/context/layers.js";
 import { assembleMessages } from "../../src/context/assembler.js";
+import type { MindChunk } from "../../src/mind/mind-files.js";
 
 const NOW = Date.parse("2026-07-22T12:00:00.000Z");
 
@@ -152,5 +153,69 @@ describe("assembleMessages 最终设计：固定前缀 + 伪装历史", () => {
     const messages = assembleMessages(layers, { now: NOW });
     expect(messages.filter((m) => !m.id.startsWith("mem-") && !m.id.startsWith("topic-"))).toEqual(l3);
     expect(layers.l3).toBe(l3);
+  });
+});
+
+function chunk(heading: string, content: string): MindChunk {
+  return { heading, content, raw: `## ${heading}\n${content}` };
+}
+
+describe("MIND.md 经验注入：assistant 历史消息，热上下文后面", () => {
+  it("命中的经验块组装为一条 assistant 消息，位于全部 L3 之后", () => {
+    const layers = createLayers({
+      l3: history(2),
+      mind: [chunk("前端状态管理", "决定使用 Zustand。"), chunk("用户偏好", "指挥官不吃辣。")],
+    });
+    const messages = assembleMessages(layers, { now: NOW });
+
+    const mindIdx = messages.findIndex((m) => m.id === "mind-recall");
+    expect(mindIdx).toBeGreaterThanOrEqual(0);
+    const mind = messages[mindIdx];
+    expect(mind.role).toBe("assistant");
+    const text = textOf(mind);
+    expect(text).toContain("前端状态管理");
+    expect(text).toContain("决定使用 Zustand。");
+    expect(text).toContain("用户偏好");
+    // 热上下文后面：位于所有 L3 消息之后，且为最后一条
+    expect(mindIdx).toBeGreaterThan(messages.findIndex((m) => m.id === "h0"));
+    expect(mindIdx).toBeGreaterThan(messages.findIndex((m) => m.id === "h1"));
+    expect(mindIdx).toBe(messages.length - 1);
+  });
+
+  it("无经验块时不产生 assistant 消息", () => {
+    const layers = createLayers({ l3: history(1), mind: [] });
+    const messages = assembleMessages(layers, { now: NOW });
+    expect(messages.find((m) => m.id === "mind-recall")).toBeUndefined();
+    expect(messages.every((m) => m.role !== "assistant")).toBe(true);
+  });
+
+  it("MIND 消息不进入固定前缀：L1/L2 system 仍居头部且内容不变", () => {
+    const layers = createLayers({
+      l1: "人格内容",
+      l2: "@提醒",
+      l3: history(1),
+      mind: [chunk("经验", "内容")],
+    });
+    const messages = assembleMessages(layers, { now: NOW });
+    expect(messages[0].role).toBe("system");
+    expect(textOf(messages[0])).toBe("人格内容");
+    expect(messages[1].role).toBe("system");
+    expect(textOf(messages[1])).toBe("@提醒");
+    // MIND 内容不出现在任何 system 消息中
+    expect(
+      messages.filter((m) => m.role === "system").map(textOf).join(""),
+    ).not.toContain("经验");
+  });
+
+  it("检索失败提示仍在末尾，MIND 消息在其之前", () => {
+    const layers = createLayers({
+      l3: history(1),
+      mind: [chunk("经验", "内容")],
+    });
+    const messages = assembleMessages(layers, { now: NOW, retrievalFailed: true });
+    const last = messages.at(-1)!;
+    expect(last.role).toBe("system");
+    expect(textOf(last)).toContain("记忆检索暂时不可用");
+    expect(messages.at(-2)!.id).toBe("mind-recall");
   });
 });

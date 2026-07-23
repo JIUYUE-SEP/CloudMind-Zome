@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@mindcloud/shared";
+import type { MindChunk } from "../mind/mind-files.js";
 
 /** L6 工具 schema（Phase 1 不依赖内部结构，token 计数按 JSON 序列化） */
 export type ToolSchema = unknown;
@@ -34,12 +35,14 @@ export interface TopicSummary {
  * - L5（话题摘要）/ L4（语义检索）/ L6-ext（扩展工具）/ L3（热上下文）：可按降级序列裁剪
  */
 export interface ContextLayers {
-  /** L1 人格文件内容（mindContext） */
+  /** L1 人格文件内容（SOUL.md + skill 索引；不含 MIND.md） */
   l1: string;
   /** L2 @提及提醒（mentionDesc） */
   l2?: string;
   /** L3 热上下文（当前场景近期消息），降级时从最旧处截断 */
   l3: ChatMessage[];
+  /** MIND.md 经验检索命中块（伪装成 assistant 历史消息，注入 L3 之后；Phase 1 不参与降级） */
+  mind: MindChunk[];
   /** L4 语义检索结果（按 score 降序，降级保留前部；伪装成历史消息注入 messages） */
   l4: SemanticMemory[];
   /** L5 话题摘要（按时间倒序，最新在前；伪装成历史消息注入 messages） */
@@ -63,6 +66,7 @@ export function createLayers(
     l1: init.l1 ?? "",
     l2: init.l2,
     l3: init.l3,
+    mind: init.mind ?? [],
     l4: init.l4 ?? [],
     l5: init.l5 ?? [],
     l6Core: init.l6Core ?? [],

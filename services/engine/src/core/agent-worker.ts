@@ -22,6 +22,12 @@ import {
   type SemanticSearchConfig,
 } from "../context/semantic.js";
 import type { SemanticMemory, TopicSummary } from "../context/layers.js";
+import {
+  loadSoul,
+  loadMindChunks,
+  retrieveMindChunks,
+  type MindChunk,
+} from "../mind/mind-files.js";
 
 console.log("[agent-worker] module loaded");
 
@@ -191,12 +197,14 @@ export class AgentWorker {
       console.log("[agent-worker] tools:", toolDescriptions.length);
 
       const promptParts: string[] = [];
+      // SOUL.md 人格核心：L1 第一部分（固定前缀，缓存命中；缺失时默认模板兜底）
+      promptParts.push(await loadSoul(this.config.agentId));
       if (this.config.skillPrompts && this.config.skillPrompts.length > 0) {
         promptParts.push(
           "# Skills\n\n" + this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
         );
       }
-      // L1 人格/skill 内容（pipeline 注入为 system 消息）
+      // L1 人格/skill 内容（pipeline 注入为 system 消息；不含 MIND.md）
       const mindContext = promptParts.join("\n\n");
 
       const lastUser = [...job.messages].reverse().find((m) => m.role === "user");
@@ -245,6 +253,18 @@ export class AgentWorker {
         }
       }
 
+      // MIND.md 经验检索（按需）：规则版按当前话题匹配相关块，
+      // 经 pipeline 注入热上下文之后（伪装成 assistant 历史消息）。
+      // 读取失败不静默——warn 留痕，本轮按无经验处理。
+      let mindChunks: MindChunk[] = [];
+      if (lastUser && lastUserText.trim()) {
+        try {
+          mindChunks = retrieveMindChunks(await loadMindChunks(this.config.agentId), lastUserText);
+        } catch (err) {
+          console.warn("[mind] MIND.md 读取失败，本轮不注入经验", err);
+        }
+      }
+
       const messages = [...job.messages];
 
       const turnInput: TurnInput = {
@@ -281,6 +301,7 @@ export class AgentWorker {
             sourceId: sessionId,
             topicSummaries,
             semanticMemories,
+            mindChunks,
             retrievalFailed,
           },
         },

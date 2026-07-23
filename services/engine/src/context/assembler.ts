@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { ContextLayers } from "./layers.js";
-import { memoryToMessage, topicToMessage, retrievalFailedMessage } from "./recall.js";
+import { memoryToMessage, topicToMessage, mindToMessage, retrievalFailedMessage } from "./recall.js";
 
 export interface AssembleOptions {
   /** 注入文本的时间渲染基准（测试注入固定值） */
@@ -28,9 +28,10 @@ function timestampOf(msg: ChatMessage): number {
  * 把分层内容组装为发给 LLM 的 messages（最终设计）。
  *
  * 结构（缓存友好的固定前缀 + 自然对话流）：
- * - 头部 system prompt（固定，缓存命中）：L1 人格 → L2 @提及提醒
+ * - 头部 system prompt（固定，缓存命中）：L1 人格（SOUL.md + skill）→ L2 @提及提醒
  * - messages 动态部分：L4/L5 伪装成的 user 历史消息与 L3 真实历史
  *   按 createdAt 归并排序（稳定：时间相等时伪装消息在前），穿插在自然对话流中；
+ *   MIND.md 经验块伪装成 assistant 历史消息，追加在热上下文之后（不参与归并）；
  *   L6（工具）不走 message 通道，由 pipeline 单独返回。
  * - 检索失败时尾随一条 system 消息明确告知（不伪装）。
  */
@@ -56,6 +57,12 @@ export function assembleMessages(layers: ContextLayers, opts: AssembleOptions = 
   messages.push(
     ...[...recalled, ...layers.l3].sort((a, b) => timestampOf(a) - timestampOf(b)),
   );
+
+  // MIND.md 经验检索：伪装成 assistant 历史消息，显式追加在热上下文之后
+  // （Phase 1 不参与降级与多轮去重；命中才注入，空档静默跳过）
+  if (layers.mind.length > 0) {
+    messages.push(mindToMessage(layers.mind, now));
+  }
 
   if (opts.retrievalFailed) {
     messages.push(retrievalFailedMessage());

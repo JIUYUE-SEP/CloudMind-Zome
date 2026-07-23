@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { SemanticMemory, TopicSummary } from "./layers.js";
+import type { MindChunk } from "../mind/mind-files.js";
 
 /**
  * 记忆自然化（最终设计）：
@@ -89,6 +90,21 @@ export function topicToMessage(topic: TopicSummary, now: number = Date.now()): C
     role: "user",
     content: [{ type: "text", text }],
     createdAt: topic.createdAt,
+  };
+}
+
+/**
+ * MIND.md 经验块 → 伪装成 assistant 历史消息（第一人称想起自己的经验档案）。
+ * 注入位置在热上下文之后（assembler 显式追加，不参与时间归并），
+ * createdAt 取注入时刻——经验是"现在想起的"，不属于过去某个时间点。
+ */
+export function mindToMessage(chunks: MindChunk[], now: number = Date.now()): ChatMessage {
+  const text = `我记得自己积累过这些经验：\n\n${chunks.map((c) => c.raw).join("\n\n")}`;
+  return {
+    id: "mind-recall",
+    role: "assistant",
+    content: [{ type: "text", text }],
+    createdAt: new Date(now).toISOString(),
   };
 }
 

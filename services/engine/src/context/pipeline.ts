@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "./layers.js";
 import type { ToolSchema, SemanticMemory, TopicSummary, ContextLayers } from "./layers.js";
+import type { MindChunk } from "../mind/mind-files.js";
 import { assembleMessages } from "./assembler.js";
 import { selectNextStep } from "./downgrade.js";
 import { CONFIDENCE_DROP } from "./recall.js";
@@ -35,6 +36,8 @@ export interface AssembleInput {
   topicSummaries?: TopicSummary[];
   /** L4 语义检索结果（已按 score 降序，降级时优先保留高相关） */
   semanticMemories?: SemanticMemory[];
+  /** MIND.md 经验检索命中块（agent-worker 已按当前话题检索；注入热上下文之后，不参与降级） */
+  mindChunks?: MindChunk[];
   /** 记忆检索本轮失败：组装时尾随 system 消息明确告知（诚实透明） */
   retrievalFailed?: boolean;
 }
@@ -106,6 +109,8 @@ export class ContextPipeline {
         (m) => m.score > CONFIDENCE_DROP && !seen.has(`mem:${m.id}`),
       ),
       l5: (input.topicSummaries ?? []).filter((t) => !seen.has(`topic:${t.id}`)),
+      // MIND.md 经验块：已在上游按话题检索，直接进层（Phase 1 不去重、不降级）
+      mind: [...(input.mindChunks ?? [])],
       l6Core: [...input.tools],
       // Phase 1 决策：现有 7 个内置工具全部为 L6-core；L6-ext 预留（MCP 接入后启用）
       l6Ext: [],

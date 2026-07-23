@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import type { AgentConfig } from "@mindcloud/shared";
+import { ensureMindFiles } from "../../mind/mind-files.js";
 
 function isValidAgentId(id: unknown): id is string {
   return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
@@ -24,6 +25,8 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
       return reply.status(400).send({ error: "Invalid agent id" });
     }
     await context.agentRepository.save(config.id, config);
+    // 新建 Agent 生成默认 SOUL.md（人格模板）与 MIND.md（空经验档案）；已存在不覆盖
+    await ensureMindFiles(config.id);
     return config;
   });
 
