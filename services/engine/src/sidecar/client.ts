@@ -123,6 +123,9 @@ export class SidecarClient {
     const res = await this.call<{ results?: { doc_id: string; score: number }[] }>(
       "Search",
       { agent_id: agentId, query, top_k: topK },
+      // 15s 而非默认 3s：P0-5 后稳态 search 恒为毫秒级，唯一慢调用是 sidecar
+      // 重启后首个 agent 的冷载入（万条级数秒、一次性），3s 会把它也打成超时静默空
+      15_000,
     );
     return (res?.results ?? []).map((r) => ({ id: r.doc_id, score: r.score }));
   }
