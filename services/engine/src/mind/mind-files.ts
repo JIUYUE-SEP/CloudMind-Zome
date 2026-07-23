@@ -233,6 +233,34 @@ export const MIND_MERGE_SIMILARITY = 0.6;
 /** 置信度 ≤ 0.5 的经验直接不落盘（沿用 P5 置信度分档口径） */
 export const MIND_MIN_CONFIDENCE = 0.5;
 
+/** 标题分段分隔符：冒号/破折号（中英文都认） */
+const HEADING_SEGMENT_RE = /[:：\-—–]+/;
+
+/**
+ * 主体段：标题按冒号/破折号分段后的末段（如「指挥官偏好：饮食」→「饮食」）；
+ * 无分隔符时整段即主体段（退化为整体判定）。
+ */
+function subjectSegment(heading: string): string {
+  const segments = heading
+    .split(HEADING_SEGMENT_RE)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1]! : heading;
+}
+
+/**
+ * 合并判定（review M1，双重门槛）：整体 Jaccard ≥ 0.6 且主体段有共享 token。
+ * 只过整体阈值会在共享前缀标题上误并（「指挥官偏好：饮食」vs「指挥官偏好：穿搭」
+ * 交 3 并 5 = 0.6 但主体段无关）；主体段约束挡住这类误并，无分隔符标题行为不变。
+ */
+function isSameExperience(existingHeading: string, newHeading: string): boolean {
+  if (jaccard(tokenize(existingHeading), tokenize(newHeading)) < MIND_MERGE_SIMILARITY) {
+    return false;
+  }
+  const newSubjectTokens = new Set(tokenize(subjectSegment(newHeading)));
+  return tokenize(subjectSegment(existingHeading)).some((t) => newSubjectTokens.has(t));
+}
+
 function jaccard(a: string[], b: string[]): number {
   const setA = new Set(a);
   const setB = new Set(b);
@@ -256,14 +284,11 @@ function formatExperienceBlock(e: NewMindExperience): string {
 }
 
 /**
- * 标题与已有块相似（Jaccard ≥ 0.6）时并入：新正文压成一行追加到已有块正文
- * 末尾（不删除原文，frontmatter 不动）；无相似块返回 null。
+ * 标题与已有块相似（双重门槛：整体 Jaccard ≥ 0.6 且主体段有共享 token）时并入：
+ * 新正文压成一行追加到已有块正文末尾（不删除原文，frontmatter 不动）；无相似块返回 null。
  */
 function mergeIntoSimilar(raw: string, e: NewMindExperience): string | null {
-  const newTokens = tokenize(e.title);
-  const target = parsePositioned(raw).find(
-    (p) => jaccard(tokenize(p.chunk.heading), newTokens) >= MIND_MERGE_SIMILARITY,
-  );
+  const target = parsePositioned(raw).find((p) => isSameExperience(p.chunk.heading, e.title));
   if (!target) return null;
   const supplement = e.text.replace(/\s+/g, " ").trim();
   const before = raw.slice(0, target.end).trimEnd();

@@ -187,6 +187,35 @@ describe("appendMindExperiences 去重（标题 token Jaccard ≥ 0.6 合并）"
     expect(parseMindChunks(after)).toHaveLength(1);
   });
 
+  it("共享前缀但主体段不同：不误并（review M1 反例）", async () => {
+    // 「指挥官偏好：饮食」vs「指挥官偏好：穿搭」：整体 Jaccard 0.6 过线，
+    // 但主体段（末段）饮食/穿搭无共享 token —— 双重门槛下不并
+    await seedMind("## 指挥官偏好：饮食\n不吃辣。\n");
+
+    const result = await appendMindExperiences(AGENT_ID, [
+      exp({ title: "指挥官偏好：穿搭", text: "正式场合穿深色。" }),
+    ]);
+
+    expect(result).toEqual({ appended: 1, merged: 0, skipped: 0 });
+    const chunks = parseMindChunks(await readMind());
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].content).toBe("不吃辣。"); // 原块未被污染
+  });
+
+  it("主体段有共享 token 且整体相似：正常合并（双重门槛正例）", async () => {
+    // 整体 Jaccard 4/6 ≈ 0.67，主体段「不用 emoji」vs「emoji 禁用」共享 emoji
+    await seedMind("## 指挥官偏好：不用 emoji\n回复不带 emoji。\n");
+
+    const result = await appendMindExperiences(AGENT_ID, [
+      exp({ title: "指挥官偏好：emoji 禁用", text: "文档里同样避免。" }),
+    ]);
+
+    expect(result.merged).toBe(1);
+    const after = await readMind();
+    expect(after).toContain("回复不带 emoji。\n文档里同样避免。");
+    expect(parseMindChunks(after)).toHaveLength(1);
+  });
+
   it("同批次后写入的经验参与去重（连续合并到同一块）", async () => {
     const result = await appendMindExperiences(AGENT_ID, [
       exp(),
