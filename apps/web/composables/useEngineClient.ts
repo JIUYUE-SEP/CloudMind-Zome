@@ -171,6 +171,13 @@ async function ensureOk(res: Response, action: string): Promise<void> {
 // 后续所有 useEngineClient() 调用直接复用，不再逐个 onMounted 异步获取。
 const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 
+// 模块级鉴权 token 单例（与 sharedBaseUrl 同一模式）。engine 本地 token 鉴权（P0-2）：
+// 除 /health 外 REST 全部要求 Bearer，WS 握手要求子协议携带 token。
+// 分发通道：desktop 由 Rust 侧读数据目录 auth-token 文件经 IPC 下发；
+// web 开发经 NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage["cloudmind.engineToken"] 手动配置
+// （engine 启动日志会打印 token 文件路径提示）。
+const sharedToken = ref("");
+
 // baseUrl 尾部斜杠未归一会拼出 "//agents" 导致全部 404：赋值入口统一去除
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
@@ -190,6 +197,14 @@ if (tauriGlobal?.core?.invoke) {
     .catch(() => {
       // backend 未就绪或 IPC 失败：保留默认 8848
     });
+  tauriGlobal.core
+    .invoke("get_engine_token")
+    .then((token: unknown) => {
+      if (typeof token === "string" && token) sharedToken.value = token;
+    })
+    .catch(() => {
+      // token 未就绪：REST/WS 会被 401/4401 拒绝，界面走既有错误路径提示
+    });
 }
 
 // 非 Tauri 环境：首次调用时从 runtimeConfig 取一次（NUXT_PUBLIC_ENGINE_URL 可覆盖），之后缓存复用
@@ -200,17 +215,30 @@ export function useEngineClient(options?: EngineClientOptions) {
   if (!runtimeConfigApplied && !tauriGlobal) {
     runtimeConfigApplied = true;
     if (config.public.engineUrl) sharedBaseUrl.value = normalizeBaseUrl(config.public.engineUrl as string);
+    const configuredToken = config.public.engineToken as string | undefined;
+    if (configuredToken) {
+      sharedToken.value = configuredToken;
+    } else if (typeof localStorage !== "undefined") {
+      sharedToken.value = localStorage.getItem("cloudmind.engineToken") ?? "";
+    }
   }
   const baseUrl = options?.baseUrl ? ref(normalizeBaseUrl(options.baseUrl)) : sharedBaseUrl;
 
+  // REST 统一携带 Bearer token（engine 除 /health 外全部要求鉴权）
+  function engineFetch(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+    const headers = new Headers(init?.headers);
+    if (sharedToken.value) headers.set("Authorization", `Bearer ${sharedToken.value}`);
+    return fetchWithTimeout(url, { ...init, headers }, timeoutMs);
+  }
+
   async function listAgents(): Promise<AgentConfig[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/agents`);
+    const res = await engineFetch(`${baseUrl.value}/agents`);
     await ensureOk(res, "list agents");
     return res.json();
   }
 
   async function createAgent(agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/agents`, {
+    const res = await engineFetch(`${baseUrl.value}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -220,13 +248,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getAgent(id: string): Promise<AgentConfig> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`);
+    const res = await engineFetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`);
     await ensureOk(res, "get agent");
     return res.json();
   }
 
   async function updateAgent(id: string, agent: AgentConfig): Promise<AgentConfig> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, {
+    const res = await engineFetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agent),
@@ -236,7 +264,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteAgent(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await engineFetch(`${baseUrl.value}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete agent");
   }
 
@@ -244,20 +272,20 @@ export function useEngineClient(options?: EngineClientOptions) {
     const params = new URLSearchParams();
     params.set("sessionId", sessionId);
     if (limit) params.set("limit", String(limit));
-    const res = await fetchWithTimeout(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
+    const res = await engineFetch(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
     await ensureOk(res, "get messages");
     return res.json();
   }
 
   // Sessions
   async function listSessions(): Promise<Session[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions`);
+    const res = await engineFetch(`${baseUrl.value}/sessions`);
     await ensureOk(res, "list sessions");
     return res.json();
   }
 
   async function createSession(session: Omit<Session, "id" | "createdAt" | "updatedAt">): Promise<Session> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions`, {
+    const res = await engineFetch(`${baseUrl.value}/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(session),
@@ -268,7 +296,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   // engine 只应用 name/agentIds（其余字段静默丢弃），类型与之一致
   async function updateSession(id: string, patch: Partial<Pick<Session, "name" | "agentIds">>): Promise<Session> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, {
+    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -278,27 +306,27 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteSession(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete session");
   }
 
   async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
     if (limit) params.set("limit", String(limit));
-    const res = await fetchWithTimeout(`${baseUrl.value}/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`);
+    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`);
     await ensureOk(res, "get session messages");
     return res.json();
   }
 
   // Compute
   async function listProviders(): Promise<Provider[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers`);
+    const res = await engineFetch(`${baseUrl.value}/compute/providers`);
     await ensureOk(res, "list providers");
     return res.json();
   }
 
   async function createProvider(body: Omit<Provider, "id">): Promise<Provider> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers`, {
+    const res = await engineFetch(`${baseUrl.value}/compute/providers`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -309,7 +337,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   // engine 只应用 displayName/baseUrl/apiKey（models/providerType 静默丢弃），类型与之一致
   async function updateProvider(id: string, body: Partial<Pick<Provider, "displayName" | "baseUrl" | "apiKey">>): Promise<Provider> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, {
+    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -319,20 +347,20 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteProvider(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete provider");
   }
 
   // engine 失败路径是 502（ensureOk 抛出），成功时才有 discovered
   async function testProvider(id: string): Promise<{ ok: true; discovered?: ModelInfo[] }> {
     // 探测外部 provider 的 models 列表，慢节点可能超过默认 10s，放宽到 30s
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}/test`, { method: "POST" }, 30_000);
+    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}/test`, { method: "POST" }, 30_000);
     await ensureOk(res, "test provider");
     return res.json();
   }
 
   async function addModel(providerId: string, body: ModelInfo): Promise<ModelInfo> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models`, {
+    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -342,7 +370,7 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function updateModel(providerId: string, modelId: string, body: Partial<ModelInfo>): Promise<ModelInfo> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, {
+    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -352,19 +380,19 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteModel(providerId: string, modelId: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, { method: "DELETE" });
+    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, { method: "DELETE" });
     await ensureOk(res, "delete model");
   }
 
   // Settings
   async function getConfig(): Promise<AppSettings & { providers: Provider[] }> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/config`);
+    const res = await engineFetch(`${baseUrl.value}/config`);
     await ensureOk(res, "get config");
     return res.json();
   }
 
   async function updateConfig(body: Partial<AppSettings>): Promise<AppSettings> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/config`, {
+    const res = await engineFetch(`${baseUrl.value}/config`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -374,21 +402,21 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getTools(): Promise<ToolInfo[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/config/tools`);
+    const res = await engineFetch(`${baseUrl.value}/config/tools`);
     await ensureOk(res, "get tools");
     return res.json();
   }
 
   // Logs
   async function getLogs(limit = 200): Promise<EngineLogEntry[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/logs?limit=${limit}`);
+    const res = await engineFetch(`${baseUrl.value}/logs?limit=${limit}`);
     await ensureOk(res, "get logs");
     return res.json();
   }
 
   // Scheduler
   async function getScheduledTasks(agentId: string): Promise<ScheduledTask[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
+    const res = await engineFetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`);
     await ensureOk(res, "list scheduled tasks");
     return res.json();
   }
@@ -398,7 +426,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     // engine 创建时忽略 lastRunAt/nextRunAt 并自算 nextRunAt，类型上直接排除
     task: Omit<ScheduledTask, "id" | "agentId" | "createdAt" | "updatedAt" | "lastRunAt" | "nextRunAt">
   ): Promise<ScheduledTask> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`, {
+    const res = await engineFetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(task),
@@ -412,7 +440,7 @@ export function useEngineClient(options?: EngineClientOptions) {
     taskId: string,
     patch: Partial<Omit<ScheduledTask, "id" | "agentId">>
   ): Promise<ScheduledTask> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${encodeURIComponent(taskId)}`, {
+    const res = await engineFetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${encodeURIComponent(taskId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -422,13 +450,16 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteScheduledTask(agentId: string, taskId: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+    const res = await engineFetch(`${baseUrl.value}/scheduler/${encodeURIComponent(agentId)}/${encodeURIComponent(taskId)}`, { method: "DELETE" });
     await ensureOk(res, "delete scheduled task");
   }
 
   function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`);
+    // 浏览器 WS 不能设请求头：token 经 Sec-WebSocket-Protocol 子协议传递（不出现在 URL/日志）
+    const socket = sharedToken.value
+      ? new WebSocket(`${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`, sharedToken.value)
+      : new WebSocket(`${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`);
 
     socket.onopen = () => {
       handlers.onOpen?.();
@@ -500,13 +531,13 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   // Blueprints
   async function listBlueprints(): Promise<Blueprint[]> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints`);
+    const res = await engineFetch(`${baseUrl.value}/blueprints`);
     await ensureOk(res, "list blueprints");
     return res.json();
   }
 
   async function createBlueprint(blueprint: Omit<Blueprint, "id" | "createdAt" | "updatedAt">): Promise<Blueprint> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints`, {
+    const res = await engineFetch(`${baseUrl.value}/blueprints`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(blueprint),
@@ -516,13 +547,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function getBlueprint(id: string): Promise<Blueprint> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`);
+    const res = await engineFetch(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`);
     await ensureOk(res, "get blueprint");
     return res.json();
   }
 
   async function updateBlueprint(id: string, patch: Partial<Blueprint>): Promise<Blueprint> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`, {
+    const res = await engineFetch(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -532,13 +563,13 @@ export function useEngineClient(options?: EngineClientOptions) {
   }
 
   async function deleteBlueprint(id: string): Promise<void> {
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await engineFetch(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "delete blueprint");
   }
 
   async function executeBlueprint(id: string, initialInput?: string): Promise<BlueprintExecution> {
     // engine 侧同步跑完整个 LLM 工作流才返回，远超默认 10s，放宽到 120s
-    const res = await fetchWithTimeout(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}/execute`, {
+    const res = await engineFetch(`${baseUrl.value}/blueprints/${encodeURIComponent(id)}/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initialInput }),
@@ -549,7 +580,10 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   function connectSession(sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`);
+    // 浏览器 WS 不能设请求头：token 经 Sec-WebSocket-Protocol 子协议传递（不出现在 URL/日志）
+    const socket = sharedToken.value
+      ? new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`, sharedToken.value)
+      : new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`);
 
     socket.onopen = () => {
       handlers.onOpen?.();

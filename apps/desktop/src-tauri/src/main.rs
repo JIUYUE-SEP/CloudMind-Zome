@@ -26,7 +26,7 @@ fn main() {
                 });
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_backend_url])
+        .invoke_handler(tauri::generate_handler![commands::get_backend_url, commands::get_engine_token])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
