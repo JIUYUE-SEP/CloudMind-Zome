@@ -211,4 +211,58 @@ describe("config/repository", () => {
     expect(loaded.providers[0].apiKey).toBeUndefined();
     expect(warnSpy).toHaveBeenCalled();
   });
+
+  it("serializes concurrent saves: none fails with ENOENT and no update is silently lost", async () => {
+    const repo = new ConfigRepository();
+    const filePath = path.join(tempDir, "config.json");
+    const makeConfig = (id: string) => ({
+      providers: [
+        {
+          id,
+          displayName: id,
+          providerType: "openai" as const,
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: `sk-${id}`,
+          models: [],
+        },
+      ],
+      settings: { memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 } },
+    });
+
+    // 原实现固定 tmp 名：并发交错会 rename 撞 ENOENT 或覆盖到别人的内容
+    const saves: Promise<void>[] = [];
+    for (let i = 0; i < 10; i++) saves.push(repo.save(makeConfig(`p${i}`)));
+    await Promise.all(saves); // 任何一个 reject（ENOENT 等）都会使本断言失败
+
+    // 队列保证调用顺序即生效顺序：最终文件是最后一次 save 的完整内容
+    const saved = JSON.parse(await fs.readFile(filePath, "utf-8"));
+    expect(saved.providers.map((p: { id: string }) => p.id)).toEqual(["p9"]);
+  });
+
+  it("blocks save after a load with decrypt failures, leaving the ciphertext file intact", async () => {
+    const repo = new ConfigRepository();
+    const filePath = path.join(tempDir, "config.json");
+    const content = JSON.stringify({
+      providers: [
+        {
+          id: "openai",
+          displayName: "OpenAI",
+          providerType: "openai",
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "enc:!!!not-valid-ciphertext!!!",
+          models: [],
+        },
+      ],
+      settings: { memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 } },
+    });
+    await fs.writeFile(filePath, content, "utf-8");
+
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loaded = await repo.load();
+    expect(loaded.providers[0].apiKey).toBeUndefined();
+
+    // 降级 load 后的 save 会把 apiKey 永久写成 undefined：必须被阻断
+    await expect(repo.save(loaded)).rejects.toThrow(/解密失败/);
+    expect(await fs.readFile(filePath, "utf-8")).toBe(content);
+  });
 });

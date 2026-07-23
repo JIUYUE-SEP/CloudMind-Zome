@@ -75,6 +75,10 @@ async function decryptValue(value: string | undefined): Promise<string | undefin
 
 export class ConfigRepository {
   private filePath: string;
+  // 并发 save 串行化（P0 review 返工）：save 共享固定 tmp 名，不排队会互相覆盖
+  private saveQueue: Promise<void> = Promise.resolve();
+  // 最近一次 load 的 decrypt 失败数：>0 时阻断 save（P0 review 返工）
+  private decryptFailures = 0;
 
   constructor() {
     this.filePath = path.join(getDataDir(), "config.json");
@@ -112,17 +116,45 @@ export class ConfigRepository {
       settings: { ...defaults.settings, ...parsed.settings },
     };
 
+    let decryptFailures = 0;
     for (const provider of config.providers) {
-      provider.apiKey = await decryptValue(provider.apiKey);
+      if (provider.apiKey?.startsWith("enc:")) {
+        const decrypted = await decryptValue(provider.apiKey);
+        if (decrypted === undefined) decryptFailures++;
+        provider.apiKey = decrypted;
+      }
     }
     if (config.settings) {
-      config.settings.tavilyApiKey = await decryptValue(config.settings.tavilyApiKey);
+      const key = config.settings.tavilyApiKey;
+      if (key?.startsWith("enc:")) {
+        const decrypted = await decryptValue(key);
+        if (decrypted === undefined) decryptFailures++;
+        config.settings.tavilyApiKey = decrypted;
+      }
     }
+    this.decryptFailures = decryptFailures;
 
     return config;
   }
 
   async save(config: GlobalConfig): Promise<void> {
+    // 并发 save 串行化（P0 review 返工）：tmp 名固定，并发 save 交错会
+    // "A 写 tmp → B 覆盖 → A rename 到 B 的内容 → B rename 撞 ENOENT"，
+    // A 的修改静默丢失。排队后任一失败不影响后续调用
+    const run = this.saveQueue.then(() => this.saveInner(config));
+    this.saveQueue = run.catch(() => {});
+    return run;
+  }
+
+  private async saveInner(config: GlobalConfig): Promise<void> {
+    // decrypt 降级阻断（P0 review 返工）：master key 暂时不可用时 load 会把
+    // apiKey 降级为 undefined，此时 save 会把它永久写成 undefined
+    if (this.decryptFailures > 0) {
+      throw new Error(
+        `配置中有 ${this.decryptFailures} 个加密字段解密失败（master key 可能已变更或暂不可用），` +
+          `已阻断保存以防 apiKey 被清空；请恢复 master key 或人工处理 config.json 后重试`,
+      );
+    }
     const toSave: GlobalConfig = {
       ...config,
       providers: await Promise.all(
