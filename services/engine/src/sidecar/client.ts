@@ -113,7 +113,9 @@ export class SidecarClient {
   }
 
   async upsert(agentId: string, docId: string, embedding: number[]): Promise<boolean> {
-    const res = await this.call("Upsert", { agent_id: agentId, doc_id: docId, embedding });
+    // 与 search 同档 30s：sidecar 重启后首条嵌入 upsert 同样触发完整冷载入，
+    // 默认 3s 会把该条嵌入打成超时丢弃（实测数据见 search 注释）
+    const res = await this.call("Upsert", { agent_id: agentId, doc_id: docId, embedding }, 30_000);
     return res !== undefined;
   }
 
@@ -123,9 +125,11 @@ export class SidecarClient {
     const res = await this.call<{ results?: { doc_id: string; score: number }[] }>(
       "Search",
       { agent_id: agentId, query, top_k: topK },
-      // 15s 而非默认 3s：P0-5 后稳态 search 恒为毫秒级，唯一慢调用是 sidecar
-      // 重启后首个 agent 的冷载入（万条级数秒、一次性），3s 会把它也打成超时静默空
-      15_000,
+      // 30s 依据实测（P0 review 返工，2026-07-24，Ryzen 7 8845H）：
+      // 万条 1536 维（295.7MB embeddings.jsonl）冷载入 12.3-12.5s
+      // （search 12487/12438/12357ms、upsert 12443/12323/12296ms，各 3 轮）。
+      // 30s ≈ 2.4 倍余量，约覆盖同机 2 万条 1536 维；超出后按空降级并 warn
+      30_000,
     );
     return (res?.results ?? []).map((r) => ({ id: r.doc_id, score: r.score }));
   }
