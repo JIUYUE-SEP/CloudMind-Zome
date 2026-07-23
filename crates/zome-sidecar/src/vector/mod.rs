@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use instant_distance::{Builder, HnswMap, Point, Search};
+use hnsw_rs::prelude::*;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
@@ -10,55 +10,78 @@ use tokio::sync::RwLock;
 use crate::data_dir;
 use crate::sanitize_agent_id;
 
-#[derive(Clone)]
-struct Embedding(Vec<f32>);
+/// HNSW 参数：ef_construction 取 100 而非教科书 200——插入成本与之近似线性，
+/// 万条冷载入与运行期 upsert 都直接减半，召回率在该规模下无感差异
+const HNSW_MAX_NB_CONNECTION: usize = 16;
+const HNSW_MAX_LAYER: usize = 16;
+const HNSW_EF_CONSTRUCTION: usize = 100;
 
-impl Point for Embedding {
-    fn distance(&self, other: &Self) -> f32 {
-        1.0 - cosine_similarity(&self.0, &other.0)
-    }
-}
+/// embeddings.jsonl 启动 compaction（M9）：行数超过唯一文档数 2 倍且超过
+/// 该下限才重写，避免小文件无意义 IO
+const COMPACTION_MIN_LINES: usize = 100;
+
+/// 小索引直接精确线性扫描的上限：此规模下线性成本可忽略，
+/// 且规避近似图在大量并列距离时的召回波动（如 50 个距离全相同的点）
+const LINEAR_SCAN_MAX: usize = 256;
+
+type HnswIndex = Hnsw<'static, f32, DistCosine>;
 
 pub struct VectorIndexState {
     dir: PathBuf,
+    /// doc_id -> 最新向量（持久化与重载的唯一事实源）
     docs: HashMap<String, Vec<f32>>,
-    index: Option<HnswMap<Embedding, String>>,
-    /// 有未入索引的 upsert：search 前惰性重建一次，避免每条消息 O(n) 重建
-    dirty: bool,
+    index: HnswIndex,
+    /// 内部点 id -> doc_id
+    ids: Vec<String>,
+    /// doc_id -> 最新内部点 id。hnsw_rs 不支持删除点：同 doc_id 重复 upsert
+    /// 会插入新点、旧点成孤儿，search 只认该表登记的最新点
+    doc_ids: HashMap<String, usize>,
 }
 
 impl VectorIndexState {
     pub async fn upsert(&mut self, doc_id: &str, embedding: &[f32]) {
         self.docs.insert(doc_id.to_string(), embedding.to_vec());
-        self.dirty = true;
+        // 增量插入单点（P0-5）：成本 O(log n) 级，不再 dirty 后 search 前全量重建
+        let internal_id = self.ids.len();
+        self.index.insert((embedding, internal_id));
+        self.ids.push(doc_id.to_string());
+        self.doc_ids.insert(doc_id.to_string(), internal_id);
         self.persist_append(doc_id, embedding).await;
     }
 
-    pub fn search(&mut self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
-        // 惰性重建：一轮对话 N 次 upsert 只在此重建一次（原每次 upsert 全量重建）
-        if self.dirty {
-            self.index = build_map(&self.docs);
-            self.dirty = false;
-        }
-        if let Some(index) = &self.index {
-            let point = Embedding(query.to_vec());
-            let mut search = Search::default();
-            let results: Vec<_> = index
-                .search(&point, &mut search)
-                .map(|result| (result.value.clone(), result.distance))
-                .take(top_k)
-                .collect();
-            if !results.is_empty() || self.docs.len() >= 2 {
-                return results;
-            }
-        }
-        self.linear_search(query, top_k)
-    }
-
-    fn linear_search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
-        if top_k == 0 || self.docs.is_empty() {
+    /// 只读检索：索引在 upsert 时已增量更新，search 不再做任何重建，
+    /// server 侧可持读锁并发执行（原全量重建持写锁阻塞整个 runtime）
+    pub fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
+        if top_k == 0 || self.ids.is_empty() {
             return Vec::new();
         }
+        if self.ids.len() <= LINEAR_SCAN_MAX {
+            return self.linear_search(query, top_k);
+        }
+        // 候选池放大：过滤孤儿点（重复 upsert 的旧向量）后仍需凑够 top_k
+        let knbn = (top_k * 4).max(64).min(self.ids.len());
+        let ef = knbn.max(64);
+        let mut seen = HashSet::with_capacity(top_k);
+        let mut results = Vec::with_capacity(top_k);
+        for neighbour in self.index.search(query, knbn, ef) {
+            let doc_id = &self.ids[neighbour.d_id];
+            // 只认最新点：同 doc_id 的旧向量是过期数据
+            if self.doc_ids.get(doc_id) != Some(&neighbour.d_id) {
+                continue;
+            }
+            if !seen.insert(doc_id.clone()) {
+                continue;
+            }
+            results.push((doc_id.clone(), neighbour.distance));
+            if results.len() == top_k {
+                break;
+            }
+        }
+        results
+    }
+
+    /// docs 只存每个 doc_id 的最新向量，线性扫描天然无重复 upsert 的孤儿问题
+    fn linear_search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
         let mut scored: Vec<(String, f32)> = self
             .docs
             .iter()
@@ -125,50 +148,170 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
         }
     }
 
+    // 重活（读盘 + JSON 解析 + 并行建索引）在缓存写锁外完成：
+    // 避免一个 agent 的冷载入（万条级秒级）阻塞其他 agent 的首次加载
+    let built = load_state(&agent_id).await?;
+
     let mut cache = INDEX_CACHE.write().await;
+    // 并发竞争加载：先到者生效，重复构建直接丢弃
     if let Some(state) = cache.get(&agent_id) {
         return Ok(Arc::clone(state));
     }
+    cache.insert(agent_id, Arc::clone(&built));
+    Ok(built)
+}
 
+async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexState>>> {
     let dir = data_dir()
         .join("agents")
-        .join(&agent_id)
+        .join(agent_id)
         .join("indices")
         .join("hnsw");
     fs::create_dir_all(&dir).await.ok();
 
     let path = dir.join("embeddings.jsonl");
     let mut docs = HashMap::new();
-    if let Ok(content) = fs::read_to_string(&path).await {
-        for line in content.lines() {
-            if let Ok(record) = serde_json::from_str::<Record>(line) {
-                docs.insert(record.doc_id, record.embedding);
-            }
+    let content = fs::read_to_string(&path).await.unwrap_or_default();
+    let line_count = content.lines().count();
+    if !content.is_empty() {
+        // 并行解析：按行边界切块多线程 JSON 解析（万条级 44MB 解析是冷载入主要成本）
+        for record in parse_records_parallel(&content) {
+            docs.insert(record.doc_id, record.embedding);
         }
     }
 
-    let index = build_map(&docs);
-    let state = Arc::new(RwLock::new(VectorIndexState {
+    // append-only 文件只加不压（M9）：行数远超唯一文档数时启动重写去重，
+    // 写 tmp + rename 原子替换，崩溃不留半截文件
+    if line_count > docs.len().saturating_mul(2).max(COMPACTION_MIN_LINES) {
+        compact_embeddings(&dir, &docs).await;
+    }
+
+    // 启动载入：先固定内部 id 顺序，再并行插入（hnsw_rs 的 insert 为 &self 且
+    // Sync，官方支持并发插入）。万条规模串行插入秒级，并行后压到亚秒，
+    // 避免 sidecar 重启后首次 search 撞 TS 客户端 3000ms deadline
+    let index = HnswIndex::new(
+        HNSW_MAX_NB_CONNECTION,
+        docs.len().max(16),
+        HNSW_MAX_LAYER,
+        HNSW_EF_CONSTRUCTION,
+        DistCosine,
+    );
+    let mut ids = Vec::with_capacity(docs.len());
+    let mut doc_ids = HashMap::with_capacity(docs.len());
+    let mut items: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(docs.len());
+    for (doc_id, embedding) in &docs {
+        let internal_id = ids.len();
+        ids.push(doc_id.clone());
+        doc_ids.insert(doc_id.clone(), internal_id);
+        items.push((embedding, internal_id));
+    }
+    parallel_insert(&index, &items);
+
+    Ok(Arc::new(RwLock::new(VectorIndexState {
         dir,
         docs,
         index,
-        dirty: false,
-    }));
-    cache.insert(agent_id, Arc::clone(&state));
-    Ok(state)
+        ids,
+        doc_ids,
+    })))
 }
 
-fn build_map(docs: &HashMap<String, Vec<f32>>) -> Option<HnswMap<Embedding, String>> {
-    if docs.len() < 2 {
-        return None;
+fn worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8)
+}
+
+fn parse_records_parallel(content: &str) -> Vec<Record> {
+    // 小文件不值得起线程
+    if content.len() < 1 << 20 {
+        return content
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
     }
-    let mut points = Vec::with_capacity(docs.len());
-    let mut values = Vec::with_capacity(docs.len());
-    for (id, emb) in docs {
-        points.push(Embedding(emb.clone()));
-        values.push(id.clone());
+    let bytes = content.as_bytes();
+    let threads = worker_threads();
+    let chunk_size = content.len().div_ceil(threads);
+    // 按块边界向后对齐到换行符，保证每块都是完整行
+    let mut bounds = vec![0usize];
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let mut end = (start + chunk_size).min(bytes.len());
+        while end < bytes.len() && bytes[end] != b'\n' {
+            end += 1;
+        }
+        if end < bytes.len() {
+            end += 1;
+        }
+        bounds.push(end);
+        start = end;
     }
-    Some(Builder::default().build(points, values))
+    std::thread::scope(|s| {
+        let handles: Vec<_> = bounds
+            .windows(2)
+            .map(|w| {
+                let slice = &content[w[0]..w[1]];
+                s.spawn(move || {
+                    slice
+                        .lines()
+                        .filter_map(|l| serde_json::from_str::<Record>(l).ok())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        // 按块序 join 合并：保持行序，后行覆盖前行的语义不变
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+fn parallel_insert(index: &HnswIndex, items: &[(&Vec<f32>, usize)]) {
+    let threads = worker_threads();
+    if items.len() <= threads * 2 {
+        for (embedding, internal_id) in items {
+            index.insert((embedding, *internal_id));
+        }
+        return;
+    }
+    let chunk = items.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        for part in items.chunks(chunk) {
+            s.spawn(move || {
+                for (embedding, internal_id) in part {
+                    index.insert((embedding, *internal_id));
+                }
+            });
+        }
+    });
+}
+
+async fn compact_embeddings(dir: &Path, docs: &HashMap<String, Vec<f32>>) {
+    let path = dir.join("embeddings.jsonl");
+    let tmp = dir.join("embeddings.jsonl.tmp");
+    let mut buf = String::new();
+    for (doc_id, embedding) in docs {
+        match serde_json::to_string(&Record {
+            doc_id: doc_id.clone(),
+            embedding: embedding.clone(),
+        }) {
+            Ok(line) => {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+            Err(e) => tracing::warn!("embedding compaction serialize failed for {}: {}", doc_id, e),
+        }
+    }
+    match fs::write(&tmp, buf).await {
+        Ok(_) => match fs::rename(&tmp, &path).await {
+            Ok(_) => tracing::info!("embedding compaction: rewrote {:?}", path),
+            Err(e) => tracing::warn!("embedding compaction rename failed: {}", e),
+        },
+        Err(e) => tracing::warn!("embedding compaction write failed: {}", e),
+    }
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {

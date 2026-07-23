@@ -45,7 +45,7 @@ impl ZomeSidecar for ZomeSidecarService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         let results = state
-            .write()
+            .read()
             .await
             .search(&req.query, req.top_k as usize)
             .into_iter()
