@@ -242,4 +242,20 @@ describe("MIND.md 经验注入：assistant 历史消息，热上下文后面", (
     expect(text).not.toContain("source:");
     expect(text).not.toContain("confidence");
   });
+
+  it("单块正文超 500 字符时摘要化注入（对齐 L4/L5 口径，heading 不参与计算）", () => {
+    const longContent = `${"首".repeat(100)}${"中".repeat(600)}${"尾".repeat(100)}`;
+    const layers = createLayers({
+      l3: history(1),
+      mind: [chunk("长经验", longContent)],
+    });
+    const messages = assembleMessages(layers, { now: NOW });
+    const text = textOf(messages.find((m) => m.id === "mind-recall")!);
+    // 摘要化：保留首尾、标注中段省略；完整中段不出现
+    expect(text).toContain("中段省略");
+    expect(text).not.toContain("中".repeat(600));
+    expect(text).toContain("首".repeat(100));
+    expect(text).toContain("尾".repeat(100));
+    expect(text).toContain("## 长经验");
+  });
 });

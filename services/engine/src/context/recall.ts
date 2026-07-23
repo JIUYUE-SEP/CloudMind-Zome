@@ -98,10 +98,12 @@ export function topicToMessage(topic: TopicSummary, now: number = Date.now()): C
  * 注入位置在热上下文之后（assembler 显式追加，不参与时间归并），
  * createdAt 取注入时刻——经验是"现在想起的"，不属于过去某个时间点。
  * 正文由 heading + content 重组：raw 含 frontmatter（仅审计用），不进注入消息。
+ * 长度控制对齐 L4/L5 口径（P5 设计决策 7）：单块 content 超 500 字符摘要化
+ * （保留首尾、标注中段省略）；heading 与 frontmatter 不参与计算。
  */
 export function mindToMessage(chunks: MindChunk[], now: number = Date.now()): ChatMessage {
   const text = `我记得自己积累过这些经验：\n\n${chunks
-    .map((c) => `## ${c.heading}\n\n${c.content}`)
+    .map((c) => `## ${c.heading}\n\n${summarizeContent(c.content)}`)
     .join("\n\n")}`;
   return {
     id: "mind-recall",
