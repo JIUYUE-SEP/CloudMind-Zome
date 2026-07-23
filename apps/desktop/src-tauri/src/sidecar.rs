@@ -36,6 +36,7 @@ pub async fn spawn_zome_sidecar<R: tauri::Runtime>(
     let state = app.state::<SidecarState>();
     *state.sidecar_handle.lock().await = Some(child);
 
+    let app_handle = app.clone();
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
@@ -49,10 +50,28 @@ pub async fn spawn_zome_sidecar<R: tauri::Runtime>(
                     error!("sidecar error: {e}");
                 }
                 CommandEvent::Terminated(payload) => {
-                    info!(
-                        "sidecar terminated: code={:?} signal={:?}",
-                        payload.code, payload.signal
-                    );
+                    // 意外退出（shutdown 主动收尸会先把 handle take 走，那时是正常路径）：
+                    // 不能只记 tracing 日志——kill_on_drop 会连带杀掉 engine，
+                    // 前端 WS 随之断开，必须通知前端给用户可见提示（D-B1）
+                    let unexpected = app_handle
+                        .state::<SidecarState>()
+                        .sidecar_handle
+                        .lock()
+                        .await
+                        .is_some();
+                    if unexpected {
+                        error!(
+                            "zome-sidecar terminated unexpectedly: code={:?} signal={:?}",
+                            payload.code, payload.signal
+                        );
+                        use tauri::Emitter;
+                        let _ = app_handle.emit("zome://sidecar-terminated", ());
+                    } else {
+                        info!(
+                            "sidecar terminated: code={:?} signal={:?}",
+                            payload.code, payload.signal
+                        );
+                    }
                     break;
                 }
                 _ => {}

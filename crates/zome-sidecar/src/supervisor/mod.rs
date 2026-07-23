@@ -14,6 +14,11 @@ const STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(30);
 const STARTUP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const UNHEALTHY_FAILURE_THRESHOLD: u32 = 3;
 const MAX_RESTART_RETRIES: u32 = 5;
+/// 启动宽限失败 / 快速重启用尽 / 端口冲突后的低频监控重试间隔：
+/// 永不放弃恢复闭环，但避免重启风暴
+const DEGRADED_MONITOR_INTERVAL: Duration = Duration::from_secs(30);
+/// engine listen 失败对 EADDRINUSE 约定的 exit code（见 services/engine 的 listen-error.ts）
+const EADDRINUSE_EXIT_CODE: i32 = 2;
 
 static SUPERVISOR: std::sync::LazyLock<Mutex<Option<Supervisor>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
@@ -73,8 +78,13 @@ fn engine_entry() -> anyhow::Result<(PathBuf, PathBuf)> {
 
 pub async fn spawn_node_engine() -> anyhow::Result<()> {
     if is_node_healthy().await {
-        // 已有运行中的 engine（上次异常退出遗留）：直接复用，避免重复 spawn 导致端口冲突
+        // 已有运行中的 engine（上次异常退出遗留）：直接复用，避免重复 spawn 导致端口冲突。
+        // 收编同样注册进 SUPERVISOR 纳入监控（child=None：不是我们 spawn 的不能 kill，
+        // 但崩溃后 restart 路径会由我们重新拉起），否则被收编的 engine 挂死后再无人恢复。
         warn!("node engine already healthy; adopting existing process");
+        *SUPERVISOR.lock().await = Some(Supervisor {
+            child: Arc::new(Mutex::new(None)),
+        });
         return Ok(());
     }
     let (cwd, entry) = engine_entry()?;
@@ -122,21 +132,50 @@ pub async fn watch_node_health() {
         tokio::time::sleep(STARTUP_CHECK_INTERVAL).await;
     }
 
-    if !started {
-        error!("node engine did not become healthy within startup grace period");
-        return;
+    if started {
+        info!("node engine passed startup health check");
+    } else {
+        // 不放弃监控（D-B1）：转入低频持续监控，engine 之后任何时刻恢复都会被感知
+        error!(
+            "node engine did not become healthy within {:?}; keep monitoring every {:?}",
+            STARTUP_GRACE_PERIOD, DEGRADED_MONITOR_INTERVAL
+        );
     }
-    info!("node engine passed startup health check");
 
     let mut failures = 0u32;
     let mut restart_retries = 0u32;
+    let mut port_conflict = false;
     loop {
-        tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
+        let degraded = !started || port_conflict || restart_retries >= MAX_RESTART_RETRIES;
+        tokio::time::sleep(if degraded {
+            DEGRADED_MONITOR_INTERVAL
+        } else {
+            HEALTH_CHECK_INTERVAL
+        })
+        .await;
 
         if check_health(&client).await {
+            if !started || port_conflict || restart_retries > 0 {
+                info!("node engine healthy again; supervisor recovered to normal monitoring");
+            }
+            started = true;
+            port_conflict = false;
             failures = 0;
             restart_retries = 0;
-            info!("node engine health ok");
+            continue;
+        }
+
+        // EADDRINUSE（D-M4）：engine 以 exit 2 退出且 /health 不通 = 8848 被其他进程占用。
+        // 高频重启只会反复 exit 2：降级为低频重试等端口释放，并给出明确提示
+        if child_exit_code().await == Some(EADDRINUSE_EXIT_CODE) {
+            if !port_conflict {
+                error!(
+                    "node engine exited with code {} (EADDRINUSE): 8848 被其他进程占用且 /health 不通；转为每 {:?} 低频重试，请检查端口冲突",
+                    EADDRINUSE_EXIT_CODE, DEGRADED_MONITOR_INTERVAL
+                );
+            }
+            port_conflict = true;
+            restart().await;
             continue;
         }
 
@@ -151,8 +190,14 @@ pub async fn watch_node_health() {
         }
 
         if restart_retries >= MAX_RESTART_RETRIES {
-            error!("node engine restart retries exceeded; giving up to avoid restart storm");
-            break;
+            // 永不放弃（D-B1）：快速重启用尽后不再 break，转为低频持续重试
+            error!(
+                "node engine still unhealthy after {} restarts; keep retrying every {:?}",
+                MAX_RESTART_RETRIES, DEGRADED_MONITOR_INTERVAL
+            );
+            restart().await;
+            failures = 0;
+            continue;
         }
 
         let backoff = Duration::from_secs(2u64.pow(restart_retries));
@@ -167,6 +212,22 @@ pub async fn watch_node_health() {
         restart_retries += 1;
         failures = 0;
     }
+}
+
+/// 当前纳管 child 的退出码；仍在运行、无 child（收编）或读取失败均为 None
+async fn child_exit_code() -> Option<i32> {
+    let sup = SUPERVISOR.lock().await.clone()?;
+    let mut guard = sup.child.lock().await;
+    let child = guard.as_mut()?;
+    match child.try_wait() {
+        Ok(Some(status)) => status.code(),
+        _ => None,
+    }
+}
+
+/// 测试与状态上报用：是否已有纳管的 engine（spawn 或收编）
+pub async fn has_supervised_engine() -> bool {
+    SUPERVISOR.lock().await.is_some()
 }
 
 async fn check_health(client: &reqwest::Client) -> bool {
@@ -184,9 +245,10 @@ async fn check_health(client: &reqwest::Client) -> bool {
 }
 
 pub async fn shutdown() {
+    // 取走并清空注册：shutdown 后不再纳管任何 engine
     let sup = {
-        let guard = SUPERVISOR.lock().await;
-        guard.clone()
+        let mut guard = SUPERVISOR.lock().await;
+        guard.take()
     };
     if let Some(sup) = sup {
         sup.shutdown().await;
