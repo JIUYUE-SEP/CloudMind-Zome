@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAuthToken, getAuthTokenFilePath } from "./config/auth-token.js";
+import { classifyListenError } from "./api/listen-error.js";
 
 /** 从 cwd 向上找 monorepo 根下的 packages/skills（内置技能目录） */
 async function findBuiltinSkillsDir(): Promise<string | undefined> {
@@ -279,7 +280,19 @@ async function main() {
       `[auth] 本地鉴权 token 文件：${getAuthTokenFilePath()}（web 开发请设 NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage cloudmind.engineToken）`,
     );
   }
-  await app.listen({ port: Number(process.env.PORT || 8848), host: "127.0.0.1" });
+  const port = Number(process.env.PORT || 8848);
+  try {
+    await app.listen({ port, host: "127.0.0.1" });
+  } catch (err) {
+    // EADDRINUSE 以独立 exit code 2 退出（普通崩溃是 1）：
+    // supervisor 据此区分端口冲突与崩溃，不盲目高频重启
+    const classified = classifyListenError(err, port);
+    if (classified) {
+      console.error(classified.message);
+      process.exit(classified.exitCode);
+    }
+    throw err;
+  }
   const addr = app.server.address();
   const addrStr =
     typeof addr === "string"
