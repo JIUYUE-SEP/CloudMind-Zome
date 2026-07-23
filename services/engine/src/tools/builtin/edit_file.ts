@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { z } from "zod";
+import { renameWithRetry } from "../../memory/document-store.js";
 import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
@@ -60,7 +61,10 @@ export const editFileTool: Tool = {
       }
 
       const updated = content.replace(oldString, () => newString);
-      await fs.writeFile(fullPath, updated, "utf-8");
+      // 原子写：先写 tmp 再 rename，避免写一半崩溃留下半截文件
+      const tmpPath = `${fullPath}.tmp`;
+      await fs.writeFile(tmpPath, updated, "utf-8");
+      await renameWithRetry(tmpPath, fullPath);
       return { success: true, output: `Edited ${filePath}` };
     } catch (err) {
       return {

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { renameWithRetry } from "../memory/document-store.js";
 import { decrypt, encrypt } from "./crypto.js";
 import { getDataDir } from "./paths.js";
 
@@ -64,7 +65,10 @@ async function decryptValue(value: string | undefined): Promise<string | undefin
   if (!value.startsWith("enc:")) return value;
   try {
     return await decrypt(value.slice(4));
-  } catch {
+  } catch (err) {
+    // master key 变更/丢失时解密必然失败：字段按未配置处理，但必须留痕，
+    // 否则用户看到的只是"apiKey 凭空消失"
+    console.warn("[config] 解密失败，该字段按未配置处理（master key 可能已变更）:", err);
     return undefined;
   }
 }
@@ -77,27 +81,45 @@ export class ConfigRepository {
   }
 
   async load(): Promise<GlobalConfig> {
+    let text: string;
     try {
-      const text = await fs.readFile(this.filePath, "utf-8");
-      const parsed = JSON.parse(text) as Partial<GlobalConfig>;
-      const defaults = createDefaultConfig();
-      const config: GlobalConfig = {
-        ...defaults,
-        ...parsed,
-        settings: { ...defaults.settings, ...parsed.settings },
-      };
-
-      for (const provider of config.providers) {
-        provider.apiKey = await decryptValue(provider.apiKey);
+      text = await fs.readFile(this.filePath, "utf-8");
+    } catch (err) {
+      // 只有"文件不存在"才回默认配置；其余读取错误必须显式抛出
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return createDefaultConfig();
       }
-      if (config.settings) {
-        config.settings.tavilyApiKey = await decryptValue(config.settings.tavilyApiKey);
-      }
-
-      return config;
-    } catch {
-      return createDefaultConfig();
+      throw err;
     }
+
+    let parsed: Partial<GlobalConfig>;
+    try {
+      parsed = JSON.parse(text) as Partial<GlobalConfig>;
+    } catch (err) {
+      // 文件存在但已损坏：隔离原文件再抛错。绝不静默回默认——
+      // 否则后续 save 会把损坏文件（含全部加密 apiKey）覆盖成空配置，数据永久丢失
+      const quarantinePath = `${this.filePath}.corrupt-${Date.now()}`;
+      await renameWithRetry(this.filePath, quarantinePath).catch(() => {});
+      throw new Error(
+        `配置文件损坏，已隔离到 ${quarantinePath}，请人工恢复：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const defaults = createDefaultConfig();
+    const config: GlobalConfig = {
+      ...defaults,
+      ...parsed,
+      settings: { ...defaults.settings, ...parsed.settings },
+    };
+
+    for (const provider of config.providers) {
+      provider.apiKey = await decryptValue(provider.apiKey);
+    }
+    if (config.settings) {
+      config.settings.tavilyApiKey = await decryptValue(config.settings.tavilyApiKey);
+    }
+
+    return config;
   }
 
   async save(config: GlobalConfig): Promise<void> {
@@ -117,6 +139,9 @@ export class ConfigRepository {
       },
     };
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(toSave, null, 2), "utf-8");
+    // 原子写：先写 tmp 再 rename，避免写一半崩溃留下半截 config.json
+    const tmpPath = `${this.filePath}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(toSave, null, 2), "utf-8");
+    await renameWithRetry(tmpPath, this.filePath);
   }
 }

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { renameWithRetry } from "../../memory/document-store.js";
 import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
@@ -73,7 +74,10 @@ export const writeTool: Tool = {
     try {
       const { fullPath, relativePath } = await resolveWritePath(ctx, filePath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
-      await fs.writeFile(fullPath, content, "utf-8");
+      // 原子写：先写 tmp 再 rename，避免写一半崩溃留下半截文件
+      const tmpPath = `${fullPath}.tmp`;
+      await fs.writeFile(tmpPath, content, "utf-8");
+      await renameWithRetry(tmpPath, fullPath);
       return { success: true, output: `Wrote ${relativePath}` };
     } catch (err) {
       return { success: false, error: String(err) };

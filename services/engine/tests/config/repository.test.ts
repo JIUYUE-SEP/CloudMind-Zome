@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigRepository } from "../../src/config/repository.js";
 
 const ORIGINAL_DATA_DIR = process.env.CLOUDMIND_DATA_DIR;
@@ -15,6 +15,7 @@ describe("config/repository", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (ORIGINAL_DATA_DIR === undefined) {
       delete process.env.CLOUDMIND_DATA_DIR;
     } else {
@@ -108,5 +109,106 @@ describe("config/repository", () => {
 
     const loaded = await repo.load();
     expect(loaded.providers[0].apiKey).toBe("legacy-plain-key");
+  });
+
+  it("returns default config when file does not exist (ENOENT)", async () => {
+    const repo = new ConfigRepository();
+    const loaded = await repo.load();
+    expect(loaded.providers).toEqual([]);
+    expect(loaded.settings.memory).toEqual({
+      compactThreshold: 0.8,
+      keepRecent: 3,
+      hotMemoryLimit: 10,
+      warmMemoryLimit: 20,
+    });
+  });
+
+  it("save writes via tmp + rename and leaves no tmp file behind", async () => {
+    const repo = new ConfigRepository();
+    const filePath = path.join(tempDir, "config.json");
+    const renameSpy = vi.spyOn(fs, "rename");
+    await repo.save({ providers: [], settings: { memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 } } });
+    expect(renameSpy).toHaveBeenCalledWith(`${filePath}.tmp`, filePath);
+    await expect(fs.access(`${filePath}.tmp`)).rejects.toThrow();
+  });
+
+  it("keeps the original file intact when the tmp write crashes mid-save", async () => {
+    const repo = new ConfigRepository();
+    const filePath = path.join(tempDir, "config.json");
+    const config = {
+      providers: [
+        {
+          id: "openai",
+          displayName: "OpenAI",
+          providerType: "openai" as const,
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-keep-me",
+          models: [],
+        },
+      ],
+      settings: {
+        memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+      },
+    };
+    await repo.save(config);
+    const before = await fs.readFile(filePath, "utf-8");
+
+    const writeSpy = vi
+      .spyOn(fs, "writeFile")
+      .mockRejectedValueOnce(new Error("simulated crash"));
+    await expect(repo.save(config)).rejects.toThrow("simulated crash");
+    writeSpy.mockRestore();
+
+    expect(await fs.readFile(filePath, "utf-8")).toBe(before);
+  });
+
+  it("throws and quarantines a corrupt config.json instead of silently falling back to defaults", async () => {
+    const repo = new ConfigRepository();
+    const filePath = path.join(tempDir, "config.json");
+    const corruptContent = "{ this is not valid json";
+    await fs.writeFile(filePath, corruptContent, "utf-8");
+
+    await expect(repo.load()).rejects.toThrow(/配置文件损坏/);
+
+    // 原文件被隔离成 config.json.corrupt-{timestamp}，内容原样保留
+    const quarantined = (await fs.readdir(tempDir)).filter((f) =>
+      f.startsWith("config.json.corrupt-"),
+    );
+    expect(quarantined).toHaveLength(1);
+    expect(await fs.readFile(path.join(tempDir, quarantined[0]), "utf-8")).toBe(corruptContent);
+    await expect(fs.access(filePath)).rejects.toThrow();
+
+    // 后续 save 写新文件，绝不动隔离文件里的原始数据
+    await repo.save({
+      providers: [],
+      settings: { memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 } },
+    });
+    expect(await fs.readFile(path.join(tempDir, quarantined[0]), "utf-8")).toBe(corruptContent);
+  });
+
+  it("warns and treats the field as unset when decrypting a stored apiKey fails", async () => {
+    const repo = new ConfigRepository();
+    await fs.writeFile(
+      path.join(tempDir, "config.json"),
+      JSON.stringify({
+        providers: [
+          {
+            id: "openai",
+            displayName: "OpenAI",
+            providerType: "openai",
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "enc:!!!not-valid-ciphertext!!!",
+            models: [],
+          },
+        ],
+        settings: { memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 } },
+      }),
+      "utf-8",
+    );
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loaded = await repo.load();
+    expect(loaded.providers[0].apiKey).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
   });
 });

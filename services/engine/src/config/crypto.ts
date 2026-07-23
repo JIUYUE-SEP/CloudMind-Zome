@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { renameWithRetry } from "../memory/document-store.js";
 import { getDataDir } from "./paths.js";
 
 const ALGORITHM = "aes-256-gcm";
@@ -20,14 +21,18 @@ async function readOrCreateKeyFile(keyFile: string): Promise<Buffer> {
     return Buffer.from(encoded.trim(), "base64");
   } catch {
     const key = crypto.randomBytes(KEY_LEN);
+    // 原子写：先写 tmp 再 rename，避免写一半崩溃留下半截密钥文件
+    // （半截密钥可读但解不了密，且不会触发本分支重新生成）
+    const tmpPath = `${keyFile}.tmp`;
     try {
       await fs.mkdir(path.dirname(keyFile), { recursive: true });
-      await fs.writeFile(keyFile, key.toString("base64"), { mode: 0o600 });
+      await fs.writeFile(tmpPath, key.toString("base64"), { mode: 0o600 });
     } catch {
       // Fallback for platforms where mode is not supported (e.g. Windows).
       await fs.mkdir(path.dirname(keyFile), { recursive: true });
-      await fs.writeFile(keyFile, key.toString("base64"));
+      await fs.writeFile(tmpPath, key.toString("base64"));
     }
+    await renameWithRetry(tmpPath, keyFile);
     return key;
   }
 }
