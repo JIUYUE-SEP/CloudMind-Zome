@@ -216,6 +216,12 @@ class ReconnectMockWebSocket {
     this.readyState = 3;
     this.onclose?.({ code, reason });
   }
+  // 测试驱动：连接被拒（浏览器真实行为：先 fire error 再 fire close 1006）
+  fail() {
+    this.readyState = 3;
+    this.onerror?.();
+    this.onclose?.({ code: 1006, reason: "" });
+  }
 }
 
 function lastReconnectSocket(): ReconnectMockWebSocket {
@@ -325,5 +331,34 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     lastReconnectSocket().open();
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onReconnected).not.toHaveBeenCalled();
+  });
+
+  it("重连期间 onError 不刷气泡（P0 review 返工）", () => {
+    const client = useEngineClient();
+    const onError = vi.fn();
+    const onReconnecting = vi.fn();
+    client.connect("agent-1", "default", { onError, onReconnecting });
+    lastReconnectSocket().open();
+
+    // 模拟 engine 停机期间连接被拒：每次失败尝试 error + close(1006) 连续触发
+    for (let n = 0; n < 10; n++) {
+      lastReconnectSocket().fail();
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(onReconnecting).toHaveBeenCalledTimes(10);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("首连失败只透传一次 onError，后续失败尝试不再刷（P0 review 返工）", () => {
+    const client = useEngineClient();
+    const onError = vi.fn();
+    client.connect("agent-1", "default", { onError });
+
+    for (let n = 0; n < 5; n++) {
+      lastReconnectSocket().fail();
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith("WebSocket error");
   });
 });

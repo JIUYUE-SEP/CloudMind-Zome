@@ -555,7 +555,16 @@ export function useEngineClient(options?: EngineClientOptions) {
         }
       };
 
-      socket.onerror = () => handlers.onError?.("WebSocket error");
+      // 连接被拒时浏览器先 fire error 再 fire close(1006)：每次失败的重连尝试
+      // 都会命中这里，透传会无限刷错误气泡（P0 review 返工）。只在首连第一次
+      // 失败透传（一次性提示）；重连进行态由 onReconnecting 统一呈现
+      socket.onerror = () => {
+        // 只在首次连接的第一次失败透传（onerror 先于 onclose，此时
+        // reconnectAttempts 仍为 0）；后续失败尝试由 onReconnecting 呈现
+        if (!hasConnectedOnce && reconnectAttempts === 0) {
+          handlers.onError?.("WebSocket error");
+        }
+      };
 
       socket.onclose = (event) => {
         const code = event?.code;
