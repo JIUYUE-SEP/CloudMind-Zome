@@ -28,6 +28,10 @@ type HnswIndex = Hnsw<'static, f32, DistCosine>;
 
 pub struct VectorIndexState {
     dir: PathBuf,
+    /// 索引维度：首个向量的维度即全索引维度（0 = 空索引未定维）。
+    /// anndists DistCosine::eval 对异维向量直接 assert panic，且污染文件会让
+    /// 每次冷载入复发——异维 upsert/search 必须在入口拒绝（P0 review 返工）
+    dim: usize,
     /// doc_id -> 最新向量（持久化与重载的唯一事实源）
     docs: HashMap<String, Vec<f32>>,
     index: HnswIndex,
@@ -40,6 +44,19 @@ pub struct VectorIndexState {
 
 impl VectorIndexState {
     pub async fn upsert(&mut self, doc_id: &str, embedding: &[f32]) {
+        // 维度门禁（P0 review 返工）：异维向量入索引会在距离求值处 panic，
+        // 拒绝并告警，不落盘、不入索引
+        if self.dim == 0 {
+            self.dim = embedding.len();
+        } else if embedding.len() != self.dim {
+            tracing::warn!(
+                "embedding dim mismatch for {}: got {}, index dim is {}; rejected",
+                doc_id,
+                embedding.len(),
+                self.dim
+            );
+            return;
+        }
         self.docs.insert(doc_id.to_string(), embedding.to_vec());
         // 增量插入单点（P0-5）：成本 O(log n) 级，不再 dirty 后 search 前全量重建
         let internal_id = self.ids.len();
@@ -53,6 +70,16 @@ impl VectorIndexState {
     /// server 侧可持读锁并发执行（原全量重建持写锁阻塞整个 runtime）
     pub fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
         if top_k == 0 || self.ids.is_empty() {
+            return Vec::new();
+        }
+        // 异维查询（P0 review 返工）：HNSW 路径会在 DistCosine::eval 处 panic，
+        // 直接返回空——维度不同本无相似性可言
+        if self.dim != 0 && query.len() != self.dim {
+            tracing::warn!(
+                "search query dim {} != index dim {}; returning empty",
+                query.len(),
+                self.dim
+            );
             return Vec::new();
         }
         if self.ids.len() <= LINEAR_SCAN_MAX {
@@ -180,6 +207,24 @@ async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexStat
         }
     }
 
+    // 维度一致性（P0 review 返工）：混入异维数据（如更换 embedding provider）
+    // 会在 HNSW 距离求值/并行插入处 panic 且每次冷载入复发。以众数维度为准
+    // 跳过异维行，compaction 顺带把异维行从盘上清掉
+    let dim = majority_dim(&docs);
+    if dim != 0 {
+        let before = docs.len();
+        docs.retain(|_, embedding| embedding.len() == dim);
+        let skipped = before - docs.len();
+        if skipped > 0 {
+            tracing::warn!(
+                "skipped {} embeddings with dim != {} during load (agent {})",
+                skipped,
+                dim,
+                agent_id
+            );
+        }
+    }
+
     // append-only 文件只加不压（M9）：行数远超唯一文档数时启动重写去重，
     // 写 tmp + rename 原子替换，崩溃不留半截文件
     if line_count > docs.len().saturating_mul(2).max(COMPACTION_MIN_LINES) {
@@ -209,11 +254,26 @@ async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexStat
 
     Ok(Arc::new(RwLock::new(VectorIndexState {
         dir,
+        dim,
         docs,
         index,
         ids,
         doc_ids,
     })))
+}
+
+/// 众数维度：混入异维数据时以多数派为准（更换 provider 后新数据随时间成为多数）。
+/// 空索引返回 0（未定维，由首个 upsert 定维）
+fn majority_dim(docs: &HashMap<String, Vec<f32>>) -> usize {
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for embedding in docs.values() {
+        *counts.entry(embedding.len()).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(dim, _)| dim)
+        .unwrap_or(0)
 }
 
 fn worker_threads() -> usize {

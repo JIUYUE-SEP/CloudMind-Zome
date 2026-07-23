@@ -242,3 +242,86 @@ async fn test_startup_compaction_rewrites_duplicated_jsonl() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// P0 review 返工：异维 upsert 被拒绝（告警）且不落盘不入索引——
+/// 原实现直接 insert，anndists DistCosine::eval 的 assert_eq 会 panic
+#[tokio::test]
+async fn test_mismatched_dim_upsert_rejected() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let state = get_or_load("dimguard-agent").await.unwrap();
+
+    state.write().await.upsert("ok", &[1.0, 0.0, 0.0]).await;
+    // 异维：必须被拒绝而不是 panic
+    state.write().await.upsert("bad", &[1.0, 0.0]).await;
+
+    let results = state.read().await.search(&[1.0, 0.0, 0.0], 10);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "ok");
+    // 拒绝的异维向量不落盘
+    let path = tmp.join("agents/dimguard-agent/indices/hnsw/embeddings.jsonl");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(content.lines().count(), 1);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P0 review 返工：异维查询在 HNSW 路径（>256 点）返回空而非 panic
+#[tokio::test]
+async fn test_mismatched_dim_query_hnsw_path_returns_empty() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let state = get_or_load("dimquery-agent").await.unwrap();
+    // 超过 LINEAR_SCAN_MAX(256)，强制走 HNSW 路径
+    for i in 0..300u32 {
+        let v: Vec<f32> = (0..8).map(|j| ((i + j) % 5) as f32).collect();
+        state.write().await.upsert(&format!("d{}", i), &v).await;
+    }
+
+    // 同维查询正常命中
+    let ok = state.read().await.search(&[1.0; 8], 5);
+    assert_eq!(ok.len(), 5);
+    // 异维查询：原实现此处 panic（assert_eq!(va.len(), vb.len())）
+    let bad = state.read().await.search(&[1.0; 4], 5);
+    assert!(bad.is_empty());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P0 review 返工：冷载入跳过异维行——混入异维数据的文件不再让每次启动 panic，
+/// 众数维度数据正常可检索
+#[tokio::test]
+async fn test_load_skips_mismatched_dim_rows() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let dir = tmp.join("agents/dimload-agent/indices/hnsw");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut content = String::new();
+    // 300 条 8 维（众数）+ 5 条 4 维（异维）：原实现 parallel_insert 处 panic
+    for i in 0..300u32 {
+        content.push_str(&format!(
+            "{{\"doc_id\":\"good{}\",\"embedding\":[1.0,0.0,0.0,0.0,0.0,0.0,0.0,{}]}}\n",
+            i, i as f32 / 1000.0
+        ));
+    }
+    for i in 0..5u32 {
+        content.push_str(&format!(
+            "{{\"doc_id\":\"bad{}\",\"embedding\":[1.0,0.0,0.0,{}]}}\n",
+            i, i
+        ));
+    }
+    std::fs::write(dir.join("embeddings.jsonl"), content).unwrap();
+
+    let state = get_or_load("dimload-agent").await.unwrap();
+    let results = state.read().await.search(&[1.0; 8], 10);
+    assert_eq!(results.len(), 10);
+    assert!(results.iter().all(|(id, _)| id.starts_with("good")));
+    // 载入后索引定维 8：后续 4 维 upsert 同样被拒
+    state.write().await.upsert("late-bad", &[1.0; 4]).await;
+    let after = state.read().await.search(&[1.0; 8], 300);
+    assert!(after
+        .iter()
+        .all(|(id, _)| !id.starts_with("bad") && id != "late-bad"));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
