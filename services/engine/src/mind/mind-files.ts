@@ -311,9 +311,28 @@ export async function appendMindExperiences(
     }
   }
 
-  await fs.mkdir(path.dirname(file), { recursive: true });
   const tmpPath = `${file}.tmp`;
-  await fs.writeFile(tmpPath, raw, "utf-8");
-  await renameWithRetry(tmpPath, file);
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(tmpPath, raw, "utf-8");
+    await renameWithRetry(tmpPath, file);
+  } catch (err) {
+    // 写入失败（如 Windows 上文件被持久占用超重试窗口）：整批经验转入 sidecar
+    // 防永久丢失（review Minor-1）；不抛错，不影响压缩主流程
+    const sidecar = agentFile(agentId, "mind-failed.jsonl");
+    console.warn(
+      `[mind] agent=${agentId} MIND.md 写入失败，本批 ${eligible.length} 条经验转入 sidecar：${sidecar}`,
+      err,
+    );
+    try {
+      await fs.mkdir(path.dirname(sidecar), { recursive: true });
+      const lines =
+        eligible.map((e) => JSON.stringify({ ...e, failedAt: new Date().toISOString() })).join("\n") +
+        "\n";
+      await fs.appendFile(sidecar, lines, "utf-8");
+    } catch (sidecarErr) {
+      console.warn(`[mind] agent=${agentId} sidecar 写入也失败，本批经验放弃：${sidecar}`, sidecarErr);
+    }
+  }
   return result;
 }
