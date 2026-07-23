@@ -83,6 +83,7 @@
             :agents="agents.list"
             :is-connected="groupIsConnected"
             :is-streaming="groupIsStreaming"
+            :status-hint="groupStatusHint"
             @send="onGroupSend"
             @approval-respond="onGroupApprovalRespond"
           />
@@ -134,6 +135,13 @@ const {
   resetStreamState: resetGroupStream,
 } = useGroupChatStream();
 const groupIsConnected = ref(false);
+// 断线重连状态（P0-3）：>0 表示正在第 N 次重试
+const groupReconnectAttempts = ref(0);
+const groupStatusHint = computed(() => {
+  if (client.sidecarTerminated.value) return "engine 进程已退出，请重启应用";
+  if (groupReconnectAttempts.value > 0) return `连接已断开，重连中（第 ${groupReconnectAttempts.value} 次）…`;
+  return "";
+});
 const sessionMode = ref<ChatMode>("chat");
 const sessionProjectId = ref<string | undefined>(undefined);
 let groupConnection: ReturnType<typeof client.connectSession> | null = null;
@@ -197,10 +205,12 @@ function connectGroup(sessionId: string) {
   closeGroupConnection();
   groupIsConnected.value = false;
   groupIsStreaming.value = false;
+  groupReconnectAttempts.value = 0;
 
   groupConnection = client.connectSession(sessionId, {
     onOpen: () => {
       groupIsConnected.value = true;
+      groupReconnectAttempts.value = 0;
       if (selectedSession.value?.mode === "code") {
         sessionMode.value = "code";
       }
@@ -210,8 +220,21 @@ function connectGroup(sessionId: string) {
       sessionMode.value = mode;
       sessionProjectId.value = projectId;
     },
+    onReconnecting: (attempt) => {
+      groupIsConnected.value = false;
+      groupReconnectAttempts.value = attempt;
+      resetGroupStream();
+    },
+    onReconnected: () => {
+      // 重连成功：拉取最新消息列表对齐断线期间的状态
+      groupReconnectAttempts.value = 0;
+      fetchGroupMessages(sessionId).then((msgs) => {
+        if (msgs && selectedId.value === sessionId) groupMessages.value = msgs;
+      });
+    },
     onClose: () => {
       groupIsConnected.value = false;
+      groupReconnectAttempts.value = 0;
       resetGroupStream();
     },
   });
@@ -221,6 +244,7 @@ function closeGroupConnection() {
   groupConnection?.close();
   groupConnection = null;
   groupIsConnected.value = false;
+  groupReconnectAttempts.value = 0;
   resetGroupStream();
 }
 

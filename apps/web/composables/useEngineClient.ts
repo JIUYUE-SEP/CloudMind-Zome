@@ -139,6 +139,10 @@ export interface WebSocketHandlers {
   onTurnEnd?: (agentId?: string) => void;
   onError?: (error: string) => void;
   onClose?: (code?: number, reason?: string) => void;
+  // 异常断开后的自动重连（P0-3）：第 attempt 次重试将在 delayMs 后发起
+  onReconnecting?: (attempt: number, delayMs: number) => void;
+  // 重连成功（仅断线后的再次 onOpen 触发，首次连接不触发）；调用方应在此拉取状态对齐
+  onReconnected?: () => void;
   onModeChanged?: (mode: ChatMode, projectId?: string) => void;
 }
 
@@ -178,6 +182,11 @@ const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 // （engine 启动日志会打印 token 文件路径提示）。
 const sharedToken = ref("");
 
+// desktop sidecar 意外退出（kill_on_drop 会连带杀掉 engine，WS 随之断开）：
+// Tauri 侧 emit 事件到这里置位，UI 据此提示"engine 进程已退出"，
+// 而不是永远停在"重连中"（P0-3 D-B1）
+const sidecarTerminated = ref(false);
+
 // baseUrl 尾部斜杠未归一会拼出 "//agents" 导致全部 404：赋值入口统一去除
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
@@ -205,6 +214,15 @@ if (tauriGlobal?.core?.invoke) {
     .catch(() => {
       // token 未就绪：REST/WS 会被 401/4401 拒绝，界面走既有错误路径提示
     });
+}
+
+// sidecar 意外退出事件（desktop）：engine 被连带杀掉，UI 需要明确提示而非静默重连
+if (tauriGlobal?.event?.listen) {
+  tauriGlobal.event
+    .listen("zome://sidecar-terminated", () => {
+      sidecarTerminated.value = true;
+    })
+    .catch(() => {});
 }
 
 // 非 Tauri 环境：首次调用时从 runtimeConfig 取一次（NUXT_PUBLIC_ENGINE_URL 可覆盖），之后缓存复用
@@ -454,57 +472,112 @@ export function useEngineClient(options?: EngineClientOptions) {
     await ensureOk(res, "delete scheduled task");
   }
 
-  function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
-    const wsUrl = baseUrl.value.replace(/^http/, "ws");
-    // 浏览器 WS 不能设请求头：token 经 Sec-WebSocket-Protocol 子协议传递（不出现在 URL/日志）
-    const socket = sharedToken.value
-      ? new WebSocket(`${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`, sharedToken.value)
-      : new WebSocket(`${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`);
+  // engine 主动关闭的业务码：终态（agent/session 不存在、参数非法、鉴权失败、Origin 拒绝），
+  // 重连无意义，直接透传 onClose；其余（1006 异常断开等）一律自动重连
+  const TERMINAL_WS_CLOSE_CODES = new Set([4001, 4002, 4003, 4004, 4401, 4403]);
 
-    socket.onopen = () => {
-      handlers.onOpen?.();
-    };
+  // WS 断线自动重连（P0-3 D-B2）：指数退避 1s/2s/4s…封顶 30s，永不放弃——
+  // supervisor 侧同样永不放弃重启 engine，两端合成恢复闭环
+  const RECONNECT_BASE_DELAY_MS = 1_000;
+  const RECONNECT_MAX_DELAY_MS = 30_000;
 
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        switch (data.type) {
-          case "text.delta":
-            handlers.onTextDelta?.(data.delta);
-            break;
-          case "thinking.delta":
-            handlers.onThinkingDelta?.(data.delta);
-            break;
-          case "tool.call":
-            handlers.onToolCall?.(data);
-            break;
-          case "tool.result":
-            handlers.onToolResult?.(data);
-            break;
-          case "tool.approval_request":
-            handlers.onApprovalRequest?.(data);
-            break;
-          case "step.end":
-            handlers.onStepEnd?.(data.finishReason);
-            break;
-          case "turn.end":
-            handlers.onTurnEnd?.();
-            break;
-          case "error":
-            handlers.onError?.(data.error);
-            break;
-        }
-      } catch {
-        handlers.onError?.("Invalid message from server");
+  function createManagedConnection(
+    url: string,
+    handlers: WebSocketHandlers,
+    isSession: boolean,
+  ): Connection {
+    let socket: WebSocket | null = null;
+    let closedByCaller = false;
+    let hasConnectedOnce = false;
+    let reconnectAttempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== undefined) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
       }
     };
 
-    socket.onerror = () => handlers.onError?.("WebSocket error");
-    // engine 主动关闭会携带 code/reason（4001 agent 不存在、4002 session 不存在等），透传给调用方
-    socket.onclose = (event) => handlers.onClose?.(event?.code, event?.reason);
+    const open = () => {
+      clearReconnectTimer();
+      // 浏览器 WS 不能设请求头：token 经 Sec-WebSocket-Protocol 子协议传递（不出现在 URL/日志）
+      socket = sharedToken.value ? new WebSocket(url, sharedToken.value) : new WebSocket(url);
+
+      socket.onopen = () => {
+        const isReconnect = hasConnectedOnce;
+        hasConnectedOnce = true;
+        reconnectAttempts = 0;
+        handlers.onOpen?.();
+        // 断线后的重连成功：调用方拉取会话状态对齐（最新消息列表）
+        if (isReconnect) handlers.onReconnected?.();
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          switch (data.type) {
+            // 群聊帧透出 agentId；私聊保持单参数调用形态（调用方按 arity 区分）
+            case "text.delta":
+              if (isSession) handlers.onTextDelta?.(data.delta, data.agentId);
+              else handlers.onTextDelta?.(data.delta);
+              break;
+            case "thinking.delta":
+              if (isSession) handlers.onThinkingDelta?.(data.delta, data.agentId);
+              else handlers.onThinkingDelta?.(data.delta);
+              break;
+            case "tool.call":
+              handlers.onToolCall?.(data);
+              break;
+            case "tool.result":
+              handlers.onToolResult?.(data);
+              break;
+            case "tool.approval_request":
+              handlers.onApprovalRequest?.(data);
+              break;
+            case "step.end":
+              if (isSession) handlers.onStepEnd?.(data.finishReason, data.agentId);
+              else handlers.onStepEnd?.(data.finishReason);
+              break;
+            case "turn.end":
+              if (isSession) handlers.onTurnEnd?.(data.agentId);
+              else handlers.onTurnEnd?.();
+              break;
+            case "session.mode_changed":
+              handlers.onModeChanged?.(data.mode, data.projectId);
+              break;
+            case "error":
+              handlers.onError?.(data.error);
+              break;
+          }
+        } catch {
+          handlers.onError?.("Invalid message from server");
+        }
+      };
+
+      socket.onerror = () => handlers.onError?.("WebSocket error");
+
+      socket.onclose = (event) => {
+        const code = event?.code;
+        // 调用方主动关闭 / 终态业务码：透传，不重连
+        if (closedByCaller || (code !== undefined && TERMINAL_WS_CLOSE_CODES.has(code))) {
+          handlers.onClose?.(code, event?.reason);
+          return;
+        }
+        reconnectAttempts += 1;
+        const delay = Math.min(
+          RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
+          RECONNECT_MAX_DELAY_MS,
+        );
+        handlers.onReconnecting?.(reconnectAttempts, delay);
+        reconnectTimer = setTimeout(open, delay);
+      };
+    };
+
+    open();
 
     const sendRawFrame = (message: object): boolean => {
-      if (socket.readyState === WebSocket.OPEN) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(message));
         return true;
       }
@@ -513,7 +586,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
     return {
       send(text: string) {
-        if (socket.readyState === WebSocket.OPEN) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ text }));
           return true;
         }
@@ -524,9 +597,20 @@ export function useEngineClient(options?: EngineClientOptions) {
       setMode: (mode: ChatMode, projectId?: string) =>
         sendRawFrame({ type: "session.set_mode", mode, projectId }),
       close() {
-        socket.close();
+        closedByCaller = true;
+        clearReconnectTimer();
+        socket?.close();
       },
     };
+  }
+
+  function connect(agentId: string, sessionId: string, handlers: WebSocketHandlers): Connection {
+    const wsUrl = baseUrl.value.replace(/^http/, "ws");
+    return createManagedConnection(
+      `${wsUrl}/ws/${encodeURIComponent(agentId)}?sessionId=${encodeURIComponent(sessionId)}`,
+      handlers,
+      false,
+    );
   }
 
   // Blueprints
@@ -580,80 +664,11 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   function connectSession(sessionId: string, handlers: WebSocketHandlers): Connection {
     const wsUrl = baseUrl.value.replace(/^http/, "ws");
-    // 浏览器 WS 不能设请求头：token 经 Sec-WebSocket-Protocol 子协议传递（不出现在 URL/日志）
-    const socket = sharedToken.value
-      ? new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`, sharedToken.value)
-      : new WebSocket(`${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`);
-
-    socket.onopen = () => {
-      handlers.onOpen?.();
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        switch (data.type) {
-          case "text.delta":
-            handlers.onTextDelta?.(data.delta, data.agentId);
-            break;
-          case "thinking.delta":
-            handlers.onThinkingDelta?.(data.delta, data.agentId);
-            break;
-          case "tool.call":
-            handlers.onToolCall?.(data);
-            break;
-          case "tool.result":
-            handlers.onToolResult?.(data);
-            break;
-          case "tool.approval_request":
-            handlers.onApprovalRequest?.(data);
-            break;
-          case "step.end":
-            handlers.onStepEnd?.(data.finishReason, data.agentId);
-            break;
-          case "turn.end":
-            handlers.onTurnEnd?.(data.agentId);
-            break;
-          case "session.mode_changed":
-            handlers.onModeChanged?.(data.mode, data.projectId);
-            break;
-          case "error":
-            handlers.onError?.(data.error);
-            break;
-        }
-      } catch {
-        handlers.onError?.("Invalid message from server");
-      }
-    };
-
-    socket.onerror = () => handlers.onError?.("WebSocket error");
-    // engine 主动关闭会携带 code/reason（4001 agent 不存在、4002 session 不存在等），透传给调用方
-    socket.onclose = (event) => handlers.onClose?.(event?.code, event?.reason);
-
-    const sendRawFrame = (message: object): boolean => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(message));
-        return true;
-      }
-      return false;
-    };
-
-    return {
-      send(text: string) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ text }));
-          return true;
-        }
-        return false;
-      },
-      sendRaw: sendRawFrame,
-      // 经闭包而非 this.sendRaw 调用：解构 setMode 后 this 会丢失
-      setMode: (mode: ChatMode, projectId?: string) =>
-        sendRawFrame({ type: "session.set_mode", mode, projectId }),
-      close() {
-        socket.close();
-      },
-    };
+    return createManagedConnection(
+      `${wsUrl}/ws/sessions/${encodeURIComponent(sessionId)}`,
+      handlers,
+      true,
+    );
   }
 
   return {
@@ -686,6 +701,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     deleteScheduledTask,
     connect,
     connectSession,
+    // desktop sidecar 意外退出置位（P0-3）：UI 据此提示"engine 进程已退出"
+    sidecarTerminated,
     listBlueprints,
     createBlueprint,
     getBlueprint,

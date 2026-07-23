@@ -13,6 +13,7 @@
       :agents="agents.list"
       :is-connected="isConnected"
       :is-streaming="isStreaming"
+      :status-hint="statusHint"
       @send="onSend"
       @approval-respond="onApprovalRespond"
     />
@@ -52,6 +53,13 @@ const {
 } = useGroupChatStream();
 const isConnected = ref(false);
 const notFound = ref(false);
+// 断线重连状态（P0-3）：>0 表示正在第 N 次重试
+const reconnectAttempts = ref(0);
+const statusHint = computed(() => {
+  if (client.sidecarTerminated.value) return "engine 进程已退出，请重启应用";
+  if (reconnectAttempts.value > 0) return `连接已断开，重连中（第 ${reconnectAttempts.value} 次）…`;
+  return "";
+});
 let connection: ReturnType<typeof client.connectSession> | null = null;
 
 // 组件卸载在途：后续 await 返回后不得落地数据或建立连接
@@ -86,15 +94,35 @@ onUnmounted(() => {
 function connect() {
   if (connection) connection.close();
   isConnected.value = false;
+  reconnectAttempts.value = 0;
   resetStreamState();
 
   connection = client.connectSession(sessionId.value, {
     onOpen: () => {
       isConnected.value = true;
+      reconnectAttempts.value = 0;
     },
     ...streamHandlers,
+    onReconnecting: (attempt) => {
+      isConnected.value = false;
+      reconnectAttempts.value = attempt;
+      resetStreamState();
+    },
+    onReconnected: () => {
+      // 重连成功：拉取最新消息列表对齐断线期间的状态
+      reconnectAttempts.value = 0;
+      client
+        .getSessionMessages(sessionId.value, 100)
+        .then((records) => {
+          if (alive) messages.value = recordsToDisplay(records);
+        })
+        .catch(() => {
+          // 对齐失败不阻塞连接态
+        });
+    },
     onClose: () => {
       isConnected.value = false;
+      reconnectAttempts.value = 0;
       resetStreamState();
     },
   });

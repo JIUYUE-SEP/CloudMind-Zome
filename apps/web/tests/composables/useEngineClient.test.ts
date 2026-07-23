@@ -185,3 +185,145 @@ describe("useEngineClient URL 路径段编码", () => {
     expect(urls[3]).toContain("/blueprints/bp%201");
   });
 });
+
+// 重连测试用 Mock：可手动驱动 open/drop，记录全部实例
+class ReconnectMockWebSocket {
+  static instances: ReconnectMockWebSocket[] = [];
+  static readonly OPEN = 1;
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
+  constructor(
+    public url: string,
+    public protocols?: string | string[],
+  ) {
+    ReconnectMockWebSocket.instances.push(this);
+  }
+  send(_data: string) {}
+  close() {
+    this.readyState = 3;
+    this.onclose?.({ code: 1000, reason: "" });
+  }
+  // 测试驱动：握手成功
+  open() {
+    this.readyState = 1;
+    this.onopen?.();
+  }
+  // 测试驱动：连接断开（1006 异常断开 / 4xxx 终态业务码）
+  drop(code = 1006, reason = "") {
+    this.readyState = 3;
+    this.onclose?.({ code, reason });
+  }
+}
+
+function lastReconnectSocket(): ReconnectMockWebSocket {
+  const ws = ReconnectMockWebSocket.instances[ReconnectMockWebSocket.instances.length - 1];
+  if (!ws) throw new Error("no WebSocket instance created");
+  return ws;
+}
+
+describe("useEngineClient WS 自动重连（P0-3）", () => {
+  beforeEach(() => {
+    ReconnectMockWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", ReconnectMockWebSocket);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("异常断开（1006）后按 1s 退避自动重连，重连成功触发 onReconnected", () => {
+    const client = useEngineClient();
+    const onOpen = vi.fn();
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    const onClose = vi.fn();
+    client.connect("agent-1", "default", { onOpen, onReconnecting, onReconnected, onClose });
+
+    lastReconnectSocket().open();
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    lastReconnectSocket().drop(1006);
+    expect(onReconnecting).toHaveBeenCalledWith(1, 1000);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(ReconnectMockWebSocket.instances).toHaveLength(1);
+
+    // 退避未到不发起新连接；到点立即重连
+    vi.advanceTimersByTime(999);
+    expect(ReconnectMockWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(ReconnectMockWebSocket.instances).toHaveLength(2);
+
+    lastReconnectSocket().open();
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("退避间隔 1s/2s/4s…指数增长并封顶 30s", () => {
+    const client = useEngineClient();
+    const onReconnecting = vi.fn();
+    client.connect("agent-1", "default", { onReconnecting });
+    lastReconnectSocket().open();
+
+    const delays: number[] = [];
+    for (let n = 1; n <= 7; n++) {
+      lastReconnectSocket().drop(1006);
+      delays.push(onReconnecting.mock.calls[n - 1][1] as number);
+      vi.advanceTimersByTime(delays[n - 1]);
+    }
+    expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+    // 永不放弃：每次都发起了新连接
+    expect(ReconnectMockWebSocket.instances).toHaveLength(8);
+  });
+
+  it("终态关闭码（4001 agent 不存在）不重连，onClose 原样透传", () => {
+    const client = useEngineClient();
+    const onClose = vi.fn();
+    const onReconnecting = vi.fn();
+    client.connect("agent-1", "default", { onClose, onReconnecting });
+    lastReconnectSocket().open();
+
+    lastReconnectSocket().drop(4001, "Agent not found");
+    expect(onClose).toHaveBeenCalledWith(4001, "Agent not found");
+    expect(onReconnecting).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(60_000);
+    expect(ReconnectMockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("调用方 close() 后不再重连", () => {
+    const client = useEngineClient();
+    const onReconnecting = vi.fn();
+    const onClose = vi.fn();
+    const conn = client.connect("agent-1", "default", { onReconnecting, onClose });
+    lastReconnectSocket().open();
+
+    conn.close();
+    expect(onClose).toHaveBeenCalledWith(1000, "");
+    expect(onReconnecting).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(60_000);
+    expect(ReconnectMockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("首次握手即失败也进入重连，但不算 onReconnected", () => {
+    const client = useEngineClient();
+    const onOpen = vi.fn();
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    client.connect("agent-1", "default", { onOpen, onReconnecting, onReconnected });
+
+    // engine 未起：首次握手直接失败
+    lastReconnectSocket().drop(1006);
+    expect(onReconnecting).toHaveBeenCalledWith(1, 1000);
+
+    vi.advanceTimersByTime(1000);
+    lastReconnectSocket().open();
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onReconnected).not.toHaveBeenCalled();
+  });
+});

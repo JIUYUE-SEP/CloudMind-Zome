@@ -17,6 +17,9 @@ export const useChatStore = defineStore("chat", () => {
   const messages = ref<DisplayMessage[]>([]);
   const isConnected = ref(false);
   const isStreaming = ref(false);
+  // 断线重连状态（P0-3）：>0 表示正在第 N 次重试，UI 显示"重连中"而非静默
+  const reconnectAttempts = ref(0);
+  const engineTerminated = client.sidecarTerminated;
   let connection: ReturnType<typeof client.connect> | null = null;
   // 历史加载代际：每次加载/断连自增，迟到的过期响应不得覆盖当前会话
   let loadSeq = 0;
@@ -35,6 +38,7 @@ export const useChatStore = defineStore("chat", () => {
     if (connection) connection.close();
     isConnected.value = false;
     isStreaming.value = false;
+    reconnectAttempts.value = 0;
 
     // 流式中断（turn 结束/出错/断连）时复位最后一条气泡的 streaming 态，
     // 否则光标与打字机永不停止
@@ -53,6 +57,23 @@ export const useChatStore = defineStore("chat", () => {
       onOpen: () => {
         if (stale()) return;
         isConnected.value = true;
+        reconnectAttempts.value = 0;
+      },
+      onReconnecting: (attempt) => {
+        if (stale()) return;
+        // 断线瞬间复位流式态，并进入"重连中"的可感知状态
+        sealLastAssistant();
+        isConnected.value = false;
+        isStreaming.value = false;
+        reconnectAttempts.value = attempt;
+      },
+      onReconnected: () => {
+        if (stale()) return;
+        // 重连成功：拉取最新消息列表对齐断线期间的状态
+        reconnectAttempts.value = 0;
+        loadMessages(agentId).catch(() => {
+          // 对齐失败不阻塞连接态；历史会在下次手动刷新时补齐
+        });
       },
       onTextDelta: (delta) => {
         if (stale()) return;
@@ -129,6 +150,7 @@ export const useChatStore = defineStore("chat", () => {
         sealLastAssistant();
         isConnected.value = false;
         isStreaming.value = false;
+        reconnectAttempts.value = 0;
         // engine 主动关闭会带原因（4001 agent 不存在、4002 session 不存在、4403 冲突等）
         if (reason) {
           pushErrorMessage(`连接已关闭：${reason}`);
@@ -187,9 +209,10 @@ export const useChatStore = defineStore("chat", () => {
     connection = null;
     isConnected.value = false;
     isStreaming.value = false;
+    reconnectAttempts.value = 0;
     // store 是单例：清空消息，避免切换 agent 时短暂残留上一个会话的内容
     messages.value = [];
   }
 
-  return { sessionId, messages, isConnected, isStreaming, loadMessages, connect, send, respondApproval, disconnect };
+  return { sessionId, messages, isConnected, isStreaming, reconnectAttempts, engineTerminated, loadMessages, connect, send, respondApproval, disconnect };
 });

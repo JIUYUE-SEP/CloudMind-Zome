@@ -55,6 +55,8 @@ const props = defineProps<{
   agents: AgentConfig[];
   isConnected: boolean;
   isStreaming: boolean;
+  // 连接异常的可感知提示（P0-3）："重连中…"/"engine 进程已退出"，优先于默认状态文案
+  statusHint?: string;
 }>();
 
 const emit = defineEmits<{
@@ -65,6 +67,7 @@ const emit = defineEmits<{
 const messagesEl = ref<HTMLElement | null>(null);
 
 const statusText = computed(() => {
+  if (props.statusHint) return props.statusHint;
   if (!props.isConnected) return "未连接";
   if (props.isStreaming) return "生成中...";
   return "已连接";
