@@ -97,9 +97,12 @@ export function topicToMessage(topic: TopicSummary, now: number = Date.now()): C
  * MIND.md 经验块 → 伪装成 assistant 历史消息（第一人称想起自己的经验档案）。
  * 注入位置在热上下文之后（assembler 显式追加，不参与时间归并），
  * createdAt 取注入时刻——经验是"现在想起的"，不属于过去某个时间点。
+ * 正文由 heading + content 重组：raw 含 frontmatter（仅审计用），不进注入消息。
  */
 export function mindToMessage(chunks: MindChunk[], now: number = Date.now()): ChatMessage {
-  const text = `我记得自己积累过这些经验：\n\n${chunks.map((c) => c.raw).join("\n\n")}`;
+  const text = `我记得自己积累过这些经验：\n\n${chunks
+    .map((c) => `## ${c.heading}\n\n${c.content}`)
+    .join("\n\n")}`;
   return {
     id: "mind-recall",
     role: "assistant",

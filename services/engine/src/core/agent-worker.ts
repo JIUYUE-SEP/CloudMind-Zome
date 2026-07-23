@@ -26,6 +26,7 @@ import {
   loadSoul,
   loadMindChunks,
   retrieveMindChunks,
+  appendMindExperiences,
   type MindChunk,
 } from "../mind/mind-files.js";
 
@@ -109,6 +110,22 @@ export class AgentWorker {
         this.topicConfig.compressionModel || this.config.model,
       );
       await writeCompressedTopic(this.config.agentId, compressed);
+      // Phase 7：压缩落档成功后顺手沉淀经验到 MIND.md（append-only）。
+      // 失败仅 warn 跳过，不影响压缩主流程
+      if (compressed.experiences && compressed.experiences.length > 0) {
+        try {
+          await appendMindExperiences(
+            this.config.agentId,
+            compressed.experiences.map((e) => ({
+              ...e,
+              source: `topic-${compressed.topicId}`,
+              created: compressed.compressedAt,
+            })),
+          );
+        } catch (err) {
+          console.warn(`[mind] 经验沉淀失败（已跳过）：${compressed.topicId}`, err);
+        }
+      }
       try {
         await this.config.messageRepository.archiveAndRemove(compressed.msgIds);
       } catch (err) {

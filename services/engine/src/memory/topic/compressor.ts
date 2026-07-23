@@ -1,6 +1,6 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider } from "../../provider/types.js";
-import { messageText, type CompressedTopic, type TopicSegment } from "./types.js";
+import { messageText, type CompressedTopic, type ExtractedExperience, type TopicSegment } from "./types.js";
 
 /** 压缩调用超时（对齐 grok 的 wall_clock_budget_secs=60） */
 const COMPRESS_TIMEOUT_MS = 60_000;
@@ -12,11 +12,16 @@ function buildPrompt(segment: TopicSegment): string {
     .map((m) => `${m.role === "user" ? "用户" : "助手"}: ${messageText(m)}`)
     .join("\n");
   return [
-    "你是对话归档助手。把下面的对话片段压缩为摘要，严格按以下格式输出，不要输出任何其他内容：",
+    "你是对话归档助手。把下面的对话片段压缩为摘要，并顺手沉淀可复用的经验。严格按以下格式输出，不要输出任何其他内容：",
     "",
     "话题主题：<一句话概括主题>",
     "关键结论：",
     "- <关键决策、事实或结论，最多 5 条，每条一行>",
+    "经验：",
+    "- <经验标题> | <置信度 0-1> | <经验正文，每条一行>",
+    "",
+    "「经验」只沉淀可复用的经验、教训或偏好（例如「指挥官讨厌 emoji」「杀 node 进程会连带其他服务」），",
+    "不是本话题的事实流水账（事实已由关键结论覆盖）；没有值得沉淀的经验时「经验：」下面留空，不要硬凑。",
     "",
     "对话片段：",
     lines,
@@ -68,13 +73,27 @@ interface ParsedSummary {
   keyPoints: string[];
 }
 
+/** 按区截取：起始区头（如「关键结论：」）到下一个区头之间的行 */
+function sectionLines(reply: string, start: RegExp, end: RegExp): string[] {
+  const lines = reply.split("\n");
+  const from = lines.findIndex((l) => start.test(l));
+  if (from < 0) return [];
+  const rest = lines.slice(from + 1);
+  const to = rest.findIndex((l) => end.test(l));
+  return to < 0 ? rest : rest.slice(0, to);
+}
+
+function dashLine(line: string): string | undefined {
+  return line.match(/^\s*[-•]\s*(.+)$/)?.[1]?.trim();
+}
+
 /** 解析「话题主题：… / 关键结论：- …」格式；解析失败走兜底，不让坏输出阻断归档 */
 function parseSummary(reply: string, fallbackText: string): ParsedSummary {
   const labelMatch = reply.match(/话题主题[：:]\s*(.+)/);
   const label = labelMatch?.[1]?.trim();
-  const keyPoints = reply
-    .split("\n")
-    .map((line) => line.match(/^\s*[-•]\s*(.+)$/)?.[1]?.trim())
+  // 只取「关键结论」区内的 dash 行：经验区的条目不能混进关键结论
+  const keyPoints = sectionLines(reply, /^\s*关键结论[：:]/, /^\s*(经验|话题主题)[：:]/)
+    .map(dashLine)
     .filter((p): p is string => !!p)
     .slice(0, MAX_KEY_POINTS);
   if (label) return { label, keyPoints };
@@ -82,6 +101,25 @@ function parseSummary(reply: string, fallbackText: string): ParsedSummary {
     label: "（未命名话题）",
     keyPoints: keyPoints.length > 0 ? keyPoints : [fallbackText.slice(0, 200)],
   };
+}
+
+/**
+ * 解析「经验：- 标题 | 置信度 | 正文」条目（Phase 7）。
+ * 格式不符的行跳过（解析失败不抛错，不影响压缩主流程）；置信度 clamp 到 0-1；
+ * 没有经验（留空/写「无」/无经验区）返回空数组。
+ */
+function parseExperiences(reply: string): ExtractedExperience[] {
+  return sectionLines(reply, /^\s*经验[：:]/, /^\s*(话题主题|关键结论)[：:]/)
+    .map((line) =>
+      line.match(/^\s*[-•]\s*(.+?)\s*[|｜]\s*([0-9]+(?:\.[0-9]+)?)\s*[|｜]\s*(.+?)\s*$/),
+    )
+    .filter((m): m is RegExpMatchArray => m !== null)
+    .map((m) => ({
+      title: m[1]!.trim(),
+      text: m[3]!.trim(),
+      confidence: Math.min(1, Math.max(0, Number(m[2]))),
+    }))
+    .filter((e) => e.title.length > 0 && e.text.length > 0);
 }
 
 /**
@@ -110,5 +148,7 @@ export async function compressTopic(
     sourceId: segment.sourceId,
     sourceName: segment.sourceName,
     compressedAt: new Date().toISOString(),
+    // Phase 7：同一次调用顺手提取的经验（0-N 条）；由调用方在落档后写入 MIND.md
+    experiences: parseExperiences(reply),
   };
 }

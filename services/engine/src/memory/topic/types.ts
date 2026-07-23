@@ -34,6 +34,19 @@ export interface CompressedTopic {
   compressedAt: string;
   /** 预留：Phase 3 接向量索引后反查 */
   embeddingId?: string;
+  /** Phase 7：同一次压缩调用顺手提取的经验（0-N 条，没有为空数组） */
+  experiences?: ExtractedExperience[];
+}
+
+/**
+ * 从话题中提取的一条经验（Phase 7）。
+ * 颗粒度为经验/教训/偏好（如"指挥官讨厌 emoji"），不是事实流水账。
+ */
+export interface ExtractedExperience {
+  title: string;
+  text: string;
+  /** 0-1（解析时已 clamp）；写入 MIND.md 时 ≤ 0.5 直接不落盘 */
+  confidence: number;
 }
 
 export interface TopicCompressionConfig {

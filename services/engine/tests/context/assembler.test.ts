@@ -218,4 +218,28 @@ describe("MIND.md 经验注入：assistant 历史消息，热上下文后面", (
     expect(textOf(last)).toContain("记忆检索暂时不可用");
     expect(messages.at(-2)!.id).toBe("mind-recall");
   });
+
+  it("注入消息正文不含 frontmatter（字段仅用于审计）", () => {
+    const layers = createLayers({
+      l3: history(1),
+      mind: [
+        {
+          heading: "指挥官偏好：不用 emoji",
+          content: "指挥官明确表示不使用 emoji。",
+          raw: "## 指挥官偏好：不用 emoji\n---\nsource: topic-tp_1\ncreated: 2026-07-23T17:00:00Z\nconfidence: 0.9\n---\n指挥官明确表示不使用 emoji。",
+          source: "topic-tp_1",
+          created: "2026-07-23T17:00:00Z",
+          confidence: 0.9,
+        },
+      ],
+    });
+    const messages = assembleMessages(layers, { now: NOW });
+    const mind = messages.find((m) => m.id === "mind-recall")!;
+    const text = textOf(mind);
+    expect(text).toContain("指挥官偏好：不用 emoji");
+    expect(text).toContain("指挥官明确表示不使用 emoji。");
+    expect(text).not.toContain("---");
+    expect(text).not.toContain("source:");
+    expect(text).not.toContain("confidence");
+  });
 });

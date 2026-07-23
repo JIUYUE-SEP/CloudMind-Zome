@@ -70,6 +70,48 @@ describe("MIND.md 解析（## 标题分块）", () => {
     expect(chunks[0].content).toBe("第一行\n第二行");
     expect(chunks[0].raw).toBe("## 经验\n第一行\n第二行");
   });
+
+  it("带 frontmatter 的块：字段解析到 chunk 上，content 跳过围栏段，raw 原样保留", () => {
+    const raw = [
+      "## 指挥官偏好：不用 emoji",
+      "---",
+      "source: topic-tp_123",
+      "created: 2026-07-23T17:00:00Z",
+      "confidence: 0.9",
+      "---",
+      "指挥官明确表示不使用 emoji。",
+      "",
+      "## 无头信息块",
+      "普通正文。",
+    ].join("\n");
+    const chunks = parseMindChunks(raw);
+    expect(chunks).toHaveLength(2);
+
+    expect(chunks[0].heading).toBe("指挥官偏好：不用 emoji");
+    expect(chunks[0].content).toBe("指挥官明确表示不使用 emoji。");
+    expect(chunks[0].source).toBe("topic-tp_123");
+    expect(chunks[0].created).toBe("2026-07-23T17:00:00Z");
+    expect(chunks[0].confidence).toBe(0.9);
+    // raw 原样（含 frontmatter，审计用）
+    expect(chunks[0].raw).toContain("source: topic-tp_123");
+    expect(chunks[0].raw).toContain("confidence: 0.9");
+
+    // 无 frontmatter 的块：字段为 undefined，行为与 Phase 6 一致
+    expect(chunks[1].content).toBe("普通正文。");
+    expect(chunks[1].source).toBeUndefined();
+    expect(chunks[1].created).toBeUndefined();
+    expect(chunks[1].confidence).toBeUndefined();
+  });
+
+  it("检索打分只看标题与正文：frontmatter 内容不参与", () => {
+    const chunks = parseMindChunks(
+      "## 饮食偏好\n---\nsource: topic-tp_1\ncreated: 2026-07-23T00:00:00Z\nconfidence: 0.9\n---\n指挥官不吃辣。",
+    );
+    // "topic"/"confidence" 只出现在 frontmatter 中，不应命中
+    expect(retrieveMindChunks(chunks, "topic confidence")).toEqual([]);
+    // 正文命中不受影响
+    expect(retrieveMindChunks(chunks, "吃辣")).toHaveLength(1);
+  });
 });
 
 describe("MIND.md 读取", () => {

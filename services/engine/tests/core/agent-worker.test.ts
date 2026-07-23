@@ -919,4 +919,77 @@ describe("AgentWorker SOUL/MIND 集成", () => {
     expect(textOf(systems[0])).toContain("数字心智"); // 默认模板内容
     expect(captured.find((m) => m.id === "mind-recall")).toBeUndefined();
   });
+
+  it("压缩落档后经验沉淀到 MIND.md（带 frontmatter）；注入消息正文无 frontmatter", async () => {
+    // 主对话回 "ok"；压缩调用（归档助手 prompt）回带「经验：」区的格式文本
+    class ExpProvider implements LLMProvider {
+      name = "exp";
+      lastMessages: ChatMessage[] = [];
+      supportsModel() {
+        return true;
+      }
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        this.lastMessages = params.messages;
+        const prompt = params.messages
+          .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+          .join("\n");
+        if (prompt.includes("对话归档助手")) {
+          yield {
+            type: "text.delta",
+            delta: [
+              "话题主题：协作偏好",
+              "关键结论：",
+              "- 结论一",
+              "经验：",
+              "- 指挥官偏好：不用 emoji | 0.9 | 指挥官明确表示不使用 emoji。",
+              "- 模糊的观察 | 0.4 | 不太确定，不应落盘。",
+            ].join("\n"),
+          };
+        } else {
+          yield { type: "text.delta", delta: "ok" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+    const provider = new ExpProvider();
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: new MessageRepository("agent-1"),
+      topicCompression: { messageThreshold: 4 },
+    });
+
+    const say = (id: string, text: string, min: number): ChatMessage => ({
+      id,
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date(Date.parse("2026-07-23T10:00:00.000Z") + min * 60_000).toISOString(),
+    });
+
+    // j1+j2 凑满 4 条触发话题关闭 → 后台压缩 → 落档后顺手沉淀经验
+    worker.enqueue({ id: "j1", messages: [say("u1", "第一个问题", 0)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [say("u2", "第二个问题", 1)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const mindPath = path.join(tmpDir, "agents", "agent-1", "MIND.md");
+    await vi.waitFor(async () => {
+      const mind = await fs.readFile(mindPath, "utf-8").catch(() => "");
+      expect(mind).toContain("## 指挥官偏好：不用 emoji");
+    });
+    const mind = await fs.readFile(mindPath, "utf-8");
+    expect(mind).toContain("source: topic-tp_");
+    expect(mind).toContain("created: ");
+    expect(mind).toContain("confidence: 0.9");
+    // confidence ≤ 0.5 的经验直接不落盘
+    expect(mind).not.toContain("模糊的观察");
+
+    // 注入侧：命中块进入 assistant 消息，正文不含 frontmatter
+    worker.enqueue({ id: "j3", messages: [say("u3", "emoji 可以用吗？", 2)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    const recalled = provider.lastMessages.find(
+      (m) => m.role === "assistant" && textOf(m).includes("指挥官偏好"),
+    );
+    expect(recalled).toBeTruthy();
+    expect(textOf(recalled!)).not.toContain("confidence");
+    expect(textOf(recalled!)).not.toContain("---");
+  });
 });

@@ -438,9 +438,47 @@ Messages（动态）：L4/L5 伪装 user 历史与 L3 按时间归并 → MIND.m
 - [x] L1 组装：agent-worker 把 SOUL 置于 skill 内容之前，MIND.md 不进 L1
 - [x] MIND 注入：`ContextLayers.mind` + `recall.mindToMessage`（第一人称"我记得自己积累过这些经验"），assembler 显式追加在热上下文之后；命中才注入，空档静默跳过
 - [x] Phase 1 不参与降级与多轮去重（量小；与个人格同为"自我"连续性）；缓存前缀跨轮字节一致
-- [ ] 后续扩展：MIND.md 详细生成逻辑（从话题压缩提取经验）、后台 LLM 判断自动更新 MIND.md、embedding 版检索
+- [ ] 后续扩展：embedding 版检索
 
 **验收**：`tests/mind/mind-files.test.ts`（13 例）+ `tests/context/pipeline-mind.test.ts` + assembler/agent-worker/api 集成用例——SOUL 加载与兜底、MIND 解析与话题检索、L1 不含 MIND、注入位置在热上下文之后、缓存前缀稳定、新建 Agent 默认文件落盘。
+
+### Phase 7：MIND.md 经验自动沉淀（2026-07-23）— ✅ 已实现
+
+**定位**：MIND.md 是人形的自我认知——"我擅长什么、我经历过什么、我学到什么"。提取颗粒度是**经验/教训/偏好**（如"指挥官讨厌 emoji""Windows 杀 node 进程会连带 engine"），不是事实流水账。事实召回已由 L4 语义检索负责，MIND 不重复建设。
+
+**四项设计决策（指挥官拍板，不再变更）**：
+
+1. **提取时机：话题压缩落档时顺手提取**。压缩本来就要调一次便宜模型，同一次调用多要一份"本话题沉淀的经验"，边际成本最低。压缩 prompt 追加一段：要求模型在话题摘要之外，额外输出 0-N 条经验（没有就输出空，不硬凑）。
+2. **写入方式：append-only，只加不改**。新经验追加为新的 `##` 块；发现旧经验过时，追加一条修正块并标注被修正块，**绝不原地改写或删除**。MIND.md 是 agent 的自我认知，被 LLM 静默改写有风险——追加式可审计、可回滚，指挥官翻开文件能看到它"学会"的全过程。
+3. **块结构：每块带 frontmatter**。格式：
+
+```markdown
+## 指挥官偏好：不用 emoji
+---
+source: topic-{topicId}
+created: 2026-07-23T17:00:00Z
+confidence: 0.9
+---
+指挥官明确表示不使用 emoji，所有回复与文档中避免。
+```
+
+frontmatter 支持来源追溯（source）、时间衰减（created）、置信度分档（confidence，沿用 P5 的 >0.7 正常 / 0.5-0.7 模糊化 / ≤0.5 不写入口径——提取阶段 ≤0.5 直接不落盘）。
+4. **写权限：仅系统自动提取**。现阶段不开放 agent 对话中主动"记一条经验"的通道（防模型滥用写权限），后续再评估。
+
+**去重**：规则版先行——新块标题与已有块标题的 token 重合度过高时（Jaccard ≥ 0.6），并入已有块正文追加一行补充（仍不删除原文），否则独立成块。LLM 合并留待规模上来后再说。
+
+**注入侧不变**：检索仍走 P6 规则版（bigram 打分、上限 3 块）；frontmatter 不参与检索打分，仅用于审计与未来的衰减。解析器需跳过 frontmatter（`---` 围栏段不进正文）。
+
+**实现要点（2026-07-23）**：
+
+- [x] 提取时机：`compressor.ts` 的 prompt 追加「经验：」区（标题 | 置信度 | 正文，0-N 条，没有留空）；同一次压缩调用返回 `CompressedTopic.experiences`，压缩模型不变
+- [x] 落档后写入：agent-worker 的 CompressionQueue 回调在 `writeCompressedTopic` 成功后 `appendMindExperiences`（source=`topic-{topicId}`、created=压缩时间）；失败仅 warn 跳过，不影响压缩主流程
+- [x] `appendMindExperiences`（`src/mind/mind-files.ts`）：append-only（只加不改）；confidence ≤ 0.5 / 空标题 / 空正文直接不落盘；标题 token Jaccard ≥ 0.6 并入已有块正文追加一行补充（原文不删、frontmatter 不动），否则独立成块；tmp + rename 原子写
+- [x] 解析器升级：`parseMindChunks` 跳过块首 frontmatter 围栏段（字段挂在 MindChunk.source/created/confidence 上，raw 原样保留）；检索打分仍只看 heading + content
+- [x] 注入消息正文无 frontmatter：`mindToMessage` 改由 heading + content 重组（raw 仅审计用）
+- [x] 区间隔离：压缩解析按区截取（关键结论不吃经验区的 dash 行）；坏行跳过、置信度 clamp 0-1
+
+**验收**：压缩落档后 MIND.md 出现带 frontmatter 的经验块；无经验可提时文件不变；frontmatter 不出现在注入消息正文；重复经验按规则合并；engine 测试全绿（522 例）。
 
 ---
 

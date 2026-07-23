@@ -124,3 +124,70 @@ describe("compressTopic", () => {
     await vi.waitFor(() => expect(provider.closed).toBe(true), { timeout: 1000, interval: 5 });
   });
 });
+
+describe("compressTopic 经验提取（Phase 7：同一次调用顺手沉淀）", () => {
+  it("压缩 prompt 包含经验提取要求：颗粒度为经验/教训/偏好，没有就留空", async () => {
+    const provider = new RecordingProvider();
+    await compressTopic(makeSegment(), provider, "k3-cheap");
+
+    expect(provider.lastPrompt).toContain("经验");
+    expect(provider.lastPrompt).toContain("偏好");
+    // 不硬凑：明确允许输出空
+    expect(provider.lastPrompt).toMatch(/留空|没有/);
+    // 经验条目格式：标题 | 置信度 | 正文
+    expect(provider.lastPrompt).toContain("置信度");
+  });
+
+  it("解析经验区：标题/置信度/正文；置信度收敛到 0-1；坏行跳过", async () => {
+    const reply = [
+      "话题主题：协作偏好与进程管理",
+      "关键结论：",
+      "- 结论一",
+      "经验：",
+      "- 指挥官偏好：不用 emoji | 0.9 | 指挥官明确表示不使用 emoji。",
+      "- Windows 进程管理 | 1.2 | 杀 node 进程会连带 engine。",
+      "- 坏行没有分隔符和置信度",
+    ].join("\n");
+    const result = await compressTopic(makeSegment(), new FixedReplyProvider(reply), "m");
+
+    expect(result.experiences).toHaveLength(2);
+    expect(result.experiences![0]).toEqual({
+      title: "指挥官偏好：不用 emoji",
+      text: "指挥官明确表示不使用 emoji。",
+      confidence: 0.9,
+    });
+    // 越界置信度 clamp 到 1
+    expect(result.experiences![1].confidence).toBe(1);
+    expect(result.experiences![1].title).toBe("Windows 进程管理");
+  });
+
+  it("无经验可提：经验区留空或写「无」→ experiences 为空", async () => {
+    const empty = await compressTopic(
+      makeSegment(),
+      new FixedReplyProvider("话题主题：闲聊\n关键结论：\n- 没有结论\n经验：\n"),
+      "m",
+    );
+    expect(empty.experiences).toEqual([]);
+
+    const explicitNone = await compressTopic(
+      makeSegment(),
+      new FixedReplyProvider("话题主题：闲聊\n关键结论：\n- 没有结论\n经验：无"),
+      "m",
+    );
+    expect(explicitNone.experiences).toEqual([]);
+  });
+
+  it("区间隔离：关键结论不吃经验区的 dash 行", async () => {
+    const reply = [
+      "话题主题：测试",
+      "关键结论：",
+      "- 真正的结论",
+      "经验：",
+      "- 经验一 | 0.9 | 不应混进关键结论。",
+    ].join("\n");
+    const result = await compressTopic(makeSegment(), new FixedReplyProvider(reply), "m");
+
+    expect(result.keyPoints).toEqual(["真正的结论"]);
+    expect(result.experiences).toHaveLength(1);
+  });
+});
