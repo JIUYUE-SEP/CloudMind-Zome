@@ -1,3 +1,4 @@
+import type { FastifyRequest } from "fastify";
 import type { ChatMode } from "@mindcloud/shared";
 
 const DEFAULT_ALLOWED_ORIGINS = [
@@ -27,6 +28,21 @@ export function isAllowedWsOrigin(origin: string | undefined): boolean {
 
 export function isValidId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
+/**
+ * WS 握手鉴权（P0-2）：浏览器 WebSocket 不能设请求头，token 改走
+ * Sec-WebSocket-Protocol 子协议字段（不出现在 URL 和请求日志里，避免泄进 /logs）。
+ * ws 库握手时会回显该子协议，浏览器与 Node 客户端均兼容。
+ */
+export function extractWsToken(req: FastifyRequest): string | undefined {
+  const header = req.headers["sec-websocket-protocol"];
+  if (!header) return undefined;
+  const offered = (Array.isArray(header) ? header.join(",") : header)
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return offered[0];
 }
 
 export function isValidChatMode(value: unknown): value is ChatMode {

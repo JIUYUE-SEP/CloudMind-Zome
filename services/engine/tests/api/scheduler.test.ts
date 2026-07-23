@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -74,7 +74,7 @@ describe("Scheduler API", () => {
 
   it("returns 400 for invalid agent id", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/scheduler/invalid!");
+    const res = await authedRequest(app.server).get("/scheduler/invalid!");
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();

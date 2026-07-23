@@ -16,6 +16,7 @@ import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
 import WebSocket from "ws";
 import { restoreDataDir } from "../helpers/env.js";
+import { TEST_AUTH_TOKEN } from "../helpers/auth.js";
 
 async function buildWsContext(agentId: string): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-test-"));
@@ -77,7 +78,7 @@ describe("WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -107,7 +108,7 @@ describe("WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {

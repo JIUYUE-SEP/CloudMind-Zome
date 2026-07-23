@@ -3,7 +3,10 @@ import { test, expect } from "@playwright/test";
 test.describe("LogPanel", () => {
   test("shows real engine logs from GET /logs", async ({ page }) => {
     // engine 侧 /logs 必须已有缓冲日志（fastify 每个请求都会打 pino 日志）
-    const res = await page.request.get("http://127.0.0.1:8848/logs");
+    // engine 本地 token 鉴权（P0-2）：e2e token 由 scripts/start-e2e.mjs 固定注入
+    const res = await page.request.get("http://127.0.0.1:8848/logs", {
+      headers: { Authorization: "Bearer e2e-test-token" },
+    });
     expect(res.ok()).toBeTruthy();
     const entries = (await res.json()) as { time: number; level: number; msg: string }[];
     expect(entries.length).toBeGreaterThan(0);

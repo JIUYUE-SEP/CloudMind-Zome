@@ -11,6 +11,10 @@ const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "mc-e2e-"));
 process.env.CLOUDMIND_DATA_DIR = tmpDir;
 process.env.NODE_ENV = "e2e";
 
+// engine 本地 token 鉴权（P0-2）：e2e 环境给 engine 和 web 注入同一固定 token，
+// tests/e2e 里直连 engine REST 的用例也用这个值
+process.env.CLOUDMIND_AUTH_TOKEN = "e2e-test-token";
+
 const engine = spawn("pnpm", ["--filter", "@mindcloud/engine", "dev"], {
   cwd: root,
   stdio: "pipe",
@@ -27,6 +31,7 @@ const web = spawn("pnpm", ["--filter", "@mindcloud/web", "dev"], {
     CLOUDMIND_DATA_DIR: tmpDir,
     NODE_ENV: "e2e",
     NUXT_PUBLIC_ENGINE_URL: "http://127.0.0.1:8848",
+    NUXT_PUBLIC_ENGINE_TOKEN: "e2e-test-token",
   },
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -72,12 +72,12 @@ describe("Compute API", () => {
       apiKey: "sk-test",
       models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" as const }],
     };
-    const createRes = await request(app.server).post("/compute/providers").send(provider);
+    const createRes = await authedRequest(app.server).post("/compute/providers").send(provider);
     expect(createRes.status).toBe(200);
     expect(createRes.body.displayName).toBe("OpenAI");
     expect(createRes.body.apiKey).toBe("***");
 
-    const listRes = await request(app.server).get("/compute/providers");
+    const listRes = await authedRequest(app.server).get("/compute/providers");
     expect(listRes.status).toBe(200);
     expect(listRes.body).toHaveLength(1);
     expect(listRes.body[0].apiKey).toBe("***");
@@ -94,16 +94,16 @@ describe("Compute API", () => {
       apiKey: "sk-test",
       models: [],
     };
-    await request(app.server).post("/compute/providers").send(provider);
+    await authedRequest(app.server).post("/compute/providers").send(provider);
 
-    const updateRes = await request(app.server).put("/compute/providers/p1").send({ displayName: "OpenAI Updated" });
+    const updateRes = await authedRequest(app.server).put("/compute/providers/p1").send({ displayName: "OpenAI Updated" });
     expect(updateRes.status).toBe(200);
     expect(updateRes.body.displayName).toBe("OpenAI Updated");
 
-    const delRes = await request(app.server).delete("/compute/providers/p1");
+    const delRes = await authedRequest(app.server).delete("/compute/providers/p1");
     expect(delRes.status).toBe(204);
 
-    const listRes = await request(app.server).get("/compute/providers");
+    const listRes = await authedRequest(app.server).get("/compute/providers");
     expect(listRes.body).toHaveLength(0);
     await app.close();
   });
@@ -118,10 +118,10 @@ describe("Compute API", () => {
       apiKey: "sk-test",
       models: [],
     };
-    await request(app.server).post("/compute/providers").send(provider);
+    await authedRequest(app.server).post("/compute/providers").send(provider);
 
     // 编辑表单留空表示"不修改"，不能把已保存的密钥覆盖掉
-    const updateRes = await request(app.server)
+    const updateRes = await authedRequest(app.server)
       .put("/compute/providers/p1")
       .send({ displayName: "Renamed", apiKey: "" });
     expect(updateRes.status).toBe(200);
@@ -142,27 +142,27 @@ describe("Compute API", () => {
       apiKey: "sk-test",
       models: [],
     };
-    await request(app.server).post("/compute/providers").send(provider);
+    await authedRequest(app.server).post("/compute/providers").send(provider);
 
     const model = { id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" };
-    const addRes = await request(app.server).post("/compute/providers/p1/models").send(model);
+    const addRes = await authedRequest(app.server).post("/compute/providers/p1/models").send(model);
     expect(addRes.status).toBe(200);
 
-    const updateRes = await request(app.server).put("/compute/providers/p1/models/gpt-4o").send({ displayName: "GPT-4o Updated" });
+    const updateRes = await authedRequest(app.server).put("/compute/providers/p1/models/gpt-4o").send({ displayName: "GPT-4o Updated" });
     expect(updateRes.status).toBe(200);
     expect(updateRes.body.displayName).toBe("GPT-4o Updated");
 
-    const delRes = await request(app.server).delete("/compute/providers/p1/models/gpt-4o");
+    const delRes = await authedRequest(app.server).delete("/compute/providers/p1/models/gpt-4o");
     expect(delRes.status).toBe(204);
 
-    const listRes = await request(app.server).get("/compute/providers");
+    const listRes = await authedRequest(app.server).get("/compute/providers");
     expect(listRes.body[0].models).toHaveLength(0);
     await app.close();
   });
 
   it("rejects localhost baseUrl", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "local",
       displayName: "Local",
       providerType: "openai",
@@ -176,7 +176,7 @@ describe("Compute API", () => {
 
   it("rejects metadata IP baseUrl", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "metadata",
       displayName: "Metadata",
       providerType: "openai",
@@ -190,7 +190,7 @@ describe("Compute API", () => {
 
   it("rejects non-http schemes baseUrl", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "file",
       displayName: "File",
       providerType: "openai",
@@ -204,7 +204,7 @@ describe("Compute API", () => {
 
   it("rejects IPv6 loopback baseUrl", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "v6loop",
       displayName: "V6Loop",
       providerType: "openai",
@@ -218,7 +218,7 @@ describe("Compute API", () => {
 
   it("rejects non-.1 loopback baseUrl", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "loop2",
       displayName: "Loop2",
       providerType: "openai",
@@ -241,7 +241,7 @@ describe("Compute API", () => {
     "http://[::]/", // unspecified
   ])("rejects IPv4-mapped/compatible IPv6 baseUrl: %s", async (baseUrl) => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "v6mapped",
       displayName: "V6Mapped",
       providerType: "openai",
@@ -255,7 +255,7 @@ describe("Compute API", () => {
 
   it("allows a public IPv4-mapped IPv6 baseUrl (不误伤)", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "v6public",
       displayName: "V6Public",
       providerType: "openai",
@@ -268,7 +268,7 @@ describe("Compute API", () => {
 
   it("allows valid http/https external baseUrl", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/compute/providers").send({
+    const res = await authedRequest(app.server).post("/compute/providers").send({
       id: "external",
       displayName: "External",
       providerType: "openai",

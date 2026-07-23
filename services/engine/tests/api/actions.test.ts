@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -74,7 +74,7 @@ describe("Action API", () => {
 
   it("lists actions for agent", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/actions/a1");
+    const res = await authedRequest(app.server).get("/actions/a1");
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     await app.close();
@@ -82,7 +82,7 @@ describe("Action API", () => {
 
   it("returns 400 for invalid agent id", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/actions/invalid!");
+    const res = await authedRequest(app.server).get("/actions/invalid!");
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();

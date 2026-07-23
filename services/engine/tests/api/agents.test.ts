@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -66,7 +66,7 @@ describe("Agent API", () => {
 
   it("lists agents", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/agents");
+    const res = await authedRequest(app.server).get("/agents");
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
     await app.close();
@@ -75,11 +75,11 @@ describe("Agent API", () => {
   it("creates and gets an agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
-    const createRes = await request(app.server).post("/agents").send(agent);
+    const createRes = await authedRequest(app.server).post("/agents").send(agent);
     expect(createRes.status).toBe(200);
     expect(createRes.body.id).toBe("a1");
 
-    const getRes = await request(app.server).get("/agents/a1");
+    const getRes = await authedRequest(app.server).get("/agents/a1");
     expect(getRes.status).toBe(200);
     expect(getRes.body.name).toBe("A1");
     await app.close();
@@ -88,7 +88,7 @@ describe("Agent API", () => {
   it("creates default SOUL.md and MIND.md for a new agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
-    const createRes = await request(app.server).post("/agents").send(agent);
+    const createRes = await authedRequest(app.server).post("/agents").send(agent);
     expect(createRes.status).toBe(200);
 
     const dir = getAgentDir("a1");
@@ -100,10 +100,10 @@ describe("Agent API", () => {
   it("updates an agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
-    await request(app.server).post("/agents").send(agent);
+    await authedRequest(app.server).post("/agents").send(agent);
 
     const updated = { ...agent, name: "Updated" };
-    const putRes = await request(app.server).put("/agents/a1").send(updated);
+    const putRes = await authedRequest(app.server).put("/agents/a1").send(updated);
     expect(putRes.status).toBe(200);
     expect(putRes.body.name).toBe("Updated");
     await app.close();
@@ -112,12 +112,12 @@ describe("Agent API", () => {
   it("deletes an agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
-    await request(app.server).post("/agents").send(agent);
+    await authedRequest(app.server).post("/agents").send(agent);
 
-    const delRes = await request(app.server).delete("/agents/a1");
+    const delRes = await authedRequest(app.server).delete("/agents/a1");
     expect(delRes.status).toBe(204);
 
-    const getRes = await request(app.server).get("/agents/a1");
+    const getRes = await authedRequest(app.server).get("/agents/a1");
     expect(getRes.status).toBe(404);
     await app.close();
   });
@@ -125,7 +125,7 @@ describe("Agent API", () => {
   it("rejects invalid agent id on create", async () => {
     const app = await makeApp();
     const agent = { id: "bad id", name: "Bad", persona: "", model: "mock", skills: [], tools: [] };
-    const res = await request(app.server).post("/agents").send(agent);
+    const res = await authedRequest(app.server).post("/agents").send(agent);
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
@@ -134,7 +134,7 @@ describe("Agent API", () => {
   it("rejects invalid agent id on update", async () => {
     const app = await makeApp();
     const agent = { id: "bad id", name: "Bad", persona: "", model: "mock", skills: [], tools: [] };
-    const res = await request(app.server).put("/agents/bad id").send(agent);
+    const res = await authedRequest(app.server).put("/agents/bad id").send(agent);
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
@@ -142,7 +142,7 @@ describe("Agent API", () => {
 
   it("rejects invalid agent id on get", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/agents/bad id");
+    const res = await authedRequest(app.server).get("/agents/bad id");
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
@@ -150,7 +150,7 @@ describe("Agent API", () => {
 
   it("rejects invalid agent id on delete", async () => {
     const app = await makeApp();
-    const res = await request(app.server).delete("/agents/bad id");
+    const res = await authedRequest(app.server).delete("/agents/bad id");
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
@@ -159,9 +159,9 @@ describe("Agent API", () => {
   it("rejects body id that does not match route id on update", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
-    await request(app.server).post("/agents").send(agent);
+    await authedRequest(app.server).post("/agents").send(agent);
 
-    const res = await request(app.server).put("/agents/a1").send({ ...agent, id: "a2" });
+    const res = await authedRequest(app.server).put("/agents/a1").send({ ...agent, id: "a2" });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Agent id in body does not match route parameter");
     await app.close();
@@ -170,9 +170,9 @@ describe("Agent API", () => {
   it("accepts body id that matches route id on update", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
-    await request(app.server).post("/agents").send(agent);
+    await authedRequest(app.server).post("/agents").send(agent);
 
-    const res = await request(app.server).put("/agents/a1").send({ ...agent, name: "Updated", id: "a1" });
+    const res = await authedRequest(app.server).put("/agents/a1").send({ ...agent, name: "Updated", id: "a1" });
     expect(res.status).toBe(200);
     expect(res.body.name).toBe("Updated");
     await app.close();
@@ -200,10 +200,10 @@ describe("Agent API", () => {
       tools: ["bash"],
     };
 
-    const postRes = await request(app.server).post("/agents").send(agent);
+    const postRes = await authedRequest(app.server).post("/agents").send(agent);
     expect(postRes.status).toBe(200);
 
-    const getRes = await request(app.server).get("/agents/extended-agent");
+    const getRes = await authedRequest(app.server).get("/agents/extended-agent");
     expect(getRes.status).toBe(200);
     const saved = getRes.body;
     expect(saved.providerId).toBe("openai");

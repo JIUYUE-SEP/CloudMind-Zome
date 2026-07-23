@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -93,19 +93,19 @@ describe("Subagents API", () => {
     backgroundManager.register(makeTask("t1"), config, 60_000);
     await vi.waitFor(() => expect(backgroundManager.get("t1")?.status).toBe("completed"));
 
-    const list = await request(app.server).get("/subagents/background");
+    const list = await authedRequest(app.server).get("/subagents/background");
     expect(list.status).toBe(200);
     expect(list.body).toHaveLength(1);
     expect(list.body[0]).toMatchObject({ taskId: "t1", status: "completed", output: "bg result" });
 
-    const got = await request(app.server).get("/subagents/background/t1");
+    const got = await authedRequest(app.server).get("/subagents/background/t1");
     expect(got.status).toBe(200);
     expect(got.body.parentAgentId).toBe("a1");
     expect(got.body.agentId).toBe("a2");
   });
 
   it("returns 404 for unknown task id", async () => {
-    const res = await request(app.server).get("/subagents/background/nope");
+    const res = await authedRequest(app.server).get("/subagents/background/nope");
     expect(res.status).toBe(404);
   });
 
@@ -124,7 +124,7 @@ describe("Subagents API", () => {
     backgroundManager.register(makeTask("t2"), config, 60_000);
     await vi.waitFor(() => expect(backgroundManager.get("t2")?.status).toBe("failed"));
 
-    const res = await request(app.server).get("/subagents/background/t2");
+    const res = await authedRequest(app.server).get("/subagents/background/t2");
     expect(res.body.status).toBe("failed");
     expect(res.body.error).toContain("bg boom");
   });

@@ -27,6 +27,7 @@ import { BackgroundManager } from "./subagent/background.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getAuthToken, getAuthTokenFilePath } from "./config/auth-token.js";
 
 /** 从 cwd 向上找 monorepo 根下的 packages/skills（内置技能目录） */
 async function findBuiltinSkillsDir(): Promise<string | undefined> {
@@ -270,6 +271,14 @@ async function main() {
   scheduler.start();
 
   const app = await createServer(context);
+  // 在 listen 前确保 token 已就绪/落盘：desktop Rust 侧等 /health 通过后
+  // 立即读 auth-token 文件下发给前端，晚于 listen 生成会引入竞态
+  await getAuthToken();
+  if (!process.env.CLOUDMIND_AUTH_TOKEN) {
+    console.log(
+      `[auth] 本地鉴权 token 文件：${getAuthTokenFilePath()}（web 开发请设 NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage cloudmind.engineToken）`,
+    );
+  }
   await app.listen({ port: Number(process.env.PORT || 8848), host: "127.0.0.1" });
   const addr = app.server.address();
   const addrStr =

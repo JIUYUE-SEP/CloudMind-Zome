@@ -6,6 +6,7 @@ import swaggerUi from "@fastify/swagger-ui";
 import pino from "pino";
 import type { ApiContext } from "./context.js";
 import { createLogBufferStream } from "./log-buffer.js";
+import { extractBearerToken, getAuthToken, isTokenValid } from "../config/auth-token.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
@@ -55,6 +56,18 @@ export async function createServer(context: ApiContext) {
   await app.register(swaggerUi, {
     routePrefix: "/docs",
     uiConfig: { docExpansion: "list", deepLinking: false },
+  });
+
+  // 本地 token 鉴权（P0-2）：除 /health（sidecar/desktop 健康检查）与 /ws/*
+  // （WS 握手无法设请求头，token 由 handler 校验 subprotocol）外，
+  // 全部 REST 要求 Authorization: Bearer <token>。/docs 也在保护范围内。
+  app.addHook("onRequest", async (req, reply) => {
+    const url = req.url.split("?")[0];
+    if (url === "/health" || url.startsWith("/ws/")) return;
+    const expected = await getAuthToken();
+    if (!isTokenValid(extractBearerToken(req.headers.authorization), expected)) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
   });
 
   app.get("/health", async () => ({ status: "ok" }));

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -62,9 +62,9 @@ describe("Logs API", () => {
     await app.ready();
 
     // 触发一次请求，fastify 会打 "incoming request"/"request completed" 日志
-    await request(app.server).get("/health");
+    await authedRequest(app.server).get("/health");
 
-    const res = await request(app.server).get("/logs");
+    const res = await authedRequest(app.server).get("/logs");
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.length).toBeGreaterThan(0);
@@ -84,7 +84,7 @@ describe("Logs API", () => {
     app.log.warn("logs-api-warn-marker");
     app.log.error("logs-api-error-marker");
 
-    const res = await request(app.server).get("/logs?limit=1000");
+    const res = await authedRequest(app.server).get("/logs?limit=1000");
     expect(res.status).toBe(200);
     const warn = res.body.find((e: { msg: string }) => e.msg === "logs-api-warn-marker");
     const error = res.body.find((e: { msg: string }) => e.msg === "logs-api-error-marker");

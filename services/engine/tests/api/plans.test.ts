@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import request from "supertest";
+import { authedRequest, TEST_AUTH_TOKEN } from "../helpers/auth.js";
 import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -99,7 +99,7 @@ describe("Plans API", () => {
   });
 
   it("creates a plan from a multi-line goal", async () => {
-    const res = await request(app.server)
+    const res = await authedRequest(app.server)
       .post("/agents/a1/plans")
       .send({ goal: "- step one\n- step two" });
     expect(res.status).toBe(200);
@@ -108,27 +108,27 @@ describe("Plans API", () => {
   });
 
   it("returns 400 for invalid agent id and missing goal", async () => {
-    const bad = await request(app.server).post("/agents/invalid!/plans").send({ goal: "x" });
+    const bad = await authedRequest(app.server).post("/agents/invalid!/plans").send({ goal: "x" });
     expect(bad.status).toBe(400);
-    const noGoal = await request(app.server).post("/agents/a1/plans").send({});
+    const noGoal = await authedRequest(app.server).post("/agents/a1/plans").send({});
     expect(noGoal.status).toBe(400);
   });
 
   it("returns 400 (not 500) when body is missing entirely", async () => {
     // 无 content-type 时 request.body 为 undefined，不能直接取属性
-    const res = await request(app.server).post("/agents/a1/plans");
+    const res = await authedRequest(app.server).post("/agents/a1/plans");
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("goal required");
   });
 
   it("returns 400 (not 500) for non-string goal", async () => {
-    const res = await request(app.server).post("/agents/a1/plans").send({ goal: 123 });
+    const res = await authedRequest(app.server).post("/agents/a1/plans").send({ goal: 123 });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("goal required");
   });
 
   it("returns 400 for oversized goal", async () => {
-    const res = await request(app.server)
+    const res = await authedRequest(app.server)
       .post("/agents/a1/plans")
       .send({ goal: "x".repeat(10_001) });
     expect(res.status).toBe(400);
@@ -136,8 +136,8 @@ describe("Plans API", () => {
   });
 
   it("returns 400 (not 500) for non-string stepId on retry", async () => {
-    const created = await request(app.server).post("/agents/a1/plans").send({ goal: "goal" });
-    const res = await request(app.server)
+    const created = await authedRequest(app.server).post("/agents/a1/plans").send({ goal: "goal" });
+    const res = await authedRequest(app.server)
       .post(`/agents/a1/plans/${created.body.id}/retry`)
       .send({ stepId: 123 });
     expect(res.status).toBe(400);
@@ -145,31 +145,31 @@ describe("Plans API", () => {
   });
 
   it("returns 404 for unknown agent", async () => {
-    const res = await request(app.server).post("/agents/ghost/plans").send({ goal: "x" });
+    const res = await authedRequest(app.server).post("/agents/ghost/plans").send({ goal: "x" });
     expect(res.status).toBe(404);
   });
 
   it("lists and gets plans", async () => {
-    const created = await request(app.server).post("/agents/a1/plans").send({ goal: "goal x" });
+    const created = await authedRequest(app.server).post("/agents/a1/plans").send({ goal: "goal x" });
     const planId = created.body.id;
 
-    const list = await request(app.server).get("/agents/a1/plans");
+    const list = await authedRequest(app.server).get("/agents/a1/plans");
     expect(list.body).toHaveLength(1);
 
-    const got = await request(app.server).get(`/agents/a1/plans/${planId}`);
+    const got = await authedRequest(app.server).get(`/agents/a1/plans/${planId}`);
     expect(got.body.goal).toBe("goal x");
 
-    const missing = await request(app.server).get("/agents/a1/plans/nope");
+    const missing = await authedRequest(app.server).get("/agents/a1/plans/nope");
     expect(missing.status).toBe(404);
   });
 
   it("runs all pending steps sequentially and stores outputs", async () => {
-    const created = await request(app.server)
+    const created = await authedRequest(app.server)
       .post("/agents/a1/plans")
       .send({ goal: "- alpha\n- beta" });
     const planId = created.body.id;
 
-    const res = await request(app.server).post(`/agents/a1/plans/${planId}/run`);
+    const res = await authedRequest(app.server).post(`/agents/a1/plans/${planId}/run`);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("completed");
     expect(res.body.steps.map((s: { output: string }) => s.output)).toEqual([
@@ -179,35 +179,35 @@ describe("Plans API", () => {
   });
 
   it("pauses and resumes a plan", async () => {
-    const created = await request(app.server).post("/agents/a1/plans").send({ goal: "goal" });
+    const created = await authedRequest(app.server).post("/agents/a1/plans").send({ goal: "goal" });
     const planId = created.body.id;
 
-    const paused = await request(app.server).post(`/agents/a1/plans/${planId}/pause`);
+    const paused = await authedRequest(app.server).post(`/agents/a1/plans/${planId}/pause`);
     expect(paused.body.status).toBe("paused");
 
     // 暂停时 run 不执行任何步骤
-    const ran = await request(app.server).post(`/agents/a1/plans/${planId}/run`);
+    const ran = await authedRequest(app.server).post(`/agents/a1/plans/${planId}/run`);
     expect(ran.body.status).toBe("paused");
     expect(ran.body.steps[0].status).toBe("pending");
 
-    const resumed = await request(app.server).post(`/agents/a1/plans/${planId}/resume`);
+    const resumed = await authedRequest(app.server).post(`/agents/a1/plans/${planId}/resume`);
     expect(resumed.body.status).toBe("pending");
   });
 
   it("stops on failed step and retry resets it", async () => {
-    const created = await request(app.server)
+    const created = await authedRequest(app.server)
       .post("/agents/a1/plans")
       .send({ goal: "- ok step\n- fail-me\n- later step" });
     const planId = created.body.id;
 
-    const ran = await request(app.server).post(`/agents/a1/plans/${planId}/run`);
+    const ran = await authedRequest(app.server).post(`/agents/a1/plans/${planId}/run`);
     expect(ran.body.status).toBe("failed");
     expect(ran.body.steps[0].status).toBe("completed");
     expect(ran.body.steps[1].status).toBe("failed");
     // 后续步骤未被执行
     expect(ran.body.steps[2].status).toBe("pending");
 
-    const retried = await request(app.server)
+    const retried = await authedRequest(app.server)
       .post(`/agents/a1/plans/${planId}/retry`)
       .send({ stepId: ran.body.steps[1].id });
     expect(retried.body.steps[1].status).toBe("pending");
@@ -215,8 +215,8 @@ describe("Plans API", () => {
   });
 
   it("returns 404 when retrying an unknown step", async () => {
-    const created = await request(app.server).post("/agents/a1/plans").send({ goal: "goal" });
-    const res = await request(app.server)
+    const created = await authedRequest(app.server).post("/agents/a1/plans").send({ goal: "goal" });
+    const res = await authedRequest(app.server)
       .post(`/agents/a1/plans/${created.body.id}/retry`)
       .send({ stepId: "nope" });
     expect(res.status).toBe(404);
@@ -233,15 +233,15 @@ describe("Plans API", () => {
     const localApp = await createServer(local.context);
     await localApp.ready();
     try {
-      const created = await request(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
+      const created = await authedRequest(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
       const planId = created.body.id;
 
       // 第一个 /run 会卡在 gate 上；第二个应立刻 409
-      const first = request(localApp.server).post(`/agents/a1/plans/${planId}/run`);
+      const first = authedRequest(localApp.server).post(`/agents/a1/plans/${planId}/run`);
       void first.then(() => {}, () => {}); // 启动请求
       await vi.waitFor(() => expect(calls).toHaveLength(1));
 
-      const second = await request(localApp.server).post(`/agents/a1/plans/${planId}/run`);
+      const second = await authedRequest(localApp.server).post(`/agents/a1/plans/${planId}/run`);
       expect(second.status).toBe(409);
       expect(second.body.error).toMatch(/already running/);
 
@@ -265,7 +265,7 @@ describe("Plans API", () => {
     const localApp = await createServer(local.context);
     await localApp.listen({ port: 0, host: "127.0.0.1" });
     try {
-      const created = await request(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
+      const created = await authedRequest(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
       const planId = created.body.id;
       const address = localApp.server.address() as { port: number };
 
@@ -275,6 +275,7 @@ describe("Plans API", () => {
         host: "127.0.0.1",
         port: address.port,
         path: `/agents/a1/plans/${planId}/run`,
+        headers: { Authorization: `Bearer ${TEST_AUTH_TOKEN}` },
       });
       req.on("error", () => {});
       req.end();

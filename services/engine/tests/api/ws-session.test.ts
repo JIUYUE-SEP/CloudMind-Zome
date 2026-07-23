@@ -19,6 +19,7 @@ import { getDataDir } from "../../src/config/paths.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import WebSocket from "ws";
 import { restoreDataDir } from "../helpers/env.js";
+import { TEST_AUTH_TOKEN } from "../helpers/auth.js";
 
 async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Promise<{ context: ApiContext; cleanup: () => Promise<void>; sessionId: string; providers: Map<string, MockLLMProvider> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-session-test-"));
@@ -97,7 +98,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -133,7 +134,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -167,7 +168,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -199,7 +200,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -249,7 +250,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -284,7 +285,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -348,7 +349,7 @@ describe("Session WebSocket API", () => {
     const address = await app.listen({ port: 0 });
     const port = Number(new URL(address).port);
 
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
 
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {

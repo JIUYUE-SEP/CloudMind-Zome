@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -65,7 +65,7 @@ describe("Sessions API", () => {
 
   it("lists sessions", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/sessions");
+    const res = await authedRequest(app.server).get("/sessions");
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
     await app.close();
@@ -73,7 +73,7 @@ describe("Sessions API", () => {
 
   it("creates a session", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/sessions").send({ name: "Team", agentIds: ["a1", "a2"] });
+    const res = await authedRequest(app.server).post("/sessions").send({ name: "Team", agentIds: ["a1", "a2"] });
     expect(res.status).toBe(200);
     expect(res.body.name).toBe("Team");
     expect(res.body.agentIds).toEqual(["a1", "a2"]);
@@ -83,14 +83,14 @@ describe("Sessions API", () => {
 
   it("validates session creation", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/sessions").send({ name: "Team" });
+    const res = await authedRequest(app.server).post("/sessions").send({ name: "Team" });
     expect(res.status).toBe(400);
     await app.close();
   });
 
   it("rejects session creation with invalid agent id", async () => {
     const app = await makeApp();
-    const res = await request(app.server).post("/sessions").send({ name: "Team", agentIds: ["a1", "bad id!"] });
+    const res = await authedRequest(app.server).post("/sessions").send({ name: "Team", agentIds: ["a1", "bad id!"] });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id in agentIds");
     await app.close();
@@ -103,7 +103,7 @@ describe("Sessions API", () => {
       agentIds: ["a1", "a2"],
       type: "group",
     });
-    const res = await request(app.server).put(`/sessions/${session.id}`).send({ name: "Crew", agentIds: ["a3"] });
+    const res = await authedRequest(app.server).put(`/sessions/${session.id}`).send({ name: "Crew", agentIds: ["a3"] });
     expect(res.status).toBe(200);
     expect(res.body.name).toBe("Crew");
     expect(res.body.agentIds).toEqual(["a3"]);
@@ -117,7 +117,7 @@ describe("Sessions API", () => {
       agentIds: ["a1", "a2"],
       type: "group",
     });
-    const res = await request(app.server).put(`/sessions/${session.id}`).send({ agentIds: ["a1", "bad id!"] });
+    const res = await authedRequest(app.server).put(`/sessions/${session.id}`).send({ agentIds: ["a1", "bad id!"] });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id in agentIds");
     await app.close();
@@ -148,7 +148,7 @@ describe("Sessions API", () => {
     await context.getMessageRepository("a1").append(msg1);
     await context.getMessageRepository("a2").append(msg2);
 
-    const res = await request(app.server).get(`/sessions/${session.id}/messages`);
+    const res = await authedRequest(app.server).get(`/sessions/${session.id}/messages`);
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
     expect(res.body[0].id).toBe("m1");
@@ -178,7 +178,7 @@ describe("Sessions API", () => {
     await context.getMessageRepository("a1").append(userMsg);
     await context.getMessageRepository("a2").append({ ...userMsg });
 
-    const res = await request(app.server).get(`/sessions/${session.id}/messages`);
+    const res = await authedRequest(app.server).get(`/sessions/${session.id}/messages`);
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe("u1");
@@ -204,7 +204,7 @@ describe("Sessions API", () => {
     await context.getMessageRepository("a2").append(mk("new", 3000, "assistant"));
     await context.getMessageRepository("a2").append(mk("mid", 2000, "assistant"));
 
-    const res = await request(app.server).get(`/sessions/${session.id}/messages?limit=2`);
+    const res = await authedRequest(app.server).get(`/sessions/${session.id}/messages?limit=2`);
     expect(res.status).toBe(200);
     // 总量截断（非 per-agent 各 2 条），保留最新的两条
     expect(res.body.map((m: { id: string }) => m.id)).toEqual(["mid", "new"]);

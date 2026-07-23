@@ -7,7 +7,8 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
 import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent } from "./validation.js";
+import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
+import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 
 const MAX_PENDING_MESSAGES = 100;
@@ -31,6 +32,12 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
 
       if (!isAllowedWsOrigin(req.headers.origin)) {
         socket.close(4403, "Forbidden origin");
+        return;
+      }
+
+      // 握手鉴权：无凭证直接拒连（同机非浏览器进程的敞口由这里闭合）
+      if (!isTokenValid(extractWsToken(req), await getAuthToken())) {
+        socket.close(4401, "Unauthorized");
         return;
       }
 

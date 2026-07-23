@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     pool: "forks",
+    setupFiles: ["tests/helpers/setup.ts"],
     // 测试文件串行执行，保持最严格的隔离。背景（Windows 实测）：
     // 1) 并行跑文件时 CLOUDMIND_DATA_DIR 等进程级状态互相踩踏，且未覆盖 env 的
     //    测试会并发写同一个兜底数据目录（~/.cloudmind-zome）产生文件锁冲突（11 败）。

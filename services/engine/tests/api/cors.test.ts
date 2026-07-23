@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -50,7 +50,7 @@ describe("CORS", () => {
   // CORS 安全方法（GET/HEAD/POST），不显式放开会被浏览器拦成 "Failed to fetch"
   it("preflight allows PUT and DELETE for allowed origin", async () => {
     for (const method of ["PUT", "DELETE"]) {
-      const res = await request(app.server)
+      const res = await authedRequest(app.server)
         .options("/agents/some-agent")
         .set("Origin", "http://localhost:3000")
         .set("Access-Control-Request-Method", method)
@@ -62,7 +62,7 @@ describe("CORS", () => {
   });
 
   it("preflight does not allow disallowed origin", async () => {
-    const res = await request(app.server)
+    const res = await authedRequest(app.server)
       .options("/agents/some-agent")
       .set("Origin", "http://evil.example.com")
       .set("Access-Control-Request-Method", "PUT");

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -75,7 +75,7 @@ describe("Chat API", () => {
     };
     await repo.append(msg);
 
-    const res = await request(app.server).get("/chat/agent-1/messages?sessionId=s1");
+    const res = await authedRequest(app.server).get("/chat/agent-1/messages?sessionId=s1");
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe("m1");
@@ -84,14 +84,14 @@ describe("Chat API", () => {
 
   it("requires sessionId", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/chat/agent-1/messages");
+    const res = await authedRequest(app.server).get("/chat/agent-1/messages");
     expect(res.status).toBe(400);
     await app.close();
   });
 
   it("returns 400 for invalid agent id", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/chat/invalid!/messages?sessionId=s1");
+    const res = await authedRequest(app.server).get("/chat/invalid!/messages?sessionId=s1");
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();

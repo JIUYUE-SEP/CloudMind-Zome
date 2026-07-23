@@ -4,7 +4,8 @@ import type { ApiContext } from "../context.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 import { randomUUID } from "node:crypto";
-import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent } from "./validation.js";
+import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
+import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
 
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
@@ -28,6 +29,12 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
 
       if (!isAllowedWsOrigin(req.headers.origin)) {
         socket.close(4403, "Forbidden origin");
+        return;
+      }
+
+      // 握手鉴权：无凭证直接拒连（同机非浏览器进程的敞口由这里闭合）
+      if (!isTokenValid(extractWsToken(req), await getAuthToken())) {
+        socket.close(4401, "Unauthorized");
         return;
       }
 

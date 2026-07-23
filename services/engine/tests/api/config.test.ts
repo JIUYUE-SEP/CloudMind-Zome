@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -64,12 +64,12 @@ describe("Config API", () => {
 
   it("returns default config with tools", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/config");
+    const res = await authedRequest(app.server).get("/config");
     expect(res.status).toBe(200);
     expect(res.body.memory).toBeDefined();
     expect(res.body.providers).toEqual([]);
 
-    const toolsRes = await request(app.server).get("/config/tools");
+    const toolsRes = await authedRequest(app.server).get("/config/tools");
     expect(toolsRes.status).toBe(200);
     expect(toolsRes.body.length).toBeGreaterThan(0);
     expect(toolsRes.body[0]).toHaveProperty("toolset", "builtin");
@@ -78,7 +78,7 @@ describe("Config API", () => {
 
   it("updates memory settings and tavily key", async () => {
     const app = await makeApp();
-    const updateRes = await request(app.server).put("/config").send({
+    const updateRes = await authedRequest(app.server).put("/config").send({
       memory: { keepRecent: 5 },
       tavilyApiKey: "tvly-test",
     });
@@ -86,7 +86,7 @@ describe("Config API", () => {
     expect(updateRes.body.memory.keepRecent).toBe(5);
     expect(updateRes.body.tavilyApiKey).toBe("***");
 
-    const getRes = await request(app.server).get("/config");
+    const getRes = await authedRequest(app.server).get("/config");
     expect(getRes.body.memory.keepRecent).toBe(5);
     expect(getRes.body.tavilyApiKey).toBe("***");
 
@@ -102,10 +102,10 @@ describe("Config API", () => {
 
   it("does not overwrite tavily key when mask '***' is sent back", async () => {
     const app = await makeApp();
-    await request(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
+    await authedRequest(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
 
     // 前端把 GET 到的掩码原样 PUT 回来时，真实密钥必须保持不动
-    const res = await request(app.server).put("/config").send({ tavilyApiKey: "***" });
+    const res = await authedRequest(app.server).put("/config").send({ tavilyApiKey: "***" });
     expect(res.status).toBe(200);
 
     const loaded = await context.configRepository.load();
@@ -115,27 +115,27 @@ describe("Config API", () => {
 
   it("clears tavily key when empty string is sent", async () => {
     const app = await makeApp();
-    await request(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
+    await authedRequest(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
 
     // 空字符串 = 清除 key
-    const res = await request(app.server).put("/config").send({ tavilyApiKey: "" });
+    const res = await authedRequest(app.server).put("/config").send({ tavilyApiKey: "" });
     expect(res.status).toBe(200);
     expect(res.body.tavilyApiKey).toBeUndefined();
 
     const loaded = await context.configRepository.load();
     expect(loaded.settings.tavilyApiKey).toBeUndefined();
 
-    const getRes = await request(app.server).get("/config");
+    const getRes = await authedRequest(app.server).get("/config");
     expect(getRes.body.tavilyApiKey).toBeUndefined();
     await app.close();
   });
 
   it("does not modify tavily key when the field is omitted", async () => {
     const app = await makeApp();
-    await request(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
+    await authedRequest(app.server).put("/config").send({ tavilyApiKey: "tvly-real" });
 
     // undefined（字段缺失）= 不修改，哪怕同请求带了其他配置项
-    const res = await request(app.server).put("/config").send({ memory: { keepRecent: 7 } });
+    const res = await authedRequest(app.server).put("/config").send({ memory: { keepRecent: 7 } });
     expect(res.status).toBe(200);
     expect(res.body.tavilyApiKey).toBe("***");
 

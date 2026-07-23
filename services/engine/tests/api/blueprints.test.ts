@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import request from "supertest";
+import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -64,7 +64,7 @@ describe("Blueprint API", () => {
 
   it("lists blueprints", async () => {
     const app = await makeApp();
-    const res = await request(app.server).get("/blueprints");
+    const res = await authedRequest(app.server).get("/blueprints");
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
     await app.close();
@@ -72,11 +72,11 @@ describe("Blueprint API", () => {
 
   it("creates and gets a blueprint", async () => {
     const app = await makeApp();
-    const createRes = await request(app.server).post("/blueprints").send({ name: "Test" });
+    const createRes = await authedRequest(app.server).post("/blueprints").send({ name: "Test" });
     expect(createRes.status).toBe(200);
     expect(createRes.body.name).toBe("Test");
 
-    const getRes = await request(app.server).get(`/blueprints/${createRes.body.id}`);
+    const getRes = await authedRequest(app.server).get(`/blueprints/${createRes.body.id}`);
     expect(getRes.status).toBe(200);
     expect(getRes.body.name).toBe("Test");
     await app.close();
@@ -84,17 +84,17 @@ describe("Blueprint API", () => {
 
   it("updates and deletes a blueprint", async () => {
     const app = await makeApp();
-    const createRes = await request(app.server).post("/blueprints").send({ name: "Test" });
+    const createRes = await authedRequest(app.server).post("/blueprints").send({ name: "Test" });
     const id = createRes.body.id;
 
-    const putRes = await request(app.server).put(`/blueprints/${id}`).send({ name: "Updated" });
+    const putRes = await authedRequest(app.server).put(`/blueprints/${id}`).send({ name: "Updated" });
     expect(putRes.status).toBe(200);
     expect(putRes.body.name).toBe("Updated");
 
-    const delRes = await request(app.server).delete(`/blueprints/${id}`);
+    const delRes = await authedRequest(app.server).delete(`/blueprints/${id}`);
     expect(delRes.status).toBe(204);
 
-    const getRes = await request(app.server).get(`/blueprints/${id}`);
+    const getRes = await authedRequest(app.server).get(`/blueprints/${id}`);
     expect(getRes.status).toBe(404);
     await app.close();
   });
@@ -109,8 +109,8 @@ describe("Blueprint API", () => {
       ],
       edges: [{ source: "start", target: "end" }],
     };
-    const createRes = await request(app.server).post("/blueprints").send(blueprint);
-    const execRes = await request(app.server)
+    const createRes = await authedRequest(app.server).post("/blueprints").send(blueprint);
+    const execRes = await authedRequest(app.server)
       .post(`/blueprints/${createRes.body.id}/execute`)
       .send({ initialInput: "hello" });
     expect(execRes.status).toBe(200);
