@@ -4,7 +4,7 @@
   "identifier": "com.mindcloud.zome",
   "build": {
     "beforeDevCommand": "pnpm --filter @mindcloud/web dev",
-    "beforeBuildCommand": "node scripts/ensure-web-dist.mjs",
+    "beforeBuildCommand": "node scripts/ensure-web-dist.mjs && node scripts/prepare-engine.mjs",
     "devUrl": "http://localhost:3000",
     "frontendDist": "../../web/dist"
   },
@@ -26,6 +26,7 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
-    "externalBin": ["binaries/zome-sidecar"]
+    "externalBin": ["binaries/zome-sidecar"],
+    "resources": ["resources/engine", "resources/node"]
   }
 }

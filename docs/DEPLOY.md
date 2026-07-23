@@ -26,11 +26,23 @@ cd ../..
 # 4. 准备 sidecar 二进制
 node scripts/prepare-sidecar.mjs release
 
-# 5. 构建桌面安装包
+# 5. 准备 engine 分发产物 + 内嵌 Node（tauri build 的 beforeBuildCommand 会自动执行，此处可手动验证）
+node scripts/prepare-engine.mjs
+
+# 6. 构建桌面安装包
 pnpm --filter @mindcloud/desktop build
 ```
 
 构建输出位于 `apps/desktop/src-tauri/target/release/bundle/`。
+
+### 安装包内容（P0-4）
+
+`tauri.conf.json` 的 `bundle.resources` 把 `apps/desktop/src-tauri/resources/` 打进安装包：
+
+- `resources/engine/`：`scripts/prepare-engine.mjs` 用 esbuild 把 engine 打成单文件 CJS bundle（`bootstrap.js`，约 4.5MB），并随附运行时资产——`tiktoken_bg.wasm`、`static/`（swagger-ui）、`packages/skills/`、`crates/zome-sidecar/proto/zome.proto`（后两个是 engine 向上查找约定的兼容布局）
+- `resources/node/`：内嵌 Node 运行时（默认 v22.14.0，`ZOME_EMBEDDED_NODE_VERSION` 可覆盖；构建机需联网下载，已 staging 则跳过）
+
+supervisor 启动 engine 时优先用 sidecar exe 旁的内嵌 Node（`node_bin()`），找不到才回退系统 PATH——**终端用户机器不需要装 Node**。`resources/` 是构建产物，已被 `.gitignore` 排除，重复执行 `prepare-engine.mjs` 可重建。
 
 ## Web 模式
 

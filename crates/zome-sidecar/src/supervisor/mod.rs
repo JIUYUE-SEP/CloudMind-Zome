@@ -29,7 +29,25 @@ pub struct Supervisor {
 }
 
 fn node_bin() -> String {
-    std::env::var("ZOME_NODE_PATH").unwrap_or_else(|_| "node".to_string())
+    if let Ok(p) = std::env::var("ZOME_NODE_PATH") {
+        return p;
+    }
+    // 打包布局：优先随包分发的内嵌 Node（P0-4，用户机器零依赖）；
+    // resources 在 Windows/NSIS 与 unix 安装布局下分别落在 exe 旁或 resources/ 子目录
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let name = if cfg!(windows) { "node.exe" } else { "node" };
+            for candidate in [
+                dir.join("node").join(name),
+                dir.join("resources").join("node").join(name),
+            ] {
+                if candidate.exists() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+    "node".to_string()
 }
 
 /// 解析 node engine 入口（bootstrap.js）与其工作目录：
