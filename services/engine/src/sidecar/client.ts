@@ -28,7 +28,7 @@ function findProtoPath(): string | undefined {
 
 const AVAILABILITY_CACHE_MS = 10_000;
 
-/** proto-loader 生成的动态客户端没有类型定义，这里只声明实际用到的三个方法 */
+/** proto-loader 生成的动态客户端没有类型定义，这里只声明实际用到的方法 */
 interface ZomeSidecarGrpc {
   Health(
     req: Record<string, never>,
@@ -42,6 +42,11 @@ interface ZomeSidecarGrpc {
   ): void;
   Search(
     req: { agent_id: string; query: number[]; top_k: number },
+    opts: { deadline: number },
+    cb: (err: unknown, res: unknown) => void,
+  ): void;
+  DeleteAgent(
+    req: { agent_id: string },
     opts: { deadline: number },
     cb: (err: unknown, res: unknown) => void,
   ): void;
@@ -132,5 +137,16 @@ export class SidecarClient {
       30_000,
     );
     return (res?.results ?? []).map((r) => ({ id: r.doc_id, score: r.score }));
+  }
+
+  /**
+   * 删除 agent 的全部向量数据（P1-3）：sidecar 逐出 INDEX_CACHE 并删除磁盘
+   * indices 目录。sidecar 不可达时返回 false（调用方 warn 降级，不阻断删除——
+   * 目录统一后磁盘 embeddings 已随 agents/{id} 的 rm -rf 删除，残留仅是
+   * sidecar 内存缓存，sidecar 重启即清）。
+   */
+  async deleteAgent(agentId: string): Promise<boolean> {
+    const res = await this.call("DeleteAgent", { agent_id: agentId });
+    return res !== undefined;
   }
 }

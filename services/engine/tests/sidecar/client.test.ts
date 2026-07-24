@@ -20,6 +20,7 @@ describe("SidecarClient gRPC 字段往返", () => {
   let client: SidecarClient;
   const upsertRequests: any[] = [];
   const searchRequests: any[] = [];
+  const deleteRequests: any[] = [];
 
   beforeAll(async () => {
     const def = protoLoader.loadSync(PROTO_PATH, { keepCase: true, longs: Number, defaults: true });
@@ -34,6 +35,10 @@ describe("SidecarClient gRPC 字段往返", () => {
       Search: (call: any, cb: any) => {
         searchRequests.push(call.request);
         cb(null, { results: [{ doc_id: "doc-1", score: 0.9 }] });
+      },
+      DeleteAgent: (call: any, cb: any) => {
+        deleteRequests.push(call.request);
+        cb(null, {});
       },
     });
     const port = await new Promise<number>((resolve, reject) => {
@@ -64,5 +69,12 @@ describe("SidecarClient gRPC 字段往返", () => {
     expect(searchRequests[0].agent_id).toBe("agent-1");
     expect(Number(searchRequests[0].top_k)).toBe(5);
     expect(hits).toEqual([{ id: "doc-1", score: expect.closeTo(0.9, 5) }]);
+  });
+
+  it("deleteAgent 发送 agent_id（P1-3）", async () => {
+    const ok = await client.deleteAgent("agent-1");
+    expect(ok).toBe(true);
+    expect(deleteRequests).toHaveLength(1);
+    expect(deleteRequests[0].agent_id).toBe("agent-1");
   });
 });

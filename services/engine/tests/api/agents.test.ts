@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -13,12 +13,15 @@ import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
+import type { SidecarClient } from "../../src/sidecar/client.js";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
 import { getAgentDir } from "../../src/config/paths.js";
 import { DEFAULT_SOUL_TEMPLATE, DEFAULT_MIND_CONTENT } from "../../src/mind/mind-files.js";
 
-async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
+async function buildTestContext(
+  extra?: Partial<ApiContext>,
+): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "api-test-"));
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
   process.env.CLOUDMIND_DATA_DIR = tmpDir;
@@ -33,6 +36,7 @@ async function buildTestContext(): Promise<{ context: ApiContext; cleanup: () =>
     sessionRepository: new SessionRepository(),
     blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async () => undefined,
+    ...extra,
   };
 
   return {
@@ -120,6 +124,49 @@ describe("Agent API", () => {
     const getRes = await authedRequest(app.server).get("/agents/a1");
     expect(getRes.status).toBe(404);
     await app.close();
+  });
+
+  it("deletes an agent and cascades vector cleanup via sidecar DeleteAgent（P1-3）", async () => {
+    const deleteAgent = vi.fn(async () => true);
+    const built = await buildTestContext({
+      sidecarClient: { deleteAgent } as unknown as SidecarClient,
+    });
+    const app = await createServer(built.context);
+    await app.ready();
+    try {
+      const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+      await authedRequest(app.server).post("/agents").send(agent);
+      const delRes = await authedRequest(app.server).delete("/agents/a1");
+      expect(delRes.status).toBe(204);
+      expect(deleteAgent).toHaveBeenCalledWith("a1");
+    } finally {
+      await app.close();
+      await built.cleanup();
+    }
+  });
+
+  it("sidecar DeleteAgent 未成功时降级 warn 不阻断删除（P1-3）", async () => {
+    const deleteAgent = vi.fn(async () => false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const built = await buildTestContext({
+      sidecarClient: { deleteAgent } as unknown as SidecarClient,
+    });
+    const app = await createServer(built.context);
+    await app.ready();
+    try {
+      const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+      await authedRequest(app.server).post("/agents").send(agent);
+      const delRes = await authedRequest(app.server).delete("/agents/a1");
+      // 删除仍成功：文件删除是主要的，向量内存缓存待 sidecar 重启清除
+      expect(delRes.status).toBe(204);
+      const getRes = await authedRequest(app.server).get("/agents/a1");
+      expect(getRes.status).toBe(404);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      await app.close();
+      await built.cleanup();
+      warn.mockRestore();
+    }
   });
 
   it("rejects invalid agent id on create", async () => {
