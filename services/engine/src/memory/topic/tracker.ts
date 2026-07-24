@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@mindcloud/shared";
 import { detectTopicBoundary } from "./detector.js";
 import { MIN_SEGMENT_MESSAGES, type TopicCompressionConfig, type TopicSegment } from "./types.js";
+import type { OpenTopicSnapshot } from "./state.js";
 
 export { MIN_SEGMENT_MESSAGES };
 
 /**
- * per-agent 话题跟踪（TopicContext 的规则版）。
- * 状态只存内存。已知取舍：进程重启后 tracker 状态清空，重启前仍在未关闭
- * 话题里的消息成为孤儿——没有压缩档指向它们，启动对账（memory/reconcile.ts）
- * 只能补归档"已有压缩档但 archiveAndRemove 未完成"的消息，覆盖不到这一类。
+ * per-agent 话题跟踪（TopicContext 规则版）。
+ * 当前开放话题经 openTopic 快照暴露，由 AgentWorker 在 turn 边界落盘
+ * （topic/state.ts，P1-2）：进程退出时未关闭话题不再成为重启孤儿——
+ * 启动对账按落盘状态补压缩/归档（memory/reconcile.ts）。
  * sourceId 随调用传入：同一 agent 可能跨多个会话，segment 记录关闭时所在场景。
  */
 export class TopicTracker {
@@ -23,6 +24,17 @@ export class TopicTracker {
       "enabled" | "windowMinutes" | "messageThreshold"
     >,
   ) {}
+
+  /** 当前开放话题的快照（无未关闭话题时为 null；供 turn 边界落盘） */
+  get openTopic(): OpenTopicSnapshot | null {
+    if (this.current.length === 0) return null;
+    return {
+      messageIds: this.current.map((m) => m.id),
+      startedAt: this.current[0]!.createdAt,
+      sourceId: this.lastSourceId,
+      sourceName: this.lastSourceName,
+    };
+  }
 
   /** 新用户消息到达（turn 开始前）调用；返回被关闭的话题片段（无则 null） */
   onUserMessage(msg: ChatMessage, sourceId: string, sourceName?: string): TopicSegment | null {

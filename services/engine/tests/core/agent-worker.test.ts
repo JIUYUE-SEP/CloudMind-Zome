@@ -89,7 +89,7 @@ describe("AgentWorker", () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     restoreDataDir(originalDataDir);
   });
 
@@ -547,7 +547,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     restoreDataDir(originalDataDir);
   });
 
@@ -698,7 +698,7 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     restoreDataDir(originalDataDir);
   });
 
@@ -862,7 +862,7 @@ describe("AgentWorker SOUL/MIND 集成", () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     restoreDataDir(originalDataDir);
   });
 

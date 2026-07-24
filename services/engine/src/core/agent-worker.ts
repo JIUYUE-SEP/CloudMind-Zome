@@ -10,8 +10,9 @@ import type { ChatMode } from "@mindcloud/shared";
 import { ContextPipeline } from "../context/pipeline.js";
 import { TopicTracker } from "../memory/topic/tracker.js";
 import { CompressionQueue } from "../memory/topic/queue.js";
-import { compressTopic } from "../memory/topic/compressor.js";
-import { latestSummaries, removeCompressedTopic, writeCompressedTopic } from "../memory/topic/store.js";
+import { runCompressionTask } from "../memory/topic/compression-task.js";
+import { saveTopicState } from "../memory/topic/state.js";
+import { latestSummaries } from "../memory/topic/store.js";
 import {
   normalizeTopicCompressionConfig,
   type TopicCompressionConfig,
@@ -26,7 +27,6 @@ import {
   loadSoul,
   loadMindChunks,
   retrieveMindChunks,
-  appendMindExperiences,
   type MindChunk,
 } from "../mind/mind-files.js";
 
@@ -98,42 +98,12 @@ export class AgentWorker {
     this.topicConfig = normalizeTopicCompressionConfig(config.topicCompression);
     this.topicTracker = new TopicTracker(this.topicConfig);
     this.compressionQueue = new CompressionQueue(async (segment) => {
-      if (segment.archiveOnly) {
-        // 短话题：不调用 LLM，仅归档，保证热存储有界
-        await this.config.messageRepository.archiveAndRemove(segment.messages.map((m) => m.id));
-        return;
-      }
-      // 压缩失败不 fallback 主模型语义：异常由队列统一告警，原始消息留在热存储
-      const compressed = await compressTopic(
-        segment,
-        this.config.provider,
-        this.topicConfig.compressionModel || this.config.model,
-      );
-      await writeCompressedTopic(this.config.agentId, compressed);
-      // Phase 7：压缩落档成功后顺手沉淀经验到 MIND.md（append-only）。
-      // 失败仅 warn 跳过，不影响压缩主流程
-      if (compressed.experiences && compressed.experiences.length > 0) {
-        try {
-          await appendMindExperiences(
-            this.config.agentId,
-            compressed.experiences.map((e) => ({
-              ...e,
-              source: `topic-${compressed.topicId}`,
-              created: compressed.compressedAt,
-            })),
-          );
-        } catch (err) {
-          console.warn(`[mind] 经验沉淀失败（已跳过）：${compressed.topicId}`, err);
-        }
-      }
-      try {
-        await this.config.messageRepository.archiveAndRemove(compressed.msgIds);
-      } catch (err) {
-        // 归档失败而压缩档已生效会导致"摘要 + 原文"重复注入：
-        // 隔离压缩档（消息留在热存储，由队列告警记录），保证上下文不重复
-        await removeCompressedTopic(this.config.agentId, compressed.topicId);
-        throw err;
-      }
+      await runCompressionTask(segment, {
+        agentId: this.config.agentId,
+        provider: this.config.provider,
+        model: this.topicConfig.compressionModel || this.config.model,
+        messageRepository: this.config.messageRepository,
+      });
     });
     this.semanticConfig = normalizeSemanticSearchConfig(config.semanticSearch);
     if (config.memoryIndexer) {
@@ -189,6 +159,26 @@ export class AgentWorker {
     this.processQueue();
   }
 
+  /** 优雅关停（P1-2）：等待压缩队列清空——进程退出前调用，避免 pending 压缩段被丢弃 */
+  async drainCompression(): Promise<void> {
+    await this.compressionQueue.drain();
+  }
+
+  /**
+   * 话题状态落盘（P1-2）：在 turn 边界把开放话题快照写入 topic-state.json。
+   * await 而非 fire-and-forget：保证进程收到退出信号时状态已落盘，也避免
+   * 异步写句柄飘进测试清理/目录删除的窗口。写失败不阻断对话主流程，
+   * 降级为改动前的重启孤儿行为。
+   */
+  private async persistTopicState(): Promise<void> {
+    if (!this.topicConfig.enabled) return;
+    try {
+      await saveTopicState(this.config.agentId, this.topicTracker.openTopic);
+    } catch (err) {
+      console.warn(`[topic] tracker 状态落盘失败（已跳过）：${this.config.agentId}`, err);
+    }
+  }
+
   private async processQueue(): Promise<void> {
     if (this.status !== "idle" || this.queue.length === 0) return;
     this.status = "busy";
@@ -236,6 +226,8 @@ export class AgentWorker {
       if (lastUser) {
         const closed = this.topicTracker.onUserMessage(lastUser, sessionId);
         if (closed) this.compressionQueue.enqueue(closed);
+        // 话题状态落盘（P1-2，turn 起点）：此刻崩溃，重启对账能识别这个开放话题
+        await this.persistTopicState();
       }
 
       // L5 话题摘要：最近压缩档注入组装（读取失败按空处理并明确告知，不静默降级）
@@ -338,6 +330,8 @@ export class AgentWorker {
       // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
       const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
       if (closedByCount) this.compressionQueue.enqueue(closedByCount);
+      // 话题状态落盘（P1-2，turn 终点）
+      await this.persistTopicState();
 
       // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
       // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去

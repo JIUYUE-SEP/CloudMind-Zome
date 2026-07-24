@@ -20,7 +20,9 @@ import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
-import { reconcileHotStorage } from "./memory/reconcile.js";
+import { reconcileHotStorage, reconcileOrphanedTopic } from "./memory/reconcile.js";
+import { loadTopicState } from "./memory/topic/state.js";
+import { registerShutdownHandlers } from "./shutdown.js";
 import { PlanManager } from "./plan/manager.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
@@ -259,9 +261,24 @@ async function main() {
     const agents = await agentRepository.list();
     for (const agent of agents) {
       try {
-        const count = await reconcileHotStorage(agent.id, new MessageRepository(agent.id));
+        const repo = new MessageRepository(agent.id);
+        const count = await reconcileHotStorage(agent.id, repo);
         if (count > 0) {
           console.log(`[reconcile] agent=${agent.id} 补归档孤儿消息 ${count} 条`);
+        }
+        // P1-2：重启孤儿（退出时仍在未关闭话题里的消息）。先查 topic-state.json
+        // （廉价文件读），有孤儿才构造 LLM provider 补压缩/归档
+        const orphanState = await loadTopicState(agent.id);
+        if (orphanState?.open && orphanState.open.messageIds.length > 0) {
+          const orphanCount = await reconcileOrphanedTopic(agent.id, repo, {
+            agentId: agent.id,
+            provider: await createLLMProvider(agent),
+            model: agent.compressionModel || agent.modelId || agent.model || "gpt-4o",
+            messageRepository: repo,
+          });
+          if (orphanCount > 0) {
+            console.log(`[reconcile] agent=${agent.id} 处理重启孤儿消息 ${orphanCount} 条`);
+          }
         }
       } catch (err) {
         console.warn(`[reconcile] agent=${agent.id} 对账失败，跳过（不阻断启动）`, err);
@@ -301,6 +318,20 @@ async function main() {
         ? `${addr.address}:${addr.port}`
         : "unknown";
   console.log(`Engine listening on ${addrStr}`);
+
+  // 优雅关停（P1-2）：SIGTERM/SIGINT 时先 drain 全部 worker 的压缩队列再退出
+  // （超时 10s 兜底，不卡死关停）。Windows desktop 的 taskkill /F 强杀不会触发
+  // 本 handler——那条路径的重启孤儿由上面的启动对账兜底。
+  registerShutdownHandlers({
+    drain: async () => {
+      await Promise.allSettled([...workers.values()].map((w) => w.drainCompression()));
+    },
+    close: async () => {
+      scheduler.stop();
+      await app.close();
+    },
+    timeoutMs: 10_000,
+  });
 }
 
 main().catch((err) => {
