@@ -325,3 +325,69 @@ async fn test_load_skips_mismatched_dim_rows() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// P1-1：无 schemaVersion 字段的旧格式行按 v1 正常加载（现存数据全是 v1）
+#[tokio::test]
+async fn test_load_legacy_rows_without_schema_version() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let dir = tmp.join("agents/legacy-agent/indices/hnsw");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("embeddings.jsonl"),
+        "{\"doc_id\":\"d1\",\"embedding\":[1.0,0.0]}\n",
+    )
+    .unwrap();
+
+    let state = get_or_load("legacy-agent").await.unwrap();
+    let results = state.read().await.search(&[1.0, 0.0], 1);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "d1");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P1-1：schemaVersion 高于当前代码认识的版本时显式报错，不静默读空
+#[tokio::test]
+async fn test_load_rejects_newer_schema_version() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let dir = tmp.join("agents/too-new-agent/indices/hnsw");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("embeddings.jsonl"),
+        "{\"doc_id\":\"d1\",\"embedding\":[1.0,0.0],\"schemaVersion\":99}\n",
+    )
+    .unwrap();
+
+    let err = get_or_load("too-new-agent")
+        .await
+        .err()
+        .expect("newer schema version must fail explicitly");
+    assert!(
+        err.to_string().contains("too new"),
+        "unexpected error: {err}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P1-1：upsert 落盘行带版本字段
+#[tokio::test]
+async fn test_upsert_stamps_schema_version() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let state = get_or_load("stamp-agent").await.unwrap();
+    state.write().await.upsert("d1", &[1.0, 0.0]).await;
+
+    let content = std::fs::read_to_string(
+        tmp.join("agents/stamp-agent/indices/hnsw/embeddings.jsonl"),
+    )
+    .unwrap();
+    assert!(
+        content.contains("\"schemaVersion\":1"),
+        "stamped row expected: {content}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

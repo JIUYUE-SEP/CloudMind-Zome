@@ -24,6 +24,10 @@ const COMPACTION_MIN_LINES: usize = 100;
 /// 且规避近似图在大量并列距离时的召回波动（如 50 个距离全相同的点）
 const LINEAR_SCAN_MAX: usize = 256;
 
+/// embeddings.jsonl 记录格式当前版本（P1-1，与 engine 侧 JSONL 同一方案：
+/// 每行记录带 schemaVersion 字段；无字段的旧行视为 v1，高于当前版本显式报错）
+const EMBEDDINGS_SCHEMA_VERSION: u32 = 1;
+
 type HnswIndex = Hnsw<'static, f32, DistCosine>;
 
 pub struct VectorIndexState {
@@ -132,6 +136,7 @@ impl VectorIndexState {
         let line = match serde_json::to_string(&Record {
             doc_id: doc_id.to_string(),
             embedding: embedding.to_vec(),
+            schema_version: Some(EMBEDDINGS_SCHEMA_VERSION),
         }) {
             Ok(l) => l + "\n",
             Err(e) => {
@@ -160,6 +165,19 @@ impl VectorIndexState {
 struct Record {
     doc_id: String,
     embedding: Vec<f32>,
+    /// 格式版本（P1-1）：旧行无此字段（反序列化为 None，视为 v1）；
+    /// 写入时盖当前版本戳；高于当前版本加载时显式报错，不静默跳过
+    #[serde(rename = "schemaVersion", default)]
+    schema_version: Option<u32>,
+}
+
+/// 记录级版本迁移（P1-1，与 engine 侧 MigrationChain 同一设计）：把 from_version
+/// 的记录逐级迁到当前版本。当前只有 v1，无实际迁移步骤；未来 v1→v2 迁移作为
+/// 第一级加在这里，逐级链式应用。
+fn migrate_record(record: Record, from_version: u32) -> Record {
+    debug_assert!(from_version >= 1 && from_version <= EMBEDDINGS_SCHEMA_VERSION);
+    let _ = from_version;
+    record
 }
 
 static INDEX_CACHE: std::sync::LazyLock<RwLock<HashMap<String, Arc<RwLock<VectorIndexState>>>>> =
@@ -203,6 +221,18 @@ async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexStat
     if !content.is_empty() {
         // 并行解析：按行边界切块多线程 JSON 解析（万条级 44MB 解析是冷载入主要成本）
         for record in parse_records_parallel(&content) {
+            // 版本字段（P1-1）：无 schemaVersion 的旧行视为 v1；高于当前版本显式
+            // 报错（engine 侧收到错误后 L4 降级并明确告知，不静默读空）；旧版按需迁移
+            let version = record.schema_version.filter(|v| *v >= 1).unwrap_or(1);
+            if version > EMBEDDINGS_SCHEMA_VERSION {
+                return Err(anyhow::anyhow!(
+                    "embeddings.jsonl schema version too new for agent {}: v{}, this sidecar supports up to v{}; upgrade the sidecar (file left unchanged)",
+                    agent_id,
+                    version,
+                    EMBEDDINGS_SCHEMA_VERSION
+                ));
+            }
+            let record = migrate_record(record, version);
             docs.insert(record.doc_id, record.embedding);
         }
     }
@@ -357,6 +387,7 @@ async fn compact_embeddings(dir: &Path, docs: &HashMap<String, Vec<f32>>) {
         match serde_json::to_string(&Record {
             doc_id: doc_id.clone(),
             embedding: embedding.clone(),
+            schema_version: Some(EMBEDDINGS_SCHEMA_VERSION),
         }) {
             Ok(line) => {
                 buf.push_str(&line);
