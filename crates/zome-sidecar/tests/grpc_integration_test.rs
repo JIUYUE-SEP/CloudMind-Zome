@@ -8,7 +8,8 @@ static PORT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use zome_sidecar::server;
 use zome_sidecar::zome::{
-    HealthRequest, SearchRequest, UpsertRequest, zome_sidecar_client::ZomeSidecarClient,
+    DeleteAgentRequest, HealthRequest, SearchRequest, UpsertRequest,
+    zome_sidecar_client::ZomeSidecarClient,
 };
 
 fn temp_data_dir() -> PathBuf {
@@ -102,6 +103,73 @@ async fn test_grpc_concurrent_upsert_preserves_data() {
         .into_inner();
 
     assert_eq!(response.results.len(), 50);
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P1-3：DeleteAgent RPC 拒绝非法 agent_id（沿用 sanitize 规则）
+#[tokio::test]
+async fn test_grpc_delete_agent_rejects_invalid_id() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let server = tokio::spawn(async { server::serve().await });
+    sleep(Duration::from_millis(500)).await;
+
+    let mut client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
+        .await
+        .expect("connect to gRPC server");
+    let status = client
+        .delete_agent(DeleteAgentRequest {
+            agent_id: "../bad".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P1-3：DeleteAgent 后 search 返回空（缓存逐出 + 磁盘清理）
+#[tokio::test]
+async fn test_grpc_delete_agent_clears_vectors() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let server = tokio::spawn(async { server::serve().await });
+    sleep(Duration::from_millis(500)).await;
+
+    let mut client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
+        .await
+        .expect("connect to gRPC server");
+    client
+        .upsert(UpsertRequest {
+            agent_id: "grpc-del-agent".to_string(),
+            doc_id: "d1".to_string(),
+            embedding: vec![1.0, 0.0],
+        })
+        .await
+        .expect("upsert");
+    client
+        .delete_agent(DeleteAgentRequest {
+            agent_id: "grpc-del-agent".to_string(),
+        })
+        .await
+        .expect("delete_agent");
+
+    // 磁盘索引目录已删除（必须在 search 前断言：load_state 会重建空目录）
+    assert!(!tmp.join("agents/grpc-del-agent/indices").exists());
+
+    let res = client
+        .search(SearchRequest {
+            agent_id: "grpc-del-agent".to_string(),
+            query: vec![1.0, 0.0],
+            top_k: 10,
+        })
+        .await
+        .expect("search")
+        .into_inner();
+    assert!(res.results.is_empty());
 
     server.abort();
     std::fs::remove_dir_all(&tmp).ok();

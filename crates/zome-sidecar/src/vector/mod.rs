@@ -206,6 +206,40 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
     Ok(built)
 }
 
+/// 删除 agent 的全部向量数据（P1-3，review M3）：逐出 INDEX_CACHE + 删除磁盘
+/// indices 目录。此前缓存进程常驻无失效入口：删除 agent 后同名重建会命中旧向量
+/// 全集，旧记忆复活并随新 upsert 重新落盘。
+/// 幂等：agent 不存在（缓存/磁盘都没有）同样返回 Ok。
+pub async fn delete_agent(agent_id: &str) -> anyhow::Result<()> {
+    let agent_id = sanitize_agent_id(agent_id)?;
+
+    let removed = {
+        let mut cache = INDEX_CACHE.write().await;
+        cache.remove(&agent_id)
+    };
+    if let Some(state) = removed {
+        // 持写锁删目录：等在飞 upsert/search 全部完成，且删除期间旧句柄的新
+        // upsert 被挡在锁外（否则在飞 upsert 会在目录删除后经 persist_append
+        // 重建文件，同名重建又读到旧向量）。锁释放后再经旧句柄 upsert 理论上
+        // 仍会重建文件——engine 删除 agent 时已先停掉其流量（worker 随 onChange
+        // 移除），该窗口仅存于引擎之外的直接调用方。
+        let _guard = state.write().await;
+        return remove_index_dir(&agent_id).await;
+    }
+
+    remove_index_dir(&agent_id).await
+}
+
+/// 删除 agents/{id}/indices 目录；不存在视为成功（幂等）
+async fn remove_index_dir(agent_id: &str) -> anyhow::Result<()> {
+    let dir = data_dir().join("agents").join(agent_id).join("indices");
+    match fs::remove_dir_all(&dir).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexState>>> {
     let dir = data_dir()
         .join("agents")

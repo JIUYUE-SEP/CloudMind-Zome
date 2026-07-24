@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,6 +6,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+use crate::data_dir;
 use crate::project_root;
 
 const HEALTH_URL: &str = "http://127.0.0.1:8848/health";
@@ -94,6 +95,17 @@ fn engine_entry() -> anyhow::Result<(PathBuf, PathBuf)> {
     )
 }
 
+/// 构造 engine spawn 命令（P1-3 数据目录统一）：sidecar 解析出的数据目录是
+/// 唯一权威源，显式注入 CLOUDMIND_DATA_DIR，保证 engine/sidecar 同一棵树。
+/// 独立 dev 模式（engine 不经 sidecar 启动）不受此影响，仍用 engine 自己的默认。
+fn engine_command(cwd: &Path, entry: &Path) -> Command {
+    let mut cmd = Command::new(node_bin());
+    cmd.arg(entry)
+        .current_dir(cwd)
+        .env("CLOUDMIND_DATA_DIR", data_dir());
+    cmd
+}
+
 pub async fn spawn_node_engine() -> anyhow::Result<()> {
     if is_node_healthy().await {
         // 已有运行中的 engine（上次异常退出遗留）：直接复用，避免重复 spawn 导致端口冲突。
@@ -106,8 +118,7 @@ pub async fn spawn_node_engine() -> anyhow::Result<()> {
         return Ok(());
     }
     let (cwd, entry) = engine_entry()?;
-    let mut cmd = Command::new(node_bin());
-    cmd.arg(&entry).current_dir(&cwd);
+    let mut cmd = engine_command(&cwd, &entry);
 
     info!("spawning node engine: {:?}", cmd);
     let child = cmd.kill_on_drop(true).spawn()?;
@@ -294,8 +305,7 @@ impl Supervisor {
                 return;
             }
         };
-        let mut cmd = Command::new(node_bin());
-        cmd.arg(&entry).current_dir(&cwd);
+        let mut cmd = engine_command(&cwd, &entry);
 
         match cmd.kill_on_drop(true).spawn() {
             Ok(child) => {
@@ -347,5 +357,27 @@ impl Supervisor {
             child.wait().await.ok();
             info!("node engine stopped");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P1-3 数据目录统一：spawn 链路必须把 sidecar 解析出的数据目录
+    /// 显式注入 engine（CLOUDMIND_DATA_DIR），保证 engine/sidecar 同一棵树
+    #[test]
+    fn engine_command_injects_unified_data_dir() {
+        let cmd = engine_command(Path::new("/tmp/x"), Path::new("/tmp/x/bootstrap.js"));
+        let value = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "CLOUDMIND_DATA_DIR")
+            .and_then(|(_, v)| v);
+        assert_eq!(
+            value,
+            Some(data_dir().as_os_str()),
+            "CLOUDMIND_DATA_DIR must be injected with sidecar's resolved data_dir"
+        );
     }
 }

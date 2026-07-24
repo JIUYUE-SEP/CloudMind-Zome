@@ -1,14 +1,14 @@
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use crate::crypto;
 use crate::supervisor;
 use crate::tokenizer;
 use crate::vector;
 use crate::zome::zome_sidecar_server::{ZomeSidecar, ZomeSidecarServer};
 use crate::zome::{
-    EncryptRequest, EncryptResponse, HealthRequest, HealthResponse, SearchRequest, SearchResponse,
-    SearchResult, TokenCountRequest, TokenCountResponse, UpsertRequest, UpsertResponse,
+    DeleteAgentRequest, DeleteAgentResponse, HealthRequest, HealthResponse, SearchRequest,
+    SearchResponse, SearchResult, TokenCountRequest, TokenCountResponse, UpsertRequest,
+    UpsertResponse,
 };
 
 #[derive(Default)]
@@ -63,15 +63,17 @@ impl ZomeSidecar for ZomeSidecarService {
         Ok(Response::new(TokenCountResponse { count }))
     }
 
-    async fn encrypt(
+    async fn delete_agent(
         &self,
-        request: Request<EncryptRequest>,
-    ) -> Result<Response<EncryptResponse>, Status> {
+        request: Request<DeleteAgentRequest>,
+    ) -> Result<Response<DeleteAgentResponse>, Status> {
         let req = request.into_inner();
-        match crypto::encrypt(&req.plaintext) {
-            Ok(ciphertext) => Ok(Response::new(EncryptResponse { ciphertext })),
-            Err(e) => Err(Status::internal(e.to_string())),
-        }
+        let agent_id = crate::sanitize_agent_id(&req.agent_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        vector::delete_agent(&agent_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(DeleteAgentResponse {}))
     }
 
     async fn health(

@@ -391,3 +391,56 @@ async fn test_upsert_stamps_schema_version() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// P1-3：delete_agent 逐出 INDEX_CACHE 并删除磁盘索引目录
+#[tokio::test]
+async fn test_delete_agent_evicts_cache_and_removes_disk() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let state = get_or_load("del-agent").await.unwrap();
+    state.write().await.upsert("doc1", &[1.0, 0.0]).await;
+    let dir = tmp.join("agents/del-agent/indices");
+    assert!(dir.exists());
+
+    zome_sidecar::vector::delete_agent("del-agent").await.unwrap();
+    assert!(!dir.exists());
+
+    // 缓存已逐出：重新加载为空索引（文件已删），search 返回空
+    let fresh = get_or_load("del-agent").await.unwrap();
+    let results = fresh.read().await.search(&[1.0, 0.0], 10);
+    assert!(results.is_empty());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P1-3（review M3）：删除后同名重建从空索引开始，旧向量不复活
+#[tokio::test]
+async fn test_recreate_same_name_after_delete_starts_empty() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    // 旧 agent：写入向量（缓存常驻 + 磁盘落盘）
+    let state = get_or_load("reborn-agent").await.unwrap();
+    state.write().await.upsert("old-doc", &[1.0, 0.0]).await;
+
+    // 删除（engine DELETE /agents/:id 的级联调用）
+    zome_sidecar::vector::delete_agent("reborn-agent").await.unwrap();
+
+    // 同名重建：旧向量不得复活
+    let fresh = get_or_load("reborn-agent").await.unwrap();
+    fresh.write().await.upsert("new-doc", &[0.0, 1.0]).await;
+    let results = fresh.read().await.search(&[1.0, 0.0], 10);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "new-doc");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// P1-3：delete_agent 幂等（不存在的 agent 返回 Ok）且拒绝非法 id
+#[tokio::test]
+async fn test_delete_agent_idempotent_and_validates_id() {
+    let _lock = ENV_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    zome_sidecar::vector::delete_agent("ghost-agent").await.unwrap();
+    assert!(zome_sidecar::vector::delete_agent("../bad").await.is_err());
+    std::fs::remove_dir_all(&tmp).ok();
+}

@@ -5,7 +5,7 @@ service ZomeSidecar {
   rpc Upsert(UpsertRequest) returns (UpsertResponse);
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc CountTokens(TokenCountRequest) returns (TokenCountResponse);
-  rpc Encrypt(EncryptRequest) returns (EncryptResponse);
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
 }
 
@@ -19,8 +19,8 @@ message SearchResult { string doc_id = 1; float score = 2; }
 message TokenCountRequest { string text = 1; string model = 2; }
 message TokenCountResponse { uint32 count = 1; }
 
-message EncryptRequest { string plaintext = 1; }
-message EncryptResponse { string ciphertext = 1; }
+message DeleteAgentRequest { string agent_id = 1; }
+message DeleteAgentResponse {}
 
 message HealthRequest {}
 message HealthResponse { string status = 1; }
