@@ -84,6 +84,8 @@ describe("MIND.md 写入失败 sidecar（review Minor-1）", () => {
       created: "2026-07-23T17:00:00Z",
     });
     expect(lines[0].failedAt).toBeTruthy();
+    // P1-1：JSONL 落盘格式按行带版本字段
+    expect(lines[0].schemaVersion).toBe(1);
     expect(lines[1].title).toBe("Windows 进程管理");
 
     // warn 留痕且带 sidecar 路径（支持人工恢复）

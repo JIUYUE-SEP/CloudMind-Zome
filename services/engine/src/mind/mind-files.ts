@@ -2,6 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir, sanitizeAgentId } from "../config/paths.js";
 import { renameWithRetry } from "../memory/document-store.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  MigrationChain,
+  frontmatterVersion,
+  stampSchemaVersion,
+} from "../versioning.js";
 
 /**
  * SOUL.md / MIND.md。
@@ -14,12 +20,15 @@ import { renameWithRetry } from "../memory/document-store.js";
  *
  * Phase 7（经验自动沉淀）：话题压缩落档时同一次 LLM 调用顺手提取经验，
  * append-only 写入 MIND.md（只加不改，绝不原地改写或删除）；每块带
- * frontmatter（source/created/confidence），≤ 0.5 直接不落盘；
+ * frontmatter（schema/source/created/confidence），≤ 0.5 直接不落盘；
  * 标题 token Jaccard ≥ 0.6 时并入已有块正文追加一行补充。
  */
 
 export const SOUL_FILE = "SOUL.md";
 export const MIND_FILE = "MIND.md";
+
+/** MIND.md 经验块 frontmatter 迁移链（P1-1）：当前 v1 无实际迁移，机制就位 */
+const MIND_CHUNK_CHAIN = new MigrationChain<Record<string, string>>(CURRENT_SCHEMA_VERSION);
 
 /** 新建 Agent 的默认人格模板：你是谁、性格、价值观、说话方式 */
 export const DEFAULT_SOUL_TEMPLATE = `# SOUL
@@ -96,11 +105,14 @@ function parseFrontmatter(fm: string): Pick<MindChunk, "source" | "created" | "c
     const idx = line.indexOf(":");
     if (idx > 0) fields[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
   }
-  const confidence = Number(fields.confidence);
+  // 版本字段（P1-1）：无 schema 的旧块视为 v1；高版本抛 UnsupportedSchemaVersionError
+  //（显式报错——块没坏，是代码太旧）；旧版经迁移链惰性迁移
+  const migrated = MIND_CHUNK_CHAIN.migrate(fields, frontmatterVersion(fields), "MIND.md 经验块");
+  const confidence = Number(migrated.confidence);
   return {
-    ...(fields.source !== undefined ? { source: fields.source } : {}),
-    ...(fields.created !== undefined ? { created: fields.created } : {}),
-    ...(fields.confidence !== undefined && Number.isFinite(confidence) ? { confidence } : {}),
+    ...(migrated.source !== undefined ? { source: migrated.source } : {}),
+    ...(migrated.created !== undefined ? { created: migrated.created } : {}),
+    ...(migrated.confidence !== undefined && Number.isFinite(confidence) ? { confidence } : {}),
   };
 }
 
@@ -275,6 +287,7 @@ function formatExperienceBlock(e: NewMindExperience): string {
   return [
     `## ${e.title.trim()}`,
     "---",
+    `schema: ${MIND_CHUNK_CHAIN.currentVersion}`,
     `source: ${e.source}`,
     `created: ${e.created}`,
     `confidence: ${e.confidence}`,
@@ -352,8 +365,14 @@ export async function appendMindExperiences(
     try {
       await fs.mkdir(path.dirname(sidecar), { recursive: true });
       const lines =
-        eligible.map((e) => JSON.stringify({ ...e, failedAt: new Date().toISOString() })).join("\n") +
-        "\n";
+        eligible
+          .map((e) =>
+            // 同为 JSONL 落盘格式，按行盖版本戳（P1-1）
+            JSON.stringify(
+              stampSchemaVersion({ ...e, failedAt: new Date().toISOString() }, CURRENT_SCHEMA_VERSION),
+            ),
+          )
+          .join("\n") + "\n";
       await fs.appendFile(sidecar, lines, "utf-8");
     } catch (sidecarErr) {
       console.warn(`[mind] agent=${agentId} sidecar 写入也失败，本批经验放弃：${sidecar}`, sidecarErr);

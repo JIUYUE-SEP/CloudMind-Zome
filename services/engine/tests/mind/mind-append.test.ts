@@ -65,6 +65,8 @@ describe("appendMindExperiences 写入（append-only + frontmatter）", () => {
       [
         "## 指挥官偏好：不用 emoji",
         "---",
+        // P1-1：frontmatter 首行固定为格式版本
+        "schema: 1",
         "source: topic-tp_1",
         "created: 2026-07-23T17:00:00Z",
         "confidence: 0.9",

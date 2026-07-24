@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AgentConfig } from "@mindcloud/shared";
 import { DocumentStore } from "../document-store.js";
+import { UnsupportedSchemaVersionError } from "../../versioning.js";
 import { getAgentDir, getDataDir, sanitizeAgentId } from "../../config/paths.js";
 import type { IAgentRepository } from "./types.js";
 
@@ -122,17 +123,23 @@ export class AgentRepository implements IAgentRepository {
         if (!entry.isDirectory()) continue;
         const filePath = path.join(agentsDir, entry.name, "agent.json");
         try {
-          const content = await fsp.readFile(filePath, "utf-8");
-          const config = JSON.parse(content) as AgentConfig;
+          // 走 DocumentStore.readJson：版本检查/迁移与 get() 路径一致（P1-1）
+          const config = await new DocumentStore<AgentConfig>(filePath).readJson();
+          if (!config) continue; // readdir 之后被并发删除
           // 目录名即 id（get() 按目录名寻址）：外部写入的配置可能缺 id 或 id 不一致，
           // 统一以目录名为准，否则前端拿到 id 为 undefined 的条目，点击/编辑全部失效
           configs.push({ ...config, id: entry.name });
         } catch (err) {
+          // 版本过高（数据由更新版本的程序写入）必须显式上抛——
+          // 不能让 agent 静默从列表消失（那正是 M4 要防的"老数据静默读不出"）
+          if (err instanceof UnsupportedSchemaVersionError) throw err;
           console.error(`Failed to load agent config from ${filePath}:`, err);
         }
       }
       return configs;
-    } catch {
+    } catch (err) {
+      // agents 目录不存在等整体失败返回空；但版本过高必须显式上抛（不静默读空）
+      if (err instanceof UnsupportedSchemaVersionError) throw err;
       return [];
     }
   }

@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import {
+  CURRENT_SCHEMA_VERSION,
+  MigrationChain,
+  splitSchemaVersion,
+  stampSchemaVersion,
+} from "../versioning.js";
 
 // 写队列挂在模块级、按文件路径串行：
 // DocumentStore 实例由调用方随手 new，实例级队列起不到跨调用串行化的作用，
@@ -39,7 +45,15 @@ export async function renameWithRetry(tmpPath: string, filePath: string): Promis
 }
 
 export class DocumentStore<T extends object> {
-  constructor(public filePath: string) {}
+  /**
+   * @param schema 该文件格式的迁移链（P1-1）：写入时逐行/顶层盖 `schemaVersion`
+   * 当前版本戳；读取时无版本字段按 v1、旧版逐级惰性迁移、高于当前版本抛
+   * UnsupportedSchemaVersionError。默认 v1 空链（机制就位，格式升级时再注册迁移）。
+   */
+  constructor(
+    public filePath: string,
+    private readonly schema: MigrationChain<T> = new MigrationChain<T>(CURRENT_SCHEMA_VERSION),
+  ) {}
 
   private enqueueWrite(op: () => Promise<void>): Promise<void> {
     const prev = writeQueues.get(this.filePath) ?? Promise.resolve();
@@ -60,7 +74,9 @@ export class DocumentStore<T extends object> {
         throw new Error(`JSON file too large: ${this.filePath} (${stat.size} bytes)`);
       }
       const content = await fs.readFile(this.filePath, "utf-8");
-      return JSON.parse(content) as T;
+      // 版本字段（P1-1）：无 schemaVersion 的旧文件视为 v1；高版本抛错；旧版惰性迁移
+      const { version, data } = splitSchemaVersion(JSON.parse(content) as T);
+      return this.schema.migrate(data, version, this.filePath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw err;
@@ -70,7 +86,8 @@ export class DocumentStore<T extends object> {
   private async writeJsonInner(data: T): Promise<void> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp`;
-    await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n");
+    const stamped = stampSchemaVersion(data, this.schema.currentVersion);
+    await fs.writeFile(tmpPath, JSON.stringify(stamped, null, 2) + "\n");
     await renameWithRetry(tmpPath, this.filePath);
     readCache.delete(this.filePath);
   }
@@ -80,7 +97,8 @@ export class DocumentStore<T extends object> {
   }
 
   private async appendLineInner(record: T): Promise<void> {
-    const line = JSON.stringify(record) + "\n";
+    // 每行盖版本戳（P1-1）：append-only 文件升级后必然新旧版本行混排，按行记录版本
+    const line = JSON.stringify(stampSchemaVersion(record, this.schema.currentVersion)) + "\n";
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     await fs.appendFile(this.filePath, line, "utf-8");
     readCache.delete(this.filePath);
@@ -91,7 +109,9 @@ export class DocumentStore<T extends object> {
   }
 
   private async writeLinesInner(records: T[]): Promise<void> {
-    const content = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
+    const content =
+      records.map((r) => JSON.stringify(stampSchemaVersion(r, this.schema.currentVersion))).join("\n") +
+      (records.length ? "\n" : "");
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp`;
     await fs.writeFile(tmpPath, content);
@@ -145,11 +165,17 @@ export class DocumentStore<T extends object> {
       try {
         for await (const line of rl) {
           if (!line.trim()) continue;
+          let parsed: T;
           try {
-            results.push(JSON.parse(line) as T);
+            parsed = JSON.parse(line) as T;
           } catch (err) {
             console.error(`Failed to parse JSONL line in ${this.filePath}: ${line}`, err);
+            continue;
           }
+          // 版本检查/迁移（P1-1）放在坏行跳过的 catch 之外：
+          // 版本过高与迁移失败必须显式上抛，不能按坏行静默丢弃
+          const { version, data } = splitSchemaVersion(parsed);
+          results.push(this.schema.migrate(data, version, this.filePath));
         }
       } finally {
         rl.close();

@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { renameWithRetry } from "../memory/document-store.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  MigrationChain,
+  splitSchemaVersion,
+  stampSchemaVersion,
+} from "../versioning.js";
 import { decrypt, encrypt } from "./crypto.js";
 import { getDataDir } from "./paths.js";
 
@@ -60,6 +66,9 @@ function createDefaultConfig(): GlobalConfig {
   return structuredClone(DEFAULT_CONFIG);
 }
 
+/** config.json 顶层格式迁移链（P1-1）：当前 v1 无实际迁移，机制就位 */
+const CONFIG_CHAIN = new MigrationChain<Partial<GlobalConfig>>(CURRENT_SCHEMA_VERSION);
+
 async function decryptValue(value: string | undefined): Promise<string | undefined> {
   if (!value) return undefined;
   if (!value.startsWith("enc:")) return value;
@@ -109,6 +118,12 @@ export class ConfigRepository {
       );
     }
 
+    // 版本字段（P1-1）：无 schemaVersion 的旧配置视为 v1；高于当前版本抛
+    // UnsupportedSchemaVersionError（文件没坏，是代码太旧——不隔离、不回默认、不上
+    // 面的损坏 catch 吞）；旧版经迁移链惰性迁移
+    const { version, data } = splitSchemaVersion(parsed);
+    parsed = CONFIG_CHAIN.migrate(data, version, this.filePath);
+
     const defaults = createDefaultConfig();
     const config: GlobalConfig = {
       ...defaults,
@@ -155,21 +170,24 @@ export class ConfigRepository {
           `已阻断保存以防 apiKey 被清空；请恢复 master key 或人工处理 config.json 后重试`,
       );
     }
-    const toSave: GlobalConfig = {
-      ...config,
-      providers: await Promise.all(
-        config.providers.map(async (p) => ({
-          ...p,
-          apiKey: p.apiKey ? `enc:${await encrypt(p.apiKey)}` : undefined,
-        })),
-      ),
-      settings: {
-        ...config.settings,
-        tavilyApiKey: config.settings.tavilyApiKey
-          ? `enc:${await encrypt(config.settings.tavilyApiKey)}`
-          : undefined,
+    const toSave = stampSchemaVersion<GlobalConfig>(
+      {
+        ...config,
+        providers: await Promise.all(
+          config.providers.map(async (p) => ({
+            ...p,
+            apiKey: p.apiKey ? `enc:${await encrypt(p.apiKey)}` : undefined,
+          })),
+        ),
+        settings: {
+          ...config.settings,
+          tavilyApiKey: config.settings.tavilyApiKey
+            ? `enc:${await encrypt(config.settings.tavilyApiKey)}`
+            : undefined,
+        },
       },
-    };
+      CONFIG_CHAIN.currentVersion,
+    );
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     // 原子写：先写 tmp 再 rename，避免写一半崩溃留下半截 config.json
     const tmpPath = `${this.filePath}.tmp`;

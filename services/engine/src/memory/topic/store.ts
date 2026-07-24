@@ -2,8 +2,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "../../config/paths.js";
 import { renameWithRetry } from "../document-store.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  MigrationChain,
+  UnsupportedSchemaVersionError,
+  frontmatterVersion,
+} from "../../versioning.js";
 import type { CompressedTopic } from "./types.js";
 import type { TopicSummary } from "../../context/layers.js";
+
+/** 压缩档 frontmatter 迁移链（P1-1）：当前 v1 无实际迁移，机制就位 */
+const COMPRESSED_TOPIC_CHAIN = new MigrationChain<Record<string, string>>(CURRENT_SCHEMA_VERSION);
 
 export function compressedDir(agentId: string): string {
   return path.join(getAgentDir(agentId), "_compressed");
@@ -21,6 +30,7 @@ export async function writeCompressedTopic(
 ): Promise<string> {
   const lines = [
     "---",
+    `schema: ${COMPRESSED_TOPIC_CHAIN.currentVersion}`,
     `topic_id: ${topic.topicId}`,
     `embedding_id: ${topic.embeddingId ?? ""}`,
     `label: ${fmValue(topic.label)}`,
@@ -95,6 +105,8 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
         continue;
       }
       const raw = await fs.readFile(filePath, "utf-8");
+      // 版本门禁（P1-1）：高版本档显式报错，而不是按旧格式正则静默抠字段
+      assertCompressedVersion(raw, filePath);
       const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
       const fileIds = section
         ? section.split(",").map((s) => s.trim()).filter(Boolean)
@@ -102,6 +114,8 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
       archivedIdsCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, ids: fileIds });
       for (const id of fileIds) ids.add(id);
     } catch (err) {
+      // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
+      if (err instanceof UnsupportedSchemaVersionError) throw err;
       console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
     }
   }
@@ -120,15 +134,35 @@ interface ParsedCompressedFile {
   text: string;
 }
 
+/** 解析 frontmatter 块的 key: value 行（未知 key 保留，供版本迁移链使用） */
+function parseFrontmatterBlock(block: string): Record<string, string> {
+  const fm: Record<string, string> = {};
+  for (const line of block.split("\n")) {
+    const idx = line.indexOf(":");
+    if (idx > 0) fm[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  return fm;
+}
+
+/**
+ * 只做版本门禁的轻量检查（P1-1）：archivedMessageIds 按正则抠正文段、不解析
+ * frontmatter，但高版本档必须显式报错，不能按旧格式静默抠字段
+ */
+function assertCompressedVersion(raw: string, filePath: string): void {
+  const block = raw.match(/^---\n([\s\S]*?)\n---/)?.[1];
+  if (!block) return; // 无 frontmatter 属损坏档，交给调用方既有的单档降级
+  const fm = parseFrontmatterBlock(block);
+  COMPRESSED_TOPIC_CHAIN.migrate(fm, frontmatterVersion(fm), filePath);
+}
+
 /** 解析压缩档为结构化条目；frontmatter 损坏时返回 null（单档跳过） */
 function parseCompressedFile(raw: string, fallbackId: string): ParsedCompressedFile | null {
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!fmMatch) return null;
-  const fm: Record<string, string> = {};
-  for (const line of fmMatch[1]!.split("\n")) {
-    const idx = line.indexOf(":");
-    if (idx > 0) fm[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-  }
+  // 版本字段（P1-1）：无 schema 的旧档视为 v1；高版本抛 UnsupportedSchemaVersionError
+  //（不判废跳过——档没坏，是代码太旧）；旧版经迁移链惰性迁移
+  const fmRaw = parseFrontmatterBlock(fmMatch[1]!);
+  const fm = COMPRESSED_TOPIC_CHAIN.migrate(fmRaw, frontmatterVersion(fmRaw), `压缩档 ${fallbackId}`);
   const compressedAt = fm["compressed_at"];
   if (!compressedAt) return null;
 
@@ -174,6 +208,8 @@ export async function latestSummaries(agentId: string, count: number): Promise<T
       const p = parseCompressedFile(raw, file.replace(/\.md$/, ""));
       if (p) parsed.push({ id: p.topicId, label: p.label, text: p.text, createdAt: p.compressedAt });
     } catch (err) {
+      // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
+      if (err instanceof UnsupportedSchemaVersionError) throw err;
       console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
     }
   }
