@@ -11,6 +11,7 @@ import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/ty
 import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
+import { SidecarCallError } from "../../src/sidecar/client.js";
 import { restoreDataDir } from "../helpers/env.js";
 import { DEFAULT_SOUL_TEMPLATE } from "../../src/mind/mind-files.js";
 
@@ -930,6 +931,37 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     error.mockRestore();
   });
 
+  it("sidecar 明确报错（SidecarCallError）→ retrievalFailed 置位、尾随告知可感知（M-a）", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const indexer = {
+      search: vi.fn(async () => {
+        throw new SidecarCallError("Search", 13, "embeddings schema version too new: v99");
+      }),
+    } as unknown as MemoryIndexer;
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+    });
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    worker.enqueue({ id: "j1", messages: [currentUser("u1", "你好")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const captured = provider.capturedParams?.messages ?? [];
+    const notice = captured.find(
+      (m) =>
+        m.role === "system" &&
+        m.content.some((c) => c.type === "text" && c.text.includes("记忆检索暂时不可用")),
+    );
+    expect(notice).toBeTruthy();
+    // 明确报错必须 error 级留痕（不是 warn 降级）
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
   it("semanticSearch.enabled=false 时不发起检索", async () => {
     const provider = new CapturingProvider();
     const repo = new MessageRepository("agent-1");
@@ -1093,5 +1125,26 @@ describe("AgentWorker SOUL/MIND 集成", () => {
     expect(recalled).toBeTruthy();
     expect(textOf(recalled!)).not.toContain("confidence");
     expect(textOf(recalled!)).not.toContain("---");
+  });
+
+  it("MIND.md 含高版本块：retrievalFailed 置位、尾随告知可感知（M-a 顺手统一 Minor-1）", async () => {
+    // 高版本 frontmatter 块：块没坏、是代码太旧——不能按"读取失败"静默跳过
+    await writeAgentFile("MIND.md", "## 高版本块\n---\nschema: 99\nsource: test\n---\n内容\n");
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    worker.enqueue({ id: "j1", messages: [userMessage("你好")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const captured = provider.capturedParams?.messages ?? [];
+    const notice = captured.find(
+      (m) =>
+        m.role === "system" &&
+        m.content.some((c) => c.type === "text" && c.text.includes("记忆检索暂时不可用")),
+    );
+    expect(notice).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

@@ -54,6 +54,35 @@ interface ZomeSidecarGrpc {
 
 type GrpcMethod = keyof ZomeSidecarGrpc;
 
+/**
+ * sidecar 明确报错（M-a）：sidecar 进程在线但返回错误 Status（如高版本数据
+ * Status::internal）——与"不可达/超时"的静默降级严格区分，调用方必须可感知。
+ */
+export class SidecarCallError extends Error {
+  constructor(
+    public readonly method: string,
+    public readonly code: number | undefined,
+    details: string,
+  ) {
+    super(`sidecar ${method} 明确报错（gRPC code=${code}）：${details}`);
+    this.name = "SidecarCallError";
+  }
+}
+
+/**
+ * 错误分类（M-a）：不可达（UNAVAILABLE）/超时（DEADLINE_EXCEEDED）= sidecar
+ * 不可用，静默降级合理；其余错误 Status = sidecar 明确报错，必须上抛。
+ * 无 code 的异常保持历史行为按不可用处理。
+ */
+export function classifySidecarError(err: unknown): "unavailable" | "explicit" {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "number") return "unavailable";
+  if (code === grpc.status.UNAVAILABLE || code === grpc.status.DEADLINE_EXCEEDED) {
+    return "unavailable";
+  }
+  return "explicit";
+}
+
 export class SidecarClient {
   private client?: ZomeSidecarGrpc;
   private availability: { at: number; ok: boolean } = { at: 0, ok: false };
@@ -84,16 +113,23 @@ export class SidecarClient {
   private call<TRes>(method: GrpcMethod, req: Parameters<ZomeSidecarGrpc[GrpcMethod]>[0], deadlineMs = 3000, quiet = false): Promise<TRes | undefined> {
     const client = this.getClient();
     if (!client) return Promise.resolve(undefined);
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       client[method](
         // 各方法 req 类型不同，union 传入在运行时无差别（grpc-js 直接序列化）
         req as never,
         { deadline: Date.now() + deadlineMs },
         (err: unknown, res: unknown) => {
           if (err) {
-            // 统一降级点：返回值契约不变（undefined），但错误必须可观测。
+            // 错误分类（M-a）：sidecar 明确返回错误 Status（如高版本数据）上抛，
+            // 调用方识别后必须可感知；不可达/超时仍走统一降级出口：
+            // 返回值契约不变（undefined），但错误必须可观测。
             // Health 走 quiet：它由 isAvailable 每 10s 轮询，可用性翻转时在
             // isAvailable 里记一次，避免 sidecar 缺席时日志刷屏
+            if (classifySidecarError(err) === "explicit") {
+              const e = err as { code?: number; details?: string };
+              reject(new SidecarCallError(method, e.code, e.details ?? String(err)));
+              return;
+            }
             if (!quiet) console.warn(`[sidecar] ${method} 调用失败，按不可用降级`, err);
             resolve(undefined);
             return;
@@ -107,7 +143,8 @@ export class SidecarClient {
   async isAvailable(): Promise<boolean> {
     const now = Date.now();
     if (now - this.availability.at < AVAILABILITY_CACHE_MS) return this.availability.ok;
-    const res = await this.call("Health", {}, 1000, true);
+    // 探活语义：即使 sidecar 明确报错（进程在线但 Health 失败）也按不可用记
+    const res = await this.call("Health", {}, 1000, true).catch(() => undefined);
     const ok = res !== undefined;
     // 只在可用性翻转时记日志（首次探测不记：纯 pnpm dev 下 sidecar 本就不存在）
     if (this.availability.at !== 0 && ok !== this.availability.ok) {
@@ -120,12 +157,20 @@ export class SidecarClient {
   async upsert(agentId: string, docId: string, embedding: number[]): Promise<boolean> {
     // 与 search 同档 30s：sidecar 重启后首条嵌入 upsert 同样触发完整冷载入，
     // 默认 3s 会把该条嵌入打成超时丢弃（实测数据见 search 注释）
-    const res = await this.call("Upsert", { agent_id: agentId, doc_id: docId, embedding }, 30_000);
+    const res = await this.call("Upsert", { agent_id: agentId, doc_id: docId, embedding }, 30_000).catch(
+      (err: unknown) => {
+        // 写路径保持 bool 契约（M-a）：明确报错不静默——error 级留痕后按失败返回
+        console.error("[sidecar] Upsert 明确报错，本条嵌入未写入", err);
+        return undefined;
+      },
+    );
     return res !== undefined;
   }
 
   // 注意：sidecar 原始返回的是距离（1 - cosine，越小越近），不是相似度。
   // 相似度换算在 MemoryIndexer.search 出口统一进行，本层原样透传。
+  // M-a：sidecar 明确报错（SidecarCallError）不在本层吞掉，上抛给调用方感知；
+  // 不可达/超时仍按空结果降级。
   async search(agentId: string, query: number[], topK: number): Promise<{ id: string; score: number }[]> {
     const res = await this.call<{ results?: { doc_id: string; score: number }[] }>(
       "Search",
@@ -146,7 +191,11 @@ export class SidecarClient {
    * sidecar 内存缓存，sidecar 重启即清）。
    */
   async deleteAgent(agentId: string): Promise<boolean> {
-    const res = await this.call("DeleteAgent", { agent_id: agentId });
+    // bool 契约不变（M-a）：明确报错 error 级留痕，仍按 false 返回（语义同注释）
+    const res = await this.call("DeleteAgent", { agent_id: agentId }).catch((err: unknown) => {
+      console.error("[sidecar] DeleteAgent 明确报错，内存缓存可能未逐出", err);
+      return undefined;
+    });
     return res !== undefined;
   }
 }

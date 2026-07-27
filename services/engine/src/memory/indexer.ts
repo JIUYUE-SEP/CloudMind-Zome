@@ -1,5 +1,5 @@
 import type { EmbedderProvider } from "../provider/types.js";
-import type { SidecarClient } from "../sidecar/client.js";
+import { SidecarCallError, type SidecarClient } from "../sidecar/client.js";
 
 const MAX_INDEX_CHARS = 2000;
 const EMBED_TIMEOUT_MS = 5000;
@@ -66,6 +66,13 @@ export class MemoryIndexer {
       const hits = await this.client.search(agentId, vec, topK);
       return hits.map((h) => ({ id: h.id, score: Math.max(0, 1 - h.score) }));
     } catch (err) {
+      // M-a：sidecar 明确报错（如高版本数据 Status::internal）必须让上层感知
+      // （agent-worker 置 retrievalFailed、组装层尾随告知）；不可达/超时/embed
+      // 失败仍按空结果静默降级
+      if (err instanceof SidecarCallError) {
+        console.error("[memory] 语义检索 sidecar 明确报错，按检索失败上抛", err);
+        throw err;
+      }
       console.warn("[memory] 语义检索失败，按空结果降级", err);
       return [];
     }

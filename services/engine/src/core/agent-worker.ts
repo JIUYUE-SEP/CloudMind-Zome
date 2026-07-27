@@ -29,6 +29,7 @@ import {
   retrieveMindChunks,
   type MindChunk,
 } from "../mind/mind-files.js";
+import { UnsupportedSchemaVersionError } from "../versioning.js";
 
 console.log("[agent-worker] module loaded");
 
@@ -271,6 +272,9 @@ export class AgentWorker {
           mindChunks = retrieveMindChunks(await loadMindChunks(this.config.agentId), lastUserText);
         } catch (err) {
           console.warn("[mind] MIND.md 读取失败，本轮不注入经验", err);
+          // M-a 顺手统一（Minor-1）：高版本数据是明确错误而非"读取失败"，
+          // 与 L4/L5 同一口径置 retrievalFailed，让用户/模型可感知
+          if (err instanceof UnsupportedSchemaVersionError) retrievalFailed = true;
         }
       }
 

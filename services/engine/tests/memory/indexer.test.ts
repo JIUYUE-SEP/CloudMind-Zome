@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { MemoryIndexer } from "../../src/memory/indexer.js";
+import { SidecarCallError } from "../../src/sidecar/client.js";
 import type { EmbedderProvider } from "../../src/provider/types.js";
 import type { SidecarClient } from "../../src/sidecar/client.js";
 
@@ -75,5 +76,29 @@ describe("MemoryIndexer", () => {
     expect(await indexer.search("a1", "query", 5)).toEqual([]);
     await indexer.indexMessage("a1", "d1", "hello");
     expect(embed).not.toHaveBeenCalled();
+  });
+
+  it("sidecar 明确报错（SidecarCallError）→ search 上抛让上层感知（M-a）", async () => {
+    const client = makeClient({
+      search: vi.fn(async () => {
+        throw new SidecarCallError("Search", 13, "schema version too new: v99");
+      }),
+    });
+    const silent = vi.spyOn(console, "error").mockImplementation(() => {});
+    const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
+    await expect(indexer.search("a1", "query", 5)).rejects.toBeInstanceOf(SidecarCallError);
+    silent.mockRestore();
+  });
+
+  it("sidecar 一般失败（非明确报错）→ search 仍按空结果降级（M-a 口径不变）", async () => {
+    const client = makeClient({
+      search: vi.fn(async () => {
+        throw new Error("connection reset");
+      }),
+    });
+    const silent = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
+    await expect(indexer.search("a1", "query", 5)).resolves.toEqual([]);
+    silent.mockRestore();
   });
 });
