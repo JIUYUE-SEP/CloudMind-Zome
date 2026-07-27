@@ -41,7 +41,9 @@ export async function gracefulShutdown(deps: ShutdownDeps): Promise<void> {
   ]);
   if (timer) clearTimeout(timer);
   if (!drained) {
-    log(`[shutdown] drain 未在 ${timeoutMs}ms 内完成，直接退出（遗留压缩段由启动对账兜底）`);
+    // M-b 后属实：队列丢弃的段在 topic-state.json 留有 pending 记录，
+    // 下次启动由 reconcilePendingSegments 补压缩/补归档
+    log(`[shutdown] drain 未在 ${timeoutMs}ms 内完成，直接退出（遗留压缩段有 pending 记录，由启动对账兜底）`);
   }
   await deps.close().catch(() => {});
   exit(0);

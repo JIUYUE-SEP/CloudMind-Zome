@@ -83,7 +83,13 @@ async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Pr
     context,
     cleanup: async () => {
       agentRepository.dispose();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      // 等所有 worker 收尾（step/turn 边界的话题状态落盘在消息帧之后仍在飞）
+      // 再删临时目录，避免 rm 与异步写撞车（ENOTEMPTY）
+      const deadline = Date.now() + 5000;
+      while ([...workers.values()].some((w) => w.status !== "idle") && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       restoreDataDir(originalDataDir);
     },
     sessionId: session.id,

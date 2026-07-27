@@ -20,7 +20,7 @@ import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
-import { reconcileHotStorage, reconcileOrphanedTopic } from "./memory/reconcile.js";
+import { reconcileHotStorage, reconcileOrphanedTopic, reconcilePendingSegments } from "./memory/reconcile.js";
 import { loadTopicState } from "./memory/topic/state.js";
 import { registerShutdownHandlers } from "./shutdown.js";
 import { PlanManager } from "./plan/manager.js";
@@ -271,15 +271,27 @@ async function main() {
         // P1-2：重启孤儿（退出时仍在未关闭话题里的消息）。先查 topic-state.json
         // （廉价文件读），有孤儿才构造 LLM provider 补压缩/归档
         const orphanState = await loadTopicState(agent.id);
-        if (orphanState?.open && orphanState.open.messageIds.length > 0) {
-          const orphanCount = await reconcileOrphanedTopic(agent.id, repo, {
+        const hasOpen = orphanState?.open && orphanState.open.messageIds.length > 0;
+        const hasPending = (orphanState?.pending ?? []).length > 0;
+        if (hasOpen || hasPending) {
+          const deps = {
             agentId: agent.id,
             provider: await createLLMProvider(agent),
             model: agent.compressionModel || agent.modelId || agent.model || "gpt-4o",
             messageRepository: repo,
-          });
-          if (orphanCount > 0) {
-            console.log(`[reconcile] agent=${agent.id} 处理重启孤儿消息 ${orphanCount} 条`);
+          };
+          // M-b：先补"已关闭已入队未压缩"的 pending 段（desktop /F 主路径缺口）
+          if (hasPending) {
+            const pendingCount = await reconcilePendingSegments(agent.id, repo, deps);
+            if (pendingCount > 0) {
+              console.log(`[reconcile] agent=${agent.id} 补处理 pending 压缩段消息 ${pendingCount} 条`);
+            }
+          }
+          if (hasOpen) {
+            const orphanCount = await reconcileOrphanedTopic(agent.id, repo, deps);
+            if (orphanCount > 0) {
+              console.log(`[reconcile] agent=${agent.id} 处理重启孤儿消息 ${orphanCount} 条`);
+            }
           }
         }
       } catch (err) {

@@ -11,11 +11,12 @@ import { ContextPipeline } from "../context/pipeline.js";
 import { TopicTracker } from "../memory/topic/tracker.js";
 import { CompressionQueue } from "../memory/topic/queue.js";
 import { runCompressionTask } from "../memory/topic/compression-task.js";
-import { saveTopicState } from "../memory/topic/state.js";
+import { addPendingSegment, removePendingSegment, saveTopicState } from "../memory/topic/state.js";
 import { latestSummaries } from "../memory/topic/store.js";
 import {
   normalizeTopicCompressionConfig,
   type TopicCompressionConfig,
+  type TopicSegment,
 } from "../memory/topic/types.js";
 import {
   normalizeSemanticSearchConfig,
@@ -105,6 +106,8 @@ export class AgentWorker {
         model: this.topicConfig.compressionModel || this.config.model,
         messageRepository: this.config.messageRepository,
       });
+      // M-b：任务成功完成才清 pending；失败由队列捕获告警，pending 保留待对账
+      await removePendingSegment(this.config.agentId, segment.topicId);
     });
     this.semanticConfig = normalizeSemanticSearchConfig(config.semanticSearch);
     if (config.memoryIndexer) {
@@ -170,14 +173,52 @@ export class AgentWorker {
    * await 而非 fire-and-forget：保证进程收到退出信号时状态已落盘，也避免
    * 异步写句柄飘进测试清理/目录删除的窗口。写失败不阻断对话主流程，
    * 降级为改动前的重启孤儿行为。
+   *
+   * M-b：extraMessages 把 turn 内已按 step 落盘、尚未入 tracker 的消息 id
+   * 并入快照（P1-6 尾巴：崩溃打在 onStepAppended 与 onTurnAppended 之间时，
+   * 这些消息也在启动对账视野内）。
    */
-  private async persistTopicState(): Promise<void> {
+  private async persistTopicState(extraMessages: ChatMessage[] = [], sourceId?: string): Promise<void> {
     if (!this.topicConfig.enabled) return;
     try {
-      await saveTopicState(this.config.agentId, this.topicTracker.openTopic);
+      const open = this.topicTracker.openTopic;
+      let merged = open;
+      if (extraMessages.length > 0) {
+        const extraIds = extraMessages.map((m) => m.id);
+        merged = open
+          ? { ...open, messageIds: [...open.messageIds, ...extraIds] }
+          : {
+              messageIds: extraIds,
+              startedAt: extraMessages[0]!.createdAt,
+              sourceId: sourceId ?? this.config.agentId,
+            };
+      }
+      await saveTopicState(this.config.agentId, merged);
     } catch (err) {
       console.warn(`[topic] tracker 状态落盘失败（已跳过）：${this.config.agentId}`, err);
     }
+  }
+
+  /**
+   * 压缩段入队（M-b）：入队即记状态——先落 pending 再入队；进程在任务执行前
+   * 退出（desktop taskkill /F 无优雅关停）时由启动对账（reconcilePendingSegments）
+   * 补压缩/补归档。pending 落盘失败不阻断入队（退化为修复前行为，warn 留痕）。
+   */
+  private async enqueueCompression(segment: TopicSegment): Promise<void> {
+    try {
+      await addPendingSegment(this.config.agentId, {
+        topicId: segment.topicId,
+        messageIds: segment.messages.map((m) => m.id),
+        startedAt: segment.startedAt,
+        endedAt: segment.endedAt,
+        sourceId: segment.sourceId,
+        sourceName: segment.sourceName,
+        archiveOnly: segment.archiveOnly ?? false,
+      });
+    } catch (err) {
+      console.warn(`[topic] pending 段落盘失败（对账兜底退化）：${segment.topicId}`, err);
+    }
+    this.compressionQueue.enqueue(segment);
   }
 
   private async processQueue(): Promise<void> {
@@ -226,7 +267,7 @@ export class AgentWorker {
       // 话题边界检测（Phase 2）：新话题开启时，旧话题送后台压缩队列
       if (lastUser) {
         const closed = this.topicTracker.onUserMessage(lastUser, sessionId);
-        if (closed) this.compressionQueue.enqueue(closed);
+        if (closed) await this.enqueueCompression(closed);
         // 话题状态落盘（P1-2，turn 起点）：此刻崩溃，重启对账能识别这个开放话题
         await this.persistTopicState();
       }
@@ -279,6 +320,8 @@ export class AgentWorker {
       }
 
       const messages = [...job.messages];
+      // M-b：本 turn 已按 step 落盘的消息（并入开放话题快照用）
+      const stepPersisted: ChatMessage[] = [];
 
       const turnInput: TurnInput = {
         provider: this.config.provider,
@@ -314,6 +357,10 @@ export class AgentWorker {
           for (const msg of msgs) {
             await this.config.messageRepository.append({ ...msg, sessionId });
           }
+          // M-b：step 落盘即并入开放话题快照——崩溃打在 onStepAppended 与
+          // onTurnAppended 之间时（P1-6 尾巴），已落盘 step 也在对账视野内
+          stepPersisted.push(...msgs);
+          await this.persistTopicState(stepPersisted, sessionId);
         },
         contextPipeline: {
           pipeline: this.pipeline,
@@ -337,7 +384,7 @@ export class AgentWorker {
 
       // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
       const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
-      if (closedByCount) this.compressionQueue.enqueue(closedByCount);
+      if (closedByCount) await this.enqueueCompression(closedByCount);
       // 话题状态落盘（P1-2，turn 终点）
       await this.persistTopicState();
 

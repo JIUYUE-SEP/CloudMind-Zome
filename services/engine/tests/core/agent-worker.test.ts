@@ -10,6 +10,8 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/types.js";
 import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
+import { reconcileOrphanedTopic, reconcilePendingSegments } from "../../src/memory/reconcile.js";
+import { loadTopicState } from "../../src/memory/topic/state.js";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -787,6 +789,113 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     const allTexts = (provider.capturedParams?.messages ?? [])
       .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
     expect(allTexts.some((t) => t.includes("用户之前聊过"))).toBe(false);
+  });
+
+  it("M-b：压缩段入队即记 pending——压缩失败 pending 保留，对账补压缩后清除", async () => {
+    // 主对话正常回复，压缩调用（归档助手 prompt）失败 → 模拟任务执行前/中崩溃
+    class CompressFailProvider implements LLMProvider {
+      name = "compress-fail";
+      supportsModel() {
+        return true;
+      }
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        const prompt = params.messages
+          .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+          .join("\n");
+        if (prompt.includes("对话归档助手")) {
+          throw new Error("process crash before compression");
+        }
+        yield { type: "text.delta", delta: "ok" };
+        yield { type: "step.end" };
+      }
+    }
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(new CompressFailProvider()),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 4 },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await repo.append({ ...seqMessage("u1", "问题一", 0), sessionId: "agent-1" });
+    await repo.append({ ...seqMessage("u2", "问题二", 1), sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "问题一", 0)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "问题二", 1)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 压缩失败：pending 记录保留（重启对账的补漏依据），消息留在热存储
+    await vi.waitFor(async () => {
+      const state = await loadTopicState("agent-1");
+      expect(state?.pending).toHaveLength(1);
+    });
+    const pending = (await loadTopicState("agent-1"))!.pending![0]!;
+    expect(pending.messageIds).toHaveLength(4);
+    expect((await repo.listBySession("agent-1")).length).toBe(4);
+
+    // 模拟重启：启动对账按 pending 补压缩（换可用 provider）→ 归档 + pending 清除
+    const goodProvider = new CapturingProvider();
+    const count = await reconcilePendingSegments("agent-1", repo, {
+      agentId: "agent-1",
+      provider: goodProvider,
+      model: "mock",
+      messageRepository: repo,
+    });
+    expect(count).toBe(4);
+    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+    expect((await loadTopicState("agent-1"))?.pending ?? []).toHaveLength(0);
+    warn.mockRestore();
+  });
+
+  it("M-b：崩溃打在 step 落盘与 turn 终点之间——已落盘 step 在对账视野内（P1-6 尾巴闭合）", async () => {
+    const controller = new AbortController();
+    const abortingTool: Tool = {
+      name: "aborter",
+      description: "aborts the job signal when executed",
+      parameters: z.object({}),
+      accesses: [],
+      async execute(): Promise<ToolResult> {
+        controller.abort();
+        return { success: true, output: "aborting now" };
+      },
+    };
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc-1", name: "aborter", arguments: {} }]);
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider, {}, [abortingTool]),
+      messageRepository: repo,
+    });
+
+    const user = seqMessage("u-abort", "go", 0);
+    await repo.append({ ...user, sessionId: "agent-1" });
+    const onDone = vi.fn();
+    worker.enqueue({
+      id: "j-abort",
+      messages: [user],
+      sessionId: "agent-1",
+      signal: controller.signal,
+      onEvent: () => {},
+      onDone,
+    });
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+
+    // turn 中止（未走 onTurnAppended），但 step 1（assistant+tool）已落盘、
+    // 且经 step 级快照进入 topic-state 的 open.messageIds——对账可见
+    const state = await loadTopicState("agent-1");
+    expect(state?.open?.messageIds).toContain("u-abort");
+    expect(state?.open?.messageIds).toContain("tool_tc-1");
+    expect(state?.open?.messageIds).toHaveLength(3);
+
+    // 启动对账：3 条（< MIN_SEGMENT_MESSAGES）archiveOnly 归档，热存储清空
+    const count = await reconcileOrphanedTopic("agent-1", repo, {
+      agentId: "agent-1",
+      provider: new CapturingProvider(),
+      model: "mock",
+      messageRepository: repo,
+    });
+    expect(count).toBe(3);
+    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+    expect(await loadTopicState("agent-1")).toBeUndefined();
   });
 });
 

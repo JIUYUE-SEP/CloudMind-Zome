@@ -59,7 +59,7 @@ export class TopicTracker {
     return null;
   }
 
-  /** turn 完成（assistant/tool 消息落库前）调用；达到数量阈值则关闭当前话题 */
+  /** turn 完成（assistant/tool 消息已按 step 落库，P1-6）调用；达到数量阈值则关闭当前话题 */
   onTurnAppended(messages: ChatMessage[], sourceId: string, sourceName?: string): TopicSegment | null {
     this.lastSourceId = sourceId;
     this.lastSourceName = sourceName;
