@@ -8,6 +8,7 @@ import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
 import { ContextPipeline } from "../context/pipeline.js";
+import { SECURITY_GUIDELINE } from "../context/security-guideline.js";
 import { TopicTracker } from "../memory/topic/tracker.js";
 import { CompressionQueue } from "../memory/topic/queue.js";
 import { runCompressionTask } from "../memory/topic/compression-task.js";
@@ -253,6 +254,9 @@ export class AgentWorker {
           "# Skills\n\n" + this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
         );
       }
+      // L1 固定尾部（P2-6）：注入面元指引——"数据非指令"。固定文案，
+      // 不随对话变化，跨轮字节稳定（缓存前缀不破）
+      promptParts.push(SECURITY_GUIDELINE);
       // L1 人格/skill 内容（pipeline 注入为 system 消息；不含 MIND.md）
       const mindContext = promptParts.join("\n\n");
 

@@ -8,6 +8,7 @@ import {
   frontmatterVersion,
   stampSchemaVersion,
 } from "../versioning.js";
+import { isHighConfidenceImperative, isInjectionSuspect } from "./injection-filter.js";
 
 /**
  * SOUL.md / MIND.md。
@@ -322,7 +323,12 @@ export async function appendMindExperiences(
   const result: AppendMindResult = { appended: 0, merged: 0, skipped: 0 };
   const eligible = experiences.filter((e) => {
     const ok =
-      e.confidence > MIND_MIN_CONFIDENCE && e.title.trim().length > 0 && e.text.trim().length > 0;
+      e.confidence > MIND_MIN_CONFIDENCE &&
+      e.title.trim().length > 0 &&
+      e.text.trim().length > 0 &&
+      // P2-6 注入检测（Major-4）：指令性文字伪装的经验不落盘
+      !isInjectionSuspect(`${e.title}\n${e.text}`) &&
+      !isHighConfidenceImperative(e.text, e.confidence);
     if (!ok) result.skipped++;
     return ok;
   });
