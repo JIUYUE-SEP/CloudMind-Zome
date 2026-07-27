@@ -504,7 +504,23 @@ ${SECURITY_GUIDELINE}` },
     expect(types[types.length - 1]).toBe("turn.end");
   });
 
-  it("工具抛错：补发 turn.end 终帧（P3-1）", async () => {
+  it("工具抛错：单 call 隔离（P3-2）——整轮不崩、错误结果入帧、消息落库、终帧照常", async () => {
+    class RecoverProvider implements LLMProvider {
+      name = "recover";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls === 1) {
+          yield { type: "tool.call", toolCallId: "tc-b", name: "boom", arguments: {} };
+        } else {
+          yield { type: "text.delta", delta: "recovered" };
+        }
+        yield { type: "step.end" };
+      }
+    }
     const explodingTool: Tool = {
       name: "boom",
       description: "throws when executed",
@@ -514,24 +530,36 @@ ${SECURITY_GUIDELINE}` },
         throw new Error("tool exploded");
       },
     };
-    const provider = new MockLLMProvider();
-    provider.setNextToolCalls([{ toolCallId: "tc-b", name: "boom", arguments: {} }]);
-    const worker = new AgentWorker(makeConfig(provider, {}, [explodingTool]));
+    const persisted: (ChatMessage & { sessionId?: string })[] = [];
+    const worker = new AgentWorker(
+      makeConfig(new RecoverProvider(), {
+        append: async (msg) => {
+          persisted.push(msg);
+        },
+        listBySession: async () => [],
+      }, [explodingTool])
+    );
     const events: LLMEvent[] = [];
     const onDone = vi.fn();
 
     worker.enqueue({
       id: "j-boom",
       messages: [userMessage("go")],
+      sessionId: "s1",
       onEvent: (e) => events.push(e),
       onDone,
     });
     await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
 
-    const types = events.map((e) => e.type);
-    expect(String(onDone.mock.calls[0][0])).toContain("tool exploded");
-    expect(types.filter((t) => t === "turn.end")).toHaveLength(1);
-    expect(types[types.length - 1]).toBe("turn.end");
+    // 整轮不崩（P3-2 隔离后 onDone 无错误）
+    expect(onDone).toHaveBeenCalledWith(undefined);
+    // 该 toolCallId 有 error tool.result 帧（无孤儿 toolCall）
+    const tr = events.find((e) => e.type === "tool.result") as { output: unknown } | undefined;
+    expect(JSON.stringify(tr?.output)).toContain("tool exploded");
+    // 已产出消息按 step 落库（assistant+tool+assistant 完整序列）
+    expect(persisted.map((m) => m.role)).toEqual(["assistant", "tool", "assistant"]);
+    // 终帧来自 runTurn 正常路径，恰好一次（P3-1 衔接：不再需要 catch 补发）
+    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
   });
 
   it("abort：补发 turn.end 且不刷错误气泡（用户主动中断是正常操作）", async () => {

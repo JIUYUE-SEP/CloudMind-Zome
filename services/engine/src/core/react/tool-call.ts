@@ -59,24 +59,34 @@ export async function runToolCallBatch(
   for (const batch of batches) {
     const batchResults = await Promise.all(
       batch.map(async (call) => {
-        const approved = await ctx.approve(call.tool.name, call.args, call.toolCallId);
-        if (!approved) {
-          const result = { toolCallId: call.toolCallId, output: { error: "Approval denied" } };
+        // P3-2（功能 M3）：单 call 隔离——approve/execute 任一抛错只影响本条，
+        // 转为 error ToolResult 并照常发 tool.result 帧（与审批拒绝同构），
+        // 整批/整轮不再因一条抛错而全崩，也不留无应答的孤儿 toolCall
+        // （OpenAI 协议下孤儿 toolCalls 会污染后续轮次）。
+        try {
+          const approved = await ctx.approve(call.tool.name, call.args, call.toolCallId);
+          if (!approved) {
+            const result = { toolCallId: call.toolCallId, output: { error: "Approval denied" } };
+            ctx.emit({ type: "tool.result", ...result });
+            return result;
+          }
+
+          const toolCtx: ToolContext = {
+            agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
+            projectRoot: ctx.projectRoot,
+            approve: ctx.approve,
+            services: ctx.services,
+          };
+          const output = await call.tool.execute(toolCtx, call.args);
+          const result = { toolCallId: call.toolCallId, output };
+          ctx.emit({ type: "tool.result", ...result });
+          return result;
+        } catch (err) {
+          const result = { toolCallId: call.toolCallId, output: { error: String(err) } };
           ctx.emit({ type: "tool.result", ...result });
           return result;
         }
-
-        const toolCtx: ToolContext = {
-          agentId: ctx.agentId,
-          workspaceDir: ctx.workspaceDir,
-          projectRoot: ctx.projectRoot,
-          approve: ctx.approve,
-          services: ctx.services,
-        };
-        const output = await call.tool.execute(toolCtx, call.args);
-        const result = { toolCallId: call.toolCallId, output };
-        ctx.emit({ type: "tool.result", ...result });
-        return result;
       })
     );
     results.push(...batchResults);
