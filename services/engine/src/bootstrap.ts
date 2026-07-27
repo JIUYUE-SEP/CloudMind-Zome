@@ -5,6 +5,7 @@ import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
 import { LLMCallRepository } from "./memory/repositories/llm-call.js";
 import { ConfigRepository } from "./config/repository.js";
+import { resolveConfiguredTools } from "./config/agent-tools.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { OpenAIProvider, MockLLMProvider, ErrorLLMProvider } from "./provider/llm.js";
 import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedder.js";
@@ -135,7 +136,7 @@ async function main() {
     const provider = await createLLMProvider(agentConfig);
     const embedder = await createEmbedderProvider(agentConfig);
     const imageProvider = await createImageProvider(agentConfig);
-    const tools = getBuiltinTools().filter((t) => agentConfig.tools.includes(t.name));
+    const tools = getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name));
     const workspaceDir = getAgentDir(agentId);
 
     // 只有配置了真实 embedder 时才启用向量索引；Mock embedder 的随机向量没有检索意义
