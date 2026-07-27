@@ -127,3 +127,27 @@ fn migrate_entry(src: &Path, dst: &Path, moved: &mut usize, skipped: &mut usize)
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_resolution_contract() {
+        // B1 同源契约：desktop auth-token 解析（apps/desktop/src-tauri/src/
+        // commands.rs）与本函数必须一致——env 优先，兜底 data_local_dir()/cloudmind-zome
+        unsafe {
+            std::env::set_var("CLOUDMIND_DATA_DIR", "/tmp/zome-data-dir-contract-test");
+        }
+        assert_eq!(data_dir(), PathBuf::from("/tmp/zome-data-dir-contract-test"));
+        unsafe {
+            std::env::remove_var("CLOUDMIND_DATA_DIR");
+        }
+        assert_eq!(
+            data_dir(),
+            dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("cloudmind-zome")
+        );
+    }
+}
