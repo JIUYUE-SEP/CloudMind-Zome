@@ -1195,6 +1195,31 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(await repo.listBySession("agent-1")).toHaveLength(0);
     expect(await loadTopicState("agent-1")).toBeUndefined();
   });
+
+  it("TopicTracker 交接（P3-6）：restoreOpen 后新 worker 的开放话题含交接消息 id（不分叉）", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+    });
+
+    // 模拟被替换 worker 留下的开放话题（经 topic-state.json 快照交接进新 worker）
+    const u1 = seqMessage("u1", "交接前的话题", 0);
+    await repo.append({ ...u1, sessionId: "agent-1" });
+    worker.restoreTopicOpen([u1], "agent-1");
+
+    const u2 = seqMessage("u2", "接着说", 1);
+    await repo.append({ ...u2, sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [u2], sessionId: "agent-1", onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 新 worker 的开放话题快照：交接的 u1 + 本轮 u2/assistant 都在，边界不分叉
+    const state = await loadTopicState("agent-1");
+    expect(state?.open?.messageIds).toContain("u1");
+    expect(state?.open?.messageIds).toContain("u2");
+    expect(state?.open?.messageIds!.length).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe("AgentWorker L4 语义检索集成（Phase 3）", () => {

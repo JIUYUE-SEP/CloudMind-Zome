@@ -36,6 +36,16 @@ export class TopicTracker {
     };
   }
 
+  /**
+   * 从落盘快照重建开放话题（P3-6 配置变更 worker 替换交接）：
+   * 正文按 id 从热存储回读（调用方职责），此处只恢复内存态
+   */
+  restoreOpen(messages: ChatMessage[], sourceId: string, sourceName?: string): void {
+    this.current = [...messages];
+    this.lastSourceId = sourceId;
+    this.lastSourceName = sourceName;
+  }
+
   /** 新用户消息到达（turn 开始前）调用；返回被关闭的话题片段（无则 null） */
   onUserMessage(msg: ChatMessage, sourceId: string, sourceName?: string): TopicSegment | null {
     this.lastSourceId = sourceId;

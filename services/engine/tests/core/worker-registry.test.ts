@@ -1,0 +1,156 @@
+import { describe, it, expect, vi } from "vitest";
+import { AgentWorker } from "../../src/core/agent-worker.js";
+import { WorkerRegistry } from "../../src/core/worker-registry.js";
+import { MockLLMProvider } from "../../src/provider/llm.js";
+import type { LLMProvider, LLMEvent } from "../../src/provider/types.js";
+import type { ChatMessage } from "@mindcloud/shared";
+import type { IMessageRepository } from "../../src/memory/repositories/types.js";
+
+function userMessage(text: string): ChatMessage {
+  return {
+    id: `u_${text}`,
+    role: "user",
+    content: [{ type: "text", text }],
+    createdAt: "2024-01-01",
+  };
+}
+
+function makeWorker(provider: LLMProvider): AgentWorker {
+  return new AgentWorker({
+    agentId: "a1",
+    model: "mock",
+    provider,
+    tools: [],
+    workspaceDir: "/tmp",
+    messageRepository: {
+      append: async () => {},
+      listBySession: async () => [],
+      getByIds: async () => [],
+      archiveAndRemove: async () => {},
+      getArchivedByIds: async () => [],
+    } as IMessageRepository,
+    approve: async () => true,
+  });
+}
+
+/** 首次 chat 阻塞在 gate 上的 provider：模拟在途长 turn */
+class GateProvider implements LLMProvider {
+  name = "gate";
+  private release: (() => void) | undefined;
+  private entered!: Promise<void>;
+  private markEntered!: () => void;
+
+  constructor() {
+    this.entered = new Promise<void>((r) => {
+      this.markEntered = r;
+    });
+  }
+
+  supportsModel() {
+    return true;
+  }
+
+  waitUntilEntered(): Promise<void> {
+    return this.entered;
+  }
+
+  open(): void {
+    this.release?.();
+  }
+
+  async *chat(): AsyncIterable<LLMEvent> {
+    this.markEntered();
+    await new Promise<void>((r) => {
+      this.release = r;
+    });
+    yield { type: "text.delta", delta: "ok" };
+    yield { type: "step.end" };
+  }
+}
+
+describe("WorkerRegistry 配置变更竞态（P3-6）", () => {
+  it("retire：排队 job 显式 settle（subagent 前台不挂起）+ 终帧，在途 job 正常跑完", async () => {
+    const provider = new GateProvider();
+    const worker = makeWorker(provider);
+    const registry = new WorkerRegistry();
+    await registry.getOrCreate("a1", async () => worker);
+
+    // j1 在途（卡在 gate），j2 排队
+    const onDone1 = vi.fn();
+    worker.enqueue({ id: "j1", messages: [userMessage("first")], onEvent: () => {}, onDone: onDone1 });
+    await provider.waitUntilEntered();
+    const events2: LLMEvent[] = [];
+    const onDone2 = vi.fn();
+    worker.enqueue({
+      id: "j2",
+      messages: [userMessage("second")],
+      onEvent: (e) => events2.push(e),
+      onDone: onDone2,
+    });
+
+    registry.retire("a1");
+
+    // 排队 job 立即 settle：onDone 带退役错误 + turn.end 终帧 + 重发提示
+    expect(onDone2).toHaveBeenCalledTimes(1);
+    expect(String(onDone2.mock.calls[0][0])).toContain("retired");
+    const types2 = events2.map((e) => e.type);
+    expect(types2).toContain("turn.end");
+    const deltas2 = events2
+      .filter((e) => e.type === "text.delta")
+      .map((e) => (e as { delta: string }).delta);
+    expect(deltas2.some((d) => d.includes("配置已变更"))).toBe(true);
+
+    // 在途 job 打开 gate 后正常跑完（无错误）
+    provider.open();
+    await vi.waitFor(() => expect(onDone1).toHaveBeenCalledTimes(1));
+    expect(onDone1).toHaveBeenCalledWith(undefined);
+  });
+
+  it("getOrCreate 在被替换 worker 排空前不新建：两个 turn 不并发，排空后共享同一新 worker", async () => {
+    const registry = new WorkerRegistry();
+    const provider = new GateProvider();
+    const oldWorker = makeWorker(provider);
+    await registry.getOrCreate("a1", async () => oldWorker);
+
+    oldWorker.enqueue({ id: "j1", messages: [userMessage("busy")], onEvent: () => {}, onDone: () => {} });
+    await provider.waitUntilEntered();
+    registry.retire("a1");
+
+    let created = 0;
+    const newWorker = makeWorker(new MockLLMProvider());
+    const pending = registry.getOrCreate("a1", async () => {
+      created++;
+      return newWorker;
+    });
+
+    // 在途 turn 未跑完：create 未被调用（不并发）
+    await new Promise((r) => setTimeout(r, 50));
+    expect(created).toBe(0);
+
+    provider.open();
+    const resolved = await pending;
+    expect(created).toBe(1);
+    expect(resolved).toBe(newWorker);
+
+    // 再次解析：直接命中注册表，不重复创建
+    const again = await registry.getOrCreate("a1", async () => {
+      created++;
+      return makeWorker(new MockLLMProvider());
+    });
+    expect(again).toBe(newWorker);
+    expect(created).toBe(1);
+  });
+
+  it("create 返回 undefined 时不入表（agent 不存在语义不变）", async () => {
+    const registry = new WorkerRegistry();
+    const res = await registry.getOrCreate("ghost", async () => undefined);
+    expect(res).toBeUndefined();
+    // 再次调用仍会尝试创建（未缓存空结果）
+    let called = 0;
+    await registry.getOrCreate("ghost", async () => {
+      called++;
+      return undefined;
+    });
+    expect(called).toBe(1);
+  });
+});

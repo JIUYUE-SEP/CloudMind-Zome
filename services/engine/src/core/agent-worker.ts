@@ -164,6 +164,51 @@ export class AgentWorker {
     this.processQueue();
   }
 
+  /**
+   * 退役（P3-6，配置变更竞态）：进程内 worker 被替换时调用。
+   * 与 pause（可 resume）语义分开——退役不可逆：
+   * - 在途 job 继续跑完（结果正常落盘）；
+   * - 排队未执行的 job 显式收尾：发 turn.end 终帧（前端"生成中"解锁）+
+   *   onDone(aborted)——runAgentCollect 的 Promise 立即 settle，subagent
+   *   前台调用不挂起；用户消息已落盘，前端提示重发。
+   */
+  retire(): void {
+    this.status = "paused";
+    const queued = this.queue.splice(0, this.queue.length);
+    for (const job of queued) {
+      const err = new Error("worker retired: agent config changed");
+      try {
+        job.onEvent({ type: "text.delta", delta: "\n配置已变更，这条消息未处理，请重发。" });
+        job.onEvent({ type: "turn.end" });
+      } catch (eventErr) {
+        console.error("retire: failed to emit terminal frames", eventErr);
+      }
+      try {
+        job.onDone?.(err);
+      } catch (doneErr) {
+        console.error("retire: job onDone callback failed", doneErr);
+      }
+    }
+  }
+
+  /**
+   * 等待在途 job 跑完且队列清空（P3-6）：配置变更后新 worker 的创建等这个
+   * 信号，保证两个 turn 不并发交错（FIFO 串行不变量）。
+   */
+  async waitForIdle(): Promise<void> {
+    while (this.runningJob !== null || this.queue.length > 0) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  /**
+   * TopicTracker 交接（P3-6）：worker 被替换时，从 topic-state.json 的开放
+   * 话题快照重建（P1-2/M-b 已按 step 落盘），新旧 worker 的话题边界不分叉。
+   */
+  restoreTopicOpen(messages: ChatMessage[], sourceId: string, sourceName?: string): void {
+    this.topicTracker.restoreOpen(messages, sourceId, sourceName);
+  }
+
   /** 优雅关停（P1-2）：等待压缩队列清空——进程退出前调用，避免 pending 压缩段被丢弃 */
   async drainCompression(): Promise<void> {
     await this.compressionQueue.drain();

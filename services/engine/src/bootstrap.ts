@@ -27,6 +27,7 @@ import { registerShutdownHandlers } from "./shutdown.js";
 import { PlanManager } from "./plan/manager.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
+import { WorkerRegistry } from "./core/worker-registry.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -66,15 +67,12 @@ async function resolveAgentSkillPrompts(agentConfig: AgentConfig): Promise<strin
 async function main() {
   const configRepo = new ConfigRepository();
   const agentRepository = new AgentRepository();
-  const workers = new Map<string, AgentWorker>();
+  // worker 注册表（P3-6）：创建/替换/退役的唯一权威
+  const workerRegistry = new WorkerRegistry();
 
   agentRepository.onChange = (agentId: string, _config: AgentConfig | null) => {
     void _config;
-    const worker = workers.get(agentId);
-    if (worker) {
-      worker.pause();
-      workers.delete(agentId);
-    }
+    workerRegistry.retire(agentId);
   };
 
   const sidecarClient = new SidecarClient();
@@ -127,11 +125,9 @@ async function main() {
   }
 
   async function getOrCreateWorker(agentId: string): Promise<AgentWorker | undefined> {
-    const existing = workers.get(agentId);
-    if (existing) return existing;
-
-    const agentConfig = await agentRepository.get(agentId);
-    if (!agentConfig) return undefined;
+    return workerRegistry.getOrCreate(agentId, async () => {
+      const agentConfig = await agentRepository.get(agentId);
+      if (!agentConfig) return undefined;
 
     const provider = await createLLMProvider(agentConfig);
     const embedder = await createEmbedderProvider(agentConfig);
@@ -179,8 +175,22 @@ async function main() {
         ...(agentConfig.semanticMinScore !== undefined ? { minScore: agentConfig.semanticMinScore } : {}),
       },
     });
-    workers.set(agentId, worker);
-    return worker;
+      // P3-6：TopicTracker 交接——被替换 worker 的开放话题快照（topic-state.json，
+      // P1-2/M-b 按 step 落盘）重建进新 worker，话题边界状态不分叉。
+      // 首次创建时文件通常不存在（启动对账已清理），读到即交接
+      try {
+        const topicState = await loadTopicState(agentId);
+        if (topicState?.open && topicState.open.messageIds.length > 0) {
+          const openMessages = await new MessageRepository(agentId).getByIds(topicState.open.messageIds);
+          if (openMessages.length > 0) {
+            worker.restoreTopicOpen(openMessages, topicState.open.sourceId, topicState.open.sourceName);
+          }
+        }
+      } catch (err) {
+        console.warn(`[topic] worker 话题状态交接失败（跳过）：${agentId}`, err);
+      }
+      return worker;
+    });
   }
 
   async function createLLMProvider(agentConfig: AgentConfig) {
@@ -339,7 +349,7 @@ async function main() {
   // 本 handler——那条路径的重启孤儿由上面的启动对账兜底。
   registerShutdownHandlers({
     drain: async () => {
-      await Promise.allSettled([...workers.values()].map((w) => w.drainCompression()));
+      await Promise.allSettled([...workerRegistry.all()].map((w) => w.drainCompression()));
     },
     close: async () => {
       scheduler.stop();
