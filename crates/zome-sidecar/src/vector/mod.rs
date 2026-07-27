@@ -248,7 +248,14 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
     }
 
     // 重活（读盘 + JSON 解析 + 并行建索引）在缓存写锁外完成：
-    // 避免一个 agent 的冷载入（万条级秒级）阻塞其他 agent 的首次加载
+    // 避免一个 agent 的冷载入（万条级秒级）阻塞其他 agent 的首次加载。
+    //
+    // 已知竞态（P1 review M-c，未根治）：冷载入在锁外进行期间，并发的
+    // delete_agent 可能已逐出缓存并删除磁盘目录——本函数随后把删除前读到的
+    // 旧向量重新 insert 回 INDEX_CACHE（reload 路径），被删 agent 的向量在
+    // 内存中复活（磁盘已删，重启自愈；存活期内旧记忆可被搜出/重新落盘）。
+    // 根治方向（后续立项）：delete_agent 逐出后留 tombstone/代际标记，
+    // 下方 insert 前在缓存写锁内校验"载入期间未发生删除"，失效则丢弃构建结果。
     let built = load_state(&agent_id).await?;
 
     let mut cache = INDEX_CACHE.write().await;
@@ -264,6 +271,16 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
 /// indices 目录。此前缓存进程常驻无失效入口：删除 agent 后同名重建会命中旧向量
 /// 全集，旧记忆复活并随新 upsert 重新落盘。
 /// 幂等：agent 不存在（缓存/磁盘都没有）同样返回 Ok。
+///
+/// 已知竞态（P1 review M-c，本批只补注释不根治）：
+/// 1. reload 路径：并发 get_or_load 的冷载入在缓存写锁外读盘建索引，可能把
+///    删除前的旧向量在本函数完成后重新入缓存（详见 get_or_load 注释）。
+/// 2. 在飞 upsert：engine 删除 agent 时 pause() 并不 drain 在飞 turn（agent-
+///    worker.ts），在飞 upsert 可打在删除窗口——锁释放后经旧句柄的 upsert 会
+///    经 persist_append 重建 embeddings.jsonl（下方注释的窗口），旧记忆随
+///    同名重建部分复活。
+/// 根治方向（后续立项）：逐出后在缓存写锁内删目录 + tombstone 挡 reload；
+/// engine 删除路由先 abort/drain 在飞 turn 再发 DeleteAgent RPC。
 pub async fn delete_agent(agent_id: &str) -> anyhow::Result<()> {
     let agent_id = sanitize_agent_id(agent_id)?;
 
