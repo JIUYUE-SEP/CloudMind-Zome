@@ -7,6 +7,41 @@ function isValidAgentId(id: unknown): id is string {
   return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
 }
 
+// AgentConfig 已知字段（功能 Minor-1）：POST/PUT 对未知字段显式 400，
+// 不再静默忽略——客户端写错字段名（如 provider 而非 providerId）时错误
+// 配置曾静默落盘，失败被推迟到聊天时才暴露。
+// schemaVersion 是 P1-1 落盘版本戳：GET 回显后 PUT 原样回传属合法。
+const KNOWN_AGENT_FIELDS = new Set([
+  "id", "name", "codename", "description", "persona", "tags", "representColor",
+  "providerId", "modelId", "model", "embedderProviderId", "embedderModelId",
+  "imageProviderId", "imageModelId", "temperature", "topP", "maxContextTokens",
+  "compressionModel", "topicDetectionWindowMinutes", "topicMessageThreshold",
+  "semanticSearchEnabled", "semanticTopK", "semanticMinScore",
+  "skills", "tools", "schemaVersion",
+]);
+
+/** 常见写错字段名 → 正确写法（报错信息里给提示） */
+const FIELD_HINTS: Record<string, string> = {
+  provider: "providerId",
+  model_id: "modelId",
+  embedder: "embedderProviderId",
+  image: "imageProviderId",
+  top_p: "topP",
+  max_context_tokens: "maxContextTokens",
+  compression_model: "compressionModel",
+};
+
+function unknownFieldsError(body: unknown): string | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return "请求体必须是对象";
+  }
+  const unknown = Object.keys(body).filter((k) => !KNOWN_AGENT_FIELDS.has(k));
+  if (unknown.length === 0) return undefined;
+  return `未知字段: ${unknown
+    .map((k) => (FIELD_HINTS[k] ? `${k}（你是不是想写 ${FIELD_HINTS[k]}？）` : k))
+    .join("、")}`;
+}
+
 export async function registerAgentRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/agents", {
     schema: { summary: "List all agents", tags: ["agents"] },
@@ -18,6 +53,10 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     schema: { summary: "Create a new agent", tags: ["agents"] },
   }, async (request, reply) => {
     const config = request.body as AgentConfig;
+    const fieldsError = unknownFieldsError(config);
+    if (fieldsError) {
+      return reply.status(400).send({ error: fieldsError });
+    }
     if (!config.id) {
       return reply.status(400).send({ error: "id is required" });
     }
@@ -49,6 +88,10 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     const config = request.body as AgentConfig;
     if (!isValidAgentId(id)) {
       return reply.status(400).send({ error: "Invalid agent id" });
+    }
+    const fieldsError = unknownFieldsError(config);
+    if (fieldsError) {
+      return reply.status(400).send({ error: fieldsError });
     }
     if (config.id !== undefined && config.id !== id) {
       return reply.status(400).send({ error: "Agent id in body does not match route parameter" });

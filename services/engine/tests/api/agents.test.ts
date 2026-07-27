@@ -113,6 +113,38 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  it("POST/PUT 未知字段显式 400 并指出字段名与提示（功能 Minor-1）", async () => {
+    const app = await makeApp();
+    // provider（错）vs providerId（对）：400 + 提示正确字段名
+    const badPost = await authedRequest(app.server)
+      .post("/agents")
+      .send({ id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [], provider: "p-1" });
+    expect(badPost.status).toBe(400);
+    expect(badPost.body.error).toContain("未知字段");
+    expect(badPost.body.error).toContain("provider");
+    expect(badPost.body.error).toContain("providerId");
+
+    // 无提示映射的未知字段：只报字段名
+    const badPost2 = await authedRequest(app.server)
+      .post("/agents")
+      .send({ id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [], fooBar: 1 });
+    expect(badPost2.status).toBe(400);
+    expect(badPost2.body.error).toContain("fooBar");
+
+    // PUT 同样拒绝
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    await authedRequest(app.server).post("/agents").send(agent);
+    const badPut = await authedRequest(app.server).put("/agents/a1").send({ ...agent, provider: "p-1" });
+    expect(badPut.status).toBe(400);
+    expect(badPut.body.error).toContain("providerId");
+
+    // GET 回显（含 schemaVersion 版本戳）原样 PUT 回传：合法，不误伤
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    const putRes = await authedRequest(app.server).put("/agents/a1").send(getRes.body);
+    expect(putRes.status).toBe(200);
+    await app.close();
+  });
+
   it("deletes an agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
