@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -97,6 +97,17 @@ function makeRepo(records: ChatMessageRecord[]): IMessageRepository {
 const config = { enabled: true, topK: 3, minScore: 0 };
 
 describe("SemanticRetriever", () => {
+  // 钉住系统时间（review M10 顺手修的时间炸弹）：retrieve 内部 timeDecay 用真实
+  // Date.now()，而造消息用固定 NOW——真实时间跨过 7 天档线后衰减档位漂移、测试
+  // 周期性爆炸。用 fake timers 把"现在"钉在 NOW，档位判定永不随真实时间漂移。
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("相似度 × 时间衰减打分并按降序返回", async () => {
     const indexer = makeIndexer([
       { id: "new-low", score: 0.5 },
@@ -113,6 +124,21 @@ describe("SemanticRetriever", () => {
     expect(out.map((m) => m.id)).toEqual(["new-low", "old-high"]);
     expect(out[0]!.score).toBeCloseTo(0.5);
     expect(out[1]!.score).toBeCloseTo(0.27);
+  });
+
+  it("时间衰减档位随钉住的系统时间正确切换（7 天档线两侧）", async () => {
+    const indexer = makeIndexer([{ id: "m", score: 0.5 }]);
+    const createdAt = new Date(NOW - 1 * DAY).toISOString();
+    const r = new SemanticRetriever(indexer, makeRepo([rec("m", "内容", createdAt)]), config);
+
+    // 钉在 NOW：消息 1 天前，一周内档 1.0
+    expect((await r.retrieve("a1", "q", new Set(), "default"))[0]!.score).toBeCloseTo(0.5);
+    // 系统时间前进 7 天：消息 8 天前，滑入一月内档 0.8
+    vi.setSystemTime(NOW + 7 * DAY);
+    expect((await r.retrieve("a1", "q", new Set(), "default"))[0]!.score).toBeCloseTo(0.4);
+    // 再前进 100 天：三个月以上保底档 0.3
+    vi.setSystemTime(NOW + 107 * DAY);
+    expect((await r.retrieve("a1", "q", new Set(), "default"))[0]!.score).toBeCloseTo(0.15);
   });
 
   it("排除当前历史已含消息（去重）", async () => {
