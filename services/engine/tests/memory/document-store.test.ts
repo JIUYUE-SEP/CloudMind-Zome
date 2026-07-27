@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -107,4 +107,39 @@ describe("DocumentStore", () => {
     await fs.rm(store.filePath);
     await expect(store.readLines()).resolves.toEqual([]);
   });
+
+  it("readLinesWhere：只返回 predicate 命中的记录", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    for (const v of [1, 2, 3, 4]) await store.appendLine({ v });
+    await expect(store.readLinesWhere((r) => r.v % 2 === 0)).resolves.toEqual([{ v: 2 }, { v: 4 }]);
+    await expect(store.readLinesWhere(() => false)).resolves.toEqual([]);
+  });
+
+  it("readLinesWhere：坏行跳过、文件不存在返回空", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await fs.writeFile(store.filePath, '{"v":1}\nnot-json\n{"v":2}\n', "utf-8");
+    await expect(store.readLinesWhere((r) => r.v > 0)).resolves.toEqual([{ v: 1 }, { v: 2 }]);
+    errSpy.mockRestore();
+    await fs.rm(store.filePath);
+    await expect(store.readLinesWhere(() => true)).resolves.toEqual([]);
+  });
+
+  it("readLinesWhere：超过 readLines 尺寸上限的文件仍可流式过滤", async () => {
+    // 回归背景（review M10）：归档只增不减，撞 readLines 100MB 上限后
+    // 恢复路径 getArchivedByIds 必须仍可用——流式逐行过滤，内存与文件大小无关。
+    // 用 >100MB 真实文件验证（大行压低行数，控制测试时长）。
+    const store = new DocumentStore<{ id: string; pad: string }>(path.join(tmpDir, "big.jsonl"));
+    const pad = "x".repeat(4096);
+    const line = JSON.stringify({ id: "filler", pad }) + "\n";
+    const lineBytes = Buffer.byteLength(line);
+    const lineCount = Math.ceil((100 * 1024 * 1024 + lineBytes) / lineBytes);
+    await fs.writeFile(store.filePath, line.repeat(lineCount), "utf-8");
+    await store.appendLine({ id: "target", pad: "" });
+
+    // 对照：同文件 readLines 仍抛尺寸上限（热存储红线不变）
+    await expect(store.readLines()).rejects.toThrow(/too large/);
+    const hits = await store.readLinesWhere((r) => r.id === "target");
+    expect(hits).toEqual([{ id: "target", pad: "" }]);
+  }, 60_000);
 });

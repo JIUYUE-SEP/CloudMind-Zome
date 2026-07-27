@@ -54,7 +54,8 @@ export class MessageRepository implements IMessageRepository {
   async getArchivedByIds(ids: string[]): Promise<ChatMessageRecord[]> {
     if (ids.length === 0) return [];
     const wanted = new Set(ids);
-    const all = await this.archiveStore().readLines();
-    return all.filter((m) => wanted.has(m.id));
+    // 流式过滤读（review M10）：归档只增不减，终将超过 readLines 的 100MB 上限，
+    // 而恢复路径必须在任意大小归档下可用；按 id 集合逐行过滤，内存与文件大小无关。
+    return this.archiveStore().readLinesWhere((m) => wanted.has(m.id));
   }
 }

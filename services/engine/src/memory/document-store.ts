@@ -136,6 +136,52 @@ export class DocumentStore<T extends object> {
     });
   }
 
+  /**
+   * 逐行解析：空行跳过、坏行记日志跳过（JSON 撕裂属崩溃窗口预期内）；
+   * 版本检查/迁移放在坏行跳过的 catch 之外——版本过高与迁移失败必须显式上抛。
+   */
+  private parseRecordLine(line: string): T | undefined {
+    if (!line.trim()) return undefined;
+    let parsed: T;
+    try {
+      parsed = JSON.parse(line) as T;
+    } catch (err) {
+      console.error(`Failed to parse JSONL line in ${this.filePath}: ${line}`, err);
+      return undefined;
+    }
+    const { version, data } = splitSchemaVersion(parsed);
+    return this.schema.migrate(data, version, this.filePath);
+  }
+
+  /**
+   * 流式过滤读：逐行解析、仅保留 predicate 命中的记录，内存占用与文件大小无关。
+   * 不设 readLines 的 100MB 尺寸上限、不进读缓存——归档恢复路径（getArchivedByIds）
+   * 必须在大于上限的归档上仍可用（review M10：恢复场景恰好排在上限引爆点之后）。
+   */
+  async readLinesWhere(predicate: (record: T) => boolean): Promise<T[]> {
+    const results: T[] = [];
+    let handle: fs.FileHandle | undefined;
+    try {
+      handle = await fs.open(this.filePath, "r");
+      const stream = handle.createReadStream();
+      const rl = createInterface({ input: stream });
+      try {
+        for await (const line of rl) {
+          const record = this.parseRecordLine(line);
+          if (record !== undefined && predicate(record)) results.push(record);
+        }
+      } finally {
+        rl.close();
+      }
+      return results;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    } finally {
+      await handle?.close();
+    }
+  }
+
   async readLines(options?: { limit?: number; offset?: number }): Promise<T[]> {
     const stat = await fs.stat(this.filePath).catch(() => null);
     if (stat && stat.size > 100 * 1024 * 1024) {
@@ -164,18 +210,8 @@ export class DocumentStore<T extends object> {
       const rl = createInterface({ input: stream });
       try {
         for await (const line of rl) {
-          if (!line.trim()) continue;
-          let parsed: T;
-          try {
-            parsed = JSON.parse(line) as T;
-          } catch (err) {
-            console.error(`Failed to parse JSONL line in ${this.filePath}: ${line}`, err);
-            continue;
-          }
-          // 版本检查/迁移（P1-1）放在坏行跳过的 catch 之外：
-          // 版本过高与迁移失败必须显式上抛，不能按坏行静默丢弃
-          const { version, data } = splitSchemaVersion(parsed);
-          results.push(this.schema.migrate(data, version, this.filePath));
+          const record = this.parseRecordLine(line);
+          if (record !== undefined) results.push(record);
         }
       } finally {
         rl.close();

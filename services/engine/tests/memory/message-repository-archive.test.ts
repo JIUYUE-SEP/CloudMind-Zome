@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
+import { getAgentDir } from "../../src/config/paths.js";
 import { restoreDataDir } from "../helpers/env.js";
 
 function rec(id: string, sessionId = "s1"): ChatMessageRecord {
@@ -75,4 +76,29 @@ describe("MessageRepository 归档", () => {
     await repo.archiveAndRemove([]);
     expect(await repo.listBySession("s1")).toHaveLength(1);
   });
+
+  it("恢复路径不受归档文件大小影响：>100MB 归档仍可 getArchivedByIds", async () => {
+    // 回归背景（review M10）：messages_archived.jsonl 只增不减，撞 readLines
+    // 100MB 硬上限后旧实现永远抛错——最需要恢复的场景恰好排在引爆点之后。
+    const repo = new MessageRepository("a1");
+    await repo.append(rec("m1"));
+    await repo.append(rec("m2"));
+    await repo.archiveAndRemove(["m1", "m2"]);
+
+    // 直接把归档灌到 100MB 以上（大行压低行数，控制测试时长）
+    const archivePath = path.join(getAgentDir("a1"), "messages_archived.jsonl");
+    const filler = JSON.stringify({
+      id: "filler",
+      sessionId: "s1",
+      role: "user",
+      content: [{ type: "text", text: "x".repeat(4096) }],
+      createdAt: new Date().toISOString(),
+    }) + "\n";
+    const lineCount = Math.ceil((100 * 1024 * 1024 + Buffer.byteLength(filler)) / Buffer.byteLength(filler));
+    await fs.appendFile(archivePath, filler.repeat(lineCount), "utf-8");
+
+    const archived = await repo.getArchivedByIds(["m1", "m2"]);
+    expect(archived.map((m) => m.id).sort()).toEqual(["m1", "m2"]);
+    expect(await repo.getArchivedByIds(["ghost"])).toEqual([]);
+  }, 60_000);
 });
