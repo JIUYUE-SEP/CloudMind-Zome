@@ -684,13 +684,14 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     worker.enqueue({ id: "j2", messages: [seqMessage("u2", "第二个问题", 1)], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
-    // 后台压缩队列：压缩档落盘（CapturingProvider 的 "ok" 走兜底摘要）
-    await vi.waitFor(async () => {
-      const files = await fs
-        .readdir(path.join(tmpDir, "agents", "agent-1", "_compressed"))
-        .catch(() => [] as string[]);
-      expect(files.filter((f) => f.endsWith(".md"))).toHaveLength(1);
-    });
+    // 压缩在后台队列执行：先 drain 再断言。此前只在 vi.waitFor 里等压缩档
+    // 出现——写档与 archiveAndRemove 之间有窗口，热存储清空的断言在全量跑
+    // （机器慢）时打在窗口里 flaky
+    await worker.drainCompression();
+    const files = await fs
+      .readdir(path.join(tmpDir, "agents", "agent-1", "_compressed"))
+      .catch(() => [] as string[]);
+    expect(files.filter((f) => f.endsWith(".md"))).toHaveLength(1);
 
     // 热存储中的 user/assistant 消息全部被归档清理
     expect(await repo.listBySession("agent-1")).toHaveLength(0);
