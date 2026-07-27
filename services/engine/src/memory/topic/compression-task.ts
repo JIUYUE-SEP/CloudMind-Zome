@@ -1,6 +1,7 @@
 import type { IMessageRepository } from "../repositories/types.js";
 import type { LLMProvider } from "../../provider/types.js";
 import { appendMindExperiences } from "../../mind/mind-files.js";
+import { isInjectionSuspect } from "../../mind/injection-filter.js";
 import { compressTopic } from "./compressor.js";
 import { removeCompressedTopic, writeCompressedTopic } from "./store.js";
 import type { TopicSegment } from "./types.js";
@@ -28,6 +29,16 @@ export async function runCompressionTask(
   }
   // 压缩失败不 fallback 主模型语义：异常由调用方（队列/对账）统一告警，原始消息留在热存储
   const compressed = await compressTopic(segment, deps.provider, deps.model);
+  // P2 review Major-3：摘要本体（主题/关键结论/正文）同样是持久化回流通道
+  // （L5），落档前过与 MIND 沉淀同一注入检测——命中则降级为仅归档
+  // （消息离开热存储进归档、不进 L5 回流），不再落档。误伤口径：讨论注入
+  // 手法本身的话题可能被误降为仅归档（不丢消息、热存储有界性不变，接受）。
+  const summaryText = [compressed.label, ...compressed.keyPoints, compressed.summary].join("\n");
+  if (isInjectionSuspect(summaryText)) {
+    console.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${compressed.topicId}`);
+    await deps.messageRepository.archiveAndRemove(compressed.msgIds);
+    return;
+  }
   await writeCompressedTopic(deps.agentId, compressed);
   // Phase 7：压缩落档成功后顺手沉淀经验到 MIND.md（append-only）。
   // 失败仅 warn 跳过，不影响压缩主流程
