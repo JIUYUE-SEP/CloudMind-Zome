@@ -393,4 +393,80 @@ describe("Session WebSocket API", () => {
     await app.close();
     await cleanup();
   });
+
+  it("群聊 remember:true 对 run_command 被引擎拒绝（P2-2 回归）：其他工具 remember 仍生效", async () => {
+    // P2-2（功能 M1）：pending 曾存复合键 "agentX:run_command"，isApprovalRememberable
+    // 恒通过 → run_command 在群聊可被 remember 免问。修复后裸 toolName 判定：
+    // run_command 两次调用都要审批；safe_writer remember 后第二次直接放行。
+    const executions: string[] = [];
+    const makeDangerous = (name: string): Tool => ({
+      name,
+      description: `dangerous ${name}`,
+      parameters: z.object({}),
+      accesses: [],
+      requiresApproval: true,
+      async execute(): Promise<ToolResult> {
+        executions.push(name);
+        return { success: true, output: "ran" };
+      },
+    });
+
+    const { context, cleanup, sessionId, providers } = await buildSessionWsContext(
+      ["a1"],
+      [makeDangerous("run_command"), makeDangerous("safe_writer")],
+    );
+    providers.get("a1")!.setNextToolCalls([{ toolCallId: "tc1", name: "run_command", arguments: {} }]);
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+
+    const approvalRequests: { approvalId: string; toolName: string }[] = [];
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "round 1" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "tool.approval_request") {
+          approvalRequests.push({ approvalId: message.approvalId, toolName: message.toolName });
+          // 自发帧客户端：批准并请求本会话免问
+          client.send(
+            JSON.stringify({ type: "tool.approval", approvalId: message.approvalId, approved: true, remember: true }),
+          );
+          return;
+        }
+        if (message.type === "turn.end") {
+          turnEnds++;
+          const provider = providers.get("a1")!;
+          if (turnEnds === 1) {
+            provider.setNextToolCalls([{ toolCallId: "tc2", name: "run_command", arguments: {} }]);
+            client.send(JSON.stringify({ text: "round 2" }));
+          } else if (turnEnds === 2) {
+            provider.setNextToolCalls([{ toolCallId: "tc3", name: "safe_writer", arguments: {} }]);
+            client.send(JSON.stringify({ text: "round 3" }));
+          } else if (turnEnds === 3) {
+            provider.setNextToolCalls([{ toolCallId: "tc4", name: "safe_writer", arguments: {} }]);
+            client.send(JSON.stringify({ text: "round 4" }));
+          } else {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 15000);
+    });
+
+    // run_command（round 1/2）：remember:true 不被记住，两次都要审批
+    expect(approvalRequests.map((r) => r.toolName)).toEqual(["run_command", "run_command", "safe_writer"]);
+    // 四次调用都经批准后执行（无免问旁路）
+    expect(executions).toEqual(["run_command", "run_command", "safe_writer", "safe_writer"]);
+
+    await app.close();
+    await cleanup();
+  });
 });

@@ -50,10 +50,10 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       let session: Awaited<ReturnType<typeof context.sessionRepository.get>> = undefined;
       let ready = false;
 
-      // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
+      // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持，维度 agent+工具）
       const pendingApprovals = new Map<
         string,
-        { toolName: string; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }
+        { agentId: string; toolName: string; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }
       >();
       const autoApprovedTools = new Set<string>();
 
@@ -65,7 +65,10 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             pendingApprovals.delete(req.id);
             resolve(false); // 超时视为拒绝
           }, APPROVAL_TIMEOUT_MS);
-          pendingApprovals.set(req.id, { toolName: rememberKey, resolve, timer });
+          // pending 记裸 toolName（P2-2）：免问资格判定必须看工具本身——
+          // 复合键 "agentX:run_command" 永远不在 NO_REMEMBER_TOOLS 内，
+          // guard 恒通过导致 run_command 在群聊可被 remember 免问（功能 M1）
+          pendingApprovals.set(req.id, { agentId, toolName: req.toolName, resolve, timer });
           safeSend(socket, {
             agentId,
             type: "tool.approval_request",
@@ -120,8 +123,10 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             if (pending) {
               clearTimeout(pending.timer);
               pendingApprovals.delete(data.approvalId);
+              // 资格判定用裸 toolName（NO_REMEMBER_TOOLS 按工具名排除），
+              // 入名单仍按 agent+工具 维度，不误放同会话其他 agent
               if (data.approved && data.remember && isApprovalRememberable(pending.toolName)) {
-                autoApprovedTools.add(pending.toolName);
+                autoApprovedTools.add(`${pending.agentId}:${pending.toolName}`);
               }
               pending.resolve(data.approved === true);
             }
