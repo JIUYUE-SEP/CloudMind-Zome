@@ -1,26 +1,13 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { z } from "zod";
 import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
-function resolveWorkspacePath(workspaceDir: string, filePath: string): string {
-  if (path.isAbsolute(filePath)) {
-    throw new Error("absolute paths are not allowed");
-  }
-  const fullPath = path.resolve(workspaceDir, filePath);
-  const rel = path.relative(workspaceDir, fullPath);
-  if (rel.startsWith("..") || rel === "..") {
-    throw new Error("path traversal detected");
-  }
-  return fullPath;
-}
-
 function resolveReadPath(ctx: ToolContext, filePath: string): Promise<string> {
-  if (ctx.projectRoot) {
-    return resolveProjectPath(ctx.projectRoot, filePath);
-  }
-  return Promise.resolve(resolveWorkspacePath(ctx.workspaceDir, filePath));
+  // P2-1：fallback（chat/scheduler/subagent/blueprint）与 code 模式同一实现——
+  // resolveProjectPath 自带 realpath 二次比较，堵 junction/symlink 逃逸
+  // （安全 review 路径 Major-1）；词法-only 的 resolveWorkspacePath 已删
+  return resolveProjectPath(ctx.projectRoot ?? ctx.workspaceDir, filePath);
 }
 
 export const readTool: Tool = {

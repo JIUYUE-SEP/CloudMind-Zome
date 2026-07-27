@@ -1,6 +1,13 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 
+/**
+ * Windows 设备保留名（安全 review Minor-4）：CON/PRN/AUX/NUL/COM1-9/LPT1-9
+ * （含带扩展名形式，如 CON.txt）在 win32 上解析到设备对象而非文件——
+ * realpathNearest 与词法校验都放行，读写会落到设备上，一律拒绝。
+ */
+const WINDOWS_RESERVED_BASENAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
 function isPathInsideProjectRoot(resolvedRoot: string, fullPath: string): boolean {
   const resolvedPath = path.resolve(fullPath);
 
@@ -50,6 +57,13 @@ export async function resolveProjectPath(
 ): Promise<string> {
   if (path.isAbsolute(relativePath)) {
     throw new Error("absolute paths are not allowed");
+  }
+
+  if (
+    process.platform === "win32" &&
+    WINDOWS_RESERVED_BASENAME.test(path.basename(relativePath))
+  ) {
+    throw new Error(`reserved device name: ${path.basename(relativePath)}`);
   }
 
   const resolvedRoot = path.resolve(projectRoot);

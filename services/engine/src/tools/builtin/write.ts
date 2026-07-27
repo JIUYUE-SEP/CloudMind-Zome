@@ -15,10 +15,10 @@ const PROTECTED_FILES = new Set([
   ".master-key",
 ]);
 
-function resolveAllowedWritePath(
+async function resolveAllowedWritePath(
   workspaceDir: string,
   filePath: string,
-): { fullPath: string; relativePath: string } {
+): Promise<{ fullPath: string; relativePath: string }> {
   if (path.isAbsolute(filePath)) {
     throw new Error("absolute paths are not allowed");
   }
@@ -29,17 +29,13 @@ function resolveAllowedWritePath(
     throw new Error(`cannot write protected file: ${filePath}`);
   }
 
+  // P2-1：fallback 复用 resolveProjectPath（realpath 二次比较堵 junction/
+  // symlink 写穿，安全 review 路径 Major-2；win32 小写比较顺带对齐 Minor-1，
+  // 词法-only 的前缀比较已删）。root 仍是 workspaceDir/files（行为不变）；
+  // files/ 可能尚不存在（首次写入），先建目录让 realpath 可解析
   const filesDir = path.join(workspaceDir, "files");
-  const fullPath = path.resolve(filesDir, normalized);
-  const resolvedFilesDir = path.resolve(filesDir);
-
-  if (
-    fullPath !== resolvedFilesDir &&
-    !fullPath.startsWith(resolvedFilesDir + path.sep)
-  ) {
-    throw new Error("path is outside allowed workspace");
-  }
-
+  await fs.mkdir(filesDir, { recursive: true });
+  const fullPath = await resolveProjectPath(filesDir, normalized);
   return { fullPath, relativePath: normalized };
 }
 

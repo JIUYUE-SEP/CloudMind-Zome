@@ -86,7 +86,7 @@ describe("writeTool", () => {
   it("rejects path traversal", async () => {
     const result = await writeTool.execute(makeCtx(workspaceDir), { path: "../outside.txt", content: "x" });
     expect(result.success).toBe(false);
-    expect(result.error).toContain("path is outside allowed workspace");
+    expect(result.error).toContain("path traversal detected");
   });
 
   it("rejects traversal to protected agent.json", async () => {
@@ -104,7 +104,7 @@ describe("writeTool", () => {
   it("rejects deep path traversal", async () => {
     const result = await writeTool.execute(makeCtx(workspaceDir), { path: "../../etc/passwd", content: "x" });
     expect(result.success).toBe(false);
-    expect(result.error).toContain("path is outside allowed workspace");
+    expect(result.error).toContain("path traversal detected");
   });
 
   it("writes files inside the workspace files subdirectory", async () => {
@@ -129,6 +129,86 @@ describe("writeTool", () => {
     const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "config.json", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("cannot write protected file");
+  });
+});
+
+describe("chat 模式 fallback 路径安全（P2-1）", () => {
+  let workspaceDir: string;
+  let outsideDir: string;
+
+  beforeEach(() => {
+    workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "engine-fallback-ws-"));
+    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "engine-fallback-out-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("read：fallback 下 junction 逃逸被拒绝", async () => {
+    fs.writeFileSync(path.join(outsideDir, "secret.txt"), "boundary-outside");
+    // junction（Windows 无需管理员）；POSIX 下 type 被忽略即普通 dir symlink
+    fs.symlinkSync(outsideDir, path.join(workspaceDir, "evil"), "junction");
+
+    const result = await readTool.execute(makeCtx(workspaceDir), { path: "evil/secret.txt" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("path traversal detected");
+  });
+
+  it("write：fallback 下 junction 写穿被拒绝，边界外不产生文件", async () => {
+    fs.mkdirSync(path.join(workspaceDir, "files"), { recursive: true });
+    fs.symlinkSync(outsideDir, path.join(workspaceDir, "files", "evil"), "junction");
+
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "evil/x.txt", content: "x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("path traversal detected");
+    expect(fs.existsSync(path.join(outsideDir, "x.txt"))).toBe(false);
+  });
+
+  it("read：workspace 内的 junction 指向 workspace 内目录仍可读（不误伤）", async () => {
+    // 文件 symlink 在 Windows 需管理员/开发者模式，目录 junction 不需要
+    fs.mkdirSync(path.join(workspaceDir, "real-dir"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "real-dir", "a.txt"), "inside");
+    fs.symlinkSync(path.join(workspaceDir, "real-dir"), path.join(workspaceDir, "link-dir"), "junction");
+
+    const result = await readTool.execute(makeCtx(workspaceDir), { path: "link-dir/a.txt" });
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("inside");
+  });
+
+  it("write：files/ 下新建多级目录的新文件正常写入（realpathNearest 祖先回溯）", async () => {
+    const result = await writeTool.execute(makeCtx(workspaceDir), { path: "sub/dir/new.txt", content: "hello" });
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(workspaceDir, "files", "sub", "dir", "new.txt"), "utf-8")).toBe("hello");
+  });
+
+  it("read：正常 files/ 读不受影响", async () => {
+    fs.mkdirSync(path.join(workspaceDir, "files"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "files", "notes.md"), "notes");
+    const result = await readTool.execute(makeCtx(workspaceDir), { path: "files/notes.md" });
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("notes");
+  });
+
+  it("Windows 保留名被拒绝（CON/NUL/PRN，含扩展名与小写）", async () => {
+    const isWin = process.platform === "win32";
+    for (const name of ["CON", "nul.txt", "PRN", "com1", "LPT9.md"]) {
+      const w = await writeTool.execute(makeCtx(workspaceDir), { path: name, content: "x" });
+      const r = await readTool.execute(makeCtx(workspaceDir), { path: name });
+      if (isWin) {
+        expect(w.success).toBe(false);
+        expect(w.error).toContain("reserved device name");
+        expect(r.success).toBe(false);
+        expect(r.error).toContain("reserved device name");
+      } else {
+        // POSIX 无设备保留名语义：按普通文件写入，可读回（fallback 写 root 为 files/）
+        expect(w.success).toBe(true);
+        const rr = await readTool.execute(makeCtx(workspaceDir), { path: `files/${name}` });
+        expect(rr.success).toBe(true);
+        expect(rr.output).toBe("x");
+      }
+    }
   });
 });
 
