@@ -24,6 +24,34 @@ const COMPACTION_MIN_LINES: usize = 100;
 /// 且规避近似图在大量并列距离时的召回波动（如 50 个距离全相同的点）
 const LINEAR_SCAN_MAX: usize = 256;
 
+// ---- 内存观测（P1-5，review M9）----
+// 全量驻留不设上限、不做逐出：单用户本地场景量化评估与根治触发条件见
+// docs/架构文档.md §9.1。此处只负责观测——驻留估算随规模记录，超阈值升 warn。
+
+/// 每 doc 驻留内存估算的固定开销（doc_id 映射、Vec/String 头、HNSW 层间链接）
+const PER_DOC_OVERHEAD_BYTES: usize = 1024;
+/// 向量驻留份数：docs HashMap（持久化/重载事实源）与 HNSW 图
+/// （hnsw_rs 的 Point 按值持有数据）各持一份
+const VECTOR_RESIDENT_COPIES: usize = 2;
+/// 运行期驻留估算的记录档位：docs 每跨一档记录一次
+const MEM_LOG_STRIDE_DOCS: usize = 10_000;
+/// 驻留告警阈值：1536 维 ≈ 650MB 驻留；超过应评估数据治理（§9.1 触发条件）
+const MEM_WARN_DOCS: usize = 50_000;
+
+fn estimate_resident_bytes(doc_count: usize, dim: usize) -> usize {
+    doc_count * (dim * std::mem::size_of::<f32>() * VECTOR_RESIDENT_COPIES + PER_DOC_OVERHEAD_BYTES)
+}
+
+/// 从 before 增至 after 是否跨过 MEM_LOG_STRIDE_DOCS 档位（重复 upsert 同
+/// doc_id 不增长 docs，自然不触发）
+fn crossed_mem_stride(before: usize, after: usize) -> bool {
+    after > before && after / MEM_LOG_STRIDE_DOCS != before / MEM_LOG_STRIDE_DOCS
+}
+
+fn mem_log_is_warn(doc_count: usize) -> bool {
+    doc_count >= MEM_WARN_DOCS
+}
+
 /// embeddings.jsonl 记录格式当前版本（P1-1，与 engine 侧 JSONL 同一方案：
 /// 每行记录带 schemaVersion 字段；无字段的旧行视为 v1，高于当前版本显式报错）
 const EMBEDDINGS_SCHEMA_VERSION: u32 = 1;
@@ -61,13 +89,39 @@ impl VectorIndexState {
             );
             return;
         }
+        let before = self.docs.len();
         self.docs.insert(doc_id.to_string(), embedding.to_vec());
         // 增量插入单点（P0-5）：成本 O(log n) 级，不再 dirty 后 search 前全量重建
         let internal_id = self.ids.len();
         self.index.insert((embedding, internal_id));
         self.ids.push(doc_id.to_string());
         self.doc_ids.insert(doc_id.to_string(), internal_id);
+        // 内存观测（P1-5）：每跨 1 万条档位记录驻留估算，超 5 万条升 warn
+        if crossed_mem_stride(before, self.docs.len()) {
+            self.log_mem_stats(None);
+        }
         self.persist_append(doc_id, embedding).await;
+    }
+
+    /// 内存观测（P1-5，M9）：驻留估算随规模落日志。估算口径：向量 2 份
+    /// （docs + HNSW Point）+ 每 doc 固定开销；file_bytes 仅冷载入时可知。
+    fn log_mem_stats(&self, file_bytes: Option<u64>) {
+        let doc_count = self.docs.len();
+        let est_mb = estimate_resident_bytes(doc_count, self.dim) / (1 << 20);
+        let file_mb = file_bytes.map(|b| b / (1 << 20));
+        if mem_log_is_warn(doc_count) {
+            tracing::warn!(
+                dir = %self.dir.display(), docs = doc_count, dim = self.dim,
+                est_resident_mb = est_mb, file_mb = ?file_mb,
+                "vector index resident estimate above warn threshold (see docs/架构文档.md §9.1 triggers)"
+            );
+        } else {
+            tracing::info!(
+                dir = %self.dir.display(), docs = doc_count, dim = self.dim,
+                est_resident_mb = est_mb, file_mb = ?file_mb,
+                "vector index resident estimate"
+            );
+        }
     }
 
     /// 只读检索：索引在 upsert 时已增量更新，search 不再做任何重建，
@@ -316,14 +370,17 @@ async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexStat
     }
     parallel_insert(&index, &items);
 
-    Ok(Arc::new(RwLock::new(VectorIndexState {
+    let state = VectorIndexState {
         dir,
         dim,
         docs,
         index,
         ids,
         doc_ids,
-    })))
+    };
+    // 冷载入内存观测（P1-5）：每次启动记录一次全量驻留估算（含文件体积）
+    state.log_mem_stats(Some(content.len() as u64));
+    Ok(Arc::new(RwLock::new(state)))
 }
 
 /// 众数维度：混入异维数据时以多数派为准（更换 provider 后新数据随时间成为多数）。
@@ -454,4 +511,35 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     (dot / (norm_a.sqrt() * norm_b.sqrt())) as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn estimate_resident_bytes_matches_1536_dim_expectation() {
+        // 1536 维（text-embedding-3-small）：每 doc = 1536×4B×2 份 + 1KB ≈ 13.3KB
+        assert_eq!(estimate_resident_bytes(1, 1536), 1536 * 4 * 2 + 1024);
+        assert_eq!(estimate_resident_bytes(0, 1536), 0);
+        // 50_000 条 ≈ 650MB——与 MEM_WARN_DOCS 阈值口径一致
+        let est_mb = estimate_resident_bytes(50_000, 1536) / (1 << 20);
+        assert!((600..=700).contains(&est_mb), "est {}MB out of expected range", est_mb);
+    }
+
+    #[test]
+    fn crossed_mem_stride_only_on_growth_across_boundary() {
+        assert!(crossed_mem_stride(9_999, 10_000));
+        assert!(crossed_mem_stride(19_999, 20_001));
+        assert!(!crossed_mem_stride(10_000, 10_001)); // 档内增长不触发
+        assert!(!crossed_mem_stride(10_000, 10_000)); // 重复 upsert 同 doc_id 不触发
+        assert!(!crossed_mem_stride(0, 1));
+    }
+
+    #[test]
+    fn mem_log_warn_threshold_boundary() {
+        assert!(!mem_log_is_warn(MEM_WARN_DOCS - 1));
+        assert!(mem_log_is_warn(MEM_WARN_DOCS));
+        assert!(mem_log_is_warn(MEM_WARN_DOCS + 1));
+    }
 }
