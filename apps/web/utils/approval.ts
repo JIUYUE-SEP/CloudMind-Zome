@@ -40,7 +40,9 @@ export interface ApprovalResponsePayload {
 // 每次都必须人工确认的工具：即使客户端点了"本会话不再询问"，
 // 引擎也不会记住（与 services/engine/src/api/ws/validation.ts 的名单保持一致）。
 // run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
-const NO_REMEMBER_TOOLS = new Set(["run_command"]);
+// write_file/edit_file（P2-3）：写操作是注入攻击的主要落地路径
+// （诱导覆写源码/配置），一律每次批。
+const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file"]);
 
 export function isApprovalRememberable(toolName: string): boolean {
   return !NO_REMEMBER_TOOLS.has(toolName);

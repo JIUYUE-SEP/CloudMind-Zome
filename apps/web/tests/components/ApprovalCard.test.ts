@@ -45,8 +45,9 @@ describe("ApprovalCard", () => {
   });
 
   it("emits remember respond when clicking 本会话不再询问", async () => {
+    // bash 保留 remember（白名单安全命令）；写类工具 P2-3 起不可 remember
     const wrapper = mount(ApprovalCard, {
-      props: { ...baseProps, toolName: "edit_file", args: { path: "a.ts" } },
+      props: { ...baseProps, toolName: "bash", args: { command: "ls" } },
     });
     const btn = wrapper.findAll("button").find((b) => b.text() === "本会话不再询问");
     await btn!.trigger("click");
@@ -55,14 +56,17 @@ describe("ApprovalCard", () => {
     ]);
   });
 
-  it("disables remember with hint for run_command (每次都必须确认)", async () => {
-    const wrapper = mount(ApprovalCard, { props: baseProps }); // toolName: run_command
-    const btn = wrapper.findAll("button").find((b) => b.text() === "本会话不再询问");
-    expect(btn!.attributes("disabled")).toBeDefined();
-    expect(wrapper.text()).toContain("该工具每次都需要确认");
-    await btn!.trigger("click");
-    expect(wrapper.emitted("respond")).toBeUndefined();
-  });
+  it.each(["run_command", "write_file", "edit_file"])(
+    "disables remember with hint for %s (每次都必须确认)",
+    async (toolName) => {
+      const wrapper = mount(ApprovalCard, { props: { ...baseProps, toolName } });
+      const btn = wrapper.findAll("button").find((b) => b.text() === "本会话不再询问");
+      expect(btn!.attributes("disabled")).toBeDefined();
+      expect(wrapper.text()).toContain("该工具每次都需要确认");
+      await btn!.trigger("click");
+      expect(wrapper.emitted("respond")).toBeUndefined();
+    },
+  );
 
   it("disables buttons and shows status once processed", async () => {
     const wrapper = mount(ApprovalCard, {
