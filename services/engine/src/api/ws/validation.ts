@@ -56,7 +56,11 @@ export function isValidProjectId(value: unknown): value is string {
 // 每次都必须人工确认的工具：即使客户端回执带了 remember:true 也不记入
 // 免询问名单（与 apps/web/utils/approval.ts 的名单保持一致）。
 // run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
-const NO_REMEMBER_TOOLS = new Set(["run_command"]);
+// write_file/edit_file（P2-3，安全 review 审批 Major-1）：写操作是注入攻击的
+// 主要落地路径（诱导覆写源码/配置），"remember 一次 = 放行该工具一切路径
+// 与内容"与 run_command 同类、爆炸半径小一档，一律每次批；
+// 路径粒度 remember（方案 A）易留绕过口子，不取。
+const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file"]);
 
 export function isApprovalRememberable(toolName: string): boolean {
   return !NO_REMEMBER_TOOLS.has(toolName);

@@ -2,11 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { isApprovalRememberable, sanitizeDeltaEvent } from "../../src/api/ws/validation.js";
 
 describe("isApprovalRememberable", () => {
-  it("run_command 不允许 remember（裸 shell，remember 一次等于本连接放行一切命令）", () => {
-    expect(isApprovalRememberable("run_command")).toBe(false);
-  });
+  it.each(["run_command", "write_file", "edit_file"])(
+    "写类/裸 shell 工具不允许 remember（P2-3：注入落地路径，一律每次批）: %s",
+    (toolName) => {
+      expect(isApprovalRememberable(toolName)).toBe(false);
+    },
+  );
 
-  it.each(["edit_file", "write_file", "bash", "dispatch_subagent"])(
+  it.each(["bash", "dispatch_subagent"])(
     "其他危险工具允许 remember: %s",
     (toolName) => {
       expect(isApprovalRememberable(toolName)).toBe(true);
