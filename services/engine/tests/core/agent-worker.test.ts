@@ -476,8 +476,7 @@ ${SECURITY_GUIDELINE}` },
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
   });
 
-  it("provider 抛错：补发 turn.end 终帧（P3-1），错误文本在前、终帧恰好一次", async () => {
-    class ThrowProvider implements LLMProvider {
+  it("provider 抛错：补发 turn.end 终帧（P3-1），错误文本在前、终帧恰好一次", async () => {    class ThrowProvider implements LLMProvider {
       name = "throw";
       supportsModel() {
         return true;
@@ -607,6 +606,61 @@ ${SECURITY_GUIDELINE}` },
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
     expect(events.map((e) => e.type).filter((t) => t === "turn.end")).toHaveLength(1);
+  });
+
+  it("流式中断：半截内容以 incomplete 标记落盘（P3-3），后续上下文包含该段", async () => {
+    class CrashMidStreamProvider implements LLMProvider {
+      name = "crash-mid";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        yield { type: "text.delta", delta: "说到一半的回复" };
+        throw new Error("stream broken");
+      }
+    }
+    const persisted: (ChatMessage & { sessionId?: string })[] = [];
+    const worker = new AgentWorker(
+      makeConfig(new CrashMidStreamProvider(), {
+        append: async (msg) => {
+          persisted.push(msg);
+        },
+        listBySession: async () => [],
+      })
+    );
+    const events: LLMEvent[] = [];
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-half",
+      messages: [userMessage("hi")],
+      sessionId: "s1",
+      onEvent: (e) => events.push(e),
+      onDone,
+    });
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+
+    // 半截消息落盘：assistant + incomplete 标记 + 已上屏文本（与用户所见一致）
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]!.role).toBe("assistant");
+    expect(persisted[0]!.incomplete).toBe(true);
+    expect(persisted[0]!.content).toEqual([{ type: "text", text: "说到一半的回复" }]);
+    // 终帧照常（P3-1 衔接：worker catch 补发）
+    expect(events.map((e) => e.type).filter((t) => t === "turn.end")).toHaveLength(1);
+
+    // 后续对话：LLM 上下文包含这段半截消息（模型知道自己说过）
+    const capturing = new CapturingProvider();
+    const worker2 = new AgentWorker(makeConfig(capturing));
+    const onDone2 = vi.fn();
+    worker2.enqueue({
+      id: "j-next",
+      messages: [...persisted, userMessage("继续")],
+      onEvent: () => {},
+      onDone: onDone2,
+    });
+    await vi.waitFor(() => expect(onDone2).toHaveBeenCalledTimes(1));
+    const sent = capturing.capturedParams!.messages;
+    expect(sent.some((m) => m.id === persisted[0]!.id)).toBe(true);
   });
 
   it("turn 中途崩溃：已完成 step 已落盘，丢失仅限当前执行中的 step（P1-6）", async () => {

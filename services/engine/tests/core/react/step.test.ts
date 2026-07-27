@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
-import { executeLoopStep } from "../../../src/core/react/step.js";
+import { executeLoopStep, StepStreamError } from "../../../src/core/react/step.js";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../../src/provider/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { Tool, ToolContext, ToolResult } from "../../../src/tools/types.js";
@@ -159,5 +159,100 @@ describe("executeLoopStep", () => {
     expect(result.toolMessages?.[0].content).toEqual([
       { type: "text", text: JSON.stringify({ error: "Unknown tool: missing" }) },
     ]);
+  });
+});
+
+describe("executeLoopStep 流式中断半截消息（P3-3）", () => {
+  it("provider 中途抛错：已累积文本构造 incomplete 半截消息随 StepStreamError 上抛", async () => {
+    class CrashMidStreamProvider implements LLMProvider {
+      name = "crash-mid";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        yield { type: "text.delta", delta: "说到一半的回复" };
+        throw new Error("stream broken");
+      }
+    }
+
+    try {
+      await executeLoopStep(
+        {
+          provider: new CrashMidStreamProvider(),
+          model: "mock",
+          messages: [userMessage("hi")],
+          tools: [],
+          toolCtx: makeToolCtx(),
+        },
+        () => {},
+      );
+      expect.unreachable("should throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(StepStreamError);
+      const partial = (err as StepStreamError).partialMessage;
+      expect(partial).toBeDefined();
+      expect(partial!.role).toBe("assistant");
+      expect(partial!.incomplete).toBe(true);
+      expect(partial!.content).toEqual([{ type: "text", text: "说到一半的回复" }]);
+      expect(partial!.toolCalls).toBeUndefined();
+    }
+  });
+
+  it("中断前已收到 tool.call：半截消息不带 toolCalls（结果从未执行，带上即成孤儿）", async () => {
+    class CrashAfterToolCallProvider implements LLMProvider {
+      name = "crash-after-toolcall";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        yield { type: "text.delta", delta: "让我查一下" };
+        yield { type: "tool.call", toolCallId: "tc_1", name: "dummy", arguments: {} };
+        throw new Error("stream broken");
+      }
+    }
+
+    try {
+      await executeLoopStep(
+        {
+          provider: new CrashAfterToolCallProvider(),
+          model: "mock",
+          messages: [userMessage("hi")],
+          tools: [],
+          toolCtx: makeToolCtx(),
+        },
+        () => {},
+      );
+      expect.unreachable("should throw");
+    } catch (err) {
+      const partial = (err as StepStreamError).partialMessage;
+      expect(partial).toBeDefined();
+      expect(partial!.toolCalls).toBeUndefined();
+      expect(partial!.content).toEqual([{ type: "text", text: "让我查一下" }]);
+    }
+  });
+
+  it("无任何累积内容时抛错：partialMessage 为 undefined", async () => {
+    class CrashImmediatelyProvider implements LLMProvider {
+      name = "crash-immediate";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        throw new Error("connect failed");
+      }
+    }
+
+    await expect(
+      executeLoopStep(
+        {
+          provider: new CrashImmediatelyProvider(),
+          model: "mock",
+          messages: [userMessage("hi")],
+          tools: [],
+          toolCtx: makeToolCtx(),
+        },
+        () => {},
+      ),
+    ).rejects.toMatchObject({ name: "StepStreamError", partialMessage: undefined });
   });
 });

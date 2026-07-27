@@ -1,6 +1,6 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMEvent } from "../../provider/types.js";
-import { executeLoopStep, type StepInput } from "./step.js";
+import { executeLoopStep, StepStreamError, type StepInput, type StepResult } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";
 import type { AssembleInput, ContextPipeline } from "../../context/pipeline.js";
 import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
@@ -92,7 +92,22 @@ export async function runTurn(
       maxToolResultTokens,
     };
 
-    const result = await executeLoopStep(stepInput, emit);
+    let result: StepResult;
+    try {
+      result = await executeLoopStep(stepInput, emit);
+    } catch (err) {
+      // P3-3：流式中断的半截 assistant 消息随 StepStreamError 上来——
+      // 先按 step 级落盘（与用户所见一致），再继续上抛
+      // （worker catch 补错误文本与 turn.end 终帧，P3-1）
+      if (err instanceof StepStreamError && err.partialMessage) {
+        messages.push(err.partialMessage);
+        appended.push(err.partialMessage);
+        if (input.onStepAppended) {
+          await input.onStepAppended([err.partialMessage]);
+        }
+      }
+      throw err;
+    }
     assistantMessage = result.assistantMessage;
     messages.push(result.assistantMessage);
     appended.push(result.assistantMessage);

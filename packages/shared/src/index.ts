@@ -47,5 +47,11 @@ export interface ChatMessage {
   content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
   toolCalls?: ToolCall[];
   toolCallId?: string;
+  /**
+   * 流式中断落盘的半截消息标记（P3-3）：provider 抛错时已上屏的部分生成
+   * 内容以半截 assistant 消息持久化（与用户所见一致），此标记供排查识别；
+   * 对 ContextPipeline/检索它是普通 assistant 消息。
+   */
+  incomplete?: boolean;
   createdAt: string;
 }

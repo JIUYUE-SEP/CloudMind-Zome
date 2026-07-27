@@ -26,6 +26,23 @@ export interface StepResult {
   toolMessages?: ChatMessage[];
 }
 
+/**
+ * 流式中断错误（P3-3，架构 review）：provider 流中途抛错时，已累积的部分
+ * 生成内容（用户已上屏）构造成带 incomplete 标记的半截 assistant 消息随错误
+ * 上抛，由 turn 层落盘——落盘内容与用户所见一致，模型后续上下文也知道这段。
+ * toolCalls 一律不带：其 tool 结果从未执行，带上即成孤儿 toolCalls。
+ */
+export class StepStreamError extends Error {
+  constructor(
+    message: string,
+    public readonly partialMessage: ChatMessage | undefined,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "StepStreamError";
+  }
+}
+
 export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) => void): Promise<StepResult> {
   const params: LLMChatParams = {
     model: input.model,
@@ -41,28 +58,46 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
   const toolCalls = new Map<string, ToolCallRequest>();
   let finishReason: string | undefined;
 
-  for await (const event of input.provider.chat(params)) {
-    emit(event);
-    if (event.type === "step.end") {
-      finishReason = event.finishReason;
-      continue;
-    }
-    switch (event.type) {
-      case "text.delta":
-        textBuffer += event.delta;
-        break;
-      case "thinking.delta":
-        thinkBuffer += event.delta;
-        break;
-      case "tool.call": {
-        toolCalls.set(event.toolCallId, {
-          toolCallId: event.toolCallId,
-          name: event.name,
-          arguments: event.arguments,
-        });
-        break;
+  try {
+    for await (const event of input.provider.chat(params)) {
+      emit(event);
+      if (event.type === "step.end") {
+        finishReason = event.finishReason;
+        continue;
+      }
+      switch (event.type) {
+        case "text.delta":
+          textBuffer += event.delta;
+          break;
+        case "thinking.delta":
+          thinkBuffer += event.delta;
+          break;
+        case "tool.call": {
+          toolCalls.set(event.toolCallId, {
+            toolCallId: event.toolCallId,
+            name: event.name,
+            arguments: event.arguments,
+          });
+          break;
+        }
       }
     }
+  } catch (err) {
+    // P3-3：流式中断——半截内容不丢（构造 incomplete 半截消息随错误上抛）
+    const partialContent: ChatMessage["content"] = [];
+    if (textBuffer) partialContent.push({ type: "text", text: textBuffer });
+    if (thinkBuffer) partialContent.push({ type: "think", think: thinkBuffer });
+    const partialMessage: ChatMessage | undefined =
+      partialContent.length > 0
+        ? {
+            id: `msg_${Date.now()}`,
+            role: "assistant",
+            content: partialContent,
+            incomplete: true,
+            createdAt: new Date().toISOString(),
+          }
+        : undefined;
+    throw new StepStreamError(String(err), partialMessage, { cause: err });
   }
 
   const content: ChatMessage["content"] = [];
