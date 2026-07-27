@@ -14,6 +14,11 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker, type Job } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
+import type { LLMEvent, LLMProvider } from "../../src/provider/types.js";
+
+function mockOf(p: LLMProvider | undefined): MockLLMProvider {
+  return p as MockLLMProvider;
+}
 import type { ApiContext } from "../../src/api/context.js";
 import { getDataDir } from "../../src/config/paths.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
@@ -21,14 +26,18 @@ import WebSocket from "ws";
 import { restoreDataDir } from "../helpers/env.js";
 import { TEST_AUTH_TOKEN } from "../helpers/auth.js";
 
-async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Promise<{ context: ApiContext; cleanup: () => Promise<void>; sessionId: string; providers: Map<string, MockLLMProvider> }> {
+async function buildSessionWsContext(
+  agentIds: string[],
+  tools: Tool[] = [],
+  providerFor?: (agentId: string) => LLMProvider,
+): Promise<{ context: ApiContext; cleanup: () => Promise<void>; sessionId: string; providers: Map<string, LLMProvider> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-session-test-"));
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
   process.env.CLOUDMIND_DATA_DIR = tmpDir;
 
   const agentRepository = new AgentRepository();
   const workers = new Map<string, AgentWorker>();
-  const providers = new Map<string, MockLLMProvider>();
+  const providers = new Map<string, LLMProvider>();
   for (const agentId of agentIds) {
     await agentRepository.save(agentId, {
       id: agentId,
@@ -38,7 +47,7 @@ async function buildSessionWsContext(agentIds: string[], tools: Tool[] = []): Pr
       skills: [],
       tools: tools.map((t) => t.name),
     });
-    const provider = new MockLLMProvider();
+    const provider = providerFor?.(agentId) ?? new MockLLMProvider();
     providers.set(agentId, provider);
     workers.set(
       agentId,
@@ -250,7 +259,7 @@ describe("Session WebSocket API", () => {
     };
 
     const { context, cleanup, sessionId, providers } = await buildSessionWsContext(["a1"], [rootCapturingTool]);
-    providers.get("a1")?.setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
+    mockOf(providers.get("a1")).setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
 
     const app = await createServer(context);
     const address = await app.listen({ port: 0 });
@@ -336,7 +345,7 @@ describe("Session WebSocket API", () => {
     };
 
     const { context, cleanup, sessionId, providers } = await buildSessionWsContext(["a1"], [rootCapturingTool]);
-    providers.get("a1")?.setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
+    mockOf(providers.get("a1")).setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
 
     // Wrap worker to capture enqueued jobs
     const originalGetAgentWorker = context.getAgentWorker;
@@ -415,7 +424,7 @@ describe("Session WebSocket API", () => {
       ["a1"],
       [makeDangerous("run_command"), makeDangerous("safe_writer")],
     );
-    providers.get("a1")!.setNextToolCalls([{ toolCallId: "tc1", name: "run_command", arguments: {} }]);
+    mockOf(providers.get("a1")).setNextToolCalls([{ toolCallId: "tc1", name: "run_command", arguments: {} }]);
 
     const app = await createServer(context);
     const address = await app.listen({ port: 0 });
@@ -441,7 +450,7 @@ describe("Session WebSocket API", () => {
         }
         if (message.type === "turn.end") {
           turnEnds++;
-          const provider = providers.get("a1")!;
+          const provider = mockOf(providers.get("a1"));
           if (turnEnds === 1) {
             provider.setNextToolCalls([{ toolCallId: "tc2", name: "run_command", arguments: {} }]);
             client.send(JSON.stringify({ text: "round 2" }));
@@ -465,6 +474,57 @@ describe("Session WebSocket API", () => {
     expect(approvalRequests.map((r) => r.toolName)).toEqual(["run_command", "run_command", "safe_writer"]);
     // 四次调用都经批准后执行（无免问旁路）
     expect(executions).toEqual(["run_command", "run_command", "safe_writer", "safe_writer"]);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("群聊异常路径：出错的 Agent 也收到 turn.end（P3-1），正常 Agent 不受影响", async () => {
+    class ThrowProvider implements LLMProvider {
+      name = "throw";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        throw new Error("provider down");
+      }
+    }
+    const { context, cleanup, sessionId } = await buildSessionWsContext(
+      ["a1", "a2"],
+      [],
+      (id) => (id === "a1" ? new ThrowProvider() : new MockLLMProvider()),
+    );
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+
+    const messages: { type: string; agentId?: string; delta?: string }[] = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "hello everyone" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        messages.push(message);
+        // a1 的 turn.end 来自 worker catch 补发；a2 正常收尾
+        const turnEnds = messages.filter((m) => m.type === "turn.end").map((m) => m.agentId);
+        if (turnEnds.includes("a1") && turnEnds.includes("a2")) {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    // a1 有错误文本增量；两个 Agent 的 turn.end 都到达（群聊永锁解除）
+    const a1Deltas = messages
+      .filter((m) => m.type === "text.delta" && m.agentId === "a1")
+      .map((m) => m.delta ?? "");
+    expect(a1Deltas.some((d) => d.includes("provider down"))).toBe(true);
 
     await app.close();
     await cleanup();

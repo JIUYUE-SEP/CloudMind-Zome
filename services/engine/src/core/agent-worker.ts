@@ -411,7 +411,16 @@ export class AgentWorker {
       }
     } catch (err) {
       jobError = err;
-      job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });
+      // abort 是用户主动中断（正常操作），不刷错误气泡；其余异常保留错误文本
+      if (!job.signal?.aborted) {
+        job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });
+      }
+      // P3-1（功能 M2）：异常路径补终帧。turn.end 唯一发出点在 runTurn 正常
+      // 退出，provider/工具抛错、abort 都走不到，前端"生成中"永锁。
+      // 语义：turn.end = 本轮生成终止（含异常终止）；能进 catch 说明 runTurn
+      // 未发出，不存在双发；前端私聊（chat.ts onTurnEnd 复位 isStreaming）与
+      // 群聊（useGroupChatStream closeSlot）现有逻辑直接生效，协议不动。
+      job.onEvent({ type: "turn.end" });
     } finally {
       this.runningJob = null;
       try {

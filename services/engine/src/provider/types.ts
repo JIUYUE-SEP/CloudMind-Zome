@@ -29,7 +29,9 @@ export interface StepEndEvent {
 }
 
 /**
- * 一轮（turn）结束：由 runTurn 在 ReAct 循环退出后发出（含 maxSteps 耗尽）。
+ * 一轮（turn）结束：正常路径由 runTurn 在 ReAct 循环退出后发出（含 maxSteps
+ * 耗尽）；异常路径（provider/工具抛错、abort）由 AgentWorker 在 catch 补发
+ * （P3-1）——语义为"本轮生成终止"（含异常终止），两条路径互斥不双发。
  * 与 step.end 区分——后者每个 loop step 都会发，tool_use 时循环继续；
  * 前端应只在 turn.end / error / close 时复位"生成中"状态。
  */
