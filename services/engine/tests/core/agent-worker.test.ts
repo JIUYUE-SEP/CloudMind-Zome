@@ -447,6 +447,108 @@ describe("AgentWorker", () => {
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
   });
 
+  it("turn 中途崩溃：已完成 step 已落盘，丢失仅限当前执行中的 step（P1-6）", async () => {
+    class CrashAtStep3Provider implements LLMProvider {
+      name = "crash-at-3";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls <= 2) {
+          yield { type: "tool.call", toolCallId: `tc_${this.calls}`, name: "dummy", arguments: { value: "x" } };
+          yield { type: "step.end" };
+        } else {
+          throw new Error("process crash at step 3");
+        }
+      }
+    }
+
+    const persisted: (ChatMessage & { sessionId?: string })[] = [];
+    const worker = new AgentWorker(
+      makeConfig(new CrashAtStep3Provider(), {
+        append: async (msg) => {
+          persisted.push(msg);
+        },
+        listBySession: async () => [],
+      })
+    );
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-crash",
+      messages: [userMessage("go")],
+      sessionId: "s1",
+      onEvent: () => {},
+      onDone,
+    });
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(String(onDone.mock.calls[0][0])).toContain("process crash at step 3");
+    // 前 2 个完整 step（assistant+tool ×2）已落盘；崩溃中的第 3 步无任何落盘
+    expect(persisted.map((m) => m.role)).toEqual(["assistant", "tool", "assistant", "tool"]);
+    expect(persisted[0]!.toolCalls?.[0]?.toolCallId).toBe("tc_1");
+    expect(persisted[1]!.toolCallId).toBe("tc_1");
+    expect(persisted[2]!.toolCalls?.[0]?.toolCallId).toBe("tc_2");
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("step 落盘中途失败留下半个 step：下一轮送入 LLM 前清洗，孤儿 toolCalls 不污染（P1-6）", async () => {
+    // 第 1 步批次：assistant 落盘成功、tool 结果落盘失败 → 热存储留下
+    // 带 toolCalls 但无 tool 结果的 assistant（崩溃/磁盘故障的最坏窗口）
+    const persisted: (ChatMessage & { sessionId?: string })[] = [];
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc_1", name: "dummy", arguments: { value: "x" } }]);
+    const capturing = new CapturingProvider();
+    let useCapturing = false;
+    const switchable: LLMProvider = {
+      name: "switchable",
+      supportsModel: () => true,
+      chat: (params) => (useCapturing ? capturing.chat(params) : provider.chat(params)),
+    };
+    const worker = new AgentWorker(
+      makeConfig(switchable, {
+        append: async (msg) => {
+          if (msg.role === "tool") throw new Error("disk full");
+          persisted.push(msg);
+        },
+        listBySession: async () => [],
+      })
+    );
+    const onDone1 = vi.fn();
+    worker.enqueue({
+      id: "j-half",
+      messages: [userMessage("go")],
+      sessionId: "s1",
+      onEvent: () => {},
+      onDone: onDone1,
+    });
+    await vi.waitFor(() => expect(onDone1).toHaveBeenCalledTimes(1));
+    expect(String(onDone1.mock.calls[0][0])).toContain("disk full");
+    // 半个 step：assistant(toolCalls=tc_1) 已落盘，tool 结果缺失
+    expect(persisted.map((m) => m.role)).toEqual(["assistant"]);
+    expect(persisted[0]!.toolCalls?.[0]?.toolCallId).toBe("tc_1");
+
+    // 下一轮：以落盘状态为历史，送入 LLM 前孤儿 toolCalls 必须被清洗
+    useCapturing = true;
+    const onDone2 = vi.fn();
+    worker.enqueue({
+      id: "j-next",
+      messages: [...persisted, userMessage("next")],
+      sessionId: "s1",
+      onEvent: () => {},
+      onDone: onDone2,
+    });
+    await vi.waitFor(() => expect(onDone2).toHaveBeenCalledTimes(1));
+    const sent = capturing.capturedParams!.messages;
+    const halfAssistant = sent.find((m) => m.id === persisted[0]!.id);
+    expect(halfAssistant).toBeDefined();
+    expect(halfAssistant!.toolCalls).toBeUndefined();
+    expect(sent.some((m) => m.role === "tool")).toBe(false);
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
   describe("dangerous tool approval", () => {
     class DangerCallProvider implements LLMProvider {
       name = "danger";

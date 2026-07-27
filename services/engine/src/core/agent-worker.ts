@@ -302,6 +302,15 @@ export class AgentWorker {
         temperature: this.config.temperature,
         topP: this.config.topP,
         signal: job.signal,
+        // step 级落盘（P1-6，review M8）：每完成一个 ReAct step 立即持久化，
+        // 崩溃最多丢当前执行中的 step，不再丢整轮（秒~分钟窗口收窄到单步）。
+        // appended 顺序与 turn 内真实顺序一致（assistant 先于其 tool 结果），
+        // 且天然不含 system prompt / pipeline 注入内容
+        onStepAppended: async (msgs) => {
+          for (const msg of msgs) {
+            await this.config.messageRepository.append({ ...msg, sessionId });
+          }
+        },
         contextPipeline: {
           pipeline: this.pipeline,
           input: {
@@ -320,12 +329,7 @@ export class AgentWorker {
       const result = await runTurn(turnInput, job.onEvent);
       console.log("[agent-worker] after runTurn, appended:", result.appended.length);
 
-      // 按真实顺序持久化本轮新增的消息（每步 assistant + tool 消息）。
-      // appended 由 runTurn 显式收集，与 pipeline 如何组装/截断输入无关，
-      // 避免 tool 消息失去前置的 assistant toolCalls，也天然不含 system prompt。
-      for (const msg of result.appended) {
-        await this.config.messageRepository.append({ ...msg, sessionId });
-      }
+      // 持久化已在 runTurn 内按 step 完成（onStepAppended），此处不再重复 append。
 
       // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
       const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
@@ -334,7 +338,10 @@ export class AgentWorker {
       await this.persistTopicState();
 
       // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
-      // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去
+      // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去。
+      // 保持 turn 级（P1-6）：索引每条消息一次 embed + sidecar upsert，step 级
+      // 不会减少调用次数，反而让中止/失败的半截 turn 也进索引；崩溃遗留的
+      // 已落盘 step 不进索引，由 L3 热上下文兜底可见，可接受。
       if (this.config.memoryIndexer && this.semanticConfig.enabled) {
         const indexer = this.config.memoryIndexer;
         const agentId = this.config.agentId;

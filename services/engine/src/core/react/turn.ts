@@ -4,6 +4,7 @@ import { executeLoopStep, type StepInput } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";
 import type { AssembleInput, ContextPipeline } from "../../context/pipeline.js";
 import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
+import { stripUnansweredToolCalls } from "../../context/history-sanitize.js";
 
 export interface TurnInput {
   provider: LLMProvider;
@@ -25,13 +26,22 @@ export interface TurnInput {
     pipeline: ContextPipeline;
     input: Omit<AssembleInput, "history" | "tools">;
   };
+  /**
+   * step 级落盘钩子（P1-6，review M8）：每完成一个 ReAct step（assistant 输出 +
+   * 该步工具调用与结果）即以 [assistant, ...tools] 顺序回调一次。崩溃最多丢
+   * 当前正在执行的 step，不再丢整轮。抛错即中止本轮（热存储只含完整 step）。
+   */
+  onStepAppended?: (messages: ChatMessage[]) => Promise<void>;
 }
 
 export interface TurnResult {
   messages: ChatMessage[];
   assistantMessage: ChatMessage;
   toolMessages: ChatMessage[];
-  /** 本轮按序新增的全部消息（assistant + tool），供持久化（与输入如何组装/截断无关） */
+  /**
+   * 本轮按序新增的全部消息（assistant + tool）。P1-6 起持久化由
+   * onStepAppended 按 step 落盘，本字段仅供话题 tracker / 向量索引使用。
+   */
   appended: ChatMessage[];
 }
 
@@ -39,7 +49,9 @@ export async function runTurn(
   input: TurnInput,
   emit: (event: LLMEvent) => void
 ): Promise<TurnResult> {
-  let messages: ChatMessage[] = [...input.messages];
+  // 半个 turn 清洗（P1-6）：历史里 assistant 带 toolCalls 但缺 tool 结果的
+  // 残缺消息（崩溃/落盘失败遗留）先修平，避免孤儿 toolCalls 污染本轮及后续
+  let messages = stripUnansweredToolCalls([...input.messages]);
   let tools = input.tools;
 
   // ContextPipeline v2：每轮统一组装（超预算自动降级）
@@ -85,10 +97,18 @@ export async function runTurn(
     messages.push(result.assistantMessage);
     appended.push(result.assistantMessage);
 
+    const stepMessages: ChatMessage[] = [result.assistantMessage];
     if (result.toolMessages) {
       messages.push(...result.toolMessages);
       toolMessages.push(...result.toolMessages);
       appended.push(...result.toolMessages);
+      stepMessages.push(...result.toolMessages);
+    }
+
+    // step 级落盘（P1-6）：assistant 与其 tool 结果同批回调，崩溃只丢当前
+    // 执行中的 step；落盘失败中止本轮，热存储不留缺 tool 结果的半截 step
+    if (input.onStepAppended) {
+      await input.onStepAppended(stepMessages);
     }
 
     if (result.stopReason !== "tool_use") {
