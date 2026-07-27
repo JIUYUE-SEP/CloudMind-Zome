@@ -60,7 +60,9 @@ export function isValidProjectId(value: unknown): value is string {
 // 主要落地路径（诱导覆写源码/配置），"remember 一次 = 放行该工具一切路径
 // 与内容"与 run_command 同类、爆炸半径小一档，一律每次批；
 // 路径粒度 remember（方案 A）易留绕过口子，不取。
-const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file"]);
+// dispatch_subagent（P2-5）：跨 agent confused deputy 通道，"remember 一次 =
+// 放行一切目标 agent 与任务"，与写类同类，一律每次批。
+const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file", "dispatch_subagent"]);
 
 export function isApprovalRememberable(toolName: string): boolean {
   return !NO_REMEMBER_TOOLS.has(toolName);

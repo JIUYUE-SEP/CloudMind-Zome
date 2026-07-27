@@ -42,7 +42,8 @@ export interface ApprovalResponsePayload {
 // run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
 // write_file/edit_file（P2-3）：写操作是注入攻击的主要落地路径
 // （诱导覆写源码/配置），一律每次批。
-const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file"]);
+// dispatch_subagent（P2-5）：跨 agent confused deputy 通道，一律每次批。
+const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file", "dispatch_subagent"]);
 
 export function isApprovalRememberable(toolName: string): boolean {
   return !NO_REMEMBER_TOOLS.has(toolName);

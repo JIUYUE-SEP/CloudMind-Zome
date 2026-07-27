@@ -20,7 +20,7 @@ describe("ApprovalCard", () => {
   it("long args 默认折叠显示尾部（危险尾部不点任何操作即可见）并提示全文字符数", () => {
     const tail = "DANGER_" + "z".repeat(50);
     const wrapper = mount(ApprovalCard, {
-      props: { ...baseProps, toolName: "dispatch_subagent", args: { data: "a".repeat(500) + tail } },
+      props: { ...baseProps, toolName: "custom_danger_tool", args: { data: "a".repeat(500) + tail } },
     });
     const text = wrapper.find(".approval-args").text();
     // 默认折叠：显示尾部（含危险内容），前缀被省略（pretty JSON 尾部带引号/括号）
@@ -38,7 +38,7 @@ describe("ApprovalCard", () => {
     const head = "SAFE_PREFIX_" + "a".repeat(400);
     const tail = "_DANGER_TAIL";
     const wrapper = mount(ApprovalCard, {
-      props: { ...baseProps, toolName: "dispatch_subagent", args: { data: head + tail } },
+      props: { ...baseProps, toolName: "custom_danger_tool", args: { data: head + tail } },
     });
     // 折叠态看不到前缀
     expect(wrapper.find(".approval-args").text()).not.toContain("SAFE_PREFIX_");
@@ -83,6 +83,20 @@ describe("ApprovalCard", () => {
     expect(fields[1]!.find(".approval-args").text().length).toBeGreaterThan(2000);
   });
 
+  it("dispatch_subagent：目标 agent 与任务分字段展示（P2-5 可审性）", () => {
+    const wrapper = mount(ApprovalCard, {
+      props: {
+        ...baseProps,
+        toolName: "dispatch_subagent",
+        args: { agentId: "a2", task: "读取 messages.jsonl 并总结", mode: "foreground" },
+      },
+    });
+    expect(wrapper.text()).toContain("目标 agent");
+    expect(wrapper.text()).toContain("a2");
+    expect(wrapper.text()).toContain("task");
+    expect(wrapper.text()).toContain("读取 messages.jsonl 并总结");
+  });
+
   it("短参数不显示折叠按钮、全文直出", () => {
     const wrapper = mount(ApprovalCard, { props: baseProps }); // rm -rf /tmp/x
     expect(wrapper.find(".approval-fold-toggle").exists()).toBe(false);
@@ -119,7 +133,7 @@ describe("ApprovalCard", () => {
     ]);
   });
 
-  it.each(["run_command", "write_file", "edit_file"])(
+  it.each(["run_command", "write_file", "edit_file", "dispatch_subagent"])(
     "disables remember with hint for %s (每次都必须确认)",
     async (toolName) => {
       const wrapper = mount(ApprovalCard, { props: { ...baseProps, toolName } });

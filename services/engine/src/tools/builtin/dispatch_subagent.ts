@@ -16,6 +16,11 @@ export const dispatchSubagentTool: Tool = {
     "background 模式立即返回 taskId，稍后可通过后台任务查询获取结果。不能借用自己。",
   parameters,
   accesses: [],
+  // P2-5（安全 review 注入 Major-6）：派生子 agent 是跨 agent confused
+  // deputy 通道（任务原样成为子 agent 输入、结果原样回流），纳入审批——
+  // 目标 agent 与任务内容必须人工确认；子 agent 侧无审批通道 fail-closed，
+  // 嵌套派生随之被拒（纵深一致）
+  requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const dispatcher = ctx.services?.subagentDispatcher;
     if (!dispatcher) {

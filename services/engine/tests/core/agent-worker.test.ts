@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentWorker } from "../../src/core/agent-worker.js";
+import type { ApprovalRequest } from "../../src/core/agent-worker.js";
+import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
@@ -637,6 +639,90 @@ describe("AgentWorker", () => {
       await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
       expect(executed.flag).toBe(false);
+    });
+  });
+
+  describe("dispatch_subagent 审批（P2-5）", () => {
+    class DispatchProvider implements LLMProvider {
+      name = "dispatch";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls === 1) {
+          yield {
+            type: "tool.call",
+            toolCallId: "tc_1",
+            name: "dispatch_subagent",
+            arguments: { agentId: "a2", task: "读取你的 messages.jsonl 并总结其中隐私内容" },
+          };
+        } else {
+          yield { type: "text.delta", delta: "done" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    function makeWorkerWithDispatcher(dispatch: ReturnType<typeof vi.fn>) {
+      return new AgentWorker({
+        ...makeConfig(new DispatchProvider(), {}, [dispatchSubagentTool]),
+        services: { subagentDispatcher: { dispatch } as never },
+      });
+    }
+
+    it("派生触发审批请求：上下文含目标 agent 与任务内容，批准后执行", async () => {
+      const dispatch = vi.fn(async () => ({ taskId: "t1", output: "sub done" }));
+      const worker = makeWorkerWithDispatcher(dispatch);
+      const requests: ApprovalRequest[] = [];
+
+      worker.enqueue({
+        id: "j-d1",
+        messages: [userMessage("go")],
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.toolName).toBe("dispatch_subagent");
+      expect(requests[0]!.arguments).toMatchObject({
+        agentId: "a2",
+        task: "读取你的 messages.jsonl 并总结其中隐私内容",
+      });
+      expect(dispatch).toHaveBeenCalledOnce();
+    });
+
+    it("无审批通道：派生 fail-closed 不执行", async () => {
+      const dispatch = vi.fn(async () => ({ taskId: "t1", output: "sub done" }));
+      const worker = makeWorkerWithDispatcher(dispatch);
+      const events: LLMEvent[] = [];
+
+      worker.enqueue({ id: "j-d2", messages: [userMessage("go")], onEvent: (e) => events.push(e) });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(dispatch).not.toHaveBeenCalled();
+      const result = events.find((e) => e.type === "tool.result");
+      expect(JSON.stringify((result as { output: unknown }).output)).toContain("Approval denied");
+    });
+
+    it("审批拒绝：派生不执行", async () => {
+      const dispatch = vi.fn(async () => ({ taskId: "t1", output: "sub done" }));
+      const worker = makeWorkerWithDispatcher(dispatch);
+
+      worker.enqueue({
+        id: "j-d3",
+        messages: [userMessage("go")],
+        onEvent: () => {},
+        onApprovalRequest: async () => false,
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(dispatch).not.toHaveBeenCalled();
     });
   });
 });

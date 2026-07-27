@@ -96,6 +96,14 @@ const argFields = computed<ArgField[]>(() => {
         { label: "newString", text: String(obj.newString ?? "") },
       ];
     }
+    if (props.toolName === "dispatch_subagent") {
+      // P2-5：派生审批的可审性——目标 agent 与任务内容分字段独立可审
+      return [
+        { label: "目标 agent", text: String(obj.agentId ?? "") },
+        { label: "task", text: String(obj.task ?? "") },
+        { label: "mode", text: String(obj.mode ?? "foreground") },
+      ];
+    }
   }
   // 其他工具/异常结构：完整 JSON（长文本同样按尾部折叠）
   let json = "";
