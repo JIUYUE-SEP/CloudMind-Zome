@@ -21,7 +21,7 @@
           {{
             isExpanded(field.label)
               ? "收起"
-              : `参数共 ${field.text.length} 字符，已折叠仅显示尾部，点击展开全文`
+              : `参数共 ${field.text.length} 字符，已折叠中段、显示首尾两段，点击展开全文`
           }}
         </button>
       </div>
@@ -134,7 +134,11 @@ function toggle(label: string): void {
 
 function displayText(field: ArgField): string {
   if (isExpanded(field.label) || field.text.length <= ARGS_LIMIT) return field.text;
-  return "…" + field.text.slice(-ARGS_LIMIT);
+  // 头+尾双段（P2 review Major-1）：只显示尾部会把藏匿点倒置到头部/中段——
+  // "无害前缀+危险尾巴"与"危险头部+无害尾巴"在默认视图都必须可见；
+  // 中段仍折叠，但按钮明示总字符数与折叠范围，可一键展开全文
+  const half = Math.floor(ARGS_LIMIT / 2);
+  return field.text.slice(0, half) + "\n…（中段已折叠）…\n" + field.text.slice(-half);
 }
 
 const statusText = computed(() => {
