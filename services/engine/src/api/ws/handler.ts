@@ -80,8 +80,6 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         socket.close(4001, "Agent not found");
         return;
       }
-      // 函数声明会被提升，TS 无法在其中保留上面的收窄，这里固化一次
-      const agentWorker = worker;
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
       const pendingApprovals = new Map<
@@ -168,7 +166,17 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
           const repo = context.getMessageRepository(agentId);
           const history = await repo.listBySession(sessionId, { limit: 20 }).catch(() => []);
 
-          agentWorker.enqueue({
+          // P3-5（架构 review P1）：worker 不固化在连接上——配置变更后注册表
+          // 里的 worker 会被 pause 并替换（bootstrap onChange），每条消息入队前
+          // 重新解析；继续用连接建立时的引用会把消息塞进已 pause 的孤儿
+          // worker（永不处理、无错误反馈）。常用路径只是 Map 查找，成本可忽略
+          const worker = await context.getAgentWorker(agentId);
+          if (!worker) {
+            safeSend(socket, { type: "error", error: "Agent not found" });
+            return;
+          }
+
+          worker.enqueue({
             id: randomUUID(),
             messages: history.length > 0 ? history : [userMessage],
             sessionId,

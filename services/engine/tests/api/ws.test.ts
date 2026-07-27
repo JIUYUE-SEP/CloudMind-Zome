@@ -13,6 +13,7 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
+import type { LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import type { Tool, ToolResult } from "../../src/tools/types.js";
 import { z } from "zod";
 import type { ApiContext } from "../../src/api/context.js";
@@ -23,6 +24,7 @@ import { TEST_AUTH_TOKEN } from "../helpers/auth.js";
 async function buildWsContext(
   agentId: string,
   tools: Tool[] = [],
+  provider: MockLLMProvider = new MockLLMProvider(),
 ): Promise<{ context: ApiContext; cleanup: () => Promise<void>; provider: MockLLMProvider }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-test-"));
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
@@ -38,11 +40,11 @@ async function buildWsContext(
     tools: [],
   });
 
-  const provider = new MockLLMProvider();
+  const providerInstance = provider;
   const worker = new AgentWorker({
     agentId,
     model: "mock",
-    provider,
+    provider: providerInstance,
     tools,
     workspaceDir: tmpDir,
     messageRepository: {
@@ -72,9 +74,10 @@ async function buildWsContext(
     cleanup: async () => {
       agentRepository.dispose();
       // 等 worker 收尾（step/turn 边界的话题状态落盘在消息帧之后仍在飞）
-      // 再删临时目录，避免 rm 与异步写撞车（ENOTEMPTY）
+      // 再删临时目录，避免 rm 与异步写撞车（ENOTEMPTY）。
+      // 只在 busy 时等待：paused 是合法终态（P3-5 测试会故意 pause 旧 worker）
       const deadline = Date.now() + 5000;
-      while (worker.status !== "idle" && Date.now() < deadline) {
+      while (worker.status === "busy" && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 20));
       }
       await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -216,6 +219,78 @@ describe("WebSocket API", () => {
     // bash（round 3/4）：remember 生效，第二次免问
     expect(approvalRequests.map((r) => r.toolName)).toEqual(["write_file", "write_file", "bash"]);
     expect(executions).toEqual(["write_file", "write_file", "bash", "bash"]);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("配置变更后消息路由到新 worker，不进已 pause 的孤儿（P3-5）", async () => {
+    const chatCount = { p1: 0, p2: 0 };
+    class CountingMock extends MockLLMProvider {
+      constructor(private counter: "p1" | "p2") {
+        super();
+      }
+      override async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        chatCount[this.counter]++;
+        yield* super.chat(params);
+      }
+    }
+
+    const { context, cleanup } = await buildWsContext("agent-ws", [], new CountingMock("p1"));
+    const worker1 = (await context.getAgentWorker("agent-ws"))!;
+    const worker2 = new AgentWorker({
+      agentId: "agent-ws",
+      model: "mock",
+      provider: new CountingMock("p2"),
+      tools: [],
+      workspaceDir: "/tmp",
+      messageRepository: {
+        append: async () => {},
+        listBySession: async () => [],
+        getByIds: async () => [],
+        archiveAndRemove: async () => {},
+        getArchivedByIds: async () => [],
+      },
+      approve: () => true,
+    });
+    // 模拟注册表行为：初始指向 worker1；配置变更后 pause 旧 worker 并替换
+    let current: AgentWorker = worker1;
+    context.getAgentWorker = async (id: string) => (id === "agent-ws" ? current : undefined);
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "first" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "turn.end") {
+          turnEnds++;
+          if (turnEnds === 1) {
+            // 开着聊天页改配置：注册表 pause 旧 worker 并换上新 worker
+            worker1.pause();
+            current = worker2;
+            client.send(JSON.stringify({ text: "second" }));
+          } else {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    // 孤儿 worker 未收到新消息；新 worker 正常处理并回复
+    expect(chatCount.p1).toBe(1);
+    expect(chatCount.p2).toBe(1);
+    expect(worker1.status).toBe("paused");
 
     await app.close();
     await cleanup();
