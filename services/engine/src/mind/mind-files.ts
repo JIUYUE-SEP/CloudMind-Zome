@@ -8,7 +8,7 @@ import {
   frontmatterVersion,
   stampSchemaVersion,
 } from "../versioning.js";
-import { isHighConfidenceImperative, isInjectionSuspect } from "./injection-filter.js";
+import { isHighConfidenceImperative, isImperativeDisguise, isInjectionSuspect } from "./injection-filter.js";
 
 /**
  * SOUL.md / MIND.md。
@@ -328,6 +328,8 @@ export async function appendMindExperiences(
       e.text.trim().length > 0 &&
       // P2-6 注入检测（Major-4）：指令性文字伪装的经验不落盘
       !isInjectionSuspect(`${e.title}\n${e.text}`) &&
+      // P2 review Major-2：祈使开头与 confidence 解耦，任何置信度都拦
+      !isImperativeDisguise(e.text) &&
       !isHighConfidenceImperative(e.text, e.confidence);
     if (!ok) result.skipped++;
     return ok;

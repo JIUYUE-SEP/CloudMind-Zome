@@ -15,11 +15,18 @@ const INJECTION_PATTERNS: RegExp[] = [
   // 忽略/覆盖既有指令（经典注入开头）
   /忽略(之前|以上|前述|先前)的?(所有|全部|上述)?(指令|指示|要求|规则)/,
   /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|rules?)/i,
-  // 自指沉淀：把"记为经验"本身当经验（注入的标准落地动作）
+  // 自指沉淀：把"记为经验/记忆"本身当经验（注入的标准落地动作；
+  // P2 review Major-2 实测穿透的中文改写一并覆盖）
   /记为经验|记录(此|这|该)条?经验|沉淀(此|这)条|写入\s*MIND/i,
-  // 立即执行类祈使
+  /请记住/,
+  /(保存|存储)为[^。]{0,8}(记忆|经验)/,
+  // 立即/下次执行类祈使
   /立即执行|马上执行|即刻执行|立即运行/,
-  /执行以下(命令|指令)|执行(该|此)命令|运行以下(命令|指令)/,
+  /执行以下(命令|指令)|执行(该|此|这条|此条|下面)命令|运行以下(命令|指令)/,
+  /下次[^。]{0,20}(执行|运行)/,
+  // "以后都要[做某动作]"的祈使式（边界：「以后[场景]要[偏好]」如
+  // "以后提交前要先跑测试"不匹配——无"都要"，正常偏好不误伤）
+  /(以后|今后)都要/,
   // 绕过审批/确认
   /不要(再)?询问|无需(审批|确认)|跳过审批|直接放行|自动批准/,
 ];
@@ -30,9 +37,20 @@ export function isInjectionSuspect(text: string): boolean {
 }
 
 /**
+ * 祈使动词开头（P2 review Major-2：与 confidence 解耦，任何置信度都拦）：
+ * 这些词开头的"经验"几乎必是命令而非偏好。词表保持窄——
+ * 删除/修改/不要等正常偏好常用开头不在此列（交由高置信闸兜底）。
+ */
+const IMPERATIVE_START_RE = /^\s*(请记住|记住|执行|立即|马上|忽略)/;
+
+export function isImperativeDisguise(text: string): boolean {
+  return IMPERATIVE_START_RE.test(text);
+}
+
+/**
  * confidence 自报异常高（≥0.95）且正文以祈使动词开头：
  * "指令伪装成经验"的典型形态（正常偏好很少既满格自信又是命令句）。
  */
 export function isHighConfidenceImperative(text: string, confidence: number): boolean {
-  return confidence >= 0.95 && /^\s*(执行|立即|马上|删除|修改|写入|忽略|禁止|不要|调用)/.test(text);
+  return confidence >= 0.95 && /^\s*(执行|立即|马上|删除|修改|写入|忽略|禁止|不要|调用|运行)/.test(text);
 }
