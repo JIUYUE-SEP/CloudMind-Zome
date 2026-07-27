@@ -9,7 +9,22 @@
     </div>
     <div class="approval-body">
       <div class="approval-tool">{{ toolName }}</div>
-      <pre class="approval-args">{{ argsSummary }}</pre>
+      <div v-for="field in argFields" :key="field.label" class="approval-field">
+        <div class="approval-field-label">{{ field.label }}</div>
+        <pre class="approval-args" :class="{ scrollable: isExpanded(field.label) }">{{ displayText(field) }}</pre>
+        <button
+          v-if="field.text.length > ARGS_LIMIT"
+          class="approval-fold-toggle"
+          type="button"
+          @click="toggle(field.label)"
+        >
+          {{
+            isExpanded(field.label)
+              ? "收起"
+              : `参数共 ${field.text.length} 字符，已折叠仅显示尾部，点击展开全文`
+          }}
+        </button>
+      </div>
     </div>
     <div class="approval-actions">
       <button class="approval-btn approve" :disabled="status !== 'pending'" @click="onRespond(true, false)">
@@ -32,7 +47,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { isApprovalRememberable, type ApprovalStatus, type ApprovalResponsePayload } from "@/utils/approval";
 
 const props = defineProps<{
@@ -50,20 +65,69 @@ const emit = defineEmits<{
 // run_command 等裸执行工具不允许"本会话不再询问"（引擎侧同样拒绝记忆）
 const rememberAllowed = computed(() => isApprovalRememberable(props.toolName));
 
-// 参数摘要最大长度，超出截断
+// 单字段折叠阈值：超出默认只显示尾部（危险内容藏在尾部，安全 review Major-2），
+// 点击可展开全文。不再是 300 字符 JSON 摘要一刀切（write_file 的 content、
+// run_command 的 command 都必须全文可审）
 const ARGS_LIMIT = 300;
 
-const argsSummary = computed(() => {
+interface ArgField {
+  label: string;
+  text: string;
+}
+
+// 按工具参数结构分字段展示，关键字段（command/content/path）各自独立可审
+const argFields = computed<ArgField[]>(() => {
+  const a = props.args;
+  if (a && typeof a === "object" && !Array.isArray(a)) {
+    const obj = a as Record<string, unknown>;
+    if (props.toolName === "run_command" || props.toolName === "bash") {
+      return [{ label: "command", text: String(obj.command ?? "") }];
+    }
+    if (props.toolName === "write_file") {
+      return [
+        { label: "path", text: String(obj.path ?? "") },
+        { label: "content", text: String(obj.content ?? "") },
+      ];
+    }
+    if (props.toolName === "edit_file") {
+      return [
+        { label: "path", text: String(obj.path ?? "") },
+        { label: "oldString", text: String(obj.oldString ?? "") },
+        { label: "newString", text: String(obj.newString ?? "") },
+      ];
+    }
+  }
+  // 其他工具/异常结构：完整 JSON（长文本同样按尾部折叠）
   let json = "";
   try {
-    // JSON.stringify(undefined) 返回 undefined 而非抛错，需兜底
-    json = JSON.stringify(props.args) ?? "";
+    json = JSON.stringify(props.args, null, 2) ?? "";
   } catch {
     json = String(props.args);
   }
-  if (json.length > ARGS_LIMIT) return json.slice(0, ARGS_LIMIT) + "…";
-  return json;
+  return [{ label: "arguments", text: json }];
 });
+
+// 折叠状态（默认折叠=显示尾部）：用户不点任何操作就能看到命令/内容末尾
+const expandedFields = ref<Set<string>>(new Set());
+
+function isExpanded(label: string): boolean {
+  return expandedFields.value.has(label);
+}
+
+function toggle(label: string): void {
+  const next = new Set(expandedFields.value);
+  if (next.has(label)) {
+    next.delete(label);
+  } else {
+    next.add(label);
+  }
+  expandedFields.value = next;
+}
+
+function displayText(field: ArgField): string {
+  if (isExpanded(field.label) || field.text.length <= ARGS_LIMIT) return field.text;
+  return "…" + field.text.slice(-ARGS_LIMIT);
+}
 
 const statusText = computed(() => {
   switch (props.status) {
@@ -140,6 +204,28 @@ function onRespond(approved: boolean, remember: boolean) {
   white-space: pre-wrap;
   word-break: break-all;
   color: var(--mc-text-secondary);
+}
+.approval-args.scrollable {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.approval-field {
+  margin-top: 4px;
+}
+.approval-field-label {
+  font-size: 11px;
+  color: var(--mc-text-tertiary);
+  margin-bottom: 2px;
+}
+.approval-fold-toggle {
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--mc-border);
+  color: var(--mc-accent);
 }
 .approval-actions {
   margin-top: 10px;
