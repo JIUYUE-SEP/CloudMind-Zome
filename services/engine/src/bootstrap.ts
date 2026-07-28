@@ -39,6 +39,14 @@ import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
 
 /** 从 cwd 向上找 monorepo 根下的 packages/skills（内置技能目录） */
 async function findBuiltinSkillsDir(): Promise<string | undefined> {
+  // env 兜底（功能 review M4）：与 ZOME_PROTO_PATH 同一模式——生产包内
+  // 向上查找不命中时，可显式指向内置目录，不再静默丢失
+  const fromEnv = process.env.ZOME_BUILTIN_SKILLS_DIR;
+  if (fromEnv) {
+    const ok = await fs.stat(fromEnv).then((s) => s.isDirectory()).catch(() => false);
+    if (ok) return fromEnv;
+    logger.warn(`[skills] ZOME_BUILTIN_SKILLS_DIR 指向的目录不存在：${fromEnv}（回退向上查找）`);
+  }
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, "packages", "skills");
@@ -48,6 +56,8 @@ async function findBuiltinSkillsDir(): Promise<string | undefined> {
     if (parent === dir) break;
     dir = parent;
   }
+  // 内置目录缺失此前静默吞掉（loader 对不存在目录 catch 跳过），打包排障零线索
+  logger.warn(`[skills] 未找到内置技能目录 packages/skills（cwd=${process.cwd()} 向上 6 级不命中），内置 skill 不可用`);
   return undefined;
 }
 
