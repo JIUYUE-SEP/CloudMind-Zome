@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "node dist/src/bootstrap.js",
     "test": "vitest run",
+    "test:sidecar": "cargo build --manifest-path ../../crates/zome-sidecar/Cargo.toml && vitest run --config vitest.smoke.config.ts",
     "test:coverage": "vitest run --coverage",
     "bench": "vitest bench",
     "lint": "eslint src tests",
