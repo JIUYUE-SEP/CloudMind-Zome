@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,8 @@ import type { LLMProvider, LLMEvent } from "../../src/provider/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
 import { reconcileOrphanedTopic } from "../../src/memory/reconcile.js";
+import { withLLMCallRecording } from "../../src/provider/record-calls.js";
+import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import type { CompressionTaskDeps } from "../../src/memory/topic/compression-task.js";
 import { loadTopicState, saveTopicState } from "../../src/memory/topic/state.js";
 import { archivedMessageIds } from "../../src/memory/topic/store.js";
@@ -138,6 +140,28 @@ describe("reconcileOrphanedTopic 重启孤儿对账（P1-2）", () => {
     );
     expect((await loadTopicState("a1"))?.open?.messageIds).toEqual(ids);
     expect((await repo.listBySession("s1")).map((m) => m.id)).toEqual(ids);
+  });
+
+  it("reconcile 路径 provider 经 withLLMCallRecording 包装后 LLM 调用落档（P4 Minor-2）", async () => {
+    const ids = ["m1", "m2", "m3", "m4"]; // ≥ MIN_SEGMENT_MESSAGES(4)：触发真实 LLM 压缩调用
+    const repo = await seedOrphans(ids);
+    const callRepo = new LLMCallRepository("a1");
+    // 与 bootstrap.ts reconcile 路径同款接线：裸 provider 包装落档装饰器
+    const recorded = withLLMCallRecording(
+      new CountingProvider("话题主题：x\n关键结论：\n- y"),
+      callRepo,
+      "a1",
+    );
+
+    const count = await reconcileOrphanedTopic("a1", repo, deps(repo, recorded));
+    expect(count).toBe(4);
+
+    // 落档 fire-and-forget：等写盘完成再断言
+    await vi.waitFor(async () => {
+      expect((await callRepo.list()).length).toBe(1);
+    });
+    const [record] = await callRepo.list();
+    expect(record).toMatchObject({ agentId: "a1", provider: "counting", model: "mock-model", status: "ok" });
   });
 
   it("模拟崩溃后重启 N 次：热存储消息数有界（修复前随重启次数单调增长）", async () => {

@@ -293,7 +293,12 @@ async function main() {
         if (hasOpen || hasPending) {
           const deps = {
             agentId: agent.id,
-            provider: await createLLMProvider(agent),
+            // P4 review Minor-2：reconcile 孤儿压缩同样经 record-calls 落档，与主链路一致
+            provider: withLLMCallRecording(
+              await createLLMProvider(agent),
+              new LLMCallRepository(agent.id),
+              agent.id,
+            ),
             model: agent.compressionModel || agent.modelId || agent.model || "gpt-4o",
             messageRepository: repo,
           };

@@ -58,13 +58,20 @@ async function collectChatText(
         reject(new Error("compress timeout"));
       }, timeoutMs);
       (async () => {
-        for (;;) {
-          const { done, value } = await it.next();
-          if (done) break;
-          if (value.type === "text.delta") text += value.delta;
-          if (value.type === "step.end") break;
+        try {
+          for (;;) {
+            const { done, value } = await it.next();
+            if (done) break;
+            if (value.type === "text.delta") text += value.delta;
+            if (value.type === "step.end") break;
+          }
+          return text;
+        } finally {
+          // 正常到 step.end 也要关闭生成器：落档装饰器（record-calls）的记录
+          // 在生成器 finally 中构造，不 return() 它会一直挂起在 yield 上，
+          // 压缩调用永不落档（P4 review Minor-2 接通 reconcile 落档时发现）
+          void it.return?.();
         }
-        return text;
       })().then(resolve, reject);
     });
   } finally {
