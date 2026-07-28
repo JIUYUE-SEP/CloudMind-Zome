@@ -15,8 +15,9 @@
 # 1. 安装依赖
 pnpm install
 
-# 2. 构建 engine 和 web
-pnpm build
+# 2. 构建 engine 和 web（注意：根 `pnpm build` 会连带 desktop 的 tauri build，
+#    此时 sidecar 二进制未就位必失败，这里必须按包过滤）
+pnpm --filter @mindcloud/engine --filter @mindcloud/web build
 
 # 3. 构建 Rust sidecar
 cd crates/zome-sidecar
@@ -47,7 +48,7 @@ supervisor 启动 engine 时优先用 sidecar exe 旁的内嵌 Node（`node_bin(
 ## Web 模式
 
 ```bash
-pnpm build
+pnpm --filter @mindcloud/engine --filter @mindcloud/web build   # 根 pnpm build 会连带 desktop 的 tauri build
 pnpm --filter @mindcloud/engine start    # node dist/src/bootstrap.js
 pnpm --filter @mindcloud/web preview     # 预览构建产物（web 无 start 脚本）
 ```
@@ -58,12 +59,13 @@ pnpm --filter @mindcloud/web preview     # 预览构建产物（web 无 start �
 
 ## 数据目录
 
-默认数据目录：`~/.cloudmind-zome`
+桌面端数据目录由 sidecar 解析（唯一权威源），启动 engine 时经 `CLOUDMIND_DATA_DIR` 注入；旧默认目录 `~/.cloudmind-zome` 的数据由 sidecar 启动时一次性迁移。
 
-- Windows: `%USERPROFILE%\.cloudmind-zome`
-- macOS / Linux: `~/.cloudmind-zome`
+- Windows: `%LOCALAPPDATA%\cloudmind-zome`
+- macOS / Linux: 系统本地数据目录下的 `cloudmind-zome`
+- 独立运行 engine（Web 模式，不经 sidecar）：默认 `~/.cloudmind-zome`
 
-可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
+均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
 
 ## Provider 配置
 

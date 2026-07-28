@@ -2,7 +2,7 @@
 
 > 版本：v2 | 日期：2026-07-17（2026-07-22 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：**Phase 1/2/3/5/6 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
+> 状态：**Phase 1/2/3/5/6/7 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---
@@ -185,7 +185,7 @@ export interface CompressedTopic {
 
 ### 压缩存储
 
-位置：`~/.cloudmind-zome/agents/{agentId}/_compressed/`
+位置：`DATA_DIR/agents/{agentId}/_compressed/`（数据目录解析见架构文档 §6.3）
 
 格式：每个话题一个 markdown 文件，带 frontmatter：
 
@@ -215,7 +215,7 @@ msg_count: 47
 msg_id_1, msg_id_2, ...
 ```
 
-**同时**：被压缩的消息从热存储（messages.jsonl）移除，但 msg_ids 保留在 frontmatter 中，可通过 `getByIds` 从归档恢复。
+**同时**：被压缩的消息从热存储（messages.jsonl）移除；msg_ids 记录在压缩档正文 `## Messages Archived` 段（非 frontmatter），可经 `getArchivedByIds` 从归档恢复（`getByIds` 只读热存储）。
 
 ### 语义检索整合（L4）
 
@@ -236,12 +236,11 @@ msg_id_1, msg_id_2, ...
 
 在 `react/turn.ts` 的 `runTurn` 入口处：
 
+> **实现修订（2026-07-28）**：无阈值预检——每轮**无条件** `pipeline.assemble`（`turn.ts`），预算控制完全在管线内部的降级循环里完成；`ContextPipelineConfig` 只有 `maxContextTokens` / `reserveRatio` 两个字段，`thresholdRatio` 从未存在。
+
 ```typescript
-// 伪代码
-const estimatedTokens = tokenCounter.count(messages);
-if (estimatedTokens > threshold) {
-  messages = await pipeline.assemble({ ... });  // 完整 L1-L6 组装 + 降级
-}
+// 实际形态（每轮无条件）
+const assembled = await pipeline.assemble({ ... });  // 完整 L1-L6 组装 + 降级
 ```
 
 在话题切换时（由 `TopicDetector` 触发）：
@@ -258,10 +257,10 @@ if (topicClosed) {
 
 | grok-build 字段 | CMZ v2 对应 | 说明 |
 |---|---|---|
-| `auto_compact_threshold_percent` | `config.thresholdRatio` (0.8) | 触发压缩的窗口占比 |
-| `compact_model` | `config.compressModel` (可选) | 用便宜模型做压缩 |
-| `memory_flush_enabled` | `config.flushBeforeCompress` (true) | 压缩前先写 memory 文档 |
-| `wall_clock_budget_secs` | `config.compressTimeoutSecs` (60) | 压缩超时保护 |
+| `auto_compact_threshold_percent` | 无对应（实现修订 2026-07-28） | 每轮无条件 assemble + 管线内降级，无阈值预检；`thresholdRatio` 从未存在 |
+| `compact_model` | `compressionModel`（Agent 级字段，可选，缺省主模型） | 用便宜模型做压缩 |
+| `memory_flush_enabled` | 无对应（未实现，留待 Phase 4 评估） | 压缩前先写 memory 文档 |
+| `wall_clock_budget_secs` | 压缩超时 60s（`COMPRESS_TIMEOUT_MS` 代码常量，不可配置） | 压缩超时保护 |
 | `two_pass_enabled` | v2 不做 | 留作未来优化 |
 
 ---
@@ -279,6 +278,8 @@ if (topicClosed) {
 - 用户显式说"换个话题"/"不说这个了" → 新话题
 - 连续 5 条消息没有实体重叠（关键词匹配）→ 新话题
 - 默认：同话题
+
+> **实现修订（2026-07-28）**：第三条"实体重叠/关键词匹配"规则**已放弃**——`detector.ts` 实际只有数量阈值（默认 20 条）、显式切换词、时间窗（默认 30 分钟）三条规则；Phase 3 完成时未实现关键词边界，此后也未回补，此处显式声明放弃（如需语义级边界，走 Phase 4 的 LLM 版检测另评）。
 
 **理由**：规则版可控、可解释；LLM 版作为 v2 升级路径，用于处理"杂谈"等模糊场景。
 
@@ -316,6 +317,8 @@ msg_count: 47
 
 **理由**：纯 markdown 可读性好，embedding_id 支持语义检索反查。
 
+> **实现修订（2026-07-28）**：`embedding_id` 至今仍只是预留——`CompressedTopic.embeddingId` 在全代码库从未被赋值，所有压缩档该字段**恒为空串**；L4 的"已压缩话题原文排除"走的是 `archivedMessageIds`（压缩档 msg_ids 汇总），不依赖 embedding_id。原"Phase 3 接入"承诺未兑现，是否接入留待重新评估。
+
 ### 4. 热存储清理：归档保护
 
 **决策**：被移除的消息先写入 `messages_archived.jsonl`（只追加），压缩档 msg_ids 指向归档行号。
@@ -325,6 +328,10 @@ msg_count: 47
 - 压缩档丢失时，原始消息仍可从归档恢复
 
 **理由**：frontmatter 可能损坏，msg_ids 可能失配，归档是最后防线。
+
+> **实现修订（2026-07-28）**：
+> - 压缩档存的是消息 **id 列表**（正文 `## Messages Archived` 段），并非"归档行号"；归档恢复走 `getArchivedByIds`。
+> - **"每周校验"未实现**：全仓无任何周期性归档校验任务（`scheduler/` 是用户任务 cron，与归档无关）。实际保护是**启动对账**（`memory/reconcile.ts`，含 P1-2 的 pending 段与重启孤儿话题对账）：engine 每次启动补归档"压缩档已写但归档未完成"的孤儿消息、补处理未压缩的 pending 段，`ZOME_STARTUP_RECONCILE=false` 可关闭。周期性校验如需补建应另立项。
 
 ### 5. 时间衰减：分段衰减，重要记忆不衰减
 
@@ -369,10 +376,10 @@ return 0.3;                              // 三个月以上保底 30%
 ### Phase 2：话题压缩（约 1 周）— ✅ 已完成（2026-07-21）
 
 - [x] `memory/topic/tracker.ts`：话题跟踪（TopicContext 规则版，含太短不压缩的噪声控制）
-- [x] `memory/topic/detector.ts` v1：规则版（时间间隔 + 数量阈值 + 用户显式切换词；关键词边界留 Phase 3）
+- [x] `memory/topic/detector.ts` v1：规则版（时间间隔 + 数量阈值 + 用户显式切换词；关键词边界规则后已放弃，见决策 1 实现修订）
 - [x] `memory/topic/compressor.ts`：LLM 单程压缩（摘要 + 关键点，失败不 fallback 主模型）
 - [x] `memory/topic/queue.ts`：后台串行压缩队列（fire-and-forget）
-- [x] 压缩档落盘 `_compressed/*.md`（frontmatter 预留 embedding_id，Phase 3 接入）
+- [x] 压缩档落盘 `_compressed/*.md`（frontmatter 预留 embedding_id；至今未接入、恒为空，见决策 3 实现修订）
 - [x] 热存储清理（`archiveAndRemove`：先归档 `messages_archived.jsonl` 再移除，可恢复）
 - [x] L5 注入：`pipeline.assemble` 的 `topicSummaries` 输入，agent-worker 接线与 agent 级配置（`compressionModel` / `topicDetectionWindowMinutes` / `topicMessageThreshold`）
 - [x] 启动对账（`memory/reconcile.ts`，2026-07-22）：engine 启动时对账"压缩档 msg_ids ∩ 热存储"，补归档"压缩档已写入但 archiveAndRemove 未完成"的孤儿消息；`ZOME_STARTUP_RECONCILE=false` 关闭，默认开启；不覆盖退出时仍在未关闭话题中的消息
@@ -383,7 +390,7 @@ return 0.3;                              // 三个月以上保底 30%
 
 - [x] 整合 `memoryIndexer` 到 `pipeline.assemble`（L4 层：`SemanticMemory[]`，参与预算与降级）
 - [x] 时间衰减打分（分段衰减，见"设计决策 5"；importance 标记待 v2 话题检测启用后接入）
-- [x] 跨场景标注（`[来自: <sessionId>]`，同场景不标注）
+- [x] 跨场景标注（Phase 5 起为自然化"在另一个对话里"；原 `[来自: <sessionId>]` 标注已移除，同场景不标注）
 - [x] L4 检索排除已归档话题的原始消息（与 Phase 2 衔接）
 - [x] 检索逻辑从 agent-worker 迁入 `context/semantic.ts`（embedder + sidecar HNSW 仍由 MemoryIndexer 承载）
 - [x] agent 级配置：`semanticSearchEnabled` / `semanticTopK` / `semanticMinScore`
@@ -440,7 +447,7 @@ Messages（动态）：L4/L5 伪装 user 历史与 L3 按时间归并 → MIND.m
 - [x] Phase 1 不参与降级与多轮去重（量小；与个人格同为"自我"连续性）；缓存前缀跨轮字节一致
 - [ ] 后续扩展：embedding 版检索
 
-**验收**：`tests/mind/mind-files.test.ts`（13 例）+ `tests/context/pipeline-mind.test.ts` + assembler/agent-worker/api 集成用例——SOUL 加载与兜底、MIND 解析与话题检索、L1 不含 MIND、注入位置在热上下文之后、缓存前缀稳定、新建 Agent 默认文件落盘。
+**验收**：`tests/mind/mind-files.test.ts`（15 例）+ `tests/context/pipeline-mind.test.ts` + assembler/agent-worker/api 集成用例——SOUL 加载与兜底、MIND 解析与话题检索、L1 不含 MIND、注入位置在热上下文之后、缓存前缀稳定、新建 Agent 默认文件落盘。
 
 ### Phase 7：MIND.md 经验自动沉淀（2026-07-23）— ✅ 已实现
 
@@ -465,7 +472,7 @@ confidence: 0.9
 frontmatter 支持来源追溯（source）、时间衰减（created）、置信度分档（confidence，沿用 P5 的 >0.7 正常 / 0.5-0.7 模糊化 / ≤0.5 不写入口径——提取阶段 ≤0.5 直接不落盘）。
 4. **写权限：仅系统自动提取**。现阶段不开放 agent 对话中主动"记一条经验"的通道（防模型滥用写权限），后续再评估。
 
-**去重**：规则版先行——新块标题与已有块标题的 token 重合度过高时（Jaccard ≥ 0.6），并入已有块正文追加一行补充（仍不删除原文），否则独立成块。LLM 合并留待规模上来后再说。
+**去重**：规则版先行——双重门槛：新块标题与已有块标题的整体 token Jaccard ≥ 0.6 **且**主体段（冒号/破折号末段）有共享 token 时，并入已有块正文追加一行补充（仍不删除原文），否则独立成块（主体段约束防止「指挥官偏好：饮食」/「指挥官偏好：穿搭」这类共享前缀标题误并）。LLM 合并留待规模上来后再说。
 
 **注入侧不变**：检索仍走 P6 规则版（bigram 打分、上限 3 块）；frontmatter 不参与检索打分，仅用于审计与未来的衰减。解析器需跳过 frontmatter（`---` 围栏段不进正文）。
 
@@ -473,12 +480,12 @@ frontmatter 支持来源追溯（source）、时间衰减（created）、置信�
 
 - [x] 提取时机：`compressor.ts` 的 prompt 追加「经验：」区（标题 | 置信度 | 正文，0-N 条，没有留空）；同一次压缩调用返回 `CompressedTopic.experiences`，压缩模型不变
 - [x] 落档后写入：agent-worker 的 CompressionQueue 回调在 `writeCompressedTopic` 成功后 `appendMindExperiences`（source=`topic-{topicId}`、created=压缩时间）；失败仅 warn 跳过，不影响压缩主流程
-- [x] `appendMindExperiences`（`src/mind/mind-files.ts`）：append-only（只加不改）；confidence ≤ 0.5 / 空标题 / 空正文直接不落盘；标题 token Jaccard ≥ 0.6 并入已有块正文追加一行补充（原文不删、frontmatter 不动），否则独立成块；tmp + rename 原子写
+- [x] `appendMindExperiences`（`src/mind/mind-files.ts`）：append-only（只加不改）；confidence ≤ 0.5 / 空标题 / 空正文直接不落盘；双重门槛（标题整体 Jaccard ≥ 0.6 且主体段共享 token）并入已有块正文追加一行补充（原文不删、frontmatter 不动），否则独立成块；tmp + rename 原子写
 - [x] 解析器升级：`parseMindChunks` 跳过块首 frontmatter 围栏段（字段挂在 MindChunk.source/created/confidence 上，raw 原样保留）；检索打分仍只看 heading + content
 - [x] 注入消息正文无 frontmatter：`mindToMessage` 改由 heading + content 重组（raw 仅审计用）
 - [x] 区间隔离：压缩解析按区截取（关键结论不吃经验区的 dash 行）；坏行跳过、置信度 clamp 0-1
 
-**验收**：压缩落档后 MIND.md 出现带 frontmatter 的经验块；无经验可提时文件不变；frontmatter 不出现在注入消息正文；重复经验按规则合并；engine 测试全绿（522 例）。
+**验收**：压缩落档后 MIND.md 出现带 frontmatter 的经验块；无经验可提时文件不变；frontmatter 不出现在注入消息正文；重复经验按规则合并；engine 测试全绿（2026-07-28 实测 690 例）。
 
 ---
 
@@ -496,7 +503,7 @@ frontmatter 支持来源追溯（source）、时间衰减（created）、置信�
 1. **功能**：1000 轮长对话不报错、不丢失人格、能回忆早期设定
 2. **性能**：assemble 延迟 < 100ms（不含 LLM 压缩调用）
 3. **可审计**：指挥官能查看任意 Agent 的 `_compressed/` 目录，理解记忆被压成了什么样
-4. **可配置**：所有阈值（触发比例、保留轮数、压缩模型）可在 config 里调整
+4. **可配置**：上下文预算（`maxContextTokens` / `reserveRatio`）、压缩模型（`compressionModel`）、话题检测窗/阈值、L4 topK/minScore 等 Agent 级字段可配；"触发比例"无对应实现（每轮无条件 assemble），"保留轮数"差异化保留未实现
 
 ---
 

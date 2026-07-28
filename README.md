@@ -28,7 +28,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **私聊** — 与单个 Agent 一对一对话，WebSocket 流式输出（正文 / 思考 / 工具调用分帧推送）
 - **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
-- **工具调用** — ReActLoop 调用 7 个内置工具：read_file / write_file / edit_file / list_files / bash / run_command / dispatch_subagent；写类工具需人工审批
+- **工具调用** — ReActLoop 调用 7 个内置工具：read_file / write_file / edit_file / list_files / bash / run_command / dispatch_subagent；写类工具与 dispatch_subagent 需人工审批
 - **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级；话题压缩归档（L5 摘要注入）与 L4 语义检索已接入管线（Phase 1–3）
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
 - **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
@@ -69,14 +69,17 @@ pnpm install
 ### 3. 启动开发
 
 ```bash
-# 同时启动 engine + web
+# 启动全部 dev 目标：engine + web + shared（tsc --watch）+ desktop（tauri dev，首次需完整 Rust 编译，耗时数分钟）
 pnpm dev
+
+# 只做 Web 开发（engine + web，不拉起桌面端）
+pnpm --filter @mindcloud/engine --filter @mindcloud/web dev
 ```
 
 - 前端：`http://localhost:3000`
 - 后端 API：`http://127.0.0.1:8848`（Swagger UI：`http://127.0.0.1:8848/docs`）
 
-### 4. 启动桌面
+### 4. 单独启动桌面
 
 ```bash
 pnpm --filter @mindcloud/desktop dev
@@ -91,7 +94,7 @@ pnpm --filter @mindcloud/desktop dev
 每个 Agent 拥有：
 - **私有记忆** — per-Agent JSON/JSONL 文档存储
 - **独立配置** — 自己的模型、人设、Skill、工具
-- **工具权限** — 可调用文件、Shell、子代理等内置工具，写操作需人工审批
+- **工具权限** — 可调用文件、Shell、子代理等内置工具，写操作与子代理派发需人工审批
 - **Plan 执行** — 通过 Plan 系统编排多步骤任务
 - **Skill 扩展** — 基于 SKILL.md manifest 动态加载能力
 
@@ -105,8 +108,8 @@ pnpm --filter @mindcloud/desktop dev
 ### 单用户本地模式
 
 - 无登录注册，开箱即用
-- 所有数据存储在本地默认目录 `~/.cloudmind-zome`
-- 可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖默认路径
+- 所有数据存储在本地。独立运行 engine（如 Web 模式 `pnpm dev`）默认 `~/.cloudmind-zome`；桌面端由 sidecar 解析统一数据目录（Windows 为 `%LOCALAPPDATA%\cloudmind-zome`）并在启动 engine 时注入，旧默认目录的数据由 sidecar 启动时一次性迁移
+- 两种形态均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖默认路径
 - 可作为 Web 应用或 Tauri 桌面应用运行
 
 ---
@@ -176,12 +179,10 @@ MindCloud-Zome/
 
 ## 数据存储
 
-所有运行时数据本地存储，默认路径：`~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）
-
-可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
+所有运行时数据本地存储。独立运行 engine（Web 模式）默认 `~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）；桌面端由 sidecar 解析统一数据目录（Windows 为 `%LOCALAPPDATA%\cloudmind-zome`），旧默认目录的数据会被一次性迁移。均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
 
 ```
-~/.cloudmind-zome/
+DATA_DIR/
 ├── config.json            # 全局配置（Provider、记忆参数；凭据加密落盘）
 ├── .master-key            # 自动生成的 AES 主密钥
 ├── blueprints.jsonl       # 蓝图定义

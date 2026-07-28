@@ -38,7 +38,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `semanticTopK` | number | 10 | L4 注入条数上限 |
 | `semanticMinScore` | number | 0 | L4 最低相关度（相似度 × 时间衰减，0-1） |
 
-> 非法取值（如 `topicMessageThreshold < 4`、`semanticTopK < 1`）由引擎 clamp 并 warn。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
+> 非法取值由引擎归一并 warn：`topicMessageThreshold < 4` clamp 到 4；`semanticTopK < 1` 重置为默认值 10。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
 
 ### Chat
 
@@ -132,7 +132,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | 帧 | 说明 |
 |---|---|
 | `{ "text": "..." }` | 聊天消息（无 type 字段，最长 10000 字符） |
-| `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` 不可 remember） |
+| `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` / `write_file` / `edit_file` / `dispatch_subagent` 不可 remember） |
 | `session.set_mode` | 切换 chat / code 模式（仅会话 WS，可带 `projectId`） |
 
 未知 type 帧静默忽略。
@@ -149,7 +149,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `session.mode_changed` | 模式切换确认（仅会话 WS） |
 | `error` | 错误 |
 
-握手时校验 Origin（无 Origin 的非浏览器客户端放行；`NODE_ENV=e2e` 全放行）。
+握手时校验 Origin（无 Origin 的非浏览器客户端放行；`tauri://` 协议及 `*.tauri.localhost` 域放行；`NODE_ENV=e2e` 全放行）。
 
 ## 通用约定
 
