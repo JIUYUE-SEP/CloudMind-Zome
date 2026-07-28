@@ -3,9 +3,15 @@ import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "./layers.js";
 import type { ToolSchema, SemanticMemory, TopicSummary, ContextLayers } from "./layers.js";
 import type { MindChunk } from "../mind/mind-files.js";
-import { assembleMessages } from "./assembler.js";
+import { assembleMessages, systemMessage } from "./assembler.js";
 import { selectNextStep } from "./downgrade.js";
-import { CONFIDENCE_DROP } from "./recall.js";
+import {
+  CONFIDENCE_DROP,
+  memoryToMessage,
+  topicToMessage,
+  mindToMessage,
+  retrievalFailedMessage,
+} from "./recall.js";
 import { getTokenCounter, type TokenCounter } from "./token-counter.js";
 
 export interface ContextPipelineConfig {
@@ -117,14 +123,40 @@ export class ContextPipeline {
       l6Ext: [],
     });
 
+    // 单次 assemble 的统一时间基准：增量计数的渲染文本与最终组装必须是同一份，
+    // 否则"计数的文本"和"发出的文本"可能差一个相对时间渲染边界（M3 增量计数）
+    const now = Date.now();
+
+    // —— 增量计数初始化（质量 review M3）——
+    // countMessages 对每条消息独立累加（overhead+role+content+toolCalls），与
+    // 顺序/归并无关，因此总量 = 各层条目计数之和；降级步骤只移除条目，每步
+    // 增量减掉被移除项即可，不再每步 O(n) 全量重算（完整降级序列 402ms → ~单次）。
+    const countOne = (m: ChatMessage): number => this.counter.countMessages([m]);
+    const sum = (nums: number[]): number => nums.reduce((a, b) => a + b, 0);
+    const l3Tokens = layers.l3.map(countOne);
+    // l4 入层时已按 CONFIDENCE_DROP 过滤（≤0.5 不入层），memoryToMessage 不会返回 null
+    const l4Tokens = layers.l4.map((m) => countOne(memoryToMessage(m, now)!));
+    const l5Tokens = layers.l5.map((t) => countOne(topicToMessage(t, now)));
+    // 固定部分（L1/L2 前缀、MIND、检索失败告知）不参与降级，只计一次；
+    // 构造条件与 assembleMessages 逐条对应，口径一致
+    const fixedMessages: ChatMessage[] = [];
+    if (layers.l1.trim()) fixedMessages.push(systemMessage(layers.l1));
+    if (layers.l2?.trim()) fixedMessages.push(systemMessage(layers.l2));
+    if (layers.mind.length > 0) fixedMessages.push(mindToMessage(layers.mind, now));
+    if (input.retrievalFailed) fixedMessages.push(retrievalFailedMessage());
+    const fixedTokens = sum(fixedMessages.map(countOne));
+
+    let tools = [...layers.l6Core, ...layers.l6Ext];
+    let toolsTokens = this.counter.countTools(tools);
+    let total = fixedTokens + sum(l3Tokens) + sum(l4Tokens) + sum(l5Tokens) + toolsTokens;
+
     for (;;) {
-      const messages = assembleMessages(layers, { retrievalFailed: input.retrievalFailed });
-      const tools = [...layers.l6Core, ...layers.l6Ext];
-      const total =
-        this.counter.countMessages(messages) + this.counter.countTools(tools);
       if (total <= this.budgetTokens) {
         this.markInjected(input.sourceId, layers);
-        return { messages, tools };
+        return {
+          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed }),
+          tools,
+        };
       }
       const step = selectNextStep(layers);
       if (!step) {
@@ -135,13 +167,35 @@ export class ContextPipeline {
             `total=${total} budget=${this.budgetTokens} l3=${layers.l3.length}`,
         );
         this.markInjected(input.sourceId, layers);
-        return { messages, tools };
+        return {
+          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed }),
+          tools,
+        };
       }
+      const before = total;
       step.apply(layers);
+      // 增量更新总量（与全量重算逐项对应）：
+      if (step.name === "l5:drop-oldest") {
+        // l5 时间倒序（最新在前），drop-oldest 移除末尾（最旧）一条
+        total -= l5Tokens.pop() ?? 0;
+      } else if (step.name.startsWith("l4:")) {
+        // l4 keep-N / drop 保留前部（高相关），移除尾部
+        total -= sum(l4Tokens.splice(layers.l4.length));
+      } else if (step.name.startsWith("l3:")) {
+        // truncateHotContext 保留尾部 keep 条并连带丢弃头部孤儿 tool，移除的是头部
+        total -= sum(l3Tokens.splice(0, l3Tokens.length - layers.l3.length));
+      } else if (step.name.startsWith("l6ext:")) {
+        // tools 是整组 JSON 编码，按条拆分不保证与整组一致——仅 l6ext 两步重算
+        // （计算对象就是降级后的整组，与全量重算逐字节一致）；其余步骤复用缓存
+        tools = [...layers.l6Core, ...layers.l6Ext];
+        const next = this.counter.countTools(tools);
+        total += next - toolsTokens;
+        toolsTokens = next;
+      }
       // M3：每步降级打 debug——哪一层被降、降后各层规模、当前预算使用
       logger.debug(
         `[ContextPipeline] agent=${input.agentId} 降级 ${step.name}：` +
-          `total=${total} budget=${this.budgetTokens}，降后 ` +
+          `total=${before} budget=${this.budgetTokens}，降后 ` +
           `l3=${layers.l3.length} l5=${layers.l5.length} l4=${layers.l4.length} l6Ext=${layers.l6Ext.length}`,
       );
     }

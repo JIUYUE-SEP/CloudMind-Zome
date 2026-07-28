@@ -10,7 +10,7 @@ export interface AssembleOptions {
   retrievalFailed?: boolean;
 }
 
-function systemMessage(text: string): ChatMessage {
+export function systemMessage(text: string): ChatMessage {
   return {
     id: randomUUID(),
     role: "system",
