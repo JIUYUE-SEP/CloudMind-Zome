@@ -190,4 +190,54 @@ describe("WorkerRegistry 配置变更竞态（P3-6）", () => {
     expect(newWorker).toBeDefined();
     expect(newWorker!.status).not.toBe("paused");
   });
+
+  it("并发 getOrCreate 共享同一 in-flight create（Major-2：群聊两条消息排空后不双创建）", async () => {
+    const registry = new WorkerRegistry();
+    let releaseCreate!: (w: AgentWorker) => void;
+    let created = 0;
+    const slowCreate = async (): Promise<AgentWorker> => {
+      created++;
+      return new Promise<AgentWorker>((r) => {
+        releaseCreate = r;
+      });
+    };
+
+    const p1 = registry.getOrCreate("a1", slowCreate);
+    const p2 = registry.getOrCreate("a1", slowCreate);
+    await new Promise((r) => setTimeout(r, 20));
+    // 两个并发调用共享同一创建：create 只跑一次
+    expect(created).toBe(1);
+
+    const worker = makeWorker(new MockLLMProvider());
+    releaseCreate(worker);
+    expect(await p1).toBe(worker);
+    expect(await p2).toBe(worker);
+  });
+
+  it("create 期间的配置变更不丢失：创建完成后补退役（Major-2）", async () => {
+    const registry = new WorkerRegistry();
+    let releaseCreate!: (w: AgentWorker) => void;
+    const staleWorker = makeWorker(new MockLLMProvider());
+    const pending = registry.getOrCreate(
+      "a1",
+      () => new Promise<AgentWorker>((r) => {
+        releaseCreate = r;
+      }),
+    );
+
+    // create 在途（workers 为空）时来配置变更：登记而不是吞掉
+    registry.retire("a1");
+    releaseCreate(staleWorker);
+
+    const worker = await pending;
+    expect(worker).toBe(staleWorker);
+    // 创建完成即补退役：旧配置创建的 worker 不提供服务
+    expect(worker!.status).toBe("paused");
+
+    // 下一次解析：按新配置重建（补退役的 waitForIdle 队列已空，立即通过）
+    const fresh = makeWorker(new MockLLMProvider());
+    const resolved = await registry.getOrCreate("a1", async () => fresh);
+    expect(resolved).toBe(fresh);
+    expect(resolved!.status).not.toBe("paused");
+  });
 });
