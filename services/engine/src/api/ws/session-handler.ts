@@ -10,6 +10,14 @@ import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
+import {
+  auditAutoApproved,
+  auditDecision,
+  auditRemembered,
+  auditRememberRejected,
+  auditRequest,
+  auditTimeout,
+} from "./approval-audit.js";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 
 const MAX_PENDING_MESSAGES = 100;
@@ -60,16 +68,28 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
 
       function requestApproval(agentId: string, req: ApprovalRequest): Promise<boolean> {
         const rememberKey = `${agentId}:${req.toolName}`;
-        if (autoApprovedTools.has(rememberKey)) return Promise.resolve(true);
+        if (autoApprovedTools.has(rememberKey)) {
+          auditAutoApproved({ agentId, sessionId, toolName: req.toolName });
+          return Promise.resolve(true);
+        }
         return new Promise((resolve) => {
           const timer = setTimeout(() => {
             pendingApprovals.delete(req.id);
+            auditTimeout({ agentId, sessionId, approvalId: req.id, toolName: req.toolName });
             resolve(false); // 超时视为拒绝
           }, APPROVAL_TIMEOUT_MS);
           // pending 记裸 toolName（P2-2）：免问资格判定必须看工具本身——
           // 复合键 "agentX:run_command" 永远不在 NO_REMEMBER_TOOLS 内，
           // guard 恒通过导致 run_command 在群聊可被 remember 免问（功能 M1）
           pendingApprovals.set(req.id, { agentId, toolName: req.toolName, resolve, timer });
+          auditRequest({
+            agentId,
+            sessionId,
+            approvalId: req.id,
+            toolCallId: req.toolCallId,
+            toolName: req.toolName,
+            args: req.arguments,
+          });
           safeSend(socket, {
             agentId,
             type: "tool.approval_request",
@@ -129,10 +149,21 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             if (pending) {
               clearTimeout(pending.timer);
               pendingApprovals.delete(data.approvalId);
+              const approved = data.approved === true;
+              auditDecision({
+                agentId: pending.agentId,
+                sessionId,
+                approvalId: data.approvalId,
+                toolName: pending.toolName,
+                approved,
+              });
               // 资格判定用裸 toolName（NO_REMEMBER_TOOLS 按工具名排除），
               // 入名单仍按 agent+工具 维度，不误放同会话其他 agent
               if (data.approved && data.remember && isApprovalRememberable(pending.toolName)) {
                 autoApprovedTools.add(`${pending.agentId}:${pending.toolName}`);
+                auditRemembered({ agentId: pending.agentId, sessionId, toolName: pending.toolName });
+              } else if (data.remember && !isApprovalRememberable(pending.toolName)) {
+                auditRememberRejected({ agentId: pending.agentId, sessionId, toolName: pending.toolName });
               }
               pending.resolve(data.approved === true);
             }

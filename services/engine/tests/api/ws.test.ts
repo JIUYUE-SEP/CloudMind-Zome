@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { logger } from "../../src/logger.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -292,6 +293,79 @@ describe("WebSocket API", () => {
     expect(chatCount.p2).toBe(1);
     expect(worker1.status).toBe("paused");
 
+    await app.close();
+    await cleanup();
+  });
+
+  it("审批全链路审计日志（P4-3）：请求/批准/免问记入各有结构化日志", async () => {
+    const { context, cleanup, provider } = await buildWsContext("agent-ws", [
+      {
+        name: "write_file",
+        description: "dangerous write",
+        parameters: z.object({ path: z.string() }),
+        accesses: [],
+        requiresApproval: true,
+        async execute(): Promise<ToolResult> {
+          return { success: true, output: "wrote" };
+        },
+      },
+    ]);
+    provider.setNextToolCalls([
+      { toolCallId: "tc1", name: "write_file", arguments: { path: "docs/a.md" } },
+    ]);
+
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "go" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "tool.approval_request") {
+          client.send(
+            JSON.stringify({ type: "tool.approval", approvalId: message.approvalId, approved: true, remember: true }),
+          );
+        }
+        if (message.type === "turn.end") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    // 请求：含 agent/session/approvalId/toolName/参数摘要（path 全文）
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent-ws",
+        sessionId: "s1",
+        toolName: "write_file",
+        toolCallId: "tc1",
+        args: "path=docs/a.md",
+      }),
+      "[approval] 请求审批",
+    );
+    // 批准与免问记入（remember:true 但 write_file 每次必批——P2-3 起是"免问被拒"）
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-ws", toolName: "write_file", approved: true }),
+      "[approval] 批准",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-ws", toolName: "write_file" }),
+      "[approval] remember 被引擎拒绝（该工具每次必批）",
+    );
+
+    info.mockRestore();
+    warn.mockRestore();
     await app.close();
     await cleanup();
   });

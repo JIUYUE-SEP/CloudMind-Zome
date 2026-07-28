@@ -33,6 +33,7 @@ import {
   type MindChunk,
 } from "../mind/mind-files.js";
 import { UnsupportedSchemaVersionError } from "../versioning.js";
+import { auditFailClosed } from "../api/ws/approval-audit.js";
 
 logger.info("[agent-worker] module loaded");
 
@@ -426,7 +427,11 @@ export class AgentWorker {
             // 危险工具：必须走人工审批通道（交互式 WS 会话提供），无通道一律拒绝
             const tool = toolsMap.get(name);
             if (!tool?.requiresApproval) return true;
-            if (!job.onApprovalRequest) return false;
+            if (!job.onApprovalRequest) {
+              // P4-3：fail-closed 也入审计（scheduler/subagent/blueprint 路径的拒绝可见）
+              auditFailClosed({ agentId: this.config.agentId, toolName: name, toolCallId });
+              return false;
+            }
             return job.onApprovalRequest({ id: randomUUID(), toolCallId, toolName: name, arguments: args });
           },
           emit: job.onEvent,

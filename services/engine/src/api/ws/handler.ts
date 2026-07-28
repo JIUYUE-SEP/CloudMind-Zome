@@ -7,6 +7,14 @@ import type { ApprovalRequest } from "../../core/agent-worker.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
+import {
+  auditAutoApproved,
+  auditDecision,
+  auditRemembered,
+  auditRememberRejected,
+  auditRequest,
+  auditTimeout,
+} from "./approval-audit.js";
 
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
@@ -95,13 +103,25 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
       const autoApprovedTools = new Set<string>();
 
       function requestApproval(req: ApprovalRequest): Promise<boolean> {
-        if (autoApprovedTools.has(req.toolName)) return Promise.resolve(true);
+        if (autoApprovedTools.has(req.toolName)) {
+          auditAutoApproved({ agentId, sessionId, toolName: req.toolName });
+          return Promise.resolve(true);
+        }
         return new Promise((resolve) => {
           const timer = setTimeout(() => {
             pendingApprovals.delete(req.id);
+            auditTimeout({ agentId, sessionId, approvalId: req.id, toolName: req.toolName });
             resolve(false); // 超时视为拒绝
           }, APPROVAL_TIMEOUT_MS);
           pendingApprovals.set(req.id, { toolName: req.toolName, resolve, timer });
+          auditRequest({
+            agentId,
+            sessionId,
+            approvalId: req.id,
+            toolCallId: req.toolCallId,
+            toolName: req.toolName,
+            args: req.arguments,
+          });
           safeSend(socket, {
             type: "tool.approval_request",
             approvalId: req.id,
@@ -134,8 +154,19 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             if (pending) {
               clearTimeout(pending.timer);
               pendingApprovals.delete(data.approvalId);
+              const approved = data.approved === true;
+              auditDecision({
+                agentId,
+                sessionId,
+                approvalId: data.approvalId,
+                toolName: pending.toolName,
+                approved,
+              });
               if (data.approved && data.remember && isApprovalRememberable(pending.toolName)) {
                 autoApprovedTools.add(pending.toolName);
+                auditRemembered({ agentId, sessionId, toolName: pending.toolName });
+              } else if (data.remember && !isApprovalRememberable(pending.toolName)) {
+                auditRememberRejected({ agentId, sessionId, toolName: pending.toolName });
               }
               pending.resolve(data.approved === true);
             }

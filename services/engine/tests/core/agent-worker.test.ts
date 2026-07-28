@@ -807,6 +807,7 @@ ${SECURITY_GUIDELINE}` },
         makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)]),
       );
       const events: LLMEvent[] = [];
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
       worker.enqueue({ id: "j1", messages: [userMessage("go")], onEvent: (e) => events.push(e) });
       await vi.waitFor(() => expect(worker.status).toBe("idle"));
@@ -814,6 +815,12 @@ ${SECURITY_GUIDELINE}` },
       expect(executed.flag).toBe(false);
       const result = events.find((e) => e.type === "tool.result");
       expect(JSON.stringify((result as { output: unknown }).output)).toContain("Approval denied");
+      // P4-3：fail-closed 拒绝入审计日志
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "agent-1", toolName: "danger_tool", toolCallId: "tc_d" }),
+        "[approval] 无审批通道，fail-closed 拒绝",
+      );
+      warn.mockRestore();
     });
 
     it("executes dangerous tools approved via onApprovalRequest", async () => {
