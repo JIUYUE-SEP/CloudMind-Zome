@@ -35,6 +35,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAuthToken, getAuthTokenFilePath } from "./config/auth-token.js";
 import { classifyListenError } from "./api/listen-error.js";
+import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
 
 /** 从 cwd 向上找 monorepo 根下的 packages/skills（内置技能目录） */
 async function findBuiltinSkillsDir(): Promise<string | undefined> {
@@ -333,7 +334,7 @@ async function main() {
       `[auth] 本地鉴权 token 文件：${getAuthTokenFilePath()}（web 开发请设 NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage cloudmind.engineToken）`,
     );
   }
-  const port = Number(process.env.PORT || 8848);
+  const port = Number(process.env.PORT || DEFAULT_ENGINE_PORT);
   try {
     await app.listen({ port, host: "127.0.0.1" });
   } catch (err) {

@@ -49,6 +49,7 @@ describe("recordsToDisplay", () => {
   function makeRecord(id: string, agentId?: string): ChatMessageRecord {
     return {
       id,
+      sessionId: "s1",
       role: agentId ? "assistant" : "user",
       content: [{ type: "text", text: `msg-${id}` }],
       createdAt: "2026-07-21T00:00:00.000Z",

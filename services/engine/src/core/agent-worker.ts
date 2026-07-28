@@ -46,7 +46,7 @@ export interface AgentWorkerConfig {
   tools: Tool[];
   workspaceDir: string;
   messageRepository: IMessageRepository;
-  approve: (toolName: string, args: unknown, toolCallId?: string) => boolean | Promise<boolean>;
+  approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   temperature?: number;
   topP?: number;
   /** 已解析的 skill 内容（SKILL.md 全文），注入 system prompt */
@@ -82,7 +82,8 @@ export interface Job {
 
 export interface ApprovalRequest {
   id: string;
-  toolCallId?: string;
+  // 构造点（下方 approve 回调）必传；收紧为必填与 WS 帧契约（shared ApprovalRequestFrame）一致
+  toolCallId: string;
   toolName: string;
   arguments: unknown;
 }

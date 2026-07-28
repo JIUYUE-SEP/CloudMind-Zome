@@ -9,6 +9,8 @@ use tracing::{error, info, warn};
 use crate::data_dir;
 use crate::project_root;
 
+// engine 默认地址的权威定义在 packages/shared/src/constants.ts（DEFAULT_ENGINE_URL，P5-2）；
+// Rust 无法消费 TS 包，此处硬编码需与其人工对齐
 const HEALTH_URL: &str = "http://127.0.0.1:8848/health";
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(30);

@@ -1,17 +1,9 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
+import type { ScheduledTask } from "@mindcloud/shared";
 
-export interface ScheduledTask {
-  id: string;
-  agentId: string;
-  description: string;
-  prompt: string;
-  cron: string;
-  enabled: boolean;
-  lastRunAt?: string;
-  nextRunAt?: string;
-}
+export type { ScheduledTask };
 
 export const useSchedulerStore = defineStore("scheduler", () => {
   const client = useEngineClient();
@@ -37,7 +29,11 @@ export const useSchedulerStore = defineStore("scheduler", () => {
     }
   }
 
-  async function create(agentId: string, task: Omit<ScheduledTask, "id" | "agentId">) {
+  // engine 创建时忽略 id/agentId/时间戳并自算 nextRunAt，类型上直接排除（与 client.createScheduledTask 对齐）
+  async function create(
+    agentId: string,
+    task: Omit<ScheduledTask, "id" | "agentId" | "createdAt" | "updatedAt" | "lastRunAt" | "nextRunAt">
+  ) {
     const created = await client.createScheduledTask(agentId, task);
     await load(agentId);
     return created;

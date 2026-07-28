@@ -18,7 +18,7 @@ export interface ToolExecutionContext {
   workspaceDir: string;
   projectRoot?: string;
   tools: Map<string, Tool>;
-  approve: (toolName: string, args: unknown, toolCallId?: string) => boolean | Promise<boolean>;
+  approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   emit: (event: LLMEvent) => void;
   services?: ToolContext["services"];
 }

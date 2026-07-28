@@ -2,11 +2,8 @@ import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import type { AgentConfig } from "@mindcloud/shared";
+import { isValidAgentId } from "@mindcloud/shared";
 import { ensureMindFiles } from "../../mind/mind-files.js";
-
-function isValidAgentId(id: unknown): id is string {
-  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
-}
 
 // AgentConfig 已知字段（功能 Minor-1）：POST/PUT 对未知字段显式 400，
 // 不再静默忽略——客户端写错字段名（如 provider 而非 providerId）时错误

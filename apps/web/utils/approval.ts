@@ -2,14 +2,12 @@
 // 私聊（stores/chat.ts）与群聊（hub.vue、sessions/[id].vue）各自维护消息数组，
 // 公共逻辑收敛在这里，三处各自的消息处理只需调用这些函数。
 
-// 引擎发来的审批请求帧（群聊帧外层会额外携带 agentId）
-export interface ApprovalRequestPayload {
-  approvalId: string;
-  toolCallId: string;
-  toolName: string;
-  arguments: unknown;
-  agentId?: string;
-}
+// 引擎发来的审批请求帧（群聊帧外层会额外携带 agentId）——权威定义在 shared 协议层
+import type { ApprovalRequestFrame, ApprovalResponseFrame } from "@mindcloud/shared";
+
+export { isApprovalRememberable } from "@mindcloud/shared";
+
+export type ApprovalRequestPayload = Omit<ApprovalRequestFrame, "type">;
 
 // 卡片状态：pending 等待用户操作；approved/denied 本端已处理；
 // expired 表示收到了同 toolCallId 的 tool.result（60 秒超时或已在其他窗口处理）
@@ -31,23 +29,7 @@ export interface ApprovalHostMessage {
 }
 
 // 客户端回执帧
-export interface ApprovalResponsePayload {
-  approvalId: string;
-  approved: boolean;
-  remember: boolean;
-}
-
-// 每次都必须人工确认的工具：即使客户端点了"本会话不再询问"，
-// 引擎也不会记住（与 services/engine/src/api/ws/validation.ts 的名单保持一致）。
-// run_command 是裸 shell 任意命令执行，remember 一次等于本连接放行一切命令。
-// write_file/edit_file（P2-3）：写操作是注入攻击的主要落地路径
-// （诱导覆写源码/配置），一律每次批。
-// dispatch_subagent（P2-5）：跨 agent confused deputy 通道，一律每次批。
-const NO_REMEMBER_TOOLS = new Set(["run_command", "write_file", "edit_file", "dispatch_subagent"]);
-
-export function isApprovalRememberable(toolName: string): boolean {
-  return !NO_REMEMBER_TOOLS.has(toolName);
-}
+export type ApprovalResponsePayload = Omit<ApprovalResponseFrame, "type">;
 
 // 由审批请求构造一条消息流中的"审批卡片"消息
 export function createApprovalMessage(req: ApprovalRequestPayload) {

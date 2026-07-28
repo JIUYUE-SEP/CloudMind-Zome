@@ -7,6 +7,7 @@ import type { ApiContext } from "./context.js";
 import { loggerStreams } from "../logger.js";
 import { extractBearerToken, getAuthToken, isTokenValid } from "../config/auth-token.js";
 import { registerAgentRoutes } from "./routes/agents.js";
+import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
 import { registerActionRoutes } from "./routes/actions.js";
@@ -46,7 +47,7 @@ export async function createServer(context: ApiContext) {
         description: "REST and WebSocket API for the CloudMind Zome engine",
         version: "2.0.0",
       },
-      servers: [{ url: "http://127.0.0.1:8848" }],
+      servers: [{ url: DEFAULT_ENGINE_URL }],
     },
   });
 

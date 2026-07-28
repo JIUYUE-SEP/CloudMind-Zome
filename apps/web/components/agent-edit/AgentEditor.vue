@@ -59,8 +59,8 @@ const props = defineProps<{
   agentId?: string;
 }>();
 
-// 与 engine 的 isValidAgentId 同一口径（services/engine/src/api/routes/agents.ts）
-const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+// Agent ID 规则的唯一来源在 packages/shared（engine 各路由同一口径）
+import { AGENT_ID_PATTERN } from "@mindcloud/shared";
 
 const agents = useAgentsStore();
 

@@ -2,10 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import { SchedulerRepository } from "../../scheduler/repository.js";
 import { computeNextRun } from "../../scheduler/engine.js";
-
-function isValidAgentId(id: unknown): id is string {
-  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
-}
+import { isValidAgentId } from "@mindcloud/shared";
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function registerSchedulerRoutes(app: FastifyInstance, context: ApiContext) {

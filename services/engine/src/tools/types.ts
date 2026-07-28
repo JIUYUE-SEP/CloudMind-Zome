@@ -17,7 +17,7 @@ export interface ToolContext {
   workspaceDir: string;
   projectRoot?: string;
   /** 返回 true 表示允许执行该工具调用；返回 false 则以 "Approval denied" 拒绝。 */
-  approve: (toolName: string, args: unknown, toolCallId?: string) => boolean | Promise<boolean>;
+  approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   services?: ToolServices;
 }
 

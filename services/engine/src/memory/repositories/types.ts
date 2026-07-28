@@ -1,14 +1,6 @@
-import type { AgentConfig, ToolCall } from "@mindcloud/shared";
+import type { AgentConfig, ChatMessageRecord } from "@mindcloud/shared";
 
-export interface ChatMessageRecord {
-  id: string;
-  sessionId: string;
-  role: "user" | "assistant" | "tool" | "system";
-  content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
-  toolCalls?: ToolCall[];
-  toolCallId?: string;
-  createdAt: string;
-}
+export type { ChatMessageRecord };
 
 export interface MemoryRecord {
   id: string;

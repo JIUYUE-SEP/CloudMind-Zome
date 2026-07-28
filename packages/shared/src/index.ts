@@ -1,5 +1,8 @@
 export type ChatMode = "chat" | "code";
 
+export * from "./constants.js";
+export * from "./protocol.js";
+
 export interface AgentConfig {
   id: string;
   name: string;

@@ -2,7 +2,7 @@ import { logger } from "../../logger.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import type { ApiContext } from "../context.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage, ApprovalRequestFrame } from "@mindcloud/shared";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
@@ -122,13 +122,14 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             toolName: req.toolName,
             args: req.arguments,
           });
-          safeSend(socket, {
+          const frame: ApprovalRequestFrame = {
             type: "tool.approval_request",
             approvalId: req.id,
             toolCallId: req.toolCallId,
             toolName: req.toolName,
             arguments: req.arguments,
-          });
+          };
+          safeSend(socket, frame);
         });
       }
 

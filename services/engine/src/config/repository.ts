@@ -10,28 +10,9 @@ import {
 } from "../versioning.js";
 import { decrypt, encrypt } from "./crypto.js";
 import { getDataDir } from "./paths.js";
+import type { ModelInfo, ProviderConfig } from "@mindcloud/shared";
 
-export interface ModelInfo {
-  id: string;
-  displayName: string;
-  modelType: "llm" | "embedding" | "image" | "stt";
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  supportsReasoning?: boolean;
-  supportsToolCalling?: boolean;
-  supportsMultimodal?: boolean;
-}
-
-export interface ProviderConfig {
-  id: string;
-  displayName: string;
-  providerType: "openai";
-  baseUrl: string;
-  apiKey?: string;
-  models: ModelInfo[];
-  requestTimeout?: number;
-  maxRetries?: number;
-}
+export type { ModelInfo, ProviderConfig };
 
 export interface MemorySettings {
   compactThreshold: number;

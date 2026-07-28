@@ -41,7 +41,7 @@ import type { DisplayToolCall, ToolCallStatus } from "@/composables/useChatRecor
 
 const props = withDefaults(
   defineProps<{
-    role: "user" | "assistant" | "tool";
+    role: "user" | "assistant" | "tool" | "system";
     text: string;
     thinking?: string;
     toolCalls?: DisplayToolCall[];

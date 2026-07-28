@@ -80,6 +80,7 @@ pub async fn spawn_zome_sidecar<R: tauri::Runtime>(
     });
 
     wait_for_backend(Duration::from_secs(30)).await?;
+    // 权威定义在 packages/shared/src/constants.ts（DEFAULT_ENGINE_URL，P5-2），人工对齐
     *state.backend_url.lock().await = Some("http://127.0.0.1:8848".to_string());
     info!("backend ready at http://127.0.0.1:8848");
 

@@ -91,6 +91,7 @@ impl ZomeSidecar for ZomeSidecarService {
 }
 
 pub async fn serve() -> anyhow::Result<()> {
+    // 权威定义在 packages/shared/src/constants.ts（DEFAULT_SIDECAR_ADDR，P5-2），人工对齐
     let addr = "127.0.0.1:50051".parse()?;
     info!("gRPC listening on {}", addr);
 

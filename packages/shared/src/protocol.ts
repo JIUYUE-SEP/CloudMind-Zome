@@ -1,0 +1,120 @@
+/**
+ * web ↔ engine 协议类型（P5-2）：WS 控制帧与 REST DTO 的权威定义。
+ * 此前两端各手写一份且已发生 3 组实际漂移（架构 review 协议一致性域 Major），
+ * 收敛为单一来源后，任一侧改字段都会在对端编译期报错。
+ *
+ * 流式事件帧（text.delta / thinking.delta / tool.call / tool.result /
+ * step.end / turn.end）是 engine 内部的 LLMEvent（provider/types.ts），
+ * 只有 engine 一份定义，不在此重复；本文件收控制帧（此前连 engine 侧都无类型）。
+ */
+import type { ChatMode, ToolCall } from "./index.js";
+
+// ---- WS 控制帧：server → client ----
+
+/** 危险工具审批请求（群聊帧外层额外携带 agentId） */
+export interface ApprovalRequestFrame {
+  type: "tool.approval_request";
+  approvalId: string;
+  toolCallId: string;
+  toolName: string;
+  arguments: unknown;
+  agentId?: string;
+}
+
+/** 模式切换确认（仅会话 WS） */
+export interface SessionModeChangedFrame {
+  type: "session.mode_changed";
+  mode: ChatMode;
+  projectId?: string;
+}
+
+/** 错误帧（群聊帧外层可额外携带 agentId） */
+export interface WsErrorFrame {
+  type: "error";
+  error: string;
+  agentId?: string;
+}
+
+// ---- WS 控制帧：client → server ----
+
+/** 审批回执（remember 对 NO_REMEMBER_TOOLS 四工具无效，见 constants.ts） */
+export interface ApprovalResponseFrame {
+  type: "tool.approval";
+  approvalId: string;
+  approved: boolean;
+  remember: boolean;
+}
+
+/** 切换 chat / code 模式（仅会话 WS） */
+export interface SessionSetModeFrame {
+  type: "session.set_mode";
+  mode: ChatMode;
+  projectId?: string;
+}
+
+/** 聊天消息帧（无 type 字段，最长 10000 字符） */
+export interface ChatTextFrame {
+  text: string;
+}
+
+// ---- REST DTO（engine 为权威形状）----
+
+/**
+ * 消息记录（engine `memory/repositories/types.ts` 原定义为权威：role 含
+ * "system"、必有 sessionId）。`agentId` 只在群聊历史合并时由引擎标注
+ * （assistant/tool 消息归属），user 消息与私聊历史不带。
+ */
+export interface ChatMessageRecord {
+  id: string;
+  sessionId: string;
+  role: "user" | "assistant" | "tool" | "system";
+  content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  agentId?: string;
+  createdAt: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+  modelType: "llm" | "embedding" | "image" | "stt";
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsReasoning?: boolean;
+  supportsToolCalling?: boolean;
+  supportsMultimodal?: boolean;
+}
+
+/**
+ * Provider 配置（engine `config/repository.ts` 原定义为权威，含
+ * requestTimeout/maxRetries）。REST 返回时 apiKey 脱敏为 "***"；
+ * web 曾另发明的 hasApiKey 字段 engine 从未返回，已随收敛删除。
+ */
+export interface ProviderConfig {
+  id: string;
+  displayName: string;
+  providerType: "openai";
+  baseUrl: string;
+  apiKey?: string;
+  models: ModelInfo[];
+  requestTimeout?: number;
+  maxRetries?: number;
+}
+
+/**
+ * 定时任务（engine `scheduler/types.ts` 原定义为权威：
+ * createdAt/updatedAt 必填——引擎创建时盖章，web 曾误标为可选）。
+ */
+export interface ScheduledTask {
+  id: string;
+  agentId: string;
+  description: string;
+  prompt: string;
+  cron: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}

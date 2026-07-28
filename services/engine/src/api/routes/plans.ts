@@ -1,15 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@mindcloud/shared";
+import { isValidAgentId } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
 import type { PlanManager } from "../../plan/manager.js";
 
 // 与 WS sanitizeInput 的文本上限保持一致
 const MAX_GOAL_LENGTH = 10_000;
-
-function isValidAgentId(id: unknown): id is string {
-  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
-}
 
 function userMessage(text: string): ChatMessage {
   return {

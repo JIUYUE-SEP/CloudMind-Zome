@@ -4,7 +4,7 @@ import type { WebSocket } from "ws";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { routeMessage } from "../../conductor/conductor.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage, ApprovalRequestFrame, SessionModeChangedFrame } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
 import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
@@ -90,14 +90,15 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             toolName: req.toolName,
             args: req.arguments,
           });
-          safeSend(socket, {
+          const frame: ApprovalRequestFrame = {
             agentId,
             type: "tool.approval_request",
             approvalId: req.id,
             toolCallId: req.toolCallId,
             toolName: req.toolName,
             arguments: req.arguments,
-          });
+          };
+          safeSend(socket, frame);
         });
       }
 
@@ -193,7 +194,8 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
               await fs.mkdir(projectRoot, { recursive: true });
             }
 
-            safeSend(socket, { type: "session.mode_changed", mode, projectId });
+            const frame: SessionModeChangedFrame = { type: "session.mode_changed", mode, projectId };
+            safeSend(socket, frame);
             return;
           }
 

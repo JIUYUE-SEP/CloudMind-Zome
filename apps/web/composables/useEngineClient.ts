@@ -1,38 +1,14 @@
 import type { AgentConfig, ChatMode } from "@mindcloud/shared";
+import type { ChatMessageRecord, ModelInfo, ProviderConfig, ScheduledTask } from "@mindcloud/shared";
+import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
+import type { ApprovalRequestPayload } from "@/utils/approval";
 import { ref } from "vue";
 import { fetchWithTimeout } from "@/utils/fetch";
 
-export interface ChatMessageRecord {
-  id: string;
-  role: "user" | "assistant" | "tool";
-  content: Array<{ type: "text"; text: string } | { type: "think"; think: string }>;
-  toolCalls?: { toolCallId: string; name: string; arguments: unknown }[];
-  toolCallId?: string;
-  // 群聊历史：assistant/tool 消息归属的 Agent（engine 合并各成员仓库时标注）；user 消息不带
-  agentId?: string;
-  createdAt: string;
-}
-
-export interface ModelInfo {
-  id: string;
-  displayName: string;
-  modelType: "llm" | "embedding" | "image" | "stt";
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  supportsReasoning?: boolean;
-  supportsToolCalling?: boolean;
-  supportsMultimodal?: boolean;
-}
-
-export interface Provider {
-  id: string;
-  displayName: string;
-  providerType: "openai";
-  baseUrl: string;
-  apiKey?: string;
-  hasApiKey?: boolean;
-  models: ModelInfo[];
-}
+// REST DTO 权威定义在 packages/shared（P5-2 收敛），此处再导出保持既有引用不变
+// （ScheduledTask 由 stores/scheduler.ts 再导出，避免 Nuxt 自动导入重名告警）
+export type { ChatMessageRecord, ModelInfo };
+export type Provider = ProviderConfig;
 
 export interface MemorySettings {
   compactThreshold: number;
@@ -56,19 +32,6 @@ export interface EngineLogEntry {
   time: number;
   level: number;
   msg: string;
-}
-
-interface ScheduledTask {
-  id: string;
-  agentId: string;
-  description: string;
-  prompt: string;
-  cron: string;
-  enabled: boolean;
-  lastRunAt?: string;
-  nextRunAt?: string;
-  createdAt?: string;
-  updatedAt?: string;
 }
 
 export interface Session {
@@ -126,13 +89,7 @@ export interface WebSocketHandlers {
   onToolCall?: (toolCall: { toolCallId: string; name: string; arguments: unknown }) => void;
   onToolResult?: (result: { toolCallId: string; output: unknown }) => void;
   // 危险工具审批请求（群聊帧会额外携带 agentId）
-  onApprovalRequest?: (request: {
-    approvalId: string;
-    toolCallId: string;
-    toolName: string;
-    arguments: unknown;
-    agentId?: string;
-  }) => void;
+  onApprovalRequest?: (request: ApprovalRequestPayload) => void;
   onStepEnd?: (finishReason?: string, agentId?: string) => void;
   // 一轮生成结束（与 step.end 区分：后者每个 ReAct step 都发）；
   // 输入框锁定等"生成中"状态只应在 turn.end / error / close 时复位
@@ -153,8 +110,6 @@ export interface Connection {
   close(): void;
 }
 
-const DEFAULT_ENGINE_URL = "http://127.0.0.1:8848";
-
 // engine 的失败响应通常携带 { error } 正文（如 "Invalid agent id"、
 // "invalid cron expression"），透出给调用方，避免错误语义被压成裸状态码
 async function ensureOk(res: Response, action: string): Promise<void> {
@@ -173,6 +128,7 @@ async function ensureOk(res: Response, action: string): Promise<void> {
 
 // 模块级 backend URL 单例：模块加载即开始解析，结果缓存，
 // 后续所有 useEngineClient() 调用直接复用，不再逐个 onMounted 异步获取。
+// 默认地址的权威定义在 packages/shared（P5-2）；Tauri 环境经 IPC 取 sidecar 实际端口覆盖
 const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 
 // 模块级鉴权 token 单例（与 sharedBaseUrl 同一模式）。engine 本地 token 鉴权（P0-2）：

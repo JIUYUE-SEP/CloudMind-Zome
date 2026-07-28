@@ -12,7 +12,8 @@ export interface DisplayToolCall {
 
 export interface DisplayMessage {
   id: string;
-  role: "user" | "assistant" | "tool";
+  // 与 engine 的 ChatMessageRecord 对齐（含 "system"；渲染层未见 role 时按默认气泡处理，行为同前）
+  role: "user" | "assistant" | "tool" | "system";
   text: string;
   thinking: string;
   toolCalls: DisplayToolCall[];

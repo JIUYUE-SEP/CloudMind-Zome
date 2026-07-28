@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import grpc from "@grpc/grpc-js";
 import protoLoader from "@grpc/proto-loader";
+import { DEFAULT_SIDECAR_ADDR } from "@mindcloud/shared";
 
 /**
  * Rust sidecar（zome-sidecar）的 gRPC 客户端。
@@ -88,7 +89,7 @@ export class SidecarClient {
   private client?: ZomeSidecarGrpc;
   private availability: { at: number; ok: boolean } = { at: 0, ok: false };
 
-  constructor(private addr: string = process.env.ZOME_SIDECAR_ADDR || "127.0.0.1:50051") {}
+  constructor(private addr: string = process.env.ZOME_SIDECAR_ADDR || DEFAULT_SIDECAR_ADDR) {}
 
   private getClient(): ZomeSidecarGrpc | undefined {
     if (this.client) return this.client;
