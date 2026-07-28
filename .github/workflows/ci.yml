@@ -49,6 +49,23 @@ jobs:
           cargo test -vv
           cargo build --release -vv
 
+      # Rust 依赖漏洞审计（P5-5）：两个 crate 的 Cargo.lock 分别扫描
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Cargo audit (zome-sidecar)
+        run: cargo audit
+        working-directory: crates/zome-sidecar
+
+      # quick-xml 两条 high（RUSTSEC-2026-0194/0195）暂无修复路径：plist 1.9.0
+      # 锁定 quick-xml 0.39.x，补丁只发在 ≥0.41.0；攻击面为构建期 plist 解析
+      # （非运行时不可信输入）。显式忽略已评估项，其余漏洞（含新增）仍然 fail。
+      - name: Cargo audit (desktop src-tauri)
+        run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+        working-directory: apps/desktop/src-tauri
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:

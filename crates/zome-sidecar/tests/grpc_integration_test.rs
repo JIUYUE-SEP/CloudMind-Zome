@@ -18,16 +18,34 @@ fn temp_data_dir() -> PathBuf {
     tmp
 }
 
+/// 起 gRPC server 并等它就绪：前一个测试 abort 后端口可能短暂不可复用
+/// （Windows 上 bind 失败时 serve 任务静默退出，固定 500ms 等待会撞上
+/// ConnectionRefused），spawn + 连接带重试。
+async fn spawn_server_ready() -> (
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    ZomeSidecarClient<tonic::transport::Channel>,
+) {
+    let mut last_err = String::new();
+    for _ in 0..10 {
+        let server = tokio::spawn(async { server::serve().await });
+        sleep(Duration::from_millis(300)).await;
+        match ZomeSidecarClient::connect("http://127.0.0.1:50051").await {
+            Ok(client) => return (server, client),
+            Err(e) => {
+                last_err = e.to_string();
+                server.abort();
+                sleep(Duration::from_millis(300)).await;
+            }
+        }
+    }
+    panic!("connect to gRPC server: {last_err}");
+}
+
 #[tokio::test]
 async fn test_grpc_health_reflects_supervisor_state() {
     let _lock = PORT_LOCK.lock().await;
     let tmp = temp_data_dir();
-    let server = tokio::spawn(async { server::serve().await });
-    sleep(Duration::from_millis(500)).await;
-
-    let mut client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
-        .await
-        .expect("connect to gRPC server");
+    let (server, mut client) = spawn_server_ready().await;
     let response = client
         .health(HealthRequest {})
         .await
@@ -45,12 +63,7 @@ async fn test_grpc_health_reflects_supervisor_state() {
 async fn test_grpc_rejects_invalid_agent_id() {
     let _lock = PORT_LOCK.lock().await;
     let tmp = temp_data_dir();
-    let server = tokio::spawn(async { server::serve().await });
-    sleep(Duration::from_millis(500)).await;
-
-    let mut client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
-        .await
-        .expect("connect to gRPC server");
+    let (server, mut client) = spawn_server_ready().await;
     let request = UpsertRequest {
         agent_id: "../bad".to_string(),
         doc_id: "doc1".to_string(),
@@ -67,12 +80,7 @@ async fn test_grpc_rejects_invalid_agent_id() {
 async fn test_grpc_concurrent_upsert_preserves_data() {
     let _lock = PORT_LOCK.lock().await;
     let tmp = temp_data_dir();
-    let server = tokio::spawn(async { server::serve().await });
-    sleep(Duration::from_millis(500)).await;
-
-    let client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
-        .await
-        .expect("connect to gRPC server");
+    let (server, client) = spawn_server_ready().await;
 
     let mut handles = Vec::new();
     for i in 0..50 {
@@ -113,12 +121,7 @@ async fn test_grpc_concurrent_upsert_preserves_data() {
 async fn test_grpc_delete_agent_rejects_invalid_id() {
     let _lock = PORT_LOCK.lock().await;
     let tmp = temp_data_dir();
-    let server = tokio::spawn(async { server::serve().await });
-    sleep(Duration::from_millis(500)).await;
-
-    let mut client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
-        .await
-        .expect("connect to gRPC server");
+    let (server, mut client) = spawn_server_ready().await;
     let status = client
         .delete_agent(DeleteAgentRequest {
             agent_id: "../bad".to_string(),
@@ -136,12 +139,7 @@ async fn test_grpc_delete_agent_rejects_invalid_id() {
 async fn test_grpc_delete_agent_clears_vectors() {
     let _lock = PORT_LOCK.lock().await;
     let tmp = temp_data_dir();
-    let server = tokio::spawn(async { server::serve().await });
-    sleep(Duration::from_millis(500)).await;
-
-    let mut client = ZomeSidecarClient::connect("http://127.0.0.1:50051")
-        .await
-        .expect("connect to gRPC server");
+    let (server, mut client) = spawn_server_ready().await;
     client
         .upsert(UpsertRequest {
             agent_id: "grpc-del-agent".to_string(),
