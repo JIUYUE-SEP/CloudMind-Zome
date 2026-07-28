@@ -11,6 +11,7 @@
     "bench": "turbo run bench",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
+    "verify": "node scripts/verify-local.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
