@@ -286,6 +286,23 @@ export class AgentWorker {
     this.compressionQueue.enqueue(segment);
   }
 
+  /**
+   * 向量索引（fire-and-forget）：turn 的用户输入与新增消息。
+   * 成功与异常（Minor-3）两条路径共用；与检索同开关，enabled=false 时全免
+   */
+  private indexTurnMessages(messages: ChatMessage[]): void {
+    if (!this.config.memoryIndexer || !this.semanticConfig.enabled) return;
+    const indexer = this.config.memoryIndexer;
+    const agentId = this.config.agentId;
+    for (const msg of messages) {
+      const text = msg.content
+        .filter((c) => c.type === "text")
+        .map((c) => c.text)
+        .join("");
+      void indexer.indexMessage(agentId, msg.id, text);
+    }
+  }
+
   private async processQueue(): Promise<void> {
     if (this.status !== "idle" || this.queue.length === 0) return;
     this.status = "busy";
@@ -293,6 +310,10 @@ export class AgentWorker {
     this.runningJob = job;
 
     let jobError: unknown;
+    // catch 路径也要触达（P3 review Minor-3）：提升出 try 作用域
+    let lastUser: ChatMessage | undefined;
+    const stepPersisted: ChatMessage[] = [];
+    const sessionId = job.sessionId || this.config.agentId;
     try {
       // 排队期间已被外部取消（如 subagent 前台超时）的 job 直接跳过
       if (job.signal?.aborted) {
@@ -324,14 +345,13 @@ export class AgentWorker {
       // L1 人格/skill 内容（pipeline 注入为 system 消息；不含 MIND.md）
       const mindContext = promptParts.join("\n\n");
 
-      const lastUser = [...job.messages].reverse().find((m) => m.role === "user");
+      lastUser = [...job.messages].reverse().find((m) => m.role === "user");
       const lastUserText =
         lastUser?.content
           .filter((c) => c.type === "text")
           .map((c) => c.text)
           .join("") ?? "";
 
-      const sessionId = job.sessionId || this.config.agentId;
       // 话题边界检测（Phase 2）：新话题开启时，旧话题送后台压缩队列
       if (lastUser) {
         const closed = this.topicTracker.onUserMessage(lastUser, sessionId);
@@ -388,8 +408,6 @@ export class AgentWorker {
       }
 
       const messages = [...job.messages];
-      // M-b：本 turn 已按 step 落盘的消息（并入开放话题快照用）
-      const stepPersisted: ChatMessage[] = [];
 
       const turnInput: TurnInput = {
         provider: this.config.provider,
@@ -459,22 +477,21 @@ export class AgentWorker {
       // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
       // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去。
       // 保持 turn 级（P1-6）：索引每条消息一次 embed + sidecar upsert，step 级
-      // 不会减少调用次数，反而让中止/失败的半截 turn 也进索引；崩溃遗留的
-      // 已落盘 step 不进索引，由 L3 热上下文兜底可见，可接受。
-      if (this.config.memoryIndexer && this.semanticConfig.enabled) {
-        const indexer = this.config.memoryIndexer;
-        const agentId = this.config.agentId;
-        const toIndex = [...(lastUser ? [lastUser] : []), ...result.appended];
-        for (const msg of toIndex) {
-          const text = msg.content
-            .filter((c) => c.type === "text")
-            .map((c) => c.text)
-            .join("");
-          void indexer.indexMessage(agentId, msg.id, text);
-        }
-      }
+      // 不会减少调用次数。异常 turn 的已落盘消息同样索引（Minor-3，见 catch）
+      this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...result.appended]);
     } catch (err) {
       jobError = err;
+      // Minor-3：异常 turn 已按 step 落盘的消息必须并入话题体系——只进
+      // stepPersisted 快照不进 tracker 会脱离话题（永不归档/压缩/索引，
+      // 永久滞留热存储且每轮进上下文；P3-3 起每次 provider 抖动都产生一条）。
+      // incomplete 半截消息同样入话题：它是用户上屏的真实内容，incomplete
+      // 标记仅供排查，不影响其作为正常 assistant 消息归档/压缩/索引
+      if (stepPersisted.length > 0) {
+        const closedOnError = this.topicTracker.onTurnAppended(stepPersisted, sessionId);
+        if (closedOnError) await this.enqueueCompression(closedOnError);
+        await this.persistTopicState();
+        this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...stepPersisted]);
+      }
       // abort 是用户主动中断（正常操作），不刷错误气泡；其余异常保留错误文本
       if (!job.signal?.aborted) {
         job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });

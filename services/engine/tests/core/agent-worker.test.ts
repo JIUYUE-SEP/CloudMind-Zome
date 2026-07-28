@@ -1220,6 +1220,61 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(state?.open?.messageIds).toContain("u2");
     expect(state?.open?.messageIds!.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("异常 turn 的已落盘消息纳入话题体系（Minor-3）：进 tracker、进索引、可正常归档", async () => {
+    class CrashMidStreamProvider implements LLMProvider {
+      name = "crash-mid";
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        yield { type: "text.delta", delta: "说到一半的回复" };
+        throw new Error("provider 抖动");
+      }
+    }
+    const repo = new MessageRepository("agent-1");
+    const indexed: string[] = [];
+    const indexer = {
+      indexMessage: async (_agentId: string, id: string) => {
+        indexed.push(id);
+      },
+      search: vi.fn(async () => []),
+    } as unknown as MemoryIndexer;
+    const worker = new AgentWorker({
+      ...makeConfig(new CrashMidStreamProvider()),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+    });
+
+    const u = seqMessage("u-crash", "你好", 0);
+    await repo.append({ ...u, sessionId: "agent-1" });
+    const onDone = vi.fn();
+    worker.enqueue({ id: "j1", messages: [u], sessionId: "agent-1", onEvent: () => {}, onDone });
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+
+    // 异常 turn 的半截消息（incomplete）也在话题内，不脱离话题体系
+    const state = await loadTopicState("agent-1");
+    expect(state?.open?.messageIds).toContain("u-crash");
+    const incompleteId = (await repo.listBySession("agent-1")).find(
+      (m) => (m as unknown as ChatMessage).incomplete === true,
+    )?.id;
+    expect(incompleteId).toBeDefined();
+    expect(state?.open?.messageIds).toContain(incompleteId);
+
+    // 向量索引同步覆盖（user 与半截消息）
+    expect(indexed).toContain("u-crash");
+    expect(indexed).toContain(incompleteId);
+
+    // 能正常归档（对账按开放话题处理，不永久滞留热存储）
+    const count = await reconcileOrphanedTopic("agent-1", repo, {
+      agentId: "agent-1",
+      provider: new CapturingProvider(),
+      model: "mock",
+      messageRepository: repo,
+    });
+    expect(count).toBe(2);
+    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+  });
 });
 
 describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
