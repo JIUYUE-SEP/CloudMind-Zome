@@ -133,7 +133,7 @@ describe("AgentRepository", () => {
   });
 
   it("watcher 重载失败节流（P4 Major-1）：文件反复写坏不刷屏，恢复有日志", async () => {
-    let now = 0;
+    const now = 0;
     const throttle = new ErrorThrottle({ now: () => now, initialBackoffMs: 1000 });
     const throttledRepo = new AgentRepository({ errorThrottle: throttle });
     const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
