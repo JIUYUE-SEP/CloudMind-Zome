@@ -28,9 +28,18 @@ export interface ActionRecord {
 export interface LLMCallRecord {
   id: string;
   model: string;
+  /** provider 返回 usage 时为真实值，拿不到（流式无 usage 或 mock）为 0（P4-5） */
   promptTokens: number;
   completionTokens: number;
   createdAt: string;
+  // —— P4-5 扩展字段（可选追加，v1 兼容不升版本）——
+  /** 调用归属 */
+  agentId?: string;
+  provider?: string;
+  /** 调用耗时（流式全程，毫秒） */
+  durationMs?: number;
+  status?: "ok" | "error";
+  error?: string;
 }
 
 export interface IAgentRepository {

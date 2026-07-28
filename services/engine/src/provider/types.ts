@@ -26,6 +26,8 @@ export interface ToolResultEvent {
 export interface StepEndEvent {
   type: "step.end";
   finishReason?: string;
+  /** token 用量（P4-5 落档）：provider 流式返回 usage 时透传；无则不携带 */
+  usage?: { promptTokens: number; completionTokens: number };
 }
 
 /**

@@ -53,12 +53,23 @@ export class OpenAIProvider implements LLMProvider {
         top_p: params.topP,
         max_tokens: params.maxTokens,
         stream: true,
+        // P4-5：请求流式 usage（OpenAI 协议标准参数；不支持的网关会在
+        // provider 层显式报错而非静默错），落档拿不到时 tokens 记 0
+        stream_options: { include_usage: true },
       });
 
       const toolCallBuffers = new Map<number, { id: string; name: string; args: string }>();
       let finalFinishReason: string | undefined;
+      let usage: { promptTokens: number; completionTokens: number } | undefined;
 
       for await (const chunk of response) {
+        // P4-5：include_usage 的末块带 usage（choices 为空）
+        if (chunk.usage) {
+          usage = {
+            promptTokens: chunk.usage.prompt_tokens,
+            completionTokens: chunk.usage.completion_tokens,
+          };
+        }
         const choice = chunk.choices[0];
         if (choice?.finish_reason) {
           finalFinishReason = choice.finish_reason;
@@ -106,7 +117,7 @@ export class OpenAIProvider implements LLMProvider {
         yield { type: "tool.call", toolCallId: buf.id, name: buf.name, arguments: args };
       }
 
-      yield { type: "step.end", finishReason: finalFinishReason };
+      yield { type: "step.end", finishReason: finalFinishReason, ...(usage ? { usage } : {}) };
     } catch (err) {
       yield { type: "text.delta", delta: `\nProvider error: ${String(err)}` };
       yield { type: "step.end" };

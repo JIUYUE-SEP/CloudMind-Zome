@@ -29,6 +29,7 @@ import { PlanManager } from "./plan/manager.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
+import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -130,8 +131,12 @@ async function main() {
       const agentConfig = await agentRepository.get(agentId);
       if (!agentConfig) return undefined;
 
-    const provider = await createLLMProvider(agentConfig);
-    const embedder = await createEmbedderProvider(agentConfig);
+      const provider = withLLMCallRecording(
+        await createLLMProvider(agentConfig),
+        new LLMCallRepository(agentId),
+        agentId,
+      );
+      const embedder = await createEmbedderProvider(agentConfig);
     const imageProvider = await createImageProvider(agentConfig);
     const tools = getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name));
     const workspaceDir = getAgentDir(agentId);
