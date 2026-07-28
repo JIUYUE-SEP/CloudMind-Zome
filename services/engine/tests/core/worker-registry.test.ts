@@ -153,4 +153,41 @@ describe("WorkerRegistry 配置变更竞态（P3-6）", () => {
     });
     expect(called).toBe(1);
   });
+
+  it("退役后经旧引用 enqueue（群聊/scheduler 可达窗口）：立即 settle 不挂起，waitForIdle 正常返回（Major-1）", async () => {
+    const provider = new GateProvider();
+    const worker = makeWorker(provider);
+    const registry = new WorkerRegistry();
+    await registry.getOrCreate("a1", async () => worker);
+
+    // 在途 job 卡住时退役
+    worker.enqueue({ id: "j1", messages: [userMessage("busy")], onEvent: () => {}, onDone: () => {} });
+    await provider.waitUntilEntered();
+    registry.retire("a1");
+
+    // 退役后经旧引用入队（retire 前 getAgentWorker 拿到的引用）：
+    // 立即 settle，不落死队列
+    const events: LLMEvent[] = [];
+    const onDone = vi.fn();
+    worker.enqueue({
+      id: "j-late",
+      messages: [userMessage("late")],
+      onEvent: (e) => events.push(e),
+      onDone,
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(String(onDone.mock.calls[0][0])).toContain("retired");
+    expect(events.map((e) => e.type)).toContain("turn.end");
+
+    // 在途 job 完成后 waitForIdle 正常返回（无死队列卡住），注册表 retiring 清除
+    provider.open();
+    const created: string[] = [];
+    const newWorker = await registry.getOrCreate("a1", async () => {
+      created.push("x");
+      return makeWorker(new MockLLMProvider());
+    });
+    expect(created).toHaveLength(1);
+    expect(newWorker).toBeDefined();
+    expect(newWorker!.status).not.toBe("paused");
+  });
 });

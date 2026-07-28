@@ -121,6 +121,16 @@ export class AgentWorker {
   }
 
   enqueue(job: Job): void {
+    // P3 review Major-1：退役守卫——retire 后仍可能经"退役前解析的旧引用"
+    // 入队（群聊 resolve→await listBySession→enqueue、scheduler 路径）；
+    // 落在死队列的 job 永不处理、永不 settle，且 waitForIdle 以
+    // queue.length>0 为条件永不返回 → 注册表 retiring 条目永不清除 →
+    // 该 agent 全通道（私聊/群聊/scheduler/subagent）静默挂起直到重启。
+    // 与 retire 同构：拒绝入队并立即 settle，调用方拿到明确错误而非挂起
+    if (this.retired) {
+      this.settleRetiredJob(job);
+      return;
+    }
     console.log("[agent-worker] enqueue, status:", this.status, "queue:", this.queue.length);
     this.queue.push(job);
     if (this.status === "idle") {
@@ -171,23 +181,32 @@ export class AgentWorker {
    * - 排队未执行的 job 显式收尾：发 turn.end 终帧（前端"生成中"解锁）+
    *   onDone(aborted)——runAgentCollect 的 Promise 立即 settle，subagent
    *   前台调用不挂起；用户消息已落盘，前端提示重发。
+   * 退役后 enqueue 被拒并立即 settle（P3 review Major-1 守卫）。
    */
+  private retired = false;
+
+  /** 退役 job 的统一收尾：终帧解锁 + onDone 明确错误（retire/enqueue 守卫共用） */
+  private settleRetiredJob(job: Job): void {
+    const err = new Error("worker retired: agent config changed");
+    try {
+      job.onEvent({ type: "text.delta", delta: "\n配置已变更，这条消息未处理，请重发。" });
+      job.onEvent({ type: "turn.end" });
+    } catch (eventErr) {
+      console.error("retire: failed to emit terminal frames", eventErr);
+    }
+    try {
+      job.onDone?.(err);
+    } catch (doneErr) {
+      console.error("retire: job onDone callback failed", doneErr);
+    }
+  }
+
   retire(): void {
+    this.retired = true;
     this.status = "paused";
     const queued = this.queue.splice(0, this.queue.length);
     for (const job of queued) {
-      const err = new Error("worker retired: agent config changed");
-      try {
-        job.onEvent({ type: "text.delta", delta: "\n配置已变更，这条消息未处理，请重发。" });
-        job.onEvent({ type: "turn.end" });
-      } catch (eventErr) {
-        console.error("retire: failed to emit terminal frames", eventErr);
-      }
-      try {
-        job.onDone?.(err);
-      } catch (doneErr) {
-        console.error("retire: job onDone callback failed", doneErr);
-      }
+      this.settleRetiredJob(job);
     }
   }
 
