@@ -6,6 +6,7 @@ import type { AgentConfig } from "@mindcloud/shared";
 import { DocumentStore } from "../document-store.js";
 import { UnsupportedSchemaVersionError } from "../../versioning.js";
 import { getAgentDir, getDataDir, sanitizeAgentId } from "../../config/paths.js";
+import { ErrorThrottle } from "../../scheduler/error-throttle.js";
 import type { IAgentRepository } from "./types.js";
 
 const MAX_CACHE_SIZE = 64;
@@ -13,6 +14,32 @@ const MAX_CACHE_SIZE = 64;
 export class AgentRepository implements IAgentRepository {
   private cache = new Map<string, { config: AgentConfig; watcher: fs.FSWatcher }>();
   onChange?: (agentId: string, config: AgentConfig | null) => void;
+  /** P4 review Major-1：watcher 错误节流（文件持续损坏/反复写坏时不刷屏） */
+  private readonly errors: ErrorThrottle;
+
+  constructor(options: { errorThrottle?: ErrorThrottle } = {}) {
+    this.errors = options.errorThrottle ?? new ErrorThrottle();
+  }
+
+  // 节流 key 用稳定的错误类别（watcher:{agentId}:{类别}），不用含动态内容的
+  // 错误消息——消息带路径/堆栈会让 key 发散、节流失效（review Minor-1）
+  private logWatchError(kind: "reload" | "watch" | "error", agentId: string, err: unknown, msg: string): void {
+    const key = `watcher:${agentId}:${kind}`;
+    const hit = this.errors.hit(key);
+    if (!hit) return;
+    logger.error({ err, agentId, throttleKey: key, count: hit.count, suppressed: hit.suppressed }, msg);
+  }
+
+  /** 对应操作再次成功即恢复：清除该类别条目并记一条"已恢复"（节流不吞信息） */
+  private recoverWatch(kind: "reload" | "watch" | "error", agentId: string): void {
+    const key = `watcher:${agentId}:${kind}`;
+    const hit = this.errors.recover(key);
+    if (!hit) return;
+    logger.info(
+      { agentId, throttleKey: key, count: hit.count, suppressed: hit.suppressed },
+      `agent config watcher 已恢复（${kind}）`,
+    );
+  }
 
   private store(agentId: string): DocumentStore<AgentConfig> {
     return new DocumentStore<AgentConfig>(path.join(getAgentDir(sanitizeAgentId(agentId)), "agent.json"));
@@ -49,28 +76,36 @@ export class AgentRepository implements IAgentRepository {
           if (reloaded) {
             this.cache.set(agentId, { config: reloaded, watcher });
             this.onChange?.(agentId, reloaded);
+            // 变更事件再次解析成功：此前的 reload 失败视为恢复
+            this.recoverWatch("reload", agentId);
           } else {
             this.invalidate(agentId);
             this.onChange?.(agentId, null);
           }
         } catch (err) {
-          logger.error({ err: err }, `Failed to reload agent config ${store.filePath}:`);
+          this.logWatchError("reload", agentId, err, `Failed to reload agent config ${store.filePath}:`);
           this.invalidate(agentId);
           this.onChange?.(agentId, null);
         }
       });
     } catch (err) {
-      logger.error({ err: err }, `Failed to watch agent config ${store.filePath}:`);
+      this.logWatchError("watch", agentId, err, `Failed to watch agent config ${store.filePath}:`);
       // cache without watcher
       this.cache.set(agentId, { config, watcher: { close: () => {} } as unknown as fs.FSWatcher });
       return config;
     }
 
     watcher.on("error", (err) => {
-      logger.error({ err: err }, `Watcher error for ${store.filePath}:`);
+      this.logWatchError("error", agentId, err, `Watcher error for ${store.filePath}:`);
       this.invalidate(agentId);
       this.onChange?.(agentId, null);
     });
+
+    // watcher 重建成功：此前的 watch 创建失败 / watcher error 视为恢复。
+    // reload 类别不在此恢复——它的恢复点是"变更事件再次解析成功"（上面的回调），
+    // 否则"文件反复写坏 + get() 重建 watcher"的场景每轮先恢复再报错，节流被绕过
+    this.recoverWatch("watch", agentId);
+    this.recoverWatch("error", agentId);
 
     this.cache.set(agentId, { config, watcher });
     return config;

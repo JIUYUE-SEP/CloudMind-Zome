@@ -1,6 +1,7 @@
 import { logger } from "../logger.js";
 import type { EmbedderProvider } from "../provider/types.js";
 import { SidecarCallError, type SidecarClient } from "../sidecar/client.js";
+import { ErrorThrottle } from "../scheduler/error-throttle.js";
 
 const MAX_INDEX_CHARS = 2000;
 const EMBED_TIMEOUT_MS = 5000;
@@ -28,24 +29,46 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * 任何一步失败都静默降级——索引是增强能力，不能影响主链路。
  */
 export class MemoryIndexer {
+  /** P4 review Major-1：索引失败 warn 节流（embedder 挂掉时不每条消息刷一条） */
+  private readonly errors: ErrorThrottle;
+
   constructor(
     private client: SidecarClient,
     private embedder: EmbedderProvider,
     private embedTimeoutMs: number = EMBED_TIMEOUT_MS,
-  ) {}
+    errorThrottle?: ErrorThrottle,
+  ) {
+    this.errors = errorThrottle ?? new ErrorThrottle();
+  }
 
   async indexMessage(agentId: string, docId: string, text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (!(await this.client.isAvailable())) return;
+    // 节流 key 用稳定类别（agentId 有界），不用含动态内容的错误消息（review Minor-1）
+    const key = `indexer:index:${agentId}`;
     try {
       const [vec] = await withTimeout(
         this.embedder.embed([trimmed.slice(0, MAX_INDEX_CHARS)]),
         this.embedTimeoutMs,
       );
       if (vec) await this.client.upsert(agentId, docId, vec);
+      // 写入成功：此前的索引失败视为恢复（节流不吞信息）
+      const recovered = this.errors.recover(key);
+      if (recovered) {
+        logger.info(
+          { agentId, throttleKey: key, count: recovered.count, suppressed: recovered.suppressed },
+          "[memory] 索引写入已恢复",
+        );
+      }
     } catch (err) {
-      logger.warn({ err: err }, "[memory] 索引写入失败，已跳过（不影响主链路）");
+      const hit = this.errors.hit(key);
+      if (hit) {
+        logger.warn(
+          { err, agentId, throttleKey: key, count: hit.count, suppressed: hit.suppressed },
+          "[memory] 索引写入失败，已跳过（不影响主链路）",
+        );
+      }
     }
   }
 

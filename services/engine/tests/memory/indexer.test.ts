@@ -1,6 +1,7 @@
 import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
 import { MemoryIndexer } from "../../src/memory/indexer.js";
+import { ErrorThrottle } from "../../src/scheduler/error-throttle.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import type { EmbedderProvider } from "../../src/provider/types.js";
 import type { SidecarClient } from "../../src/sidecar/client.js";
@@ -77,6 +78,42 @@ describe("MemoryIndexer", () => {
     expect(await indexer.search("a1", "query", 5)).toEqual([]);
     await indexer.indexMessage("a1", "d1", "hello");
     expect(embed).not.toHaveBeenCalled();
+  });
+
+  it("embedder 故障时索引 warn 节流（P4 Major-1）：不每条消息刷一条，恢复有日志", async () => {
+    let now = 0;
+    const throttle = new ErrorThrottle({ now: () => now, initialBackoffMs: 1000 });
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    let failing = true;
+    const embedder = makeEmbedder(async (texts: string[]) => {
+      if (failing) throw new Error("embedder down");
+      return texts.map(() => [0.1, 0.2]);
+    });
+    const indexer = new MemoryIndexer(makeClient(), embedder, SHORT_TIMEOUT_MS, throttle);
+
+    // t=0 首次记录；t=100/900 折叠；t=1100 窗口到第二条（带累计）
+    await indexer.indexMessage("a1", "d1", "m1");
+    now = 100;
+    await indexer.indexMessage("a1", "d2", "m2");
+    now = 900;
+    await indexer.indexMessage("a1", "d3", "m3");
+    now = 1100;
+    await indexer.indexMessage("a1", "d4", "m4");
+
+    const warns = warnSpy.mock.calls.filter((c) => String(c[1]).includes("索引写入失败"));
+    expect(warns).toHaveLength(2);
+    expect(warns[1]?.[0]).toMatchObject({ count: 4, suppressed: 2 });
+
+    // embedder 恢复：一次成功索引记一条"已恢复"（count=累计；折叠数随上次 warn 清零）
+    failing = false;
+    await indexer.indexMessage("a1", "d5", "m5");
+    const recovered = infoSpy.mock.calls.filter((c) => String(c[1]).includes("索引写入已恢复"));
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.[0]).toMatchObject({ count: 4, suppressed: 0 });
+
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
   });
 
   it("sidecar 明确报错（SidecarCallError）→ search 上抛让上层感知（M-a）", async () => {

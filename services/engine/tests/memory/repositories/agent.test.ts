@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { AgentRepository } from "../../../src/memory/repositories/agent.js";
+import { ErrorThrottle } from "../../../src/scheduler/error-throttle.js";
+import { logger } from "../../../src/logger.js";
 import { getAgentDir } from "../../../src/config/paths.js";
 import type { AgentConfig } from "@mindcloud/shared";
 import { restoreDataDir } from "../../helpers/env.js";
@@ -128,5 +130,47 @@ describe("AgentRepository", () => {
     expect(changes.length).toBeGreaterThan(0);
     expect(changes[changes.length - 1].agentId).toBe("watch-cb");
     expect(changes[changes.length - 1].config?.name).toBe("UpdatedByWatch");
+  });
+
+  it("watcher 重载失败节流（P4 Major-1）：文件反复写坏不刷屏，恢复有日志", async () => {
+    let now = 0;
+    const throttle = new ErrorThrottle({ now: () => now, initialBackoffMs: 1000 });
+    const throttledRepo = new AgentRepository({ errorThrottle: throttle });
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 300));
+
+    await throttledRepo.save("thr", makeConfig("thr", "T"));
+    await throttledRepo.get("thr"); // 建立 watcher
+    const filePath = path.join(getAgentDir("thr"), "agent.json");
+
+    // 连续 3 轮"写坏 → 回调报错并 invalidate → 写回有效 → get() 重建 watcher"，
+    // 假时钟冻结在同一退避窗口内：只有首轮记 error，其余折叠
+    for (let i = 0; i < 3; i++) {
+      await fs.writeFile(filePath, "not valid json");
+      await wait();
+      await fs.writeFile(filePath, JSON.stringify(makeConfig("thr", "T")) + "\n");
+      await throttledRepo.get("thr"); // 有效文件：重建 watcher（不恢复 reload 类别）
+    }
+
+    const reloadErrors = errorSpy.mock.calls.filter((c) =>
+      String(c[1]).includes("Failed to reload agent config"),
+    );
+    expect(reloadErrors).toHaveLength(1);
+
+    // 恢复：watcher 存活时一次成功解析 → 记一条"已恢复"带累计。
+    // fs.watch 每次写入可能触发多个回调（Windows 常见），事件总数不定——
+    // 断言节流语义本身：仅首条落日志（suppressed = count - 1），不钉死次数
+    await fs.writeFile(filePath, JSON.stringify(makeConfig("thr", "Recovered")) + "\n");
+    await wait();
+    const recovered = infoSpy.mock.calls.filter((c) => String(c[1]).includes("watcher 已恢复"));
+    expect(recovered).toHaveLength(1);
+    const recoveredFields = recovered[0]?.[0] as { count: number; suppressed: number };
+    expect(recoveredFields.count).toBeGreaterThanOrEqual(3);
+    expect(recoveredFields.suppressed).toBe(recoveredFields.count - 1);
+
+    errorSpy.mockRestore();
+    infoSpy.mockRestore();
+    throttledRepo.dispose();
   });
 });
