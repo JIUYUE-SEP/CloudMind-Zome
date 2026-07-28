@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Scheduler } from "../../src/scheduler/scheduler.js";
+import { ErrorThrottle } from "../../src/scheduler/error-throttle.js";
+import { logger } from "../../src/logger.js";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
@@ -187,4 +189,53 @@ describe("Scheduler", () => {
     expect(getAgentWorker).toHaveBeenCalledTimes(1);
     scheduler.stop();
   });
+
+  it("tick 错误节流（P4-4）：同一错误不每秒刷屏，恢复有日志", async () => {
+    let now = 0;
+    const throttle = new ErrorThrottle({ now: () => now, initialBackoffMs: 1000 });
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+
+    let shouldFail = true;
+    const context: ApiContext = {
+      ...makeContext(makeWorker()),
+      agentRepository: {
+        list: async () => {
+          if (shouldFail) throw new Error("config store corrupted");
+          return [];
+        },
+        get: async () => undefined,
+        save: async () => {},
+        delete: async () => {},
+      } as unknown as ApiContext["agentRepository"],
+    };
+    const scheduler = new Scheduler(context, { errorThrottle: throttle });
+    const tick = () => (scheduler as unknown as SchedulerInternals).tick();
+
+    // t=0 首次记录；t=100/900 折叠；t=1100 第二次记录（带累计）
+    await tick();
+    now = 100;
+    await tick();
+    now = 900;
+    await tick();
+    now = 1100;
+    await tick();
+
+    const errorCalls = errorSpy.mock.calls.filter((c) => String(c[1]).includes("scheduler tick failed"));
+    expect(errorCalls).toHaveLength(2);
+    expect(errorCalls[1]?.[0]).toMatchObject({ count: 4, suppressed: 2 });
+
+    // 恢复：tick 跑通后记录"已恢复"（count=累计次数；折叠数已随上次错误日志清零）
+    shouldFail = false;
+    now = 5000;
+    await tick();
+    const recovered = infoSpy.mock.calls.filter((c) => String(c[1]).includes("已恢复"));
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.[0]).toMatchObject({ count: 4, suppressed: 0 });
+
+    errorSpy.mockRestore();
+    infoSpy.mockRestore();
+    scheduler.stop();
+  });
 });
+

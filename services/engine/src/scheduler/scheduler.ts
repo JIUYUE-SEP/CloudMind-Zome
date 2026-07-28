@@ -2,10 +2,18 @@ import { logger } from "../logger.js";
 import type { ApiContext } from "../api/context.js";
 import { SchedulerRepository } from "./repository.js";
 import { computeNextRun, isDue } from "./engine.js";
+import { ErrorThrottle } from "./error-throttle.js";
 import type { ScheduledTask } from "./types.js";
 
 export interface SchedulerOptions {
   pollIntervalMs?: number;
+  /** 测试注入带假时钟的节流器（生产缺省） */
+  errorThrottle?: ErrorThrottle;
+}
+
+/** 错误指纹：消息前 120 字符足够区分原因，又不因长栈/长输出稀释 key */
+function errKey(err: unknown): string {
+  return String(err).slice(0, 120);
 }
 
 export class Scheduler {
@@ -13,8 +21,12 @@ export class Scheduler {
   private running = false;
   private runningTick = false;
   private runningTasks = new Set<string>();
+  /** P4-4：tick/任务错误节流（同 key 退避记录+计数+恢复，不每秒刷屏） */
+  private readonly errors: ErrorThrottle;
 
-  constructor(private context: ApiContext, private options: SchedulerOptions = {}) {}
+  constructor(private context: ApiContext, private options: SchedulerOptions = {}) {
+    this.errors = options.errorThrottle ?? new ErrorThrottle();
+  }
 
   start(): void {
     if (this.running) return;
@@ -44,16 +56,32 @@ export class Scheduler {
           if (!task.nextRunAt || isDue(task.nextRunAt)) {
             // Fire and forget: a slow task must not block the global tick.
             this.runTask(task, agent.id).catch((err) => {
-              logger.error({ err: err }, `scheduled task ${task.id} failed`);
+              this.logThrottled("error", `task:${task.id}:${errKey(err)}`, { err }, `scheduled task ${task.id} failed`);
             });
           }
         }
       }
+      // tick 整体成功：此前 tick 级错误视为恢复（节流不吞信息）
+      for (const { key, hit } of this.errors.recoverPrefix("tick:")) {
+        logger.info({ key, count: hit.count, suppressed: hit.suppressed }, "scheduler tick 已恢复");
+      }
     } catch (err) {
-      logger.error({ err: err }, "scheduler tick failed");
+      this.logThrottled("error", `tick:${errKey(err)}`, { err }, "scheduler tick failed");
     } finally {
       this.runningTick = false;
     }
+  }
+
+  /** 节流记录：退避窗口内只计数；窗口到时一条日志带累计（P4-4） */
+  private logThrottled(
+    level: "error" | "warn",
+    key: string,
+    fields: Record<string, unknown>,
+    msg: string,
+  ): void {
+    const hit = this.errors.hit(key);
+    if (!hit) return;
+    logger[level]({ ...fields, throttleKey: key, count: hit.count, suppressed: hit.suppressed }, msg);
   }
 
   private async runTask(task: ScheduledTask, agentId: string): Promise<void> {
@@ -88,8 +116,12 @@ export class Scheduler {
         sessionId: task.id,
         onEvent: () => {},
       });
+      // 任务跑通：此前该任务的错误视为恢复
+      for (const { key, hit } of this.errors.recoverPrefix(`task:${task.id}:`)) {
+        logger.info({ key, count: hit.count, suppressed: hit.suppressed }, `scheduled task ${task.id} 已恢复`);
+      }
     } catch (err) {
-      logger.error({ err: err }, `failed to run scheduled task ${task.id}`);
+      this.logThrottled("error", `task:${task.id}:${errKey(err)}`, { err }, `failed to run scheduled task ${task.id}`);
     } finally {
       this.runningTasks.delete(task.id);
     }
