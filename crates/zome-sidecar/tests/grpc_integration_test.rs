@@ -88,7 +88,7 @@ async fn test_grpc_concurrent_upsert_preserves_data() {
         handles.push(tokio::spawn(async move {
             c.upsert(UpsertRequest {
                 agent_id: "concurrent-grpc-agent".to_string(),
-                doc_id: format!("doc{}", i),
+                doc_id: format!("doc{i}"),
                 embedding: vec![i as f32, 0.0, 0.0],
             })
             .await

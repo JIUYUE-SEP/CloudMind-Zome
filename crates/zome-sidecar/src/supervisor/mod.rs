@@ -57,6 +57,7 @@ fn node_bin() -> String {
 /// 1. `ZOME_ENGINE_ENTRY` 环境变量（部署时显式指定）
 /// 2. sidecar 可执行文件附近的 engine/bootstrap.js（打包布局）
 /// 3. 开发环境 monorepo 路径
+///
 /// 找不到时返回明确错误，而不是静默退回 cwd 再神秘超时。
 fn engine_entry() -> anyhow::Result<(PathBuf, PathBuf)> {
     if let Ok(entry) = std::env::var("ZOME_ENGINE_ENTRY") {
@@ -68,7 +69,10 @@ fn engine_entry() -> anyhow::Result<(PathBuf, PathBuf)> {
                 .unwrap_or_else(|| PathBuf::from("."));
             return Ok((cwd, entry));
         }
-        anyhow::bail!("ZOME_ENGINE_ENTRY points to a missing file: {}", entry.display());
+        anyhow::bail!(
+            "ZOME_ENGINE_ENTRY points to a missing file: {}",
+            entry.display()
+        );
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

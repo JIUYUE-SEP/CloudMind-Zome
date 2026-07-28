@@ -10,7 +10,10 @@ async fn main() -> anyhow::Result<()> {
     // 必须在 spawn engine（注入新目录）之前完成；失败不阻断启动
     match zome_sidecar::migrate_legacy_data_dir() {
         Ok(0) => {}
-        Ok(n) => info!("migrated {} entries from legacy data dir (~/.cloudmind-zome)", n),
+        Ok(n) => info!(
+            "migrated {} entries from legacy data dir (~/.cloudmind-zome)",
+            n
+        ),
         Err(e) => warn!("legacy data dir migration failed (non-fatal): {e}"),
     }
 

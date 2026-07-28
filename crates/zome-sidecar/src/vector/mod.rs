@@ -202,7 +202,12 @@ impl VectorIndexState {
             tracing::warn!("embedding dir create failed: {}", e);
             return;
         }
-        let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path).await {
+        let mut file = match fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+        {
             Ok(f) => f,
             Err(e) => {
                 tracing::warn!("embedding file open failed: {}", e);
@@ -279,6 +284,7 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
 ///    worker.ts），在飞 upsert 可打在删除窗口——锁释放后经旧句柄的 upsert 会
 ///    经 persist_append 重建 embeddings.jsonl（下方注释的窗口），旧记忆随
 ///    同名重建部分复活。
+///
 /// 根治方向（后续立项）：逐出后在缓存写锁内删目录 + tombstone 挡 reload；
 /// engine 删除路由先 abort/drain 在飞 turn 再发 DeleteAgent RPC。
 pub async fn delete_agent(agent_id: &str) -> anyhow::Result<()> {
@@ -331,10 +337,7 @@ async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexStat
             let version = record.schema_version.filter(|v| *v >= 1).unwrap_or(1);
             if version > EMBEDDINGS_SCHEMA_VERSION {
                 return Err(anyhow::anyhow!(
-                    "embeddings.jsonl schema version too new for agent {}: v{}, this sidecar supports up to v{}; upgrade the sidecar (file left unchanged)",
-                    agent_id,
-                    version,
-                    EMBEDDINGS_SCHEMA_VERSION
+                    "embeddings.jsonl schema version too new for agent {agent_id}: v{version}, this sidecar supports up to v{EMBEDDINGS_SCHEMA_VERSION}; upgrade the sidecar (file left unchanged)"
                 ));
             }
             let record = migrate_record(record, version);
@@ -501,7 +504,11 @@ async fn compact_embeddings(dir: &Path, docs: &HashMap<String, Vec<f32>>) {
                 buf.push_str(&line);
                 buf.push('\n');
             }
-            Err(e) => tracing::warn!("embedding compaction serialize failed for {}: {}", doc_id, e),
+            Err(e) => tracing::warn!(
+                "embedding compaction serialize failed for {}: {}",
+                doc_id,
+                e
+            ),
         }
     }
     match fs::write(&tmp, buf).await {
@@ -541,7 +548,10 @@ mod tests {
         assert_eq!(estimate_resident_bytes(0, 1536), 0);
         // 50_000 条 ≈ 650MB——与 MEM_WARN_DOCS 阈值口径一致
         let est_mb = estimate_resident_bytes(50_000, 1536) / (1 << 20);
-        assert!((600..=700).contains(&est_mb), "est {}MB out of expected range", est_mb);
+        assert!(
+            (600..=700).contains(&est_mb),
+            "est {est_mb}MB out of expected range"
+        );
     }
 
     #[test]

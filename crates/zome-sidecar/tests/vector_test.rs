@@ -72,7 +72,7 @@ async fn test_concurrent_upsert_does_not_lose_data() {
         handles.push(tokio::spawn(async move {
             let mut guard = state.write().await;
             guard
-                .upsert(&format!("doc{}", i), &[1.0, i as f32, 0.0])
+                .upsert(&format!("doc{i}"), &[1.0, i as f32, 0.0])
                 .await;
         }));
     }
@@ -155,7 +155,11 @@ async fn test_incremental_upsert_immediately_searchable() {
     let r = state.read().await.search(&[1.0, 0.0, 0.0], 1);
     assert_eq!(r[0].0, "near");
 
-    state.write().await.upsert("nearest", &[0.99, 0.01, 0.0]).await;
+    state
+        .write()
+        .await
+        .upsert("nearest", &[0.99, 0.01, 0.0])
+        .await;
     let r2 = state.read().await.search(&[1.0, 0.0, 0.0], 1);
     assert_eq!(r2[0].0, "nearest");
 
@@ -196,7 +200,7 @@ async fn test_search_not_blocked_during_continuous_upserts() {
         tokio::spawn(async move {
             for i in 0..3000u32 {
                 let v: Vec<f32> = (0..64).map(|j| ((i * 31 + j) % 17) as f32).collect();
-                state.write().await.upsert(&format!("d{}", i), &v).await;
+                state.write().await.upsert(&format!("d{i}"), &v).await;
             }
         })
     };
@@ -213,7 +217,10 @@ async fn test_search_not_blocked_during_continuous_upserts() {
     writer.await.unwrap();
     assert!(hits > 0);
     // 旧实现 3000 条重建是秒级；增量插入下单次 search 应在毫秒级
-    assert!(max_ms < 500.0, "search blocked during upserts: max {max_ms:.1}ms");
+    assert!(
+        max_ms < 500.0,
+        "search blocked during upserts: max {max_ms:.1}ms"
+    );
 
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -228,7 +235,9 @@ async fn test_startup_compaction_rewrites_duplicated_jsonl() {
     let mut content = String::new();
     for i in 0..150u32 {
         let doc = ["a", "b", "c"][(i % 3) as usize];
-        content.push_str(&format!("{{\"doc_id\":\"{}\",\"embedding\":[1.0,{}]}}\n", doc, i));
+        content.push_str(&format!(
+            "{{\"doc_id\":\"{doc}\",\"embedding\":[1.0,{i}]}}\n"
+        ));
     }
     std::fs::write(dir.join("embeddings.jsonl"), content).unwrap();
 
@@ -275,7 +284,7 @@ async fn test_mismatched_dim_query_hnsw_path_returns_empty() {
     // 超过 LINEAR_SCAN_MAX(256)，强制走 HNSW 路径
     for i in 0..300u32 {
         let v: Vec<f32> = (0..8).map(|j| ((i + j) % 5) as f32).collect();
-        state.write().await.upsert(&format!("d{}", i), &v).await;
+        state.write().await.upsert(&format!("d{i}"), &v).await;
     }
 
     // 同维查询正常命中
@@ -300,14 +309,13 @@ async fn test_load_skips_mismatched_dim_rows() {
     // 300 条 8 维（众数）+ 5 条 4 维（异维）：原实现 parallel_insert 处 panic
     for i in 0..300u32 {
         content.push_str(&format!(
-            "{{\"doc_id\":\"good{}\",\"embedding\":[1.0,0.0,0.0,0.0,0.0,0.0,0.0,{}]}}\n",
-            i, i as f32 / 1000.0
+            "{{\"doc_id\":\"good{i}\",\"embedding\":[1.0,0.0,0.0,0.0,0.0,0.0,0.0,{}]}}\n",
+            i as f32 / 1000.0
         ));
     }
     for i in 0..5u32 {
         content.push_str(&format!(
-            "{{\"doc_id\":\"bad{}\",\"embedding\":[1.0,0.0,0.0,{}]}}\n",
-            i, i
+            "{{\"doc_id\":\"bad{i}\",\"embedding\":[1.0,0.0,0.0,{i}]}}\n"
         ));
     }
     std::fs::write(dir.join("embeddings.jsonl"), content).unwrap();
@@ -319,9 +327,11 @@ async fn test_load_skips_mismatched_dim_rows() {
     // 载入后索引定维 8：后续 4 维 upsert 同样被拒
     state.write().await.upsert("late-bad", &[1.0; 4]).await;
     let after = state.read().await.search(&[1.0; 8], 300);
-    assert!(after
-        .iter()
-        .all(|(id, _)| !id.starts_with("bad") && id != "late-bad"));
+    assert!(
+        after
+            .iter()
+            .all(|(id, _)| !id.starts_with("bad") && id != "late-bad")
+    );
 
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -380,10 +390,9 @@ async fn test_upsert_stamps_schema_version() {
     let state = get_or_load("stamp-agent").await.unwrap();
     state.write().await.upsert("d1", &[1.0, 0.0]).await;
 
-    let content = std::fs::read_to_string(
-        tmp.join("agents/stamp-agent/indices/hnsw/embeddings.jsonl"),
-    )
-    .unwrap();
+    let content =
+        std::fs::read_to_string(tmp.join("agents/stamp-agent/indices/hnsw/embeddings.jsonl"))
+            .unwrap();
     assert!(
         content.contains("\"schemaVersion\":1"),
         "stamped row expected: {content}"
@@ -402,7 +411,9 @@ async fn test_delete_agent_evicts_cache_and_removes_disk() {
     let dir = tmp.join("agents/del-agent/indices");
     assert!(dir.exists());
 
-    zome_sidecar::vector::delete_agent("del-agent").await.unwrap();
+    zome_sidecar::vector::delete_agent("del-agent")
+        .await
+        .unwrap();
     assert!(!dir.exists());
 
     // 缓存已逐出：重新加载为空索引（文件已删），search 返回空
@@ -423,7 +434,9 @@ async fn test_recreate_same_name_after_delete_starts_empty() {
     state.write().await.upsert("old-doc", &[1.0, 0.0]).await;
 
     // 删除（engine DELETE /agents/:id 的级联调用）
-    zome_sidecar::vector::delete_agent("reborn-agent").await.unwrap();
+    zome_sidecar::vector::delete_agent("reborn-agent")
+        .await
+        .unwrap();
 
     // 同名重建：旧向量不得复活
     let fresh = get_or_load("reborn-agent").await.unwrap();
@@ -440,7 +453,9 @@ async fn test_recreate_same_name_after_delete_starts_empty() {
 async fn test_delete_agent_idempotent_and_validates_id() {
     let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
-    zome_sidecar::vector::delete_agent("ghost-agent").await.unwrap();
+    zome_sidecar::vector::delete_agent("ghost-agent")
+        .await
+        .unwrap();
     assert!(zome_sidecar::vector::delete_agent("../bad").await.is_err());
     std::fs::remove_dir_all(&tmp).ok();
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
-use tiktoken_rs::{get_bpe_from_model, CoreBPE};
+use tiktoken_rs::{CoreBPE, get_bpe_from_model};
 
 /// get_bpe_from_model 每次都重新解析 rank 文件构造 BPE（非 singleton），
 /// 按 model 缓存一份共享实例，昂贵构造只发生一次。

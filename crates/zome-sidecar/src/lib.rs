@@ -81,7 +81,12 @@ pub fn migrate_dir_contents(old: &Path, new: &Path) -> anyhow::Result<usize> {
     let mut skipped = 0usize;
     for entry in std::fs::read_dir(old)? {
         let entry = entry?;
-        migrate_entry(&entry.path(), &new.join(entry.file_name()), &mut moved, &mut skipped);
+        migrate_entry(
+            &entry.path(),
+            &new.join(entry.file_name()),
+            &mut moved,
+            &mut skipped,
+        );
     }
     if skipped == 0 {
         std::fs::remove_dir_all(old).ok();
@@ -139,7 +144,10 @@ mod tests {
         unsafe {
             std::env::set_var("CLOUDMIND_DATA_DIR", "/tmp/zome-data-dir-contract-test");
         }
-        assert_eq!(data_dir(), PathBuf::from("/tmp/zome-data-dir-contract-test"));
+        assert_eq!(
+            data_dir(),
+            PathBuf::from("/tmp/zome-data-dir-contract-test")
+        );
         unsafe {
             std::env::remove_var("CLOUDMIND_DATA_DIR");
         }
