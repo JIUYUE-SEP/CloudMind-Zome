@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import type { EmbedderProvider } from "../provider/types.js";
 import { SidecarCallError, type SidecarClient } from "../sidecar/client.js";
 
@@ -44,7 +45,7 @@ export class MemoryIndexer {
       );
       if (vec) await this.client.upsert(agentId, docId, vec);
     } catch (err) {
-      console.warn("[memory] 索引写入失败，已跳过（不影响主链路）", err);
+      logger.warn({ err: err }, "[memory] 索引写入失败，已跳过（不影响主链路）");
     }
   }
 
@@ -70,10 +71,10 @@ export class MemoryIndexer {
       // （agent-worker 置 retrievalFailed、组装层尾随告知）；不可达/超时/embed
       // 失败仍按空结果静默降级
       if (err instanceof SidecarCallError) {
-        console.error("[memory] 语义检索 sidecar 明确报错，按检索失败上抛", err);
+        logger.error({ err: err }, "[memory] 语义检索 sidecar 明确报错，按检索失败上抛");
         throw err;
       }
-      console.warn("[memory] 语义检索失败，按空结果降级", err);
+      logger.warn({ err: err }, "[memory] 语义检索失败，按空结果降级");
       return [];
     }
   }

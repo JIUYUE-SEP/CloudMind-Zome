@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -146,7 +147,7 @@ export class DocumentStore<T extends object> {
     try {
       parsed = JSON.parse(line) as T;
     } catch (err) {
-      console.error(`Failed to parse JSONL line in ${this.filePath}: ${line}`, err);
+      logger.warn({ err: err }, `Failed to parse JSONL line in ${this.filePath}: ${line}`);
       return undefined;
     }
     const { version, data } = splitSchemaVersion(parsed);

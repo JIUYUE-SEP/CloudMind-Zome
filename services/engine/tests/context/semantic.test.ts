@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -48,7 +49,7 @@ describe("normalizeSemanticSearchConfig", () => {
   });
 
   it("topK < 1 回退默认并 warn", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     expect(normalizeSemanticSearchConfig({ topK: 0 }).topK).toBe(DEFAULT_SEMANTIC_SEARCH_CONFIG.topK);
     expect(warn).toHaveBeenCalledOnce();
   });
@@ -59,7 +60,7 @@ describe("normalizeSemanticSearchConfig", () => {
   });
 
   it("NaN 与非法输入被归一", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     expect(normalizeSemanticSearchConfig({ topK: Number.NaN }).topK).toBe(
       DEFAULT_SEMANTIC_SEARCH_CONFIG.topK,
     );

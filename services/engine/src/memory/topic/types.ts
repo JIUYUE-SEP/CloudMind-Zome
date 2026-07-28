@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 /** 一个已关闭、待压缩的话题片段 */
@@ -81,13 +82,13 @@ export function normalizeTopicCompressionConfig(
 ): TopicCompressionConfig {
   const config = { ...DEFAULT_TOPIC_COMPRESSION_CONFIG, ...partial };
   if (config.messageThreshold < MIN_SEGMENT_MESSAGES) {
-    console.warn(
+    logger.warn(
       `[topic] messageThreshold=${config.messageThreshold} 小于最短压缩段 ${MIN_SEGMENT_MESSAGES}，已按 ${MIN_SEGMENT_MESSAGES} 处理`,
     );
     config.messageThreshold = MIN_SEGMENT_MESSAGES;
   }
   if (config.windowMinutes <= 0) {
-    console.warn(
+    logger.warn(
       `[topic] windowMinutes=${config.windowMinutes} 非法，已按默认 ${DEFAULT_TOPIC_COMPRESSION_CONFIG.windowMinutes} 处理`,
     );
     config.windowMinutes = DEFAULT_TOPIC_COMPRESSION_CONFIG.windowMinutes;

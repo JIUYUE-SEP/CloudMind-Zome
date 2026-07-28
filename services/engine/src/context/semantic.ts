@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import type { MemoryIndexer } from "../memory/indexer.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ChatMessageRecord } from "../memory/repositories/types.js";
@@ -28,7 +29,7 @@ export function normalizeSemanticSearchConfig(
   const config = { ...DEFAULT_SEMANTIC_SEARCH_CONFIG, ...partial };
   // NaN 会穿透一切比较（search(top_k=NaN) 到 gRPC 行为未定义）；非整数取整
   if (!Number.isFinite(config.topK) || config.topK < 1) {
-    console.warn(`[semantic] topK=${config.topK} 非法，已按默认 ${DEFAULT_SEMANTIC_SEARCH_CONFIG.topK} 处理`);
+    logger.warn(`[semantic] topK=${config.topK} 非法，已按默认 ${DEFAULT_SEMANTIC_SEARCH_CONFIG.topK} 处理`);
     config.topK = DEFAULT_SEMANTIC_SEARCH_CONFIG.topK;
   }
   config.topK = Math.floor(config.topK);

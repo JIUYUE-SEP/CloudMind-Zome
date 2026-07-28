@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 /**
@@ -50,6 +51,6 @@ export function stripUnansweredToolCalls(messages: ChatMessage[]): ChatMessage[]
   });
 
   if (!changed) return messages;
-  console.warn("[history] 检测到孤儿 toolCalls/tool 消息（半个 turn 或窗口截断），已清洗后送入 LLM");
+  logger.warn("[history] 检测到孤儿 toolCalls/tool 消息（半个 turn 或窗口截断），已清洗后送入 LLM");
   return result;
 }

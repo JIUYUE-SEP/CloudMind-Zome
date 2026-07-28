@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { FastifyRequest } from "fastify";
 import type { ChatMode } from "@mindcloud/shared";
 
@@ -83,7 +84,7 @@ export function sanitizeDeltaEvent<T>(event: T): T | null {
   if (event && typeof event === "object" && "delta" in event) {
     const delta = (event as { delta: unknown }).delta;
     if (typeof delta !== "string") {
-      console.warn("dropping ws event with non-string delta", event);
+      logger.warn({ err: event }, "dropping ws event with non-string delta");
       return null;
     }
   }

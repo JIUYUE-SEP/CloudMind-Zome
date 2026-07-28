@@ -1,4 +1,5 @@
 import type { AgentWorker } from "./agent-worker.js";
+import { logger } from "../logger.js";
 
 /**
  * worker 注册表（P3-6，配置变更竞态）：worker 生命周期的唯一权威——
@@ -28,6 +29,7 @@ export class WorkerRegistry {
   retire(agentId: string): void {
     const worker = this.workers.get(agentId);
     if (worker) {
+      logger.info({ agentId }, "[worker] 配置变更：退役旧 worker（在途排空后替换）");
       worker.retire();
       this.workers.delete(agentId);
       this.retiringWorkers.set(
@@ -73,6 +75,7 @@ export class WorkerRegistry {
       const worker = await promise;
       if (!worker) return undefined;
       this.workers.set(agentId, worker);
+      logger.info({ agentId }, "[worker] 创建 worker");
       // create 期间的配置变更补退役（否则该次变更被静默吞掉，
       // 用户拿到的还是变更前配置创建的 worker）
       if (this.pendingRetires.delete(agentId)) {

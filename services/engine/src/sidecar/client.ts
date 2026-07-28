@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import fs from "node:fs";
 import path from "node:path";
 import grpc from "@grpc/grpc-js";
@@ -105,7 +106,7 @@ export class SidecarClient {
       ) as ZomeSidecarGrpc;
       return this.client;
     } catch (err) {
-      console.error("failed to load sidecar proto", err);
+      logger.error({ err: err }, "failed to load sidecar proto");
       return undefined;
     }
   }
@@ -130,7 +131,7 @@ export class SidecarClient {
               reject(new SidecarCallError(method, e.code, e.details ?? String(err)));
               return;
             }
-            if (!quiet) console.warn(`[sidecar] ${method} 调用失败，按不可用降级`, err);
+            if (!quiet) logger.warn({ err: err }, `[sidecar] ${method} 调用失败，按不可用降级`);
             resolve(undefined);
             return;
           }
@@ -148,7 +149,7 @@ export class SidecarClient {
     const ok = res !== undefined;
     // 只在可用性翻转时记日志（首次探测不记：纯 pnpm dev 下 sidecar 本就不存在）
     if (this.availability.at !== 0 && ok !== this.availability.ok) {
-      console.warn(`[sidecar] 可用性变化：${this.availability.ok ? "可用" : "不可用"} -> ${ok ? "可用" : "不可用"}`);
+      logger.warn(`[sidecar] 可用性变化：${this.availability.ok ? "可用" : "不可用"} -> ${ok ? "可用" : "不可用"}`);
     }
     this.availability = { at: now, ok };
     return ok;
@@ -160,7 +161,7 @@ export class SidecarClient {
     const res = await this.call("Upsert", { agent_id: agentId, doc_id: docId, embedding }, 30_000).catch(
       (err: unknown) => {
         // 写路径保持 bool 契约（M-a）：明确报错不静默——error 级留痕后按失败返回
-        console.error("[sidecar] Upsert 明确报错，本条嵌入未写入", err);
+        logger.error({ err: err }, "[sidecar] Upsert 明确报错，本条嵌入未写入");
         return undefined;
       },
     );
@@ -193,7 +194,7 @@ export class SidecarClient {
   async deleteAgent(agentId: string): Promise<boolean> {
     // bool 契约不变（M-a）：明确报错 error 级留痕，仍按 false 返回（语义同注释）
     const res = await this.call("DeleteAgent", { agent_id: agentId }).catch((err: unknown) => {
-      console.error("[sidecar] DeleteAgent 明确报错，内存缓存可能未逐出", err);
+      logger.error({ err: err }, "[sidecar] DeleteAgent 明确报错，内存缓存可能未逐出");
       return undefined;
     });
     return res !== undefined;

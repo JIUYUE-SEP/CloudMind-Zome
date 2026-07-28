@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // 模拟 Windows 上 rename 持久失败（文件被占用超过重试窗口）：只拦 renameWithRetry，
@@ -59,7 +60,7 @@ describe("MIND.md 写入失败 sidecar（review Minor-1）", () => {
     const seed = "我是新心智，还在学习中。\n";
     await fs.mkdir(agentDir(), { recursive: true });
     await fs.writeFile(path.join(agentDir(), "MIND.md"), seed, "utf-8");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     await appendMindExperiences(AGENT_ID, [
       exp(),
@@ -88,14 +89,14 @@ describe("MIND.md 写入失败 sidecar（review Minor-1）", () => {
     expect(lines[0].schemaVersion).toBe(1);
     expect(lines[1].title).toBe("Windows 进程管理");
 
-    // warn 留痕且带 sidecar 路径（支持人工恢复）
-    const warnText = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    // warn 留痕且带 sidecar 路径（支持人工恢复）；P4-1 起 err 为合并首参，路径在 msg 参数
+    const warnText = warn.mock.calls.map((c) => String(c[1] ?? c[0])).join("\n");
     expect(warnText).toContain("mind-failed.jsonl");
   });
 
   it("sidecar 也写失败（路径是目录）：仍不抛错", async () => {
     await fs.mkdir(path.join(agentDir(), "mind-failed.jsonl"), { recursive: true });
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     await expect(appendMindExperiences(AGENT_ID, [exp()])).resolves.toBeTruthy();
   });

@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { z } from "zod";
 import fs from "node:fs/promises";
@@ -193,7 +194,7 @@ describe("AgentWorker", () => {
   });
 
   it("runScheduledTask logs and continues when persistence fails", async () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
     const append = vi.fn(async () => {
       throw new Error("disk full");
     });
@@ -208,7 +209,10 @@ describe("AgentWorker", () => {
     });
 
     expect(append).toHaveBeenCalled();
-    expect(consoleSpy).toHaveBeenCalledWith("failed to persist scheduler user message", expect.any(Error));
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      "failed to persist scheduler user message",
+    );
     expect(enqueueSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "sched-1", sessionId: "sess-1" }));
 
     consoleSpy.mockRestore();
@@ -1044,7 +1048,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     failingRepo.archiveAndRemove = async () => {
       throw new Error("disk full");
     };
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     const worker = new AgentWorker({
       ...makeConfig(provider),
@@ -1113,7 +1117,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       messageRepository: repo,
       topicCompression: { messageThreshold: 4 },
     });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     await repo.append({ ...seqMessage("u1", "问题一", 0), sessionId: "agent-1" });
     await repo.append({ ...seqMessage("u2", "问题二", 1), sessionId: "agent-1" });
@@ -1400,7 +1404,7 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
       memoryIndexer: indexer,
     });
 
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = vi.spyOn(logger, "error").mockImplementation(() => {});
     worker.enqueue({ id: "j1", messages: [currentUser("u1", "你好")], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
@@ -1433,7 +1437,7 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
       memoryIndexer: indexer,
     });
 
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = vi.spyOn(logger, "error").mockImplementation(() => {});
     worker.enqueue({ id: "j1", messages: [currentUser("u1", "你好")], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
@@ -1620,7 +1624,7 @@ describe("AgentWorker SOUL/MIND 集成", () => {
     const provider = new CapturingProvider();
     const worker = new AgentWorker(makeConfig(provider));
 
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     worker.enqueue({ id: "j1", messages: [userMessage("你好")], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
 

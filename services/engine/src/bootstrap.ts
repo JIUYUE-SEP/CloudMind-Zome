@@ -1,3 +1,4 @@
+import { logger } from "./logger.js";
 import { createServer } from "./api/server.js";
 import { AgentRepository } from "./memory/repositories/agent.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -187,7 +188,7 @@ async function main() {
           }
         }
       } catch (err) {
-        console.warn(`[topic] worker 话题状态交接失败（跳过）：${agentId}`, err);
+        logger.warn({ err: err }, `[topic] worker 话题状态交接失败（跳过）：${agentId}`);
       }
       return worker;
     });
@@ -205,7 +206,7 @@ async function main() {
     const config = await configRepo.load();
     const providerConfig = config.providers.find((p) => p.id === agentConfig.providerId);
     if (!providerConfig) {
-      console.warn(
+      logger.warn(
         `agent '${agentConfig.id}' references missing provider '${agentConfig.providerId}'`
       );
       return new ErrorLLMProvider(
@@ -277,7 +278,7 @@ async function main() {
         const repo = new MessageRepository(agent.id);
         const count = await reconcileHotStorage(agent.id, repo);
         if (count > 0) {
-          console.log(`[reconcile] agent=${agent.id} 补归档孤儿消息 ${count} 条`);
+          logger.info(`[reconcile] agent=${agent.id} 补归档孤儿消息 ${count} 条`);
         }
         // P1-2：重启孤儿（退出时仍在未关闭话题里的消息）。先查 topic-state.json
         // （廉价文件读），有孤儿才构造 LLM provider 补压缩/归档
@@ -295,18 +296,18 @@ async function main() {
           if (hasPending) {
             const pendingCount = await reconcilePendingSegments(agent.id, repo, deps);
             if (pendingCount > 0) {
-              console.log(`[reconcile] agent=${agent.id} 补处理 pending 压缩段消息 ${pendingCount} 条`);
+              logger.info(`[reconcile] agent=${agent.id} 补处理 pending 压缩段消息 ${pendingCount} 条`);
             }
           }
           if (hasOpen) {
             const orphanCount = await reconcileOrphanedTopic(agent.id, repo, deps);
             if (orphanCount > 0) {
-              console.log(`[reconcile] agent=${agent.id} 处理重启孤儿消息 ${orphanCount} 条`);
+              logger.info(`[reconcile] agent=${agent.id} 处理重启孤儿消息 ${orphanCount} 条`);
             }
           }
         }
       } catch (err) {
-        console.warn(`[reconcile] agent=${agent.id} 对账失败，跳过（不阻断启动）`, err);
+        logger.warn({ err: err }, `[reconcile] agent=${agent.id} 对账失败，跳过（不阻断启动）`);
       }
     }
   }
@@ -318,7 +319,7 @@ async function main() {
   // 立即读 auth-token 文件下发给前端，晚于 listen 生成会引入竞态
   await getAuthToken();
   if (!process.env.CLOUDMIND_AUTH_TOKEN) {
-    console.log(
+    logger.info(
       `[auth] 本地鉴权 token 文件：${getAuthTokenFilePath()}（web 开发请设 NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage cloudmind.engineToken）`,
     );
   }
@@ -330,7 +331,7 @@ async function main() {
     // supervisor 据此区分端口冲突与崩溃，不盲目高频重启
     const classified = classifyListenError(err, port);
     if (classified) {
-      console.error(classified.message);
+      logger.error(classified.message);
       process.exit(classified.exitCode);
     }
     throw err;
@@ -342,7 +343,7 @@ async function main() {
       : addr
         ? `${addr.address}:${addr.port}`
         : "unknown";
-  console.log(`Engine listening on ${addrStr}`);
+  logger.info(`Engine listening on ${addrStr}`);
 
   // 优雅关停（P1-2）：SIGTERM/SIGINT 时先 drain 全部 worker 的压缩队列再退出
   // （超时 10s 兜底，不卡死关停）。Windows desktop 的 taskkill /F 强杀不会触发
@@ -360,6 +361,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  logger.error(err);
   process.exit(1);
 });

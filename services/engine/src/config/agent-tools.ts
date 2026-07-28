@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import type { AgentConfig } from "@mindcloud/shared";
 
 /**
@@ -10,7 +11,7 @@ import type { AgentConfig } from "@mindcloud/shared";
  */
 export function resolveConfiguredTools(agentConfig: AgentConfig): string[] {
   if (Array.isArray(agentConfig.tools)) return agentConfig.tools;
-  console.warn(
+  logger.warn(
     `[agents] agent=${agentConfig.id} 未配置 tools 字段，按空工具集装配（chat-only）`,
   );
   return [];

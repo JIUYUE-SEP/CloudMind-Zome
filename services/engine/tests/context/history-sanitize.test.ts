@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { stripUnansweredToolCalls } from "../../src/context/history-sanitize.js";
@@ -33,7 +34,7 @@ describe("stripUnansweredToolCalls（半个 turn 清洗，P1-6）", () => {
   });
 
   it("半个 turn：assistant 的 toolCalls 全无应答 → 摘除 toolCalls 字段，正文保留", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const history = [user("hi"), assistant("a1", "说到一半的回复", ["tc1", "tc2"])];
     const out = stripUnansweredToolCalls(history);
     expect(out).toHaveLength(2);

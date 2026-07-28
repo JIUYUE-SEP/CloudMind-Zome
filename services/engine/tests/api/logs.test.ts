@@ -92,4 +92,23 @@ describe("Logs API", () => {
     expect(error?.level).toBe(50);
     await app.close();
   });
+
+  it("业务日志（P4-1 统一出口）经同一缓冲可被 /logs 读到", async () => {
+    const app = await createServer(context);
+    await app.ready();
+
+    // 业务模块共享的 logger（非 Fastify 请求日志）必须同进 LogPanel
+    const { logger } = await import("../../src/logger.js");
+    logger.warn("business-warn-marker");
+    logger.error("business-error-marker");
+    logger.debug("business-debug-hidden-by-default-level");
+
+    const res = await authedRequest(app.server).get("/logs?limit=1000");
+    expect(res.status).toBe(200);
+    expect(res.body.find((e: { msg: string }) => e.msg === "business-warn-marker")?.level).toBe(40);
+    expect(res.body.find((e: { msg: string }) => e.msg === "business-error-marker")?.level).toBe(50);
+    // debug 默认级别（info）不输出
+    expect(res.body.some((e: { msg: string }) => e.msg === "business-debug-hidden-by-default-level")).toBe(false);
+    await app.close();
+  });
 });

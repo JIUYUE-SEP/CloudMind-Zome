@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import type { AgentConfig } from "@mindcloud/shared";
@@ -117,7 +118,7 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     if (context.sidecarClient) {
       const ok = await context.sidecarClient.deleteAgent(id).catch(() => false);
       if (!ok) {
-        console.warn(`[agents] sidecar DeleteAgent(${id}) 未成功，向量内存缓存待 sidecar 重启后清除`);
+        logger.warn(`[agents] sidecar DeleteAgent(${id}) 未成功，向量内存缓存待 sidecar 重启后清除`);
       }
     }
     return reply.status(204).send();

@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -33,7 +34,7 @@ import {
 } from "../mind/mind-files.js";
 import { UnsupportedSchemaVersionError } from "../versioning.js";
 
-console.log("[agent-worker] module loaded");
+logger.info("[agent-worker] module loaded");
 
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
@@ -131,12 +132,12 @@ export class AgentWorker {
       this.settleRetiredJob(job);
       return;
     }
-    console.log("[agent-worker] enqueue, status:", this.status, "queue:", this.queue.length);
+    logger.debug(`[agent-worker] enqueue, status: ${this.status} queue: ${this.queue.length}`);
     this.queue.push(job);
     if (this.status === "idle") {
-      console.log("[agent-worker] triggering processQueue");
+      logger.debug("[agent-worker] triggering processQueue");
       this.processQueue().catch((err) => {
-        console.error("[agent-worker] processQueue failed:", err);
+        logger.error({ err: err }, "[agent-worker] processQueue failed:");
       });
     }
   }
@@ -156,7 +157,7 @@ export class AgentWorker {
               createdAt: new Date().toISOString(),
             })
             .catch((err) => {
-              console.error("failed to persist scheduler user message", err);
+              logger.error({ err: err }, "failed to persist scheduler user message");
             });
         }
       }
@@ -192,12 +193,12 @@ export class AgentWorker {
       job.onEvent({ type: "text.delta", delta: "\n配置已变更，这条消息未处理，请重发。" });
       job.onEvent({ type: "turn.end" });
     } catch (eventErr) {
-      console.error("retire: failed to emit terminal frames", eventErr);
+      logger.error({ err: eventErr }, "retire: failed to emit terminal frames");
     }
     try {
       job.onDone?.(err);
     } catch (doneErr) {
-      console.error("retire: job onDone callback failed", doneErr);
+      logger.error({ err: doneErr }, "retire: job onDone callback failed");
     }
   }
 
@@ -260,7 +261,7 @@ export class AgentWorker {
       }
       await saveTopicState(this.config.agentId, merged);
     } catch (err) {
-      console.warn(`[topic] tracker 状态落盘失败（已跳过）：${this.config.agentId}`, err);
+      logger.warn({ err: err }, `[topic] tracker 状态落盘失败（已跳过）：${this.config.agentId}`);
     }
   }
 
@@ -281,7 +282,7 @@ export class AgentWorker {
         archiveOnly: segment.archiveOnly ?? false,
       });
     } catch (err) {
-      console.warn(`[topic] pending 段落盘失败（对账兜底退化）：${segment.topicId}`, err);
+      logger.warn({ err: err }, `[topic] pending 段落盘失败（对账兜底退化）：${segment.topicId}`);
     }
     this.compressionQueue.enqueue(segment);
   }
@@ -319,7 +320,7 @@ export class AgentWorker {
       if (job.signal?.aborted) {
         throw new Error("aborted");
       }
-      console.log("[agent-worker] processQueue start, messages:", job.messages.length);
+      logger.debug(`[agent-worker] processQueue start, messages: ${job.messages.length}`);
       const toolsMap = new Map(this.config.tools.map((t) => [t.name, t]));
       const toolDescriptions = this.config.tools.map((t) => ({
         type: "function",
@@ -329,7 +330,7 @@ export class AgentWorker {
           parameters: zodToJsonSchema(t.parameters),
         },
       }));
-      console.log("[agent-worker] tools:", toolDescriptions.length);
+      logger.debug(`[agent-worker] tools: ${toolDescriptions.length}`);
 
       const promptParts: string[] = [];
       // SOUL.md 人格核心：L1 第一部分（固定前缀，缓存命中；缺失时默认模板兜底）
@@ -367,7 +368,7 @@ export class AgentWorker {
         try {
           topicSummaries = await latestSummaries(this.config.agentId, this.topicConfig.hotMemoryCount);
         } catch (err) {
-          console.warn("[topic] 压缩档读取失败，L5 按空处理", err);
+          logger.warn({ err: err }, "[topic] 压缩档读取失败，L5 按空处理");
           retrievalFailed = true;
         }
       }
@@ -387,7 +388,7 @@ export class AgentWorker {
             sessionId,
           );
         } catch (err) {
-          console.error("semantic retrieval failed", err);
+          logger.error({ err: err }, "semantic retrieval failed");
           retrievalFailed = true;
         }
       }
@@ -400,7 +401,7 @@ export class AgentWorker {
         try {
           mindChunks = retrieveMindChunks(await loadMindChunks(this.config.agentId), lastUserText);
         } catch (err) {
-          console.warn("[mind] MIND.md 读取失败，本轮不注入经验", err);
+          logger.warn({ err: err }, "[mind] MIND.md 读取失败，本轮不注入经验");
           // M-a 顺手统一（Minor-1）：高版本数据是明确错误而非"读取失败"，
           // 与 L4/L5 同一口径置 retrievalFailed，让用户/模型可感知
           if (err instanceof UnsupportedSchemaVersionError) retrievalFailed = true;
@@ -462,9 +463,9 @@ export class AgentWorker {
         },
       };
 
-      console.log("[agent-worker] before runTurn, messages:", messages.length, "tools:", toolDescriptions.length);
+      logger.debug(`[agent-worker] before runTurn, messages: ${messages.length} tools: ${toolDescriptions.length}`);
       const result = await runTurn(turnInput, job.onEvent);
-      console.log("[agent-worker] after runTurn, appended:", result.appended.length);
+      logger.debug(`[agent-worker] after runTurn, appended: ${result.appended.length}`);
 
       // 持久化已在 runTurn 内按 step 完成（onStepAppended），此处不再重复 append。
 
@@ -507,7 +508,7 @@ export class AgentWorker {
       try {
         job.onDone?.(jobError);
       } catch (err) {
-        console.error("job onDone callback failed", err);
+        logger.error({ err: err }, "job onDone callback failed");
       }
       if ((this.status as AgentWorkerStatus) !== "paused") {
         this.status = "idle";

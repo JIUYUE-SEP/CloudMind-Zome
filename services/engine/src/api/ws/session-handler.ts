@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import path from "node:path";
@@ -19,7 +20,7 @@ function safeSend(socket: WebSocket, data: string | object): void {
     const payload = typeof data === "string" ? data : JSON.stringify(data);
     socket.send(payload);
   } catch (err) {
-    console.error("failed to send websocket message", err);
+    logger.error({ err: err }, "failed to send websocket message");
   }
 }
 
@@ -106,6 +107,11 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
         socket.close(4002, "Session not found");
         return;
       }
+      // WS 连接生命周期（排查断连/1006 的关键路径日志）
+      logger.info({ sessionId }, "[ws] 群聊连接建立");
+      socket.on("close", (code: number, reason: Buffer) => {
+        logger.info({ sessionId, code, reason: reason.toString() }, "[ws] 群聊连接关闭");
+      });
       ready = true;
 
       for (const raw of pendingMessages) {
@@ -183,7 +189,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             try {
               await repo.append({ ...userMessage, sessionId });
             } catch (err) {
-              console.error("failed to persist user message", err);
+              logger.error({ err: err }, "failed to persist user message");
               safeSend(socket, { type: "error", error: "Failed to persist message" });
             }
           }

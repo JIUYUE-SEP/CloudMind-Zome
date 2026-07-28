@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import type { ApiContext } from "../api/context.js";
 import { SchedulerRepository } from "./repository.js";
 import { computeNextRun, isDue } from "./engine.js";
@@ -43,13 +44,13 @@ export class Scheduler {
           if (!task.nextRunAt || isDue(task.nextRunAt)) {
             // Fire and forget: a slow task must not block the global tick.
             this.runTask(task, agent.id).catch((err) => {
-              console.error(`scheduled task ${task.id} failed`, err);
+              logger.error({ err: err }, `scheduled task ${task.id} failed`);
             });
           }
         }
       }
     } catch (err) {
-      console.error("scheduler tick failed", err);
+      logger.error({ err: err }, "scheduler tick failed");
     } finally {
       this.runningTick = false;
     }
@@ -67,7 +68,7 @@ export class Scheduler {
       if (!task.nextRunAt) {
         // cron 已失效（如文件被手改）：禁用任务，而不是每个轮询周期都触发一次
         task.enabled = false;
-        console.error(`scheduled task ${task.id} has invalid cron '${task.cron}', disabling it`);
+        logger.error(`scheduled task ${task.id} has invalid cron '${task.cron}', disabling it`);
       }
       await repo.update(task);
 
@@ -88,7 +89,7 @@ export class Scheduler {
         onEvent: () => {},
       });
     } catch (err) {
-      console.error(`failed to run scheduled task ${task.id}`, err);
+      logger.error({ err: err }, `failed to run scheduled task ${task.id}`);
     } finally {
       this.runningTasks.delete(task.id);
     }

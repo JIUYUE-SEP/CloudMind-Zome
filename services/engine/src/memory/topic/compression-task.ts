@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { IMessageRepository } from "../repositories/types.js";
 import type { LLMProvider } from "../../provider/types.js";
 import { appendMindExperiences } from "../../mind/mind-files.js";
@@ -35,7 +36,7 @@ export async function runCompressionTask(
   // 手法本身的话题可能被误降为仅归档（不丢消息、热存储有界性不变，接受）。
   const summaryText = [compressed.label, ...compressed.keyPoints, compressed.summary].join("\n");
   if (isInjectionSuspect(summaryText)) {
-    console.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${compressed.topicId}`);
+    logger.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${compressed.topicId}`);
     await deps.messageRepository.archiveAndRemove(compressed.msgIds);
     return;
   }
@@ -53,7 +54,7 @@ export async function runCompressionTask(
         })),
       );
     } catch (err) {
-      console.warn(`[mind] 经验沉淀失败（已跳过）：${compressed.topicId}`, err);
+      logger.warn({ err: err }, `[mind] 经验沉淀失败（已跳过）：${compressed.topicId}`);
     }
   }
   try {

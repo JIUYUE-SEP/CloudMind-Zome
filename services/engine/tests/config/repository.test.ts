@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -206,7 +207,7 @@ describe("config/repository", () => {
       "utf-8",
     );
 
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const loaded = await repo.load();
     expect(loaded.providers[0].apiKey).toBeUndefined();
     expect(warnSpy).toHaveBeenCalled();
@@ -257,7 +258,7 @@ describe("config/repository", () => {
     });
     await fs.writeFile(filePath, content, "utf-8");
 
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
     const loaded = await repo.load();
     expect(loaded.providers[0].apiKey).toBeUndefined();
 

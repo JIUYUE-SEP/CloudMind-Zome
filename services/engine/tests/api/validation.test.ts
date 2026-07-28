@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
 import { isApprovalRememberable, sanitizeDeltaEvent } from "../../src/api/ws/validation.js";
 
@@ -28,7 +29,7 @@ describe("sanitizeDeltaEvent", () => {
   it.each([undefined, null, 42, { text: "x" }, ["x"]])(
     "非 string 的 delta 丢弃并打 warn: %j",
     (badDelta) => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
       const event = { type: "text.delta", delta: badDelta };
       expect(sanitizeDeltaEvent(event)).toBeNull();
       expect(warn).toHaveBeenCalledOnce();

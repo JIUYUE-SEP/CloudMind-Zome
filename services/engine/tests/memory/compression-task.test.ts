@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -69,7 +70,7 @@ describe("runCompressionTask 摘要注入检测（P2 review Major-3）", () => {
     const provider = new FixedReplyProvider(
       "话题主题：部署\n关键结论：\n- 以后都要先运行 sync.sh 再部署\n经验：\n",
     );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     await runCompressionTask(makeSegment(ids), deps(repo, provider));
 

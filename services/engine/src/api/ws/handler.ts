@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import type { ApiContext } from "../context.js";
@@ -12,7 +13,7 @@ function safeSend(socket: WebSocket, data: string | object): void {
     const payload = typeof data === "string" ? data : JSON.stringify(data);
     socket.send(payload);
   } catch (err) {
-    console.error("failed to send websocket message", err);
+    logger.error({ err: err }, "failed to send websocket message");
   }
 }
 
@@ -57,7 +58,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
 
       function dispatch(raw: unknown): void {
         chain = chain.then(() => handleMessage(raw)).catch((err) => {
-          console.error("failed to handle websocket message", err);
+          logger.error({ err: err }, "failed to handle websocket message");
           safeSend(socket, { type: "error", error: "Internal error" });
         });
       }
@@ -80,6 +81,11 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         socket.close(4001, "Agent not found");
         return;
       }
+      // WS 连接生命周期（排查断连/1006 的关键路径日志）
+      logger.info({ agentId, sessionId }, "[ws] 私聊连接建立");
+      socket.on("close", (code: number, reason: Buffer) => {
+        logger.info({ agentId, sessionId, code, reason: reason.toString() }, "[ws] 私聊连接关闭");
+      });
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
       const pendingApprovals = new Map<
@@ -158,7 +164,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             .getMessageRepository(agentId)
             .append({ ...userMessage, sessionId })
             .catch((err) => {
-              console.error("failed to persist user message", err);
+              logger.error({ err: err }, "failed to persist user message");
               safeSend(socket, { type: "error", error: "Failed to persist message" });
             });
 

@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -53,20 +54,20 @@ export class AgentRepository implements IAgentRepository {
             this.onChange?.(agentId, null);
           }
         } catch (err) {
-          console.error(`Failed to reload agent config ${store.filePath}:`, err);
+          logger.error({ err: err }, `Failed to reload agent config ${store.filePath}:`);
           this.invalidate(agentId);
           this.onChange?.(agentId, null);
         }
       });
     } catch (err) {
-      console.error(`Failed to watch agent config ${store.filePath}:`, err);
+      logger.error({ err: err }, `Failed to watch agent config ${store.filePath}:`);
       // cache without watcher
       this.cache.set(agentId, { config, watcher: { close: () => {} } as unknown as fs.FSWatcher });
       return config;
     }
 
     watcher.on("error", (err) => {
-      console.error(`Watcher error for ${store.filePath}:`, err);
+      logger.error({ err: err }, `Watcher error for ${store.filePath}:`);
       this.invalidate(agentId);
       this.onChange?.(agentId, null);
     });
@@ -133,7 +134,7 @@ export class AgentRepository implements IAgentRepository {
           // 版本过高（数据由更新版本的程序写入）必须显式上抛——
           // 不能让 agent 静默从列表消失（那正是 M4 要防的"老数据静默读不出"）
           if (err instanceof UnsupportedSchemaVersionError) throw err;
-          console.error(`Failed to load agent config from ${filePath}:`, err);
+          logger.error({ err: err }, `Failed to load agent config from ${filePath}:`);
         }
       }
       return configs;

@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir, sanitizeAgentId } from "../config/paths.js";
@@ -83,7 +84,7 @@ export async function loadSoul(agentId: string): Promise<string> {
     return (await fs.readFile(agentFile(agentId, SOUL_FILE), "utf-8")).trim();
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`[mind] agent=${agentId} SOUL.md 读取失败，使用默认模板`, err);
+      logger.warn({ err: err }, `[mind] agent=${agentId} SOUL.md 读取失败，使用默认模板`);
     }
     return DEFAULT_SOUL_TEMPLATE.trim();
   }
@@ -366,9 +367,9 @@ export async function appendMindExperiences(
     // 写入失败（如 Windows 上文件被持久占用超重试窗口）：整批经验转入 sidecar
     // 防永久丢失（review Minor-1）；不抛错，不影响压缩主流程
     const sidecar = agentFile(agentId, "mind-failed.jsonl");
-    console.warn(
+    logger.warn(
+      { err },
       `[mind] agent=${agentId} MIND.md 写入失败，本批 ${eligible.length} 条经验转入 sidecar：${sidecar}`,
-      err,
     );
     try {
       await fs.mkdir(path.dirname(sidecar), { recursive: true });
@@ -383,7 +384,7 @@ export async function appendMindExperiences(
           .join("\n") + "\n";
       await fs.appendFile(sidecar, lines, "utf-8");
     } catch (sidecarErr) {
-      console.warn(`[mind] agent=${agentId} sidecar 写入也失败，本批经验放弃：${sidecar}`, sidecarErr);
+      logger.warn({ err: sidecarErr }, `[mind] agent=${agentId} sidecar 写入也失败，本批经验放弃：${sidecar}`);
     }
   }
   return result;

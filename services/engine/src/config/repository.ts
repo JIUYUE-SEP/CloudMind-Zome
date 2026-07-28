@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { renameWithRetry } from "../memory/document-store.js";
@@ -77,7 +78,7 @@ async function decryptValue(value: string | undefined): Promise<string | undefin
   } catch (err) {
     // master key 变更/丢失时解密必然失败：字段按未配置处理，但必须留痕，
     // 否则用户看到的只是"apiKey 凭空消失"
-    console.warn("[config] 解密失败，该字段按未配置处理（master key 可能已变更）:", err);
+    logger.warn({ err: err }, "[config] 解密失败，该字段按未配置处理（master key 可能已变更）:");
     return undefined;
   }
 }

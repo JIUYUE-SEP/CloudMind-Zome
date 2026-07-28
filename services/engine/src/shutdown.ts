@@ -1,3 +1,4 @@
+import { logger } from "./logger.js";
 /**
  * 优雅关停（P1-2，数据 review M6）：收到 SIGTERM/SIGINT 时先把压缩队列
  * drain 完再退出——此前 drain() 在生产代码零调用，每次正常退出都丢弃
@@ -25,7 +26,7 @@ export interface ShutdownDeps {
 export async function gracefulShutdown(deps: ShutdownDeps): Promise<void> {
   const timeoutMs = deps.timeoutMs ?? 10_000;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
-  const log = deps.log ?? console.log;
+  const log = deps.log ?? ((msg: string) => logger.info(msg));
   log(`[shutdown] 开始优雅关停：drain 压缩队列（超时上限 ${timeoutMs}ms）`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const drained = await Promise.race([
@@ -55,7 +56,7 @@ export function registerShutdownHandlers(deps: ShutdownDeps): () => void {
   const handler = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    (deps.log ?? console.log)(`[shutdown] 收到 ${signal}`);
+    (deps.log ?? ((msg: string) => logger.info(msg)))(`[shutdown] 收到 ${signal}`);
     await gracefulShutdown(deps);
   };
   const onSigterm = (): void => void handler("SIGTERM");

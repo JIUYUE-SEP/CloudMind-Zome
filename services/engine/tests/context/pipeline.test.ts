@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import {
@@ -163,16 +164,16 @@ describe("M3：降级可观测日志", () => {
   });
 
   it("未超预算：不打任何降级日志", async () => {
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     await makePipeline(10000).assemble(makeInput({ history: history(3) }));
     expect(debug).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
 
   it("超预算：每步降级打 debug，含 step 名、agentId、预算使用", async () => {
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
     // 25 条 → keep-15（>20）→ 仍超 → keep-5（15>10）→ 满足
     await makePipeline(100).assemble(makeInput({ agentId: "agent-x", history: history(25) }));
     const logs = debug.mock.calls.map((c) => String(c[0]));
@@ -184,8 +185,8 @@ describe("M3：降级可观测日志", () => {
   });
 
   it("兜底（无可再降）：打 warn 一次，含 agentId 与 total/budget", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => {});
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(logger, "debug").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     await makePipeline(10).assemble(
       makeInput({ agentId: "agent-y", mindContext: "x".repeat(100), history: history(2) }),
     );
@@ -197,8 +198,8 @@ describe("M3：降级可观测日志", () => {
   });
 
   it("降级顺序：l5:drop 先于 l3 截断", async () => {
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
     // l3：25 条 × 13 = 325；l5 ≈ 100；预算 300 → l5:drop（325 仍超）→ l3:keep-15（195）满足
     const result = await makePipeline(300).assemble(
       makeInput({ history: history(25), topicSummaries: [topicSummary("tp1", "S".repeat(60))] }),

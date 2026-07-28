@@ -1,3 +1,4 @@
+import { logger } from "../logger.js";
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "./types.js";
 import { ProviderError } from "./errors.js";
@@ -100,7 +101,7 @@ export class OpenAIProvider implements LLMProvider {
         try {
           args = buf.args ? JSON.parse(buf.args) : {};
         } catch (err) {
-          console.error(`Failed to parse tool call arguments for ${buf.name}: ${buf.args}`, err);
+          logger.warn({ err: err }, `Failed to parse tool call arguments for ${buf.name}: ${buf.args}`);
         }
         yield { type: "tool.call", toolCallId: buf.id, name: buf.name, arguments: args };
       }

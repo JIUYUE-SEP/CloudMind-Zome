@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   normalizeTopicCompressionConfig,
@@ -16,14 +17,14 @@ describe("normalizeTopicCompressionConfig", () => {
   });
 
   it("messageThreshold 小于最短压缩段时 clamp 并 warn", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const config = normalizeTopicCompressionConfig({ messageThreshold: 2 });
     expect(config.messageThreshold).toBe(MIN_SEGMENT_MESSAGES);
     expect(warn).toHaveBeenCalledOnce();
   });
 
   it("windowMinutes 非正时回退默认并 warn", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     expect(normalizeTopicCompressionConfig({ windowMinutes: 0 }).windowMinutes).toBe(
       DEFAULT_TOPIC_COMPRESSION_CONFIG.windowMinutes,
     );

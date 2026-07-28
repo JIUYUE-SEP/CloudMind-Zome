@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
@@ -179,7 +180,7 @@ describe("Agent API", () => {
 
   it("sidecar DeleteAgent 未成功时降级 warn 不阻断删除（P1-3）", async () => {
     const deleteAgent = vi.fn(async () => false);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const built = await buildTestContext({
       sidecarClient: { deleteAgent } as unknown as SidecarClient,
     });

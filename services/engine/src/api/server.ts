@@ -3,9 +3,8 @@ import websocket from "@fastify/websocket";
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
-import pino from "pino";
 import type { ApiContext } from "./context.js";
-import { createLogBufferStream } from "./log-buffer.js";
+import { loggerStreams } from "../logger.js";
 import { extractBearerToken, getAuthToken, isTokenValid } from "../config/auth-token.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerChatRoutes } from "./routes/chat.js";
@@ -25,11 +24,9 @@ import { registerSessionWebSocket } from "./ws/session-handler.js";
 import { getAllowedOrigins } from "./ws/validation.js";
 
 export async function createServer(context: ApiContext) {
-  // pino 默认只写 stdout；multistream 并行 tee 一份进内存缓冲，供 GET /logs 给前端 LogPanel
+  // Fastify 请求日志与业务日志共用同一流（P4-1）：stdout + /logs 环形缓冲
   const app = Fastify({
-    logger: {
-      stream: pino.multistream([{ stream: process.stdout }, { stream: createLogBufferStream() }]),
-    },
+    logger: { stream: loggerStreams },
   });
   const allowedOrigins = getAllowedOrigins();
 

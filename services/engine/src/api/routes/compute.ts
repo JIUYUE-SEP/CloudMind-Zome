@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import OpenAI from "openai";
@@ -153,7 +154,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       }));
       return { ok: true, discovered };
     } catch (err) {
-      console.error("test connection failed", err);
+      logger.error({ err: err }, "test connection failed");
       return reply.status(502).send({ error: "Test connection failed" });
     }
   });

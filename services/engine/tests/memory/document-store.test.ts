@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -117,7 +118,7 @@ describe("DocumentStore", () => {
 
   it("readLinesWhere：坏行跳过、文件不存在返回空", async () => {
     const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
     await fs.writeFile(store.filePath, '{"v":1}\nnot-json\n{"v":2}\n', "utf-8");
     await expect(store.readLinesWhere((r) => r.v > 0)).resolves.toEqual([{ v: 1 }, { v: 2 }]);
     errSpy.mockRestore();

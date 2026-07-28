@@ -1,3 +1,4 @@
+import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
 import { MemoryIndexer } from "../../src/memory/indexer.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
@@ -62,7 +63,7 @@ describe("MemoryIndexer", () => {
     const indexer = new MemoryIndexer(client, hanging, SHORT_TIMEOUT_MS);
     const start = Date.now();
     // console.error 会被调用，静音掉避免污染测试输出
-    const silent = vi.spyOn(console, "error").mockImplementation(() => {});
+    const silent = vi.spyOn(logger, "error").mockImplementation(() => {});
     await indexer.indexMessage("a1", "d1", "hello world");
     expect(Date.now() - start).toBeLessThan(2000);
     expect(client.upsert).not.toHaveBeenCalled();
@@ -84,7 +85,7 @@ describe("MemoryIndexer", () => {
         throw new SidecarCallError("Search", 13, "schema version too new: v99");
       }),
     });
-    const silent = vi.spyOn(console, "error").mockImplementation(() => {});
+    const silent = vi.spyOn(logger, "error").mockImplementation(() => {});
     const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
     await expect(indexer.search("a1", "query", 5)).rejects.toBeInstanceOf(SidecarCallError);
     silent.mockRestore();
@@ -96,7 +97,7 @@ describe("MemoryIndexer", () => {
         throw new Error("connection reset");
       }),
     });
-    const silent = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const silent = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
     await expect(indexer.search("a1", "query", 5)).resolves.toEqual([]);
     silent.mockRestore();

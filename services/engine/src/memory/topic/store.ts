@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "../../config/paths.js";
@@ -116,7 +117,7 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
     } catch (err) {
       // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
       if (err instanceof UnsupportedSchemaVersionError) throw err;
-      console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
+      logger.warn({ err: err }, `[topic] 压缩档读取失败，已跳过：${file}`);
     }
   }
   // 清理已删除压缩档的缓存项（removeCompressedTopic / 外部清理），避免无限增长
@@ -210,7 +211,7 @@ export async function latestSummaries(agentId: string, count: number): Promise<T
     } catch (err) {
       // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
       if (err instanceof UnsupportedSchemaVersionError) throw err;
-      console.warn(`[topic] 压缩档读取失败，已跳过：${file}`, err);
+      logger.warn({ err: err }, `[topic] 压缩档读取失败，已跳过：${file}`);
     }
   }
   return parsed;

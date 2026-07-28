@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { TopicSegment } from "./types.js";
 
 /**
@@ -13,7 +14,7 @@ export class CompressionQueue {
     this.tail = this.tail
       .then(() => this.run(segment))
       .catch((err) => {
-        console.warn(`[topic] 压缩任务失败（原始消息保留在热存储）：${segment.topicId}`, err);
+        logger.warn({ err: err }, `[topic] 压缩任务失败（原始消息保留在热存储）：${segment.topicId}`);
       });
   }
 
