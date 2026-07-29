@@ -14,6 +14,7 @@ import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-g
 import { AgentWorker } from "./core/agent-worker.js";
 import { createContextPipelineForAgent } from "./core/pipeline-factory.js";
 import { getBuiltinTools } from "./tools/builtin/index.js";
+import { McpClientManager } from "./tools/mcp/index.js";
 import type { ApiContext } from "./api/context.js";
 import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
@@ -91,6 +92,10 @@ async function main() {
 
   const sidecarClient = new SidecarClient();
 
+  // MCP servers：启动时按 DATA_DIR/mcp-servers.json 连接，单个失败降级不影响整体
+  const mcpManager = McpClientManager.loadDefault();
+  await mcpManager.connectAll();
+
   // subagent 调度链路：runAgentCollect 经 AgentWorker 队列执行（保持串行不变量），
   // dispatcher/background 为全局单例，同时暴露给工具上下文与 REST 路由。
   async function runAgentCollect(
@@ -155,7 +160,11 @@ async function main() {
       );
       const embedder = await createEmbedderProvider(agentConfig);
     const imageProvider = await createImageProvider(agentConfig);
-    const tools = getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name));
+    const tools = [
+      ...getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name)),
+      // MCP 工具动态命名（mcp__ 前缀），不参与 agent 配置白名单过滤，与内置工具同管线
+      ...mcpManager.getTools(),
+    ];
     const workspaceDir = getAgentDir(agentId);
 
     // 只有配置了真实 embedder 时才启用向量索引；Mock embedder 的随机向量没有检索意义
@@ -381,6 +390,7 @@ async function main() {
     },
     close: async () => {
       scheduler.stop();
+      await mcpManager.close();
       await app.close();
     },
     timeoutMs: 10_000,

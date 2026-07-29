@@ -10,6 +10,7 @@ import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
+import { isMcpToolName } from "../../tools/mcp/index.js";
 import {
   auditAutoApproved,
   auditDecision,
@@ -159,11 +160,14 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
                 approved,
               });
               // 资格判定用裸 toolName（NO_REMEMBER_TOOLS 按工具名排除），
-              // 入名单仍按 agent+工具 维度，不误放同会话其他 agent
-              if (data.approved && data.remember && isApprovalRememberable(pending.toolName)) {
+              // 入名单仍按 agent+工具 维度，不误放同会话其他 agent；
+              // MCP 工具（mcp__ 前缀）名动态且第三方 annotations 不可信，一律禁 remember
+              const rememberable =
+                isApprovalRememberable(pending.toolName) && !isMcpToolName(pending.toolName);
+              if (data.approved && data.remember && rememberable) {
                 autoApprovedTools.add(`${pending.agentId}:${pending.toolName}`);
                 auditRemembered({ agentId: pending.agentId, sessionId, toolName: pending.toolName });
-              } else if (data.remember && !isApprovalRememberable(pending.toolName)) {
+              } else if (data.remember && !rememberable) {
                 auditRememberRejected({ agentId: pending.agentId, sessionId, toolName: pending.toolName });
               }
               pending.resolve(data.approved === true);

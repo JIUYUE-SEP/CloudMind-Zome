@@ -7,6 +7,7 @@ import type { ApprovalRequest } from "../../core/agent-worker.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
+import { isMcpToolName } from "../../tools/mcp/index.js";
 import {
   auditAutoApproved,
   auditDecision,
@@ -163,10 +164,14 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                 toolName: pending.toolName,
                 approved,
               });
-              if (data.approved && data.remember && isApprovalRememberable(pending.toolName)) {
+              // MCP 工具名是动态的，进不了 shared 的 NO_REMEMBER 静态名单；
+              // 第三方 server 的 annotations 不可信，mcp__ 前缀一律禁 remember
+              const rememberable =
+                isApprovalRememberable(pending.toolName) && !isMcpToolName(pending.toolName);
+              if (data.approved && data.remember && rememberable) {
                 autoApprovedTools.add(pending.toolName);
                 auditRemembered({ agentId, sessionId, toolName: pending.toolName });
-              } else if (data.remember && !isApprovalRememberable(pending.toolName)) {
+              } else if (data.remember && !rememberable) {
                 auditRememberRejected({ agentId, sessionId, toolName: pending.toolName });
               }
               pending.resolve(data.approved === true);

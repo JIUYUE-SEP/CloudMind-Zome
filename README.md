@@ -29,6 +29,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
 - **工具调用** — ReActLoop 调用 7 个内置工具：read_file / write_file / edit_file / list_files / bash / run_command / dispatch_subagent；写类工具与 dispatch_subagent 需人工审批
+- **MCP 接入** — 经 `DATA_DIR/mcp-servers.json` 配置接入 stdio MCP server，工具以 `mcp__<server>__<tool>` 命名注入 Agent 工具管线；`readOnlyHint===true` 免审批，其余需人工审批且一律禁「本会话免问」；单 server 失败静默降级
 - **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级；话题压缩归档（L5 摘要注入）与 L4 语义检索已接入管线（Phase 1–3）
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
 - **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
@@ -40,7 +41,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **会话模式** — chat / code 双模式，code 模式下工具可访问项目目录
 - **桌面应用** — Tauri 启动 Rust sidecar，sidecar 守护 Node 引擎（失败自动重启）
 
-> 规划中：Intermind（心智互聊）、蓝图分支/并行/审批、公共 Skill 池、web_search / generate_image 工具、MCP、多用户
+> 规划中：Intermind（心智互聊）、蓝图分支/并行/审批、公共 Skill 池、web_search / generate_image 工具、多用户
 > 完整功能状态见 [`docs/路线图.md`](docs/路线图.md)
 
 ---

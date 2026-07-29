@@ -225,6 +225,70 @@ describe("WebSocket API", () => {
     await cleanup();
   });
 
+  it("MCP 工具（mcp__ 前缀）remember:true 被引擎拒绝：每次都批", async () => {
+    const executions: string[] = [];
+    const mcpTool: Tool = {
+      name: "mcp__demo__delete_file",
+      description: "MCP write tool",
+      parameters: z.object({}),
+      accesses: [],
+      requiresApproval: true,
+      async execute(): Promise<ToolResult> {
+        executions.push("mcp__demo__delete_file");
+        return { success: true, output: "ran" };
+      },
+    };
+
+    const { context, cleanup, provider } = await buildWsContext("agent-ws", [mcpTool]);
+    provider.setNextToolCalls([{ toolCallId: "tc1", name: "mcp__demo__delete_file", arguments: {} }]);
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    const approvalRequests: { approvalId: string; toolName: string }[] = [];
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "round 1" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "tool.approval_request") {
+          approvalRequests.push({ approvalId: message.approvalId, toolName: message.toolName });
+          client.send(
+            JSON.stringify({ type: "tool.approval", approvalId: message.approvalId, approved: true, remember: true }),
+          );
+          return;
+        }
+        if (message.type === "turn.end") {
+          turnEnds++;
+          if (turnEnds === 1) {
+            provider.setNextToolCalls([{ toolCallId: "tc2", name: "mcp__demo__delete_file", arguments: {} }]);
+            client.send(JSON.stringify({ text: "round 2" }));
+          } else {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 15000);
+    });
+
+    // remember:true 不被记住（mcp__ 前缀一律禁免问），两轮都要审批，两次都真实执行
+    expect(approvalRequests.map((r) => r.toolName)).toEqual([
+      "mcp__demo__delete_file",
+      "mcp__demo__delete_file",
+    ]);
+    expect(executions).toEqual(["mcp__demo__delete_file", "mcp__demo__delete_file"]);
+
+    await app.close();
+    await cleanup();
+  });
+
   it("配置变更后消息路由到新 worker，不进已 pause 的孤儿（P3-5）", async () => {
     const chatCount = { p1: 0, p2: 0 };
     class CountingMock extends MockLLMProvider {
