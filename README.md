@@ -29,14 +29,15 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
 - **工具调用** — ReActLoop 调用 7 个内置工具：read_file / write_file / edit_file / list_files / bash / run_command / dispatch_subagent；写类工具与 dispatch_subagent 需人工审批
-- **MCP 接入** — 经 `DATA_DIR/mcp-servers.json` 配置接入 stdio MCP server，工具以 `mcp__<server>__<tool>` 命名注入 Agent 工具管线；`readOnlyHint===true` 免审批，其余需人工审批且一律禁「本会话免问」；单 server 失败静默降级
+- **MCP 接入** — 经 `DATA_DIR/mcp-servers.json` 配置接入 stdio MCP server，工具以 `mcp__<server>__<tool>` 命名注入 Agent 工具管线；`readOnlyHint===true` 免审批，其余需人工审批且一律禁「本会话免问」；单 server 失败降级（记 warn，不阻塞整体）
 - **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级；话题压缩归档（L5 摘要注入）与 L4 语义检索已接入管线（Phase 1–3）
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
+- **心智系统** — SOUL.md 人格核心注入 L1；MIND.md 动态经验档案（话题压缩时 LLM 沉淀、置信度过滤、注入防御）
 - **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
 - **Skill 系统** — 基于 SKILL.md 的技能加载（内置目录 / 全局目录 / Agent 私有目录），内容注入 system prompt
 - **Plan / Subagent** — 计划管理（REST，plans.jsonl 持久化，重启自动恢复）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent）
 - **定时任务** — Cron 调度，到点自动给 Agent 派发任务
-- **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试、用量统计）
+- **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试）；错误分类重试（429/5xx/网络/超时指数退避）+ Agent 级备用 Provider 降级链（`fallbackProviderIds`）
 - **蓝图工作流** — start / llm / tool / end 节点编排（线性链）
 - **会话模式** — chat / code 双模式，code 模式下工具可访问项目目录
 - **桌面应用** — Tauri 启动 Rust sidecar，sidecar 守护 Node 引擎（失败自动重启）
@@ -122,7 +123,7 @@ pnpm --filter @mindcloud/desktop dev
 | 后端引擎 | Node.js + TypeScript + Fastify 5 |
 | 前端 | Nuxt 3 + Vue 3 + Pinia + TypeScript |
 | 桌面 | Tauri 2 + Rust + WebView2 |
-| 性能侧车 | Rust（zome-sidecar）+ gRPC（HNSW 向量搜索；另有 tokenizer / 加密 / 进程守护能力） |
+| 性能侧车 | Rust（zome-sidecar）+ gRPC（HNSW 向量搜索；另有 tokenizer / 进程守护能力） |
 | 存储 | per-Agent JSON/JSONL 文档存储（无数据库） |
 | 包管理 | pnpm workspace + Turborepo |
 
@@ -172,6 +173,8 @@ MindCloud-Zome/
 ├── packages/
 │   ├── shared/        # 共享 TypeScript 类型
 │   └── skills/        # 内置 Skill
+├── tests/             # Playwright e2e 测试
+├── spikes/            # 技术验证（throwaway 实验）
 ├── docs/              # 项目文档
 └── scripts/           # 构建辅助脚本
 ```
