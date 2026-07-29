@@ -25,6 +25,7 @@ function scriptedProvider(name: string, behaviors: Array<Error | LLMEvent[]>) {
     name,
     supportsModel: () => true,
     async *chat(_params: LLMChatParams) {
+      void _params;
       const behavior = behaviors[Math.min(calls, behaviors.length - 1)];
       calls++;
       if (behavior instanceof Error) throw behavior;
