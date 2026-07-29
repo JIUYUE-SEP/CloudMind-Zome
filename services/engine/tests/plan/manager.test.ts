@@ -21,9 +21,9 @@ describe("PlanManager", () => {
   it("pauses and resumes plan", async () => {
     const manager = new PlanManager({ provider: new MockLLMProvider(), model: "mock" });
     const plan = await manager.createPlan("- step one");
-    const paused = manager.pause(plan.id);
+    const paused = await manager.pause(plan.id);
     expect(paused.status).toBe("paused");
-    const running = manager.resume(plan.id);
+    const running = await manager.resume(plan.id);
     expect(running.status).toBe("pending");
   });
 
@@ -34,7 +34,7 @@ describe("PlanManager", () => {
       throw new Error("boom");
     });
     expect(manager.get(plan.id)?.status).toBe("failed");
-    const retried = manager.retry(plan.id, plan.steps[0].id);
+    const retried = await manager.retry(plan.id, plan.steps[0].id);
     expect(retried.steps[0].status).toBe("pending");
     expect(retried.status).toBe("pending");
   });

@@ -156,7 +156,7 @@ export async function registerPlanRoutes(app: FastifyInstance, context: ApiConte
       return reply.status(400).send({ error: "stepId required" });
     }
     try {
-      return manager.retry(planId, body.stepId);
+      return await manager.retry(planId, body.stepId);
     } catch {
       return reply.status(404).send({ error: "Step not found" });
     }

@@ -33,7 +33,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
 - **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
 - **Skill 系统** — 基于 SKILL.md 的技能加载（内置目录 / 全局目录 / Agent 私有目录），内容注入 system prompt
-- **Plan / Subagent** — 计划管理（REST，内存态）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent）
+- **Plan / Subagent** — 计划管理（REST，plans.jsonl 持久化，重启自动恢复）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent）
 - **定时任务** — Cron 调度，到点自动给 Agent 派发任务
 - **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试、用量统计）
 - **蓝图工作流** — start / llm / tool / end 节点编排（线性链）

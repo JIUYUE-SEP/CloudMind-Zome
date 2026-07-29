@@ -26,6 +26,7 @@ import { reconcileHotStorage, reconcileOrphanedTopic, reconcilePendingSegments }
 import { loadTopicState } from "./memory/topic/state.js";
 import { registerShutdownHandlers } from "./shutdown.js";
 import { PlanManager } from "./plan/manager.js";
+import { PlanRepository } from "./plan/repository.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
@@ -129,10 +130,15 @@ async function main() {
     if (existing) return existing;
     const agentConfig = await agentRepository.get(agentId);
     if (!agentConfig) return undefined;
-    const manager = new PlanManager({
-      provider: await createLLMProvider(agentConfig),
-      model: agentConfig.modelId || agentConfig.model || "gpt-4o",
-    });
+    const manager = new PlanManager(
+      {
+        provider: await createLLMProvider(agentConfig),
+        model: agentConfig.modelId || agentConfig.model || "gpt-4o",
+      },
+      new PlanRepository(agentId),
+    );
+    // 从 plans.jsonl 恢复历史 plan（running 步骤回退 pending，见 PlanManager.load）
+    await manager.load();
     planManagers.set(agentId, manager);
     return manager;
   }
