@@ -9,6 +9,8 @@ import { ConfigRepository } from "./config/repository.js";
 import { resolveConfiguredTools } from "./config/agent-tools.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { OpenAIProvider, MockLLMProvider, ErrorLLMProvider } from "./provider/llm.js";
+import { ResilientLLMProvider } from "./provider/resilient.js";
+import type { LLMProvider } from "./provider/types.js";
 import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedder.js";
 import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-gen.js";
 import { AgentWorker } from "./core/agent-worker.js";
@@ -153,11 +155,19 @@ async function main() {
       const agentConfig = await agentRepository.get(agentId);
       if (!agentConfig) return undefined;
 
-      const provider = withLLMCallRecording(
-        await createLLMProvider(agentConfig),
-        new LLMCallRepository(agentId),
-        agentId,
-      );
+      // 包装顺序 resilient( record( provider ) )：record 在内层，
+      // 每次底层尝试（含重试、含备用）独立落档 llm_calls.jsonl
+      const recordLLM = (p: LLMProvider) =>
+        withLLMCallRecording(p, new LLMCallRepository(agentId), agentId);
+      const primaryProviderConfig = await findProviderConfig(agentConfig.providerId);
+      const provider = new ResilientLLMProvider(recordLLM(await createLLMProvider(agentConfig)), {
+        maxRetries: primaryProviderConfig?.maxRetries ?? 2,
+        fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
+        fallbackFactory: async (id) => {
+          const fallback = await createFallbackLLMProvider(id, agentConfig);
+          return fallback ? recordLLM(fallback) : undefined;
+        },
+      });
       const embedder = await createEmbedderProvider(agentConfig);
     const imageProvider = await createImageProvider(agentConfig);
     const tools = [
@@ -225,6 +235,12 @@ async function main() {
     });
   }
 
+  async function findProviderConfig(providerId: string | undefined) {
+    if (!providerId) return undefined;
+    const config = await configRepo.load();
+    return config.providers.find((p) => p.id === providerId);
+  }
+
   async function createLLMProvider(agentConfig: AgentConfig) {
     if (process.env.NODE_ENV === "e2e") {
       return new MockLLMProvider();
@@ -234,8 +250,7 @@ async function main() {
         "尚未配置算力 Provider。请先在「算力平台」添加 Provider，再在本心智的设置中选择它。"
       );
     }
-    const config = await configRepo.load();
-    const providerConfig = config.providers.find((p) => p.id === agentConfig.providerId);
+    const providerConfig = await findProviderConfig(agentConfig.providerId);
     if (!providerConfig) {
       logger.warn(
         `agent '${agentConfig.id}' references missing provider '${agentConfig.providerId}'`
@@ -244,7 +259,27 @@ async function main() {
         `配置的 Provider「${agentConfig.providerId}」不存在（可能已被删除），请在本心智的设置中重新选择。`
       );
     }
-    return new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl);
+    return new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl, {
+      requestTimeout: providerConfig.requestTimeout,
+    });
+  }
+
+  /** 降级链备用实例：按 providerId 创建；不存在则跳过（返回 undefined），不降级为 ErrorLLMProvider */
+  async function createFallbackLLMProvider(
+    providerId: string,
+    agentConfig: AgentConfig,
+  ): Promise<LLMProvider | undefined> {
+    if (process.env.NODE_ENV === "e2e") {
+      return new MockLLMProvider();
+    }
+    const providerConfig = await findProviderConfig(providerId);
+    if (!providerConfig) {
+      logger.warn(`agent '${agentConfig.id}' 的备用 provider '${providerId}' 不存在，跳过`);
+      return undefined;
+    }
+    return new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl, {
+      requestTimeout: providerConfig.requestTimeout,
+    });
   }
 
   async function createEmbedderProvider(agentConfig: AgentConfig) {

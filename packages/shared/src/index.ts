@@ -12,6 +12,8 @@ export interface AgentConfig {
   tags?: string[];
   representColor?: string;
   providerId?: string;
+  /** 备用算力 Provider 降级链：主 Provider 重试耗尽后按序切换（ResilientLLMProvider） */
+  fallbackProviderIds?: string[];
   modelId?: string;
   model?: string; // fallback for old configs
   embedderProviderId?: string;

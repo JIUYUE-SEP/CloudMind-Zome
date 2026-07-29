@@ -2,6 +2,7 @@ import { logger } from "../logger.js";
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "./types.js";
 import { ProviderError } from "./errors.js";
+import { isRetryableError } from "./classify.js";
 
 interface ToolCallDelta {
   index?: number;
@@ -9,12 +10,23 @@ interface ToolCallDelta {
   function?: { name?: string; arguments?: string };
 }
 
+export interface OpenAIProviderOptions {
+  /** 请求超时（ms），透传 OpenAI SDK 的 timeout；来自 ProviderConfig.requestTimeout */
+  requestTimeout?: number;
+}
+
 export class OpenAIProvider implements LLMProvider {
   name = "openai";
   private client: OpenAI;
 
-  constructor(apiKey?: string, baseURL?: string) {
-    this.client = new OpenAI({ apiKey, baseURL });
+  constructor(apiKey?: string, baseURL?: string, options?: OpenAIProviderOptions) {
+    this.client = new OpenAI({
+      apiKey,
+      baseURL,
+      ...(options?.requestTimeout !== undefined ? { timeout: options.requestTimeout } : {}),
+      // 禁用 SDK 内置重试：重试由 resilient 层统一接管，防双层重试叠乘
+      maxRetries: 0,
+    });
   }
 
   supportsModel(model: string): boolean {
@@ -119,9 +131,9 @@ export class OpenAIProvider implements LLMProvider {
 
       yield { type: "step.end", finishReason: finalFinishReason, ...(usage ? { usage } : {}) };
     } catch (err) {
-      yield { type: "text.delta", delta: `\nProvider error: ${String(err)}` };
-      yield { type: "step.end" };
-      throw new ProviderError("openai", err);
+      // 不再原地 yield 错误文本：错误展示职责上移给 resilient 层
+      // （全链失败时统一告知），此处只抛出带分类信息的 ProviderError
+      throw new ProviderError("openai", err, { retryable: isRetryableError(err) });
     }
   }
 }

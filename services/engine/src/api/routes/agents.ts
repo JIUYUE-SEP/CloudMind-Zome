@@ -12,6 +12,7 @@ import { ensureMindFiles } from "../../mind/mind-files.js";
 const KNOWN_AGENT_FIELDS = new Set([
   "id", "name", "codename", "description", "persona", "tags", "representColor",
   "providerId", "modelId", "model", "embedderProviderId", "embedderModelId",
+  "fallbackProviderIds",
   "imageProviderId", "imageModelId", "temperature", "topP", "maxContextTokens",
   "compressionModel", "topicDetectionWindowMinutes", "topicMessageThreshold",
   "semanticSearchEnabled", "semanticTopK", "semanticMinScore",
