@@ -3,18 +3,26 @@ use std::sync::Arc;
 
 use zome_sidecar::vector::get_or_load;
 
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// 每测试唯一目录序号：杜绝共享目录的跨测试/跨运行污染（PID 重用会撞上
+/// 上次运行因 panic 未清理的残留目录）
+static NEXT_DIR_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 每测试唯一数据目录，经 thread-local 覆盖注入（见 lib.rs
+/// set_data_dir_override）：不经过进程级 env，测试之间无需串行
 fn temp_data_dir() -> PathBuf {
-    let tmp =
-        std::env::temp_dir().join(format!("zome-sidecar-vector-test-{}-", std::process::id()));
-    unsafe { std::env::set_var("CLOUDMIND_DATA_DIR", &tmp) };
+    let seq = NEXT_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!(
+        "zome-sidecar-vector-test-{}-{seq}",
+        std::process::id()
+    ));
+    // 防御性预清理：同名残留（PID+序号撞上前次运行）不得带进本测试
+    std::fs::remove_dir_all(&tmp).ok();
+    zome_sidecar::set_data_dir_override(&tmp);
     tmp
 }
 
 #[tokio::test]
 async fn test_vector_search() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("test-agent").await.unwrap();
     state.write().await.upsert("doc1", &[1.0, 0.0, 0.0]).await;
@@ -29,7 +37,6 @@ async fn test_vector_search() {
 
 #[tokio::test]
 async fn test_vector_search_top_k() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("test-agent-topk").await.unwrap();
     state.write().await.upsert("doc1", &[1.0, 0.0, 0.0]).await;
@@ -47,7 +54,6 @@ async fn test_vector_search_top_k() {
 
 #[tokio::test]
 async fn test_vector_single_doc_linear_search() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("single-doc-agent").await.unwrap();
     state.write().await.upsert("only", &[1.0, 0.0, 0.0]).await;
@@ -62,7 +68,6 @@ async fn test_vector_single_doc_linear_search() {
 
 #[tokio::test]
 async fn test_concurrent_upsert_does_not_lose_data() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("concurrent-agent").await.unwrap();
 
@@ -98,7 +103,6 @@ async fn test_concurrent_upsert_does_not_lose_data() {
 
 #[tokio::test]
 async fn test_upsert_appends_without_full_rewrite() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("append-agent").await.unwrap();
     state.write().await.upsert("doc1", &[1.0, 0.0]).await;
@@ -115,7 +119,6 @@ async fn test_upsert_appends_without_full_rewrite() {
 
 #[tokio::test]
 async fn test_load_dedups_duplicate_doc_ids_last_wins() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     // 手工构造 append-only 文件：doc1 先 [1,0] 后 [0,1]，加载时后行覆盖前行
     let dir = tmp.join("agents/dedup-agent/indices/hnsw");
@@ -146,7 +149,6 @@ async fn test_sanitize_agent_id_rejects_invalid() {
 /// P0-5：增量插入立即可检索——每次 upsert 后 search 都能命中最新点，无需任何重建
 #[tokio::test]
 async fn test_incremental_upsert_immediately_searchable() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("incr-agent").await.unwrap();
 
@@ -169,7 +171,6 @@ async fn test_incremental_upsert_immediately_searchable() {
 /// P0-5：重复 upsert 同 doc_id，search 去重且以最新向量为准（旧点成孤儿不得命中）
 #[tokio::test]
 async fn test_search_reupserted_doc_latest_vector_wins() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("reupsert-agent").await.unwrap();
 
@@ -189,7 +190,6 @@ async fn test_search_reupserted_doc_latest_vector_wins() {
 /// P0-5：持续 upsert 期间 search 不被阻塞（原全量重建持写锁，search 会卡到重建完成）
 #[tokio::test]
 async fn test_search_not_blocked_during_continuous_upserts() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("nonblock-agent").await.unwrap();
     // 先种一条，保证 search 有内容可检
@@ -228,7 +228,6 @@ async fn test_search_not_blocked_during_continuous_upserts() {
 /// P0-5/M9：embeddings.jsonl 行数远超唯一文档数时，启动加载触发 compaction 重写去重
 #[tokio::test]
 async fn test_startup_compaction_rewrites_duplicated_jsonl() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let dir = tmp.join("agents/compact-agent/indices/hnsw");
     std::fs::create_dir_all(&dir).unwrap();
@@ -256,7 +255,6 @@ async fn test_startup_compaction_rewrites_duplicated_jsonl() {
 /// 原实现直接 insert，anndists DistCosine::eval 的 assert_eq 会 panic
 #[tokio::test]
 async fn test_mismatched_dim_upsert_rejected() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("dimguard-agent").await.unwrap();
 
@@ -278,7 +276,6 @@ async fn test_mismatched_dim_upsert_rejected() {
 /// P0 review 返工：异维查询在 HNSW 路径（>256 点）返回空而非 panic
 #[tokio::test]
 async fn test_mismatched_dim_query_hnsw_path_returns_empty() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("dimquery-agent").await.unwrap();
     // 超过 LINEAR_SCAN_MAX(256)，强制走 HNSW 路径
@@ -301,7 +298,6 @@ async fn test_mismatched_dim_query_hnsw_path_returns_empty() {
 /// 众数维度数据正常可检索
 #[tokio::test]
 async fn test_load_skips_mismatched_dim_rows() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let dir = tmp.join("agents/dimload-agent/indices/hnsw");
     std::fs::create_dir_all(&dir).unwrap();
@@ -339,7 +335,6 @@ async fn test_load_skips_mismatched_dim_rows() {
 /// P1-1：无 schemaVersion 字段的旧格式行按 v1 正常加载（现存数据全是 v1）
 #[tokio::test]
 async fn test_load_legacy_rows_without_schema_version() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let dir = tmp.join("agents/legacy-agent/indices/hnsw");
     std::fs::create_dir_all(&dir).unwrap();
@@ -360,7 +355,6 @@ async fn test_load_legacy_rows_without_schema_version() {
 /// P1-1：schemaVersion 高于当前代码认识的版本时显式报错，不静默读空
 #[tokio::test]
 async fn test_load_rejects_newer_schema_version() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let dir = tmp.join("agents/too-new-agent/indices/hnsw");
     std::fs::create_dir_all(&dir).unwrap();
@@ -385,7 +379,6 @@ async fn test_load_rejects_newer_schema_version() {
 /// P1-1：upsert 落盘行带版本字段
 #[tokio::test]
 async fn test_upsert_stamps_schema_version() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("stamp-agent").await.unwrap();
     state.write().await.upsert("d1", &[1.0, 0.0]).await;
@@ -404,7 +397,6 @@ async fn test_upsert_stamps_schema_version() {
 /// P1-3：delete_agent 逐出 INDEX_CACHE 并删除磁盘索引目录
 #[tokio::test]
 async fn test_delete_agent_evicts_cache_and_removes_disk() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     let state = get_or_load("del-agent").await.unwrap();
     state.write().await.upsert("doc1", &[1.0, 0.0]).await;
@@ -427,7 +419,6 @@ async fn test_delete_agent_evicts_cache_and_removes_disk() {
 /// P1-3（review M3）：删除后同名重建从空索引开始，旧向量不复活
 #[tokio::test]
 async fn test_recreate_same_name_after_delete_starts_empty() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     // 旧 agent：写入向量（缓存常驻 + 磁盘落盘）
     let state = get_or_load("reborn-agent").await.unwrap();
@@ -451,7 +442,6 @@ async fn test_recreate_same_name_after_delete_starts_empty() {
 /// P1-3：delete_agent 幂等（不存在的 agent 返回 Ok）且拒绝非法 id
 #[tokio::test]
 async fn test_delete_agent_idempotent_and_validates_id() {
-    let _lock = ENV_LOCK.lock().await;
     let tmp = temp_data_dir();
     zome_sidecar::vector::delete_agent("ghost-agent")
         .await

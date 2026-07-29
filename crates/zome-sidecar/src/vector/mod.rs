@@ -216,6 +216,14 @@ impl VectorIndexState {
         };
         if let Err(e) = file.write_all(line.as_bytes()).await {
             tracing::warn!("embedding append failed for {}: {}", doc_id, e);
+            return;
+        }
+        // tokio fs::File 的 write_all 只把数据拷进内部缓冲即返回（真实 write 在
+        // blocking 任务里异步完成）；不 flush 就返回，紧随其后的读（同进程立即
+        // 读回，如测试/校验路径）可能看不到新行——低核数机器上必现。flush 等待
+        // 在飞写任务完成（write 系统调用落地，非 fsync），并顺带暴露其错误
+        if let Err(e) = file.flush().await {
+            tracing::warn!("embedding append flush failed for {}: {}", doc_id, e);
         }
     }
 }

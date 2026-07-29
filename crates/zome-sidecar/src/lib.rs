@@ -39,7 +39,23 @@ pub fn project_root() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+thread_local! {
+    /// 测试专用数据目录覆盖（thread-local）：集成测试每个用例跑在独立 OS 线程，
+    /// #[tokio::test] 的 current_thread runtime 所有轮询都在该线程上进行，
+    /// thread-local 从机制上杜绝跨测试 clobber——测试链路不再经过进程级 env
+    static DATA_DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 仅测试用：为当前线程覆盖 data_dir() 的解析结果（优先于 CLOUDMIND_DATA_DIR）。
+pub fn set_data_dir_override(dir: &Path) {
+    DATA_DIR_OVERRIDE.with(|o| *o.borrow_mut() = Some(dir.to_path_buf()));
+}
+
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = DATA_DIR_OVERRIDE.with(|o| o.borrow().clone()) {
+        return dir;
+    }
     if let Ok(dir) = std::env::var("CLOUDMIND_DATA_DIR") {
         return PathBuf::from(dir);
     }
