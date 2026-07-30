@@ -14,6 +14,7 @@ import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
+import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import type { AgentConfig } from "@mindcloud/shared";
@@ -30,7 +31,10 @@ async function buildContext(runAgent: () => Promise<string>): Promise<{
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
   process.env.CLOUDMIND_DATA_DIR = tmpDir;
 
-  const backgroundManager = new BackgroundManager({ runAgent });
+  const backgroundManager = new BackgroundManager(
+    { runAgent },
+    new SubagentTaskRepository(path.join(tmpDir, "subagent-tasks.jsonl")),
+  );
 
   const context: ApiContext = {
     agentRepository: new AgentRepository(),
@@ -127,5 +131,77 @@ describe("Subagents API", () => {
     const res = await authedRequest(app.server).get("/subagents/background/t2");
     expect(res.body.status).toBe("failed");
     expect(res.body.error).toContain("bg boom");
+  });
+
+  it("summary 暴露 kind（默认 delegate / 显式 puppet）", async () => {
+    backgroundManager.register(makeTask("t-kind-1"), config, 60_000);
+    backgroundManager.register(makeTask("t-kind-2"), config, 60_000, "puppet");
+    await vi.waitFor(() => expect(backgroundManager.get("t-kind-2")?.status).toBe("completed"));
+
+    const list = await authedRequest(app.server).get("/subagents/background");
+    const byId = new Map(list.body.map((t: { taskId: string }) => [t.taskId, t]));
+    expect(byId.get("t-kind-1")).toMatchObject({ kind: "delegate" });
+    expect(byId.get("t-kind-2")).toMatchObject({ kind: "puppet" });
+  });
+
+  it("输出双轨：summary 是截尾 preview，/output 端点返回全量", async () => {
+    const big = "y".repeat(5000) + "END";
+    await app.close();
+    await cleanup();
+
+    const built = await buildContext(async () => big);
+    backgroundManager = built.backgroundManager;
+    cleanup = built.cleanup;
+    app = await createServer(built.context);
+    await app.ready();
+
+    backgroundManager.register(makeTask("t-big"), config, 60_000);
+    await vi.waitFor(() => expect(backgroundManager.get("t-big")?.status).toBe("completed"));
+
+    const summary = await authedRequest(app.server).get("/subagents/background/t-big");
+    expect(summary.body.outputTruncated).toBe(true);
+    expect(summary.body.output.length).toBe(4096);
+    expect(summary.body.output.endsWith("END")).toBe(true);
+
+    const full = await authedRequest(app.server).get("/subagents/background/t-big/output");
+    expect(full.status).toBe(200);
+    expect(full.body.output).toBe(big);
+
+    const missing = await authedRequest(app.server).get("/subagents/background/nope/output");
+    expect(missing.status).toBe(404);
+  });
+
+  it("重启后 lost 状态经 REST 正确暴露", async () => {
+    // 上一世：任务永远 running（runAgent 不返回），等 running 记录落盘后模拟重启
+    await app.close();
+    await cleanup();
+    const built = await buildContext(() => new Promise<string>(() => {}));
+    backgroundManager = built.backgroundManager;
+    cleanup = built.cleanup;
+    app = await createServer(built.context);
+    await app.ready();
+
+    backgroundManager.register(makeTask("t-lost"), config, 60_000);
+    const repoFile = path.join(process.env.CLOUDMIND_DATA_DIR!, "subagent-tasks.jsonl");
+    await vi.waitFor(async () => {
+      const records = await new SubagentTaskRepository(repoFile).loadAll();
+      expect(records.find((r) => r.taskId === "t-lost")?.status).toBe("running");
+    });
+    await app.close();
+
+    // 重启：新 manager 从同一 repository 文件 load，running 标 lost
+    const manager2 = new BackgroundManager(
+      { runAgent: async () => "" },
+      new SubagentTaskRepository(repoFile),
+    );
+    await manager2.load();
+    const app2 = await createServer({ ...built.context, backgroundManager: manager2 });
+    await app2.ready();
+
+    const res = await authedRequest(app2.server).get("/subagents/background/t-lost");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("lost");
+
+    await app2.close();
   });
 });

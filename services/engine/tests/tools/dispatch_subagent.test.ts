@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
+import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
 import type { ToolContext } from "../../src/tools/types.js";
 import type { AgentConfig } from "@mindcloud/shared";
 
@@ -14,6 +18,12 @@ const borrowedConfig: AgentConfig = {
   tools: [],
 };
 
+// 共享临时目录：BackgroundManager 落盘指向这里，不污染真实 DATA_DIR
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-subagent-test-"));
+afterAll(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
 function makeCtx(dispatcher?: SubagentDispatcher): ToolContext {
   return {
     agentId: "a1",
@@ -23,11 +33,15 @@ function makeCtx(dispatcher?: SubagentDispatcher): ToolContext {
   };
 }
 
+let repoSeq = 0;
 function makeDispatcher(runAgent: (agentId: string) => Promise<string> = async () => "sub result") {
   return new SubagentDispatcher({
     getAgentConfig: async (id) => (id === "a2" ? borrowedConfig : undefined),
     runAgent,
-    background: new BackgroundManager({ runAgent }),
+    background: new BackgroundManager(
+      { runAgent },
+      new SubagentTaskRepository(path.join(tmpDir, `tasks-${repoSeq++}.jsonl`)),
+    ),
   });
 }
 

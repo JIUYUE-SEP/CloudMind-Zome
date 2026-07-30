@@ -46,7 +46,8 @@ export class SubagentDispatcher {
       if (!this.deps.background) {
         throw new Error("BackgroundManager not available");
       }
-      this.deps.background.register(task, config, options.timeoutMs ?? 120_000);
+      // kind 埋入任务 schema（默认 delegate 兼容现状）；puppet 在 2b 前按 delegate 同等执行
+      this.deps.background.register(task, config, options.timeoutMs ?? 120_000, options.kind ?? "delegate");
       return task.id;
     }
 

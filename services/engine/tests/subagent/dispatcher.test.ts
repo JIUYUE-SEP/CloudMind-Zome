@@ -1,9 +1,30 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterAll } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
+import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
+import type { ChatMessage } from "@mindcloud/shared";
 import type { AgentConfig } from "@mindcloud/shared";
 
 const config: AgentConfig = { id: "a2", name: "A2", persona: "", model: "mock", skills: [], tools: [] };
+
+// 共享临时目录：BackgroundManager 的状态变更落盘指向这里，不污染真实 DATA_DIR
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-dispatcher-test-"));
+let repoSeq = 0;
+afterAll(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+type RunAgent = (agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }) => Promise<string>;
+
+function makeBackground(runAgent: RunAgent): BackgroundManager {
+  return new BackgroundManager(
+    { runAgent },
+    new SubagentTaskRepository(path.join(tmpDir, `tasks-${repoSeq++}.jsonl`)),
+  );
+}
 
 describe("SubagentDispatcher", () => {
   it("borrows agent config and runs foreground", async () => {
@@ -62,11 +83,9 @@ describe("SubagentDispatcher", () => {
 
   it("aborts the underlying run when background task times out", async () => {
     let receivedSignal: AbortSignal | undefined;
-    const background = new BackgroundManager({
-      runAgent: (_id, _messages, opts) => {
-        receivedSignal = opts?.signal;
-        return new Promise(() => {});
-      },
+    const background = makeBackground((_id, _messages, opts) => {
+      receivedSignal = opts?.signal;
+      return new Promise(() => {});
     });
     const dispatcher = new SubagentDispatcher({
       getAgentConfig: async () => config,
@@ -83,7 +102,7 @@ describe("SubagentDispatcher", () => {
   });
 
   it("registers background task and returns task id", async () => {
-    const background = new BackgroundManager({ runAgent: async () => "ok" });
+    const background = makeBackground(async () => "ok");
     const dispatcher = new SubagentDispatcher({
       getAgentConfig: async () => config,
       runAgent: async () => "ok",
@@ -93,11 +112,11 @@ describe("SubagentDispatcher", () => {
     expect(typeof result).toBe("string");
     const bg = background.get(result as string);
     expect(bg).toBeDefined();
-    expect(bg?.task.taskDescription).toBe("do work");
+    expect(bg?.taskDescription).toBe("do work");
   });
 
   it("marks background task completed with final output", async () => {
-    const background = new BackgroundManager({ runAgent: async () => "final text" });
+    const background = makeBackground(async () => "final text");
     const dispatcher = new SubagentDispatcher({
       getAgentConfig: async () => config,
       runAgent: async () => "final text",
@@ -109,10 +128,8 @@ describe("SubagentDispatcher", () => {
   });
 
   it("marks background task failed when runAgent rejects", async () => {
-    const background = new BackgroundManager({
-      runAgent: async () => {
-        throw new Error("boom");
-      },
+    const background = makeBackground(async () => {
+      throw new Error("boom");
     });
     const dispatcher = new SubagentDispatcher({
       getAgentConfig: async () => config,

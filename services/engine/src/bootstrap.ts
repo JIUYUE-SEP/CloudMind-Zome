@@ -32,6 +32,7 @@ import { PlanManager } from "./plan/manager.js";
 import { PlanRepository } from "./plan/repository.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
+import { SubagentTaskRepository } from "./subagent/task-repository.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
@@ -124,7 +125,10 @@ async function main() {
     });
   }
 
-  const backgroundManager = new BackgroundManager({ runAgent: runAgentCollect });
+  const backgroundManager = new BackgroundManager(
+    { runAgent: runAgentCollect },
+    new SubagentTaskRepository(),
+  );
   const subagentDispatcher = new SubagentDispatcher({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
     runAgent: runAgentCollect,
@@ -334,6 +338,10 @@ async function main() {
   };
 
   const scheduler = new Scheduler(context, { pollIntervalMs: 5000 });
+
+  // subagent 后台任务启动对账：持久化记录回填内存索引，running 一律标 lost
+  // （重启语义：现场已毁、不知死活≠已知失败，交人工决策而非自动续跑）
+  await backgroundManager.load();
 
   // 启动对账（Phase 2 M3）：补归档"已有压缩档但仍留在热存储"的孤儿消息。
   // 在 scheduler/worker 产生新流量前完成；单 agent 失败只记 warn，不阻断启动。

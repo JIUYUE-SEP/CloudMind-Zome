@@ -7,6 +7,10 @@ const parameters = z.object({
   task: z.string().describe("交给子 Agent 执行的任务描述"),
   mode: z.enum(["foreground", "background"]).default("foreground"),
   timeoutMs: z.number().int().positive().optional(),
+  kind: z
+    .enum(["puppet", "delegate"])
+    .optional()
+    .describe("子 Agent 分型：delegate=借用人形（默认，现状语义）；puppet=傀儡（预留，暂按 delegate 执行）"),
 });
 
 export const dispatchSubagentTool: Tool = {
@@ -52,6 +56,7 @@ export const dispatchSubagentTool: Tool = {
       const result = await dispatcher.dispatch(ctx.agentId, parsed.agentId, parsed.task, {
         mode: parsed.mode,
         timeoutMs,
+        kind: parsed.kind,
       });
       if (typeof result === "string") {
         return { success: true, output: { taskId: result } };
