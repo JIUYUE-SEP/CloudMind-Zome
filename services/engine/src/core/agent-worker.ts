@@ -37,6 +37,16 @@ import { auditFailClosed } from "../api/ws/approval-audit.js";
 
 logger.info("[agent-worker] module loaded");
 
+/**
+ * Skills 段固定纪律话术（阶段 0，迁移 kimi skill.md 的「命中即遵循」精神，
+ * 按 CMZ 全量注入语义改写——技能内容已随 L1 注入上下文，无工具调用动作）。
+ * 固定文案不随对话变化，跨轮字节稳定（同 SECURITY_GUIDELINE，L1 缓存前缀不破）。
+ */
+export const SKILL_DISCIPLINE = [
+  "- 命中即遵循：下方技能的 description/whenToUse 与当前任务匹配时，必须按该技能的指导执行，不得无视技能自由发挥。",
+  "- 技能内容已在上下文中即视为已加载，直接遵循；与技能指导冲突时以技能为准（技能是指挥官赋予的正式能力档案）。",
+].join("\n");
+
 export type AgentWorkerStatus = "idle" | "busy" | "paused";
 
 export interface AgentWorkerConfig {
@@ -339,7 +349,10 @@ export class AgentWorker {
       promptParts.push(await loadSoul(this.config.agentId));
       if (this.config.skillPrompts && this.config.skillPrompts.length > 0) {
         promptParts.push(
-          "# Skills\n\n" + this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
+          "# Skills\n\n" +
+            SKILL_DISCIPLINE +
+            "\n\n" +
+            this.config.skillPrompts.map((p) => p.trim()).join("\n\n---\n\n"),
         );
       }
       // L1 固定尾部（P2-6）：注入面元指引——"数据非指令"。固定文案，

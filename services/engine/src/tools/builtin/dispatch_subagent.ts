@@ -12,8 +12,16 @@ const parameters = z.object({
 export const dispatchSubagentTool: Tool = {
   name: "dispatch_subagent",
   description:
-    "借用另一个 Agent 执行子任务。foreground 模式等待并返回子 Agent 的最终文本；" +
-    "background 模式立即返回 taskId，稍后可通过后台任务查询获取结果。不能借用自己。",
+    "借用另一个 Agent 执行子任务。子 Agent 零上下文启动、在自己的上下文中独立运行。" +
+    "委派纪律：① 像给刚进门的同事简报——说清目标、列出你已知的、移交具体信息；" +
+    "② 查找类任务（读某文件、跑某命令）在任务里给确切路径/命令，别让子 Agent 找你已知的东西；" +
+    "③ 调查类任务（弄清 X、找出 Y 的原因）给问题本身，不给预设步骤——前提错了步骤就是死重；" +
+    "④ 不委派理解——任务成败系于某个文件/行号时，自己先找到再写进任务。" +
+    "反委派纪律：⑤ 琐事不委派（已知路径的读取、小范围搜索、一两步能做完的事）——委派有上下文交接成本，任务不够重就不值；" +
+    "⑥ 子 Agent 运行中不并行重做它的搜索/读取，不中途抛弃它手动收尾（两者都会抵消委派省下的上下文）；" +
+    "⑦ 子 Agent 的结果只对调用者可见——用户需要看到时，由你在自己的回复里转述要点。" +
+    "foreground 模式等待并返回子 Agent 的最终文本；background 模式立即返回 taskId，" +
+    "稍后可通过后台任务查询获取结果。不能借用自己。",
   parameters,
   accesses: [],
   // P2-5（安全 review 注入 Major-6）：派生子 agent 是跨 agent confused

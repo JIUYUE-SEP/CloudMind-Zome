@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
+import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
 import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
@@ -356,11 +357,11 @@ ${SECURITY_GUIDELINE}` },
 
     const messages = provider.capturedParams?.messages;
     expect(messages?.[0].role).toBe("system");
-    // L1 = SOUL（默认模板）+ skill 内容 + 固定安全指引（P2-6），SOUL 在前
+    // L1 = SOUL（默认模板）+ Skills 段（固定纪律话术 + skill 内容）+ 固定安全指引（P2-6），SOUL 在前
     expect(messages?.[0].content).toEqual([
       {
         type: "text",
-        text: `${DEFAULT_SOUL_TEMPLATE.trim()}\n\n# Skills\n\n# Core Skill\nDo core things.\n\n${SECURITY_GUIDELINE}`,
+        text: `${DEFAULT_SOUL_TEMPLATE.trim()}\n\n# Skills\n\n${SKILL_DISCIPLINE}\n\n# Core Skill\nDo core things.\n\n${SECURITY_GUIDELINE}`,
       },
     ]);
   });
