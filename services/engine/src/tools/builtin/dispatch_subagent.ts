@@ -21,7 +21,7 @@ export const dispatchSubagentTool: Tool = {
     "⑥ 子 Agent 运行中不并行重做它的搜索/读取，不中途抛弃它手动收尾（两者都会抵消委派省下的上下文）；" +
     "⑦ 子 Agent 的结果只对调用者可见——用户需要看到时，由你在自己的回复里转述要点。" +
     "foreground 模式等待并返回子 Agent 的最终文本；background 模式立即返回 taskId，" +
-    "稍后可通过后台任务查询获取结果。不能借用自己。",
+    "结果写入后台任务记录（你无法自助查询，用户可查看）。不能借用自己。",
   parameters,
   accesses: [],
   // P2-5（安全 review 注入 Major-6）：派生子 agent 是跨 agent confused
