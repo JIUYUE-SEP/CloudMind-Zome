@@ -5,8 +5,9 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
  * annotations → 审批映射（fail-closed，spike 结论）：
  * 仅 readOnlyHint === true 免审批；其余（false 或缺失）一律需审批。
  * annotations 全部可选且第三方 server 不可信，缺失必须按危险处理。
- * 「禁止本会话免问」不在这里表达——所有 mcp__ 前缀工具在 WS 审批层
- * 统一禁 remember（见 api/ws/handler.ts / session-handler.ts）。
+ * 该映射可被 server 配置 toolOverrides.requiresApproval 本地覆盖（见 wrapper.ts）；
+ * 「禁止本会话免问」不在这里表达——mcp__ 前缀工具在 WS 审批层默认禁 remember，
+ * 仅 toolOverrides.allowRemember===true 放行（见 api/ws/handler.ts / session-handler.ts）。
  */
 export function mapAnnotationsToApproval(annotations: ToolAnnotations | undefined): {
   requiresApproval: boolean;

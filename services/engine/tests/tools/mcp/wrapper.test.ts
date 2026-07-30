@@ -8,6 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { mcpToolToEngine, isMcpToolName } from "../../../src/tools/mcp/wrapper.js";
+import type { McpToolCaller } from "../../../src/tools/mcp/wrapper.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolContext } from "../../../src/tools/types.js";
 
@@ -16,6 +17,13 @@ const ctx: ToolContext = {
   workspaceDir: ".",
   approve: async () => true,
 };
+
+function clientCaller(client: Client): McpToolCaller {
+  return {
+    callTool: (name, args) => client.callTool({ name, arguments: args }) as Promise<CallToolResult>,
+    ping: (timeoutMs) => client.ping({ timeout: timeoutMs }),
+  };
+}
 
 async function setup() {
   const server = new McpServer({ name: "Test Server", version: "0.0.1" });
@@ -69,15 +77,12 @@ describe("mcpToolToEngine（InMemoryTransport 集成）", () => {
     };
 
     const { tools } = await client.listTools();
-    const wrapped = tools.map((t) =>
-      mcpToolToEngine("Test Server", t, {
-        callTool: (name, args) => client.callTool({ name, arguments: args }) as Promise<CallToolResult>,
-      }),
-    );
+    const wrapped = tools.map((t) => mcpToolToEngine("Test Server", t, clientCaller(client)));
 
+    // kimi tool-naming 语义：白名单字符 + 下划线折叠，保留大小写
     const names = wrapped.map((t) => t.name);
-    expect(names).toContain("mcp__test_server__ping");
-    expect(names).toContain("mcp__test_server__mutate");
+    expect(names).toContain("mcp__Test_Server__ping");
+    expect(names).toContain("mcp__Test_Server__mutate");
     for (const n of names) expect(isMcpToolName(n)).toBe(true);
   });
 
@@ -90,12 +95,7 @@ describe("mcpToolToEngine（InMemoryTransport 集成）", () => {
 
     const { tools } = await client.listTools();
     const byName = new Map(
-      tools.map((t) => [
-        t.name,
-        mcpToolToEngine("s", t, {
-          callTool: (name, args) => client.callTool({ name, arguments: args }) as Promise<CallToolResult>,
-        }),
-      ]),
+      tools.map((t) => [t.name, mcpToolToEngine("s", t, clientCaller(client))]),
     );
     expect(byName.get("ping")?.requiresApproval).toBe(false);
     expect(byName.get("mutate")?.requiresApproval).toBe(true);
@@ -111,11 +111,7 @@ describe("mcpToolToEngine（InMemoryTransport 集成）", () => {
     };
 
     const { tools } = await client.listTools();
-    const caller = {
-      callTool: (name: string, args: Record<string, unknown>) =>
-        client.callTool({ name, arguments: args }) as Promise<CallToolResult>,
-    };
-    const byName = new Map(tools.map((t) => [t.name, mcpToolToEngine("s", t, caller)]));
+    const byName = new Map(tools.map((t) => [t.name, mcpToolToEngine("s", t, clientCaller(client))]));
 
     const ping = byName.get("ping")!;
     const ok = await ping.execute(ctx, { msg: "hi" });
@@ -136,9 +132,7 @@ describe("mcpToolToEngine（InMemoryTransport 集成）", () => {
 
     const { tools } = await client.listTools();
     const ping = tools.find((t) => t.name === "ping")!;
-    const wrapped = mcpToolToEngine("s", ping, {
-      callTool: (name, args) => client.callTool({ name, arguments: args }) as Promise<CallToolResult>,
-    });
+    const wrapped = mcpToolToEngine("s", ping, clientCaller(client));
     expect(wrapped.parameters.safeParse({ msg: "x" }).success).toBe(true);
     expect(wrapped.parameters.safeParse({}).success).toBe(false);
   });

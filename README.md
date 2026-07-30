@@ -29,7 +29,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
 - **工具调用** — ReActLoop 调用 7 个内置工具：read_file / write_file / edit_file / list_files / bash / run_command / dispatch_subagent；写类工具与 dispatch_subagent 需人工审批
-- **MCP 接入** — 经 `DATA_DIR/mcp-servers.json` 配置接入 stdio MCP server，工具以 `mcp__<server>__<tool>` 命名注入 Agent 工具管线；`readOnlyHint===true` 免审批，其余需人工审批且一律禁「本会话免问」；单 server 失败降级（记 warn，不阻塞整体）
+- **MCP 接入** — 经 `DATA_DIR/mcp-servers.json` 配置接入 stdio MCP server，工具以 `mcp__<server>__<tool>` 命名（64 字符封顶哈希后缀）注入 Agent 工具管线；审批 fail-closed（仅 `readOnlyHint===true` 免审批），`toolOverrides` 可按限定名本地覆盖（免审批/强制审批/`allowRemember` 放行「本会话免问」，默认禁）；调用失败自愈封顶一次（ping 探活分流 + single-flight 重连后重试），server 崩溃工具不消失（断线保注册）；单 server 失败降级（记 warn，不阻塞整体）
 - **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级；话题压缩归档（L5 摘要注入）与 L4 语义检索已接入管线（Phase 1–3）
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
 - **心智系统** — SOUL.md 人格核心注入 L1；MIND.md 动态经验档案（话题压缩时 LLM 沉淀、置信度过滤、注入防御）

@@ -16,6 +16,7 @@ import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import type { Tool, ToolResult } from "../../src/tools/types.js";
+import { McpClientManager } from "../../src/tools/mcp/index.js";
 import { z } from "zod";
 import type { ApiContext } from "../../src/api/context.js";
 import WebSocket from "ws";
@@ -26,6 +27,7 @@ async function buildWsContext(
   agentId: string,
   tools: Tool[] = [],
   provider: MockLLMProvider = new MockLLMProvider(),
+  mcpManager?: McpClientManager,
 ): Promise<{ context: ApiContext; cleanup: () => Promise<void>; provider: MockLLMProvider }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ws-test-"));
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
@@ -68,6 +70,7 @@ async function buildWsContext(
     sessionRepository: new SessionRepository(),
     blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async (id: string) => (id === agentId ? worker : undefined),
+    ...(mcpManager ? { mcpManager } : {}),
   };
 
   return {
@@ -286,6 +289,81 @@ describe("WebSocket API", () => {
     expect(executions).toEqual(["mcp__demo__delete_file", "mcp__demo__delete_file"]);
 
     await app.close();
+    await cleanup();
+  });
+
+  it("MCP 工具 toolOverrides.allowRemember:true 放行 remember：第二轮免问", async () => {
+    const executions: string[] = [];
+    const mcpTool: Tool = {
+      name: "mcp__demo__read_thing",
+      description: "MCP tool with local trust override",
+      parameters: z.object({}),
+      accesses: [],
+      requiresApproval: true,
+      async execute(): Promise<ToolResult> {
+        executions.push("mcp__demo__read_thing");
+        return { success: true, output: "ran" };
+      },
+    };
+    // 本地显式信任：server 配置 toolOverrides 放行该限定名的 remember
+    const mcpManager = new McpClientManager([
+      {
+        name: "demo",
+        command: "node",
+        toolOverrides: { "mcp__demo__read_thing": { allowRemember: true } },
+      },
+    ]);
+
+    const { context, cleanup, provider } = await buildWsContext(
+      "agent-ws",
+      [mcpTool],
+      new MockLLMProvider(),
+      mcpManager,
+    );
+    provider.setNextToolCalls([{ toolCallId: "tc1", name: "mcp__demo__read_thing", arguments: {} }]);
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    const approvalRequests: { approvalId: string; toolName: string }[] = [];
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "round 1" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "tool.approval_request") {
+          approvalRequests.push({ approvalId: message.approvalId, toolName: message.toolName });
+          client.send(
+            JSON.stringify({ type: "tool.approval", approvalId: message.approvalId, approved: true, remember: true }),
+          );
+          return;
+        }
+        if (message.type === "turn.end") {
+          turnEnds++;
+          if (turnEnds === 1) {
+            provider.setNextToolCalls([{ toolCallId: "tc2", name: "mcp__demo__read_thing", arguments: {} }]);
+            client.send(JSON.stringify({ text: "round 2" }));
+          } else {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 15000);
+    });
+
+    // allowRemember:true 放行：remember 生效，第二轮不再审批，两轮都真实执行
+    expect(approvalRequests.map((r) => r.toolName)).toEqual(["mcp__demo__read_thing"]);
+    expect(executions).toEqual(["mcp__demo__read_thing", "mcp__demo__read_thing"]);
+
+    await app.close();
+    await mcpManager.close();
     await cleanup();
   });
 

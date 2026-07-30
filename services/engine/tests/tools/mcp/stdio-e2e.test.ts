@@ -32,9 +32,9 @@ describe("McpClientManager stdio e2e", () => {
     const tools = manager.getTools();
     const byName = new Map(tools.map((t) => [t.name, t]));
 
-    // 工具发现 + mcp__ 前缀 + server 名 sanitize
-    const echo = byName.get("mcp__fixture_server__echo");
-    const touch = byName.get("mcp__fixture_server__touch");
+    // 工具发现 + mcp__ 前缀 + server 名 sanitize（kimi tool-naming 语义，保留大小写）
+    const echo = byName.get("mcp__Fixture_Server__echo");
+    const touch = byName.get("mcp__Fixture_Server__touch");
     expect(echo).toBeDefined();
     expect(touch).toBeDefined();
 

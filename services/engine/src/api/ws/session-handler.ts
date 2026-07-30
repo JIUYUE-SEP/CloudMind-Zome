@@ -161,9 +161,12 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
               });
               // 资格判定用裸 toolName（NO_REMEMBER_TOOLS 按工具名排除），
               // 入名单仍按 agent+工具 维度，不误放同会话其他 agent；
-              // MCP 工具（mcp__ 前缀）名动态且第三方 annotations 不可信，一律禁 remember
+              // MCP 工具（mcp__ 前缀）名动态且第三方 annotations 不可信，默认禁 remember，
+              // 仅 server 配置 toolOverrides.allowRemember===true 放行（查询 McpClientManager）
               const rememberable =
-                isApprovalRememberable(pending.toolName) && !isMcpToolName(pending.toolName);
+                isApprovalRememberable(pending.toolName) &&
+                (!isMcpToolName(pending.toolName) ||
+                  (context.mcpManager?.isRememberAllowed(pending.toolName) ?? false));
               if (data.approved && data.remember && rememberable) {
                 autoApprovedTools.add(`${pending.agentId}:${pending.toolName}`);
                 auditRemembered({ agentId: pending.agentId, sessionId, toolName: pending.toolName });

@@ -13,6 +13,7 @@ import type { PlanManager } from "../plan/manager.js";
 import type { SubagentDispatcher } from "../subagent/dispatcher.js";
 import type { BackgroundManager } from "../subagent/background.js";
 import type { SidecarClient } from "../sidecar/client.js";
+import type { McpClientManager } from "../tools/mcp/index.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 export interface ApiContext {
@@ -34,4 +35,6 @@ export interface ApiContext {
   backgroundManager?: BackgroundManager;
   /** sidecar gRPC 客户端（P1-3：删除 agent 时级联清理向量索引；dev/测试可缺省） */
   sidecarClient?: SidecarClient;
+  /** MCP 工具 remember 判定查询（toolOverrides.allowRemember 放行；缺省/无 override 一律禁） */
+  mcpManager?: McpClientManager;
 }

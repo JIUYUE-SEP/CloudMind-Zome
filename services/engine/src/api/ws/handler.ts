@@ -165,9 +165,12 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                 approved,
               });
               // MCP 工具名是动态的，进不了 shared 的 NO_REMEMBER 静态名单；
-              // 第三方 server 的 annotations 不可信，mcp__ 前缀一律禁 remember
+              // 第三方 server 的 annotations 不可信，mcp__ 前缀默认禁 remember，
+              // 仅 server 配置 toolOverrides.allowRemember===true 放行（查询 McpClientManager）
               const rememberable =
-                isApprovalRememberable(pending.toolName) && !isMcpToolName(pending.toolName);
+                isApprovalRememberable(pending.toolName) &&
+                (!isMcpToolName(pending.toolName) ||
+                  (context.mcpManager?.isRememberAllowed(pending.toolName) ?? false));
               if (data.approved && data.remember && rememberable) {
                 autoApprovedTools.add(pending.toolName);
                 auditRemembered({ agentId, sessionId, toolName: pending.toolName });
