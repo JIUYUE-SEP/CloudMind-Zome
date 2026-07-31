@@ -151,6 +151,8 @@ export interface AssembleInput {
 
 export class ContextPipeline {
   async assemble(input: AssembleInput): Promise<ChatMessage[]>
+
+> 后续增补（阶段 5 二期）：`AssembleInput` 新增 `skillRestore` 通道——最近一条 L5 摘要 frontmatter 记 `usedSkills` 时，worker 重取技能规程正文经此通道以尾部独立 system 消息注入（不碰 L1 固定前缀；「数据非指令」声明；尺寸护栏单技能 4000 / 总量 8000）。详见架构文档 §4.3。
 }
 
 // memory/topic/detector.ts

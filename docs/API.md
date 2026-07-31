@@ -99,14 +99,16 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `POST /agents/:agentId/plans/:planId/resume` — 恢复
 - `POST /agents/:agentId/plans/:planId/retry` — 重试指定步骤
 
-> 计划存储在内存中，engine 重启后丢失。
+> 计划经 `plans.jsonl` 持久化，engine 重启自动恢复（重启时 running 的步骤标回 pending 可续跑）。
 
 ### Subagents
 
 - `GET /subagents/background` — 列出后台子代理任务
 - `GET /subagents/background/:taskId` — 查询单个后台任务
+- `GET /subagents/background/:taskId/output` — 读取任务全量输出（超 10MB 返回 413）
+- `POST /agents/:agentId/subagents/:taskId/resume` — 续跑终态任务（completed/failed/lost）：同简报重跑、复用原记录（taskId 不变、attempts+1）；running 拒绝 409，非 owner 404
 
-> 子代理通过 `dispatch_subagent` 工具创建，无 REST 创建端点。
+> 子代理通过 `dispatch_subagent` / `dispatch_subagent_batch` 工具创建，无 REST 创建端点。任务持久化于 `subagent-tasks.jsonl`（engine 重启时 running 标 `lost`，不自动续跑）；列表/详情中 `output` 为截尾 preview（超 ~4KB，`outputTruncated` 标记），全量走 output 端点；`kind` 区分 `delegate`（借用人形）/ `puppet`（傀儡分身）。
 
 ### Memory
 
@@ -120,6 +122,8 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Skills
 
 - `GET /skills` — 列出可用 Skill
+- `POST /agents/:agentId/skills/reload` — 热重载 Agent 技能目录（清解析缓存 + worker 退役重建，改完 SKILL.md 无需重启）
+- `GET /agents/:agentId/skill-history?limit=N` — Skill 工具调用记录（默认 50，上限 200，倒序）
 
 ### Logs
 
@@ -132,7 +136,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | 帧 | 说明 |
 |---|---|
 | `{ "text": "..." }` | 聊天消息（无 type 字段，最长 10000 字符） |
-| `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` / `write_file` / `edit_file` / `dispatch_subagent` 不可 remember） |
+| `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` / `write_file` / `edit_file` / `dispatch_subagent` / `dispatch_subagent_batch` 不可 remember） |
 | `session.set_mode` | 切换 chat / code 模式（仅会话 WS，可带 `projectId`） |
 
 未知 type 帧静默忽略。
