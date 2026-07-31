@@ -34,6 +34,7 @@ import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
 import { SubagentTaskRepository } from "./subagent/task-repository.js";
 import { PuppetRunner, type PuppetRuntime } from "./subagent/puppet.js";
+import { SubagentSwarm } from "./subagent/batch.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
@@ -173,6 +174,15 @@ async function main() {
     puppet: puppetRunner,
   });
 
+  // swarm 批量派发（阶段 3）：全傀儡成员（无审批桥接，写类 fail-closed），
+  // 调度核 AgentRunBatch 的 Launcher 接 PuppetRunner，任务记录进同一后台任务表
+  const subagentSwarm = new SubagentSwarm({
+    getAgentConfig: (agentId) => agentRepository.get(agentId),
+    runPuppet: (ownerAgentId, prompt, opts) =>
+      puppetRunner.run(ownerAgentId, prompt, { signal: opts?.signal }),
+    background: backgroundManager,
+  });
+
   const planManagers = new Map<string, PlanManager>();
   async function getPlanManager(agentId: string): Promise<PlanManager | undefined> {
     const existing = planManagers.get(agentId);
@@ -237,7 +247,8 @@ async function main() {
       memoryIndexer,
       embedder,
       imageProvider,
-      services: { subagentDispatcher },
+      // swarm 只接 worker（主人会话）；傀儡 runtime 故意不接——防嵌套批量（16×16）
+      services: { subagentDispatcher, subagentSwarm },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),
       // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）

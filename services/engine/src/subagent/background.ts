@@ -23,6 +23,8 @@ export interface BackgroundSubagent {
   startTime: number;
   endTime?: number;
   timeoutMs: number;
+  /** 执行尝试次数（swarm 限流续跑复用同一记录）；注册为 1 */
+  attempts: number;
   /** 运行期专用（任务消息与借用 agent 配置）；重启恢复的历史记录没有 */
   task?: SubagentTask;
   config?: AgentConfig;
@@ -42,6 +44,7 @@ function toRecord(bg: BackgroundSubagent): SubagentTaskRecord {
     startTime: bg.startTime,
     endTime: bg.endTime,
     timeoutMs: bg.timeoutMs,
+    attempts: bg.attempts,
   };
 }
 
@@ -59,6 +62,7 @@ function fromRecord(record: SubagentTaskRecord): BackgroundSubagent {
     startTime: record.startTime,
     endTime: record.endTime,
     timeoutMs: record.timeoutMs,
+    attempts: record.attempts ?? 1,
   };
 }
 
@@ -103,12 +107,98 @@ export class BackgroundManager {
       outputTruncated: false,
       startTime: Date.now(),
       timeoutMs,
+      attempts: 1,
       task,
       config,
     };
     this.tasks.set(task.id, bg);
     void this.persist(bg);
     void this.run(bg);
+  }
+
+  /**
+   * swarm 受管尝试（阶段 3）：注册任务记录并执行一次，完成/失败由管理器落盘，
+   * 完成句柄随返回值给出。与 register 的区别：执行器由调用方注入（调度核驱动），
+   * 不做内部超时计时（超时/取消经执行器自身的 signal 贯入）。
+   */
+  startTracked(
+    task: SubagentTask,
+    config: AgentConfig,
+    timeoutMs: number,
+    kind: SubagentTaskKind,
+    execute: () => Promise<string>,
+  ): { taskId: string; completion: Promise<string> } {
+    const bg: BackgroundSubagent = {
+      taskId: task.id,
+      parentAgentId: task.parentAgentId,
+      agentId: config.id,
+      kind,
+      taskDescription: task.taskDescription,
+      status: "running",
+      output: "",
+      outputTruncated: false,
+      startTime: Date.now(),
+      timeoutMs,
+      attempts: 1,
+      task,
+      config,
+    };
+    this.tasks.set(task.id, bg);
+    void this.persist(bg);
+    return { taskId: task.id, completion: this.runTracked(bg, execute) };
+  }
+
+  /**
+   * swarm 限流续跑：复用同一任务记录（taskId 不变、状态回 running、attempts+1），
+   * 不新建记录——傀儡无状态，续跑=同简报重新执行。
+   */
+  retryTracked(
+    taskId: string,
+    execute: () => Promise<string>,
+  ): { taskId: string; completion: Promise<string> } {
+    const bg = this.tasks.get(taskId);
+    if (!bg) throw new Error(`Tracked task ${taskId} not found`);
+    bg.status = "running";
+    bg.attempts += 1;
+    bg.error = undefined;
+    bg.endTime = undefined;
+    void this.persist(bg);
+    return { taskId, completion: this.runTracked(bg, execute) };
+  }
+
+  /** 受管尝试统一收尾：成功写双轨输出，失败记 error；异常随 completion 上抛给调度核 */
+  private async runTracked(bg: BackgroundSubagent, execute: () => Promise<string>): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // 硬超时兜底（review 建议）：signal 是协作式取消，runTurn 仅在 step 边界检查——
+      // provider 流中途挂起时 execute 永不 settle，批次悬挂且孤儿调用空转烧钱；
+      // 与旧路径 run() 的 Promise.race 同范式，超时时限用任务记录的 timeoutMs
+      const full = await Promise.race([
+        execute(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`timeout（受管执行硬超时 ${bg.timeoutMs}ms）`)),
+            bg.timeoutMs,
+          );
+        }),
+      ]);
+      const { preview, truncated } = makeOutputPreview(full);
+      bg.output = preview;
+      bg.outputTruncated = truncated;
+      bg.status = "completed";
+      bg.endTime = Date.now();
+      await this.persist(bg, full);
+      return full;
+    } catch (err) {
+      bg.error = String(err);
+      bg.status = "failed";
+      bg.endTime = Date.now();
+      await this.persist(bg);
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      this.notify(bg);
+    }
   }
 
   private async run(bg: BackgroundSubagent): Promise<void> {

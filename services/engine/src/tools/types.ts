@@ -1,5 +1,6 @@
 import type { ZodTypeAny } from "zod";
 import type { SubagentDispatcher } from "../subagent/dispatcher.js";
+import type { SubagentSwarm } from "../subagent/batch.js";
 
 export interface ToolAccess {
   resource: "file" | "network" | "process" | "memory";
@@ -10,6 +11,8 @@ export interface ToolAccess {
 /** 可注入工具执行上下文的生产服务（按需在 bootstrap 组装） */
 export interface ToolServices {
   subagentDispatcher?: SubagentDispatcher;
+  /** swarm 批量派发（dispatch_subagent_batch 工具） */
+  subagentSwarm?: SubagentSwarm;
 }
 
 export interface ToolContext {

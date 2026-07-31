@@ -29,11 +29,14 @@ export function isValidAgentId(id: unknown): id is string {
 // 路径粒度 remember（方案 A）易留绕过口子，不取。
 // dispatch_subagent（P2-5）：跨 agent confused deputy 通道，"remember 一次 =
 // 放行一切目标 agent 与任务"，与写类同类，一律每次批。
+// dispatch_subagent_batch：同源的批量派发（傀儡 swarm），一次 remember =
+// 放行任意模板×items 批量执行，与单发同等待遇。
 export const NO_REMEMBER_TOOLS: ReadonlySet<string> = new Set([
   "run_command",
   "write_file",
   "edit_file",
   "dispatch_subagent",
+  "dispatch_subagent_batch",
 ]);
 
 export function isApprovalRememberable(toolName: string): boolean {
