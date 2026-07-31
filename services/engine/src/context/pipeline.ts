@@ -47,6 +47,11 @@ export interface AssembleInput {
   mindChunks?: MindChunk[];
   /** 记忆检索本轮失败：组装时尾随 system 消息明确告知（诚实透明） */
   retrievalFailed?: boolean;
+  /**
+   * 规程自动恢复（阶段 5 二期）：前一话题用过的技能正文，以尾部 system 消息
+   * 附带注入——不进 L1 固定前缀（保缓存前缀），语义属"规程数据通告"而非人格/记忆
+   */
+  skillRestore?: string;
 }
 
 export interface AssembleResult {
@@ -137,12 +142,13 @@ export class ContextPipeline {
     // l4 入层时已按 CONFIDENCE_DROP 过滤（≤0.5 不入层），memoryToMessage 不会返回 null
     const l4Tokens = layers.l4.map((m) => countOne(memoryToMessage(m, now)!));
     const l5Tokens = layers.l5.map((t) => countOne(topicToMessage(t, now)));
-    // 固定部分（L1/L2 前缀、MIND、检索失败告知）不参与降级，只计一次；
+    // 固定部分（L1/L2 前缀、MIND、规程恢复、检索失败告知）不参与降级，只计一次；
     // 构造条件与 assembleMessages 逐条对应，口径一致
     const fixedMessages: ChatMessage[] = [];
     if (layers.l1.trim()) fixedMessages.push(systemMessage(layers.l1));
     if (layers.l2?.trim()) fixedMessages.push(systemMessage(layers.l2));
     if (layers.mind.length > 0) fixedMessages.push(mindToMessage(layers.mind, now));
+    if (input.skillRestore) fixedMessages.push(systemMessage(input.skillRestore));
     if (input.retrievalFailed) fixedMessages.push(retrievalFailedMessage());
     const fixedTokens = sum(fixedMessages.map(countOne));
 
@@ -154,7 +160,7 @@ export class ContextPipeline {
       if (total <= this.budgetTokens) {
         this.markInjected(input.sourceId, layers);
         return {
-          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed }),
+          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed, skillRestore: input.skillRestore }),
           tools,
         };
       }
@@ -168,7 +174,7 @@ export class ContextPipeline {
         );
         this.markInjected(input.sourceId, layers);
         return {
-          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed }),
+          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed, skillRestore: input.skillRestore }),
           tools,
         };
       }

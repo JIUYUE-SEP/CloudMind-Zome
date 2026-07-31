@@ -14,6 +14,7 @@ import type { SubagentDispatcher } from "../subagent/dispatcher.js";
 import type { BackgroundManager } from "../subagent/background.js";
 import type { SidecarClient } from "../sidecar/client.js";
 import type { McpClientManager } from "../tools/mcp/index.js";
+import type { SkillService } from "../skills/service.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 export interface ApiContext {
@@ -37,4 +38,8 @@ export interface ApiContext {
   sidecarClient?: SidecarClient;
   /** MCP 工具 remember 判定查询（toolOverrides.allowRemember 放行；缺省/无 override 一律禁） */
   mcpManager?: McpClientManager;
+  /** 技能目录/正文/调用记录通道（skill 工具与 skills 路由共用） */
+  skillService?: SkillService;
+  /** 退役 agent 的 worker（skills/reload 复用配置变更的退役/重建机制：下次使用按新目录重建） */
+  retireAgentWorker?(agentId: string): void;
 }

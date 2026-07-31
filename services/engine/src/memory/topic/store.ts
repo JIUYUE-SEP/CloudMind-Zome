@@ -40,6 +40,7 @@ export async function writeCompressedTopic(
     `source_name: ${fmValue(topic.sourceName ?? "")}`,
     `compressed_at: ${topic.compressedAt}`,
     `msg_count: ${topic.msgCount}`,
+    `used_skills: ${(topic.usedSkills ?? []).map(fmValue).join(", ")}`,
     "---",
     "",
     "## Summary",
@@ -133,6 +134,8 @@ interface ParsedCompressedFile {
   compressedAt: string;
   /** 摘要正文：summary + 关键结论（不含 label 与元信息包装） */
   text: string;
+  /** 阶段 5 二期：该话题内使用过的技能名（无字段的旧档为 undefined） */
+  usedSkills?: string[];
 }
 
 /** 解析 frontmatter 块的 key: value 行（未知 key 保留，供版本迁移链使用） */
@@ -174,11 +177,16 @@ function parseCompressedFile(raw: string, fallbackId: string): ParsedCompressedF
   const parts: string[] = [];
   if (summary) parts.push(summary);
   if (keyPointsBlock) parts.push(`关键结论：\n${keyPointsBlock}`);
+  const usedSkills = (fm["used_skills"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   return {
     topicId: fm["topic_id"] || fallbackId,
     label: fm["label"] || "（未命名话题）",
     compressedAt,
     text: parts.join("\n"),
+    ...(usedSkills.length > 0 ? { usedSkills } : {}),
   };
 }
 
@@ -207,7 +215,15 @@ export async function latestSummaries(agentId: string, count: number): Promise<T
     try {
       const raw = await fs.readFile(path.join(compressedDir(agentId), file), "utf-8");
       const p = parseCompressedFile(raw, file.replace(/\.md$/, ""));
-      if (p) parsed.push({ id: p.topicId, label: p.label, text: p.text, createdAt: p.compressedAt });
+      if (p) {
+        parsed.push({
+          id: p.topicId,
+          label: p.label,
+          text: p.text,
+          createdAt: p.compressedAt,
+          ...(p.usedSkills ? { usedSkills: p.usedSkills } : {}),
+        });
+      }
     } catch (err) {
       // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
       if (err instanceof UnsupportedSchemaVersionError) throw err;

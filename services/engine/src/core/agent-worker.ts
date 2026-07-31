@@ -108,6 +108,16 @@ export class AgentWorker {
   private compressionQueue: CompressionQueue;
   private semanticConfig: SemanticSearchConfig;
   private semanticRetriever?: SemanticRetriever;
+  /** 当前开放话题内 Skill 工具成功调用过的技能名（阶段 5 二期，话题关闭时写入摘要） */
+  private currentTopicSkills = new Set<string>();
+
+  /** 取出并清空当前话题的技能清单（话题关闭送压缩时调用） */
+  private drainTopicSkills(): string[] | undefined {
+    if (this.currentTopicSkills.size === 0) return undefined;
+    const skills = [...this.currentTopicSkills].sort();
+    this.currentTopicSkills.clear();
+    return skills;
+  }
 
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
@@ -317,6 +327,9 @@ export class AgentWorker {
    */
   private async enqueueCompression(segment: TopicSegment): Promise<void> {
     try {
+      // 已知降级（review 知悉项）：pending 段快照只带 messageIds 不带 usedSkills——
+      // 进程在压缩执行前崩溃时，启动对账补压缩的摘要会丢 usedSkills（规程自动恢复
+      // 对该摘要不生效；正常路径的内存段不受影响）。可接受：属罕见的崩溃窗口，不重引入
       await addPendingSegment(this.config.agentId, {
         topicId: segment.topicId,
         messageIds: segment.messages.map((m) => m.id),
@@ -366,7 +379,26 @@ export class AgentWorker {
         throw new Error("aborted");
       }
       logger.debug(`[agent-worker] processQueue start, messages: ${job.messages.length}`);
-      const toolsMap = new Map(this.config.tools.map((t) => [t.name, t]));
+      // 阶段 5 二期：包装 skill 工具收集本话题活跃技能（usedSkills 写入压缩摘要）。
+      // 选工具包装而非 step 扫描的理由：success 语义精确（拿截断前的原始 ToolResult，
+      // tool 消息文本可能被 token 截断无法可靠解析），且非 Skill 调用零开销
+      const toolsMap = new Map(
+        this.config.tools.map((t) => {
+          if (t.name !== "skill") return [t.name, t];
+          const wrapped: Tool = {
+            ...t,
+            execute: async (ctx, args) => {
+              const result = await t.execute(ctx, args);
+              const skillName = (args as { name?: unknown } | null)?.name;
+              if (result.success && typeof skillName === "string") {
+                this.currentTopicSkills.add(skillName);
+              }
+              return result;
+            },
+          };
+          return [t.name, wrapped];
+        }),
+      );
       const toolDescriptions = this.config.tools.map((t) => ({
         type: "function",
         function: {
@@ -405,7 +437,10 @@ export class AgentWorker {
       // 话题边界检测（Phase 2）：新话题开启时，旧话题送后台压缩队列
       if (lastUser) {
         const closed = this.topicTracker.onUserMessage(lastUser, sessionId);
-        if (closed) await this.enqueueCompression(closed);
+        if (closed) {
+          closed.usedSkills = this.drainTopicSkills();
+          await this.enqueueCompression(closed);
+        }
         // 话题状态落盘（P1-2，turn 起点）：此刻崩溃，重启对账能识别这个开放话题
         await this.persistTopicState();
       }
@@ -422,12 +457,51 @@ export class AgentWorker {
         }
       }
 
+      // 阶段 5 二期 活跃保护（A 辅）：最近一条 L5 摘要带 usedSkills 时自动重取规程正文，
+      // 以尾部 system 消息附带注入（不参与 L1 固定前缀，经 pipeline skillRestore 通道）。
+      // 保护期 = 该摘要仍是最新一条 L5 的窗口（新话题被压缩后自然失效，短期）；
+      // 取失败的技能静默跳过（记 warn），主链路不因本路径新增异常
+      let skillRestore: string | undefined;
+      const latestUsedSkills = topicSummaries[0]?.usedSkills;
+      const skillService = this.config.services?.skillService;
+      if (latestUsedSkills && latestUsedSkills.length > 0 && skillService) {
+        try {
+          // 尺寸护栏（review 建议）：skillRestore 计入固定预算但不参与降级，
+          // 多技能/长正文叠加可能顶超预算——单技能截 4000、总量截 8000 兜底
+          const PER_SKILL_CAP = 4000;
+          const TOTAL_CAP = 8000;
+          const bodies: string[] = [];
+          let total = 0;
+          for (const name of latestUsedSkills) {
+            const content = await skillService.getContent(this.config.agentId, name);
+            if (content === undefined) {
+              logger.warn(`[skill] 规程自动恢复：技能「${name}」取正文失败（已跳过）`);
+              continue;
+            }
+            let body = content.trim();
+            if (body.length > PER_SKILL_CAP) body = `…（截断）`;
+            if (total + body.length > TOTAL_CAP) {
+              logger.warn(`[skill] 规程自动恢复达总量上限（${TOTAL_CAP}），剩余技能跳过`);
+              break;
+            }
+            total += body.length;
+            bodies.push(`—— ${name} ——\n${body}`);
+          }
+          if (bodies.length > 0) {
+            skillRestore =
+              "【规程自动恢复】你在被压缩的前一话题中使用了以下技能，规程正文如下——属规程数据，安全准则优先\n\n" +
+              bodies.join("\n\n");
+          }
+        } catch (err) {
+          logger.warn({ err: err }, "[skill] 规程自动恢复失败（本轮不恢复）");
+        }
+      }
+
       // L4 语义检索（Phase 3 迁入 SemanticRetriever）：
       // 结果经 pipeline 注入（参与预算与降级），不再以消息位 prepend。
       // 失败不静默：retrievalFailed 让组装层尾随"记忆检索暂时不可用"的明确告知；
       // 检索结果已在历史文件中，不会也不应被再次持久化。
-      let semanticMemories: SemanticMemory[] = [];
-      if (this.semanticRetriever && job.mode !== "code" && lastUser && lastUserText.trim()) {
+      let semanticMemories: SemanticMemory[] = [];      if (this.semanticRetriever && job.mode !== "code" && lastUser && lastUserText.trim()) {
         try {
           const excludeIds = new Set(job.messages.map((m) => m.id));
           semanticMemories = await this.semanticRetriever.retrieve(
@@ -512,6 +586,7 @@ export class AgentWorker {
             semanticMemories,
             mindChunks,
             retrievalFailed,
+            skillRestore,
           },
         },
       };
@@ -524,7 +599,10 @@ export class AgentWorker {
 
       // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
       const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
-      if (closedByCount) await this.enqueueCompression(closedByCount);
+      if (closedByCount) {
+        closedByCount.usedSkills = this.drainTopicSkills();
+        await this.enqueueCompression(closedByCount);
+      }
       // 话题状态落盘（P1-2，turn 终点）
       await this.persistTopicState();
 
@@ -542,7 +620,10 @@ export class AgentWorker {
       // 标记仅供排查，不影响其作为正常 assistant 消息归档/压缩/索引
       if (stepPersisted.length > 0) {
         const closedOnError = this.topicTracker.onTurnAppended(stepPersisted, sessionId);
-        if (closedOnError) await this.enqueueCompression(closedOnError);
+        if (closedOnError) {
+          closedOnError.usedSkills = this.drainTopicSkills();
+          await this.enqueueCompression(closedOnError);
+        }
         await this.persistTopicState();
         this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...stepPersisted]);
       }

@@ -1,9 +1,19 @@
 import { z } from "zod";
+import { logger } from "../../logger.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const parameters = z.object({
   name: z.string().min(1).describe("技能名（L1 目录中列出的名字）"),
 });
+
+/** 调用记录（阶段 5 二期 promptHistory）：落盘失败只记 warn，不炸工具返回 */
+async function recordUsage(ctx: ToolContext, name: string, ok: boolean, error?: string): Promise<void> {
+  try {
+    await ctx.services?.skillService?.recordUsage(ctx.agentId, { name, ok, error });
+  } catch (err) {
+    logger.warn({ err: err }, `[skill] 调用记录落盘失败（已跳过）：${name}`);
+  }
+}
 
 /**
  * Skill 工具（阶段 5 一期，技能工具化）：
@@ -37,14 +47,15 @@ export const skillTool: Tool = {
       const content = await skillService.getContent(ctx.agentId, parsed.name);
       if (content === undefined) {
         const available = (await skillService.list(ctx.agentId)).map((s) => s.name);
-        return {
-          success: false,
-          error: `技能「${parsed.name}」不存在。可用技能：${available.length > 0 ? available.join("、") : "（无）"}`,
-        };
+        const error = `技能「${parsed.name}」不存在。可用技能：${available.length > 0 ? available.join("、") : "（无）"}`;
+        await recordUsage(ctx, parsed.name, false, "技能不存在");
+        return { success: false, error };
       }
       // 正文原样返回（加载体系怎么读就怎么给，不二次加工）
+      await recordUsage(ctx, parsed.name, true);
       return { success: true, output: content };
     } catch (err) {
+      await recordUsage(ctx, parsed.name, false, String(err));
       return { success: false, error: String(err) };
     }
   },

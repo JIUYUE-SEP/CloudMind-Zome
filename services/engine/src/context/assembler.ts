@@ -8,6 +8,8 @@ export interface AssembleOptions {
   now?: number;
   /** 记忆检索失败：尾随 system 消息明确告知（诚实透明） */
   retrievalFailed?: boolean;
+  /** 规程自动恢复（阶段 5 二期）：尾部 system 消息（检索失败告知之前） */
+  skillRestore?: string;
 }
 
 export function systemMessage(text: string): ChatMessage {
@@ -62,6 +64,11 @@ export function assembleMessages(layers: ContextLayers, opts: AssembleOptions = 
   // （Phase 1 不参与降级与多轮去重；命中才注入，空档静默跳过）
   if (layers.mind.length > 0) {
     messages.push(mindToMessage(layers.mind, now));
+  }
+
+  // 规程自动恢复（阶段 5 二期）：尾部 system 通告（不伪装、不进 L1 固定前缀）
+  if (opts.skillRestore) {
+    messages.push(systemMessage(opts.skillRestore));
   }
 
   if (opts.retrievalFailed) {

@@ -16,6 +16,8 @@ export interface TopicSegment {
    * 保证热存储有界，又不为两三句话浪费一次压缩调用
    */
   archiveOnly?: boolean;
+  /** 阶段 5 二期：本话题内 Skill 工具成功调用过的技能名（去重），写入摘要作活跃保护 */
+  usedSkills?: string[];
 }
 
 /** 压缩档：frontmatter 元数据 + 正文，落盘为 _compressed/{topicId}.md */
@@ -37,6 +39,8 @@ export interface CompressedTopic {
   embeddingId?: string;
   /** Phase 7：同一次压缩调用顺手提取的经验（0-N 条，没有为空数组） */
   experiences?: ExtractedExperience[];
+  /** 阶段 5 二期：本话题内 Skill 工具成功调用过的技能名（活跃保护，组装自动重取依据） */
+  usedSkills?: string[];
 }
 
 /**

@@ -383,6 +383,8 @@ async function main() {
     mcpManager,
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,
+    skillService,
+    retireAgentWorker: (agentId) => workerRegistry.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];
       const builtin = await findBuiltinSkillsDir();

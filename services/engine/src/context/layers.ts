@@ -25,6 +25,8 @@ export interface TopicSummary {
   text: string;
   /** 压缩时间：注入消息的时间戳来源（时间真实，心智可算时间差） */
   createdAt: string;
+  /** 阶段 5 二期：该话题内使用过的技能名（活跃保护——组装时自动重取规程正文） */
+  usedSkills?: string[];
 }
 
 /**

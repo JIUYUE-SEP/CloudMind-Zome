@@ -100,3 +100,17 @@ describe("② Skill 工具不存在", () => {
     expect(result.error).toContain("not available");
   });
 });
+
+describe("⑤ promptHistory 落盘（工具侧）", () => {
+  it("成功与失败调用都记录（skill-history.jsonl，倒序可读）", async () => {
+    await skillTool.execute(ctx, { name: "code-review" });
+    await skillTool.execute(ctx, { name: "ghost" });
+
+    const history = await ctx.services!.skillService!.readHistory("a1", 50);
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({ name: "ghost", ok: false, error: "技能不存在" });
+    expect(history[1]).toMatchObject({ name: "code-review", ok: true });
+    expect(history[0]!.ts).toBeTruthy();
+    expect(history[0]!.agentId).toBe("a1");
+  });
+});
