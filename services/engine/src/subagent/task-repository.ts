@@ -28,6 +28,8 @@ export interface SubagentTaskRecord {
   timeoutMs: number;
   /** 执行尝试次数（swarm 限流续跑复用同一记录，taskId 不变、attempts+1）；旧记录缺省视为 1 */
   attempts?: number;
+  /** 终态通知幂等标记：任务记录生命周期内 notify 只发一次（resume 后再终态不重复通知） */
+  notified?: boolean;
 }
 
 /** taskId 只作路径段用，字符白名单防路径穿越（生产为 UUID，测试可见短横线 id） */

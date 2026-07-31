@@ -35,6 +35,7 @@ import { BackgroundManager } from "./subagent/background.js";
 import { SubagentTaskRepository } from "./subagent/task-repository.js";
 import { PuppetRunner, type PuppetRuntime } from "./subagent/puppet.js";
 import { SubagentSwarm } from "./subagent/batch.js";
+import { createSubagentTerminalNotifier } from "./subagent/notify.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
@@ -164,6 +165,12 @@ async function main() {
       runAgent: runAgentCollect,
       runPuppet: (ownerAgentId, taskDescription, opts) =>
         puppetRunner.run(ownerAgentId, taskDescription, { signal: opts?.signal }),
+      // 终态通知（阶段 4）：任务 completed/failed → owner worker 注入感知回合
+      // （开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
+      onTaskTerminal: createSubagentTerminalNotifier({
+        getAgentConfig: (agentId) => agentRepository.get(agentId),
+        getWorker: getOrCreateWorker,
+      }),
     },
     new SubagentTaskRepository(),
   );

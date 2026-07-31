@@ -53,7 +53,9 @@ async function buildContext(runAgent: () => Promise<string>): Promise<{
     context,
     backgroundManager,
     cleanup: async () => {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      // 任务状态翻转先于落盘 await 完成（run/runTracked 尾部），
+      // rm 与在飞写撞车会 ENOTEMPTY——重试覆盖收尾窗口（与 ws.test 同范式）
+      await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       restoreDataDir(originalDataDir);
     },
   };
@@ -111,6 +113,38 @@ describe("Subagents API", () => {
   it("returns 404 for unknown task id", async () => {
     const res = await authedRequest(app.server).get("/subagents/background/nope");
     expect(res.status).toBe(404);
+  });
+
+  it("resume：不存在 404、非 owner 404、running 409、终态恢复 running 且 attempts+1", async () => {
+    // 终态任务 resume 成功
+    backgroundManager.register(makeTask("t-resume"), config, 60_000);
+    await vi.waitFor(() => expect(backgroundManager.get("t-resume")?.status).toBe("completed"));
+
+    const notFound = await authedRequest(app.server).post("/agents/a1/subagents/nope/resume");
+    expect(notFound.status).toBe(404);
+
+    const notOwner = await authedRequest(app.server).post("/agents/other/subagents/t-resume/resume");
+    expect(notOwner.status).toBe(404);
+
+    const ok = await authedRequest(app.server).post("/agents/a1/subagents/t-resume/resume");
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ taskId: "t-resume", status: "running", attempts: 2 });
+    await vi.waitFor(() => expect(backgroundManager.get("t-resume")?.status).toBe("completed"));
+    expect(backgroundManager.get("t-resume")?.attempts).toBe(2);
+
+    // running 任务 resume 拒绝 409
+    await app.close();
+    await cleanup();
+    const built = await buildContext(() => new Promise<string>(() => {}));
+    backgroundManager = built.backgroundManager;
+    cleanup = built.cleanup;
+    app = await createServer(built.context);
+    await app.ready();
+    backgroundManager.register(makeTask("t-busy"), config, 60_000);
+    await vi.waitFor(() => expect(backgroundManager.get("t-busy")?.status).toBe("running"));
+
+    const conflict = await authedRequest(app.server).post("/agents/a1/subagents/t-busy/resume");
+    expect(conflict.status).toBe(409);
   });
 
   it("reflects failed status after runAgent rejects", async () => {

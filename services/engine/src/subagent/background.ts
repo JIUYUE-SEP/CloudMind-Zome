@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
 import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
 import type { SubagentTask } from "./types.js";
@@ -25,6 +26,8 @@ export interface BackgroundSubagent {
   timeoutMs: number;
   /** 执行尝试次数（swarm 限流续跑复用同一记录）；注册为 1 */
   attempts: number;
+  /** 终态通知幂等标记：任务记录生命周期内 notify 只发一次 */
+  notified: boolean;
   /** 运行期专用（任务消息与借用 agent 配置）；重启恢复的历史记录没有 */
   task?: SubagentTask;
   config?: AgentConfig;
@@ -45,6 +48,7 @@ function toRecord(bg: BackgroundSubagent): SubagentTaskRecord {
     endTime: bg.endTime,
     timeoutMs: bg.timeoutMs,
     attempts: bg.attempts,
+    notified: bg.notified,
   };
 }
 
@@ -63,6 +67,7 @@ function fromRecord(record: SubagentTaskRecord): BackgroundSubagent {
     endTime: record.endTime,
     timeoutMs: record.timeoutMs,
     attempts: record.attempts ?? 1,
+    notified: record.notified ?? false,
   };
 }
 
@@ -79,6 +84,12 @@ export class BackgroundManager {
       runAgent(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string>;
       /** puppet 后台执行口（2b）：傀儡任务不走 AgentWorker，经 PuppetRunner 裸跑 */
       runPuppet?(ownerAgentId: string, taskDescription: string, opts?: { signal?: AbortSignal }): Promise<string>;
+      /**
+       * 终态通知钩子（阶段 4）：任务进入 completed/failed 时调用（bootstrap 接线到
+       * owner worker 的注入通道）。幂等由管理器保证（notified 标记只发一次）；
+       * 回调抛错只记 warn，不影响任务收尾
+       */
+      onTaskTerminal?(bg: BackgroundSubagent): void;
     },
     private repository: SubagentTaskRepository,
   ) {}
@@ -108,6 +119,7 @@ export class BackgroundManager {
       startTime: Date.now(),
       timeoutMs,
       attempts: 1,
+      notified: false,
       task,
       config,
     };
@@ -140,6 +152,7 @@ export class BackgroundManager {
       startTime: Date.now(),
       timeoutMs,
       attempts: 1,
+      notified: false,
       task,
       config,
     };
@@ -164,6 +177,36 @@ export class BackgroundManager {
     bg.endTime = undefined;
     void this.persist(bg);
     return { taskId, completion: this.runTracked(bg, execute) };
+  }
+
+  /**
+   * 任务 resume（阶段 4）：终态任务按原 kind 走原路径重新执行——
+   * 统一语义 = 同简报重跑（delegate 不是常驻会话、傀儡本无状态，
+   * 都没有 kimi 那样的持久 wire 上下文可续，诚实差异注于此）。
+   * 复用原任务记录：taskId 不变、status 回 running、attempts+1、清 error/endTime。
+   * running 任务拒绝（REST 层映射 409）；不存在抛错（REST 层映射 404）。
+   */
+  resume(taskId: string): { taskId: string; completion: Promise<string> } {
+    const bg = this.tasks.get(taskId);
+    if (!bg) throw new Error(`Task ${taskId} not found`);
+    if (bg.status === "running") throw new Error(`Task ${taskId} is still running`);
+
+    const execute = (): Promise<string> => {
+      if (bg.kind === "puppet" && this.deps.runPuppet) {
+        return this.deps.runPuppet(bg.parentAgentId, bg.taskDescription);
+      }
+      // delegate：原简报重建 user 消息（与 dispatcher 首次派发同构），走 AgentWorker 路径
+      const messages: ChatMessage[] = [
+        {
+          id: randomUUID(),
+          role: "user",
+          content: [{ type: "text", text: bg.taskDescription }],
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      return this.deps.runAgent(bg.agentId, messages);
+    };
+    return this.retryTracked(taskId, execute);
   }
 
   /** 受管尝试统一收尾：成功写双轨输出，失败记 error；异常随 completion 上抛给调度核 */
@@ -197,6 +240,7 @@ export class BackgroundManager {
       throw err;
     } finally {
       if (timer) clearTimeout(timer);
+      await this.notifyTerminalOnce(bg);
       this.notify(bg);
     }
   }
@@ -235,7 +279,27 @@ export class BackgroundManager {
     } finally {
       if (timer) clearTimeout(timer);
     }
+    await this.notifyTerminalOnce(bg);
     this.notify(bg);
+  }
+
+  /**
+   * 终态通知（幂等）：completed/failed 时触发 onTaskTerminal 钩子；
+   * notified 标记随记录落盘——任务生命周期内只发一次（resume 后再终态不重复）；
+   * 钩子异常只记 warn，不影响任务收尾。落盘 await（不 fire-and-forget），
+   * 避免收尾后仍在飞的写与进程退出/测试清理撞车
+   */
+  private async notifyTerminalOnce(bg: BackgroundSubagent): Promise<void> {
+    if (bg.notified) return;
+    if (bg.status !== "completed" && bg.status !== "failed") return;
+    bg.notified = true;
+    await this.persist(bg);
+    if (!this.deps.onTaskTerminal) return;
+    try {
+      this.deps.onTaskTerminal(bg);
+    } catch (err) {
+      logger.warn({ err }, `[subagent] 任务 ${bg.taskId} 终态通知回调异常`);
+    }
   }
 
   /** 状态变更点落盘（同 Plan：注册/完成/失败）；落盘失败只记 warn，不影响任务语义 */

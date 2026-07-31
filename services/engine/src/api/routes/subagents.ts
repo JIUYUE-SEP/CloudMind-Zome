@@ -21,6 +21,7 @@ function toSummary(bg: BackgroundSubagent) {
     startTime: bg.startTime,
     endTime: bg.endTime,
     timeoutMs: bg.timeoutMs,
+    attempts: bg.attempts,
   };
 }
 
@@ -58,5 +59,35 @@ export async function registerSubagentRoutes(app: FastifyInstance, context: ApiC
       }
       throw err;
     }
+  });
+
+  /**
+   * 任务 resume（阶段 4）：终态任务同简报重跑（统一语义：delegate 非常驻会话、
+   * 傀儡本无状态，复用原记录 taskId 不变、attempts+1）。
+   * owner 校验：任务 parentAgentId 必须等于路径 agentId，否则按不存在处理（不泄露归属）。
+   */
+  app.post("/agents/:agentId/subagents/:taskId/resume", {
+    schema: { summary: "Resume a terminal background subagent task", tags: ["subagents"] },
+  }, async (request, reply) => {
+    const { agentId, taskId } = request.params as { agentId: string; taskId: string };
+    const manager = context.backgroundManager;
+    const bg = manager?.get(taskId);
+    if (!manager || !bg || bg.parentAgentId !== agentId) {
+      return reply.status(404).send({ error: "Task not found" });
+    }
+    if (bg.status === "running") {
+      return reply.status(409).send({ error: "Task is still running" });
+    }
+    // 并发 resume 竞态（review 建议）：双请求同过 409 前置检查时，
+    // 第二个 manager.resume() 抛 "still running"——映射为 409 而非冒泡 500
+    try {
+      manager.resume(taskId);
+    } catch (err) {
+      if (String(err).includes("still running")) {
+        return reply.status(409).send({ error: "Task is still running" });
+      }
+      throw err;
+    }
+    return toSummary(manager.get(taskId)!);
   });
 }

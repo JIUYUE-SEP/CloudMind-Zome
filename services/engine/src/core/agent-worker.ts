@@ -154,6 +154,39 @@ export class AgentWorker {
     }
   }
 
+  /**
+   * 通用系统通知注入通道（阶段 4；第一个消费者：subagent 任务终态通知，
+   * 未来 Intermind 复用同一通道）。通知作为一个普通 job 入队——串行不插队，
+   * 忙碌则排队，空闲即感知；防环靠队列串行 + 上游幂等标记。
+   *
+   * 消息角色选 user 而非 system：L1 system 位置是固定人格/纪律区（SOUL/安全准则），
+   * 任务通知是瞬时事件，语义上是"外部环境传来的一则消息"（与 kimi steer 注入同范式）。
+   * 通知文本先落热存储（感知回合的产出写历史——她"记得"这件事发生过），
+   * 再入队触发一轮正常感知（感知回合无审批通道：写类工具一律 fail-closed，含嵌套 dispatch——防环因此平凡成立）。
+   */
+  enqueueSystemNotice(text: string, sourceId: string): void {
+    const message: ChatMessage = {
+      id: randomUUID(),
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date().toISOString(),
+    };
+    this.config.messageRepository
+      .append({ ...message, sessionId: sourceId })
+      .catch((err) => {
+        logger.warn({ err: err }, "[agent-worker] 系统通知落盘失败（仍入队感知）");
+      });
+    this.enqueue({
+      id: `notice_${randomUUID()}`,
+      sessionId: sourceId,
+      messages: [message],
+      onEvent: () => {},
+      onDone: (err) => {
+        if (err) logger.warn({ err: err }, "[agent-worker] 系统通知感知回合失败");
+      },
+    });
+  }
+
   async runScheduledTask(job: ScheduledTaskJob): Promise<void> {
     if (job.sessionId) {
       for (const msg of job.messages) {

@@ -36,6 +36,8 @@ export interface AgentConfig {
   semanticTopK?: number;
   /** L4 最低相关度（向量相似度 × 时间衰减，0-1），缺省 0 不过滤 */
   semanticMinScore?: number;
+  /** subagent 任务终态通知注入（completed/failed 时向 owner 注入感知回合），缺省 true */
+  subagentNotify?: boolean;
   skills: string[];
   tools: string[];
 }
