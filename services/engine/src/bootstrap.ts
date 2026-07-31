@@ -23,6 +23,7 @@ import { getAgentDir, getDataDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
 import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
+import { createSkillService } from "./skills/service.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
 import { reconcileHotStorage, reconcileOrphanedTopic, reconcilePendingSegments } from "./memory/reconcile.js";
@@ -69,22 +70,6 @@ async function findBuiltinSkillsDir(): Promise<string | undefined> {
   return undefined;
 }
 
-/** 解析 Agent 配置的 skill 名称列表为可注入 prompt 的 SKILL.md 内容 */
-async function resolveAgentSkillPrompts(agentConfig: AgentConfig): Promise<string[]> {
-  const names = agentConfig.skills ?? [];
-  if (names.length === 0) return [];
-  const dirs: string[] = [];
-  const builtin = await findBuiltinSkillsDir();
-  if (builtin) dirs.push(builtin);
-  dirs.push(path.join(getDataDir(), "skills"));
-  dirs.push(path.join(getAgentDir(agentConfig.id), "skills"));
-  const skills = await loadSkills({ builtinDirs: dirs });
-  const byName = new Map(skills.map((s) => [s.name, s]));
-  return names
-    .map((n) => byName.get(n)?.content)
-    .filter((c): c is string => typeof c === "string" && c.length > 0);
-}
-
 async function main() {
   const configRepo = new ConfigRepository();
   const agentRepository = new AgentRepository();
@@ -97,6 +82,20 @@ async function main() {
   };
 
   const sidecarClient = new SidecarClient();
+
+  // 技能服务（阶段 5 一期，Skill 工具化）：L1 目录（发现入口）与 Skill 工具
+  // （取规程正文）共用同一套三级目录加载
+  const skillService = createSkillService({
+    getAgentConfig: (agentId) => agentRepository.get(agentId),
+    resolveDirs: async (agentId) => {
+      const dirs: string[] = [];
+      const builtin = await findBuiltinSkillsDir();
+      if (builtin) dirs.push(builtin);
+      dirs.push(path.join(getDataDir(), "skills"));
+      dirs.push(path.join(getAgentDir(agentId), "skills"));
+      return dirs;
+    },
+  });
 
   // MCP servers：启动时按 DATA_DIR/mcp-servers.json 连接，单个失败降级不影响整体
   const mcpManager = McpClientManager.loadDefault();
@@ -250,12 +249,13 @@ async function main() {
       approve: () => true,
       temperature: agentConfig.temperature,
       topP: agentConfig.topP,
-      skillPrompts: await resolveAgentSkillPrompts(agentConfig),
+      // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
+      skillCatalog: (await skillService.list(agentId)).map((s) => `- ${s.name}：${s.description}`),
       memoryIndexer,
       embedder,
       imageProvider,
       // swarm 只接 worker（主人会话）；傀儡 runtime 故意不接——防嵌套批量（16×16）
-      services: { subagentDispatcher, subagentSwarm },
+      services: { subagentDispatcher, subagentSwarm, skillService },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),
       // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）

@@ -33,4 +33,18 @@ describe("resolveConfiguredTools（P3-4，功能 M5）", () => {
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it("落差可见：配置了技能但白名单不含 skill 工具时 warn 提醒（stage 5 review）", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const withSkill = { ...makeConfig(["read_file"]), skills: ["code-review"] };
+    expect(resolveConfiguredTools(withSkill)).toEqual(["read_file"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('"skill"');
+    // 白名单已含 skill 或无技能配置：不 warn
+    warn.mockClear();
+    resolveConfiguredTools({ ...makeConfig(["skill"]), skills: ["code-review"] });
+    resolveConfiguredTools(makeConfig(["read_file"]));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });

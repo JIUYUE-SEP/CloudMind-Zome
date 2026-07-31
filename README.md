@@ -34,7 +34,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
 - **心智系统** — SOUL.md 人格核心注入 L1；MIND.md 动态经验档案（话题压缩时 LLM 沉淀、置信度过滤、注入防御）
 - **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
-- **Skill 系统** — 基于 SKILL.md 的技能加载（内置目录 / 全局目录 / Agent 私有目录），内容注入 system prompt
+- **Skill 系统** — 基于 SKILL.md 的技能加载（内置目录 / 全局目录 / Agent 私有目录），已工具化：L1 只注技能目录（名字+一句话）作发现入口，规程正文经 `skill` 工具按名取回（不预塞全文进上下文）；技能不存在返回可用列表（fail-closed）
 - **Plan / Subagent** — 计划管理（REST，plans.jsonl 持久化，重启自动恢复）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent；后台任务持久化 subagent-tasks.jsonl，重启 running 标 lost，输出超 ~4KB 截尾 preview + 全量 log 双轨；`kind` 分型——delegate 借用人形 / puppet 傀儡：调用方的一次性分身，无 SOUL 无记忆、记忆即弃，用主人的模型与工具裸跑，写类操作回主人会话审批）；终态任务可 resume（`POST /agents/:id/subagents/:taskId/resume`，同简报重跑、复用记录 attempts+1）；任务终态通知注入 owner 感知回合（开关 `subagentNotify` 缺省开）；`dispatch_subagent_batch` 批量 swarm（模板 × ≤16 items 全傀儡派发，burst 坡道 + 429 限流自适应续跑，结果 XML 原位聚合，无审批桥接——面向只读/分析/汇总类批量任务）
 - **定时任务** — Cron 调度，到点自动给 Agent 派发任务
 - **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试）；错误分类重试（429/5xx/网络/超时指数退避）+ Agent 级备用 Provider 降级链（`fallbackProviderIds`）

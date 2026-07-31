@@ -6,6 +6,7 @@ import { editFileTool } from "./edit_file.js";
 import { runCommandTool } from "./run_command.js";
 import { dispatchSubagentTool } from "./dispatch_subagent.js";
 import { dispatchSubagentBatchTool } from "./dispatch_subagent_batch.js";
+import { skillTool } from "./skill.js";
 import type { Tool } from "../types.js";
 
 export function getBuiltinTools(): Tool[] {
@@ -18,5 +19,6 @@ export function getBuiltinTools(): Tool[] {
     runCommandTool,
     dispatchSubagentTool,
     dispatchSubagentBatchTool,
+    skillTool,
   ];
 }
