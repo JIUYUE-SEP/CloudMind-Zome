@@ -6,12 +6,22 @@ import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
+import { PuppetRunner } from "../../src/subagent/puppet.js";
+import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ToolContext } from "../../src/tools/types.js";
 import type { AgentConfig } from "@mindcloud/shared";
 
 const borrowedConfig: AgentConfig = {
   id: "a2",
   name: "A2",
+  persona: "",
+  model: "mock",
+  skills: [],
+  tools: [],
+};
+const ownerConfig: AgentConfig = {
+  id: "a1",
+  name: "A1",
   persona: "",
   model: "mock",
   skills: [],
@@ -42,6 +52,21 @@ function makeDispatcher(runAgent: (agentId: string) => Promise<string> = async (
       { runAgent },
       new SubagentTaskRepository(path.join(tmpDir, `tasks-${repoSeq++}.jsonl`)),
     ),
+  });
+}
+
+/** 带 puppet 执行路径的 dispatcher（Mock provider 裸跑，runtime 仅 owner 可解析） */
+function makePuppetDispatcher() {
+  const runner = new PuppetRunner({
+    getRuntime: async (id) =>
+      id === "a1"
+        ? { provider: new MockLLMProvider(), model: "mock", tools: [], workspaceDir: tmpDir }
+        : undefined,
+  });
+  return new SubagentDispatcher({
+    getAgentConfig: async (id) => (id === "a1" ? ownerConfig : id === "a2" ? borrowedConfig : undefined),
+    runAgent: async () => "delegate result",
+    puppet: runner,
   });
 }
 
@@ -91,5 +116,41 @@ describe("dispatch_subagent tool", () => {
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain("not available");
+  });
+
+  it("kind=puppet 无需指定目标 agentId：傀儡裸跑返回蒸馏结论", async () => {
+    const result = await dispatchSubagentTool.execute(makeCtx(makePuppetDispatcher()), {
+      task: "summarize this",
+      kind: "puppet",
+    });
+    expect(result.success).toBe(true);
+    expect((result.output as { output: string }).output).toBe("Hello from mock");
+  });
+
+  it("kind=puppet 忽略未知 agentId（傀儡是调用方自己的分身）", async () => {
+    const result = await dispatchSubagentTool.execute(makeCtx(makePuppetDispatcher()), {
+      agentId: "ghost",
+      task: "summarize this",
+      kind: "puppet",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("kind=delegate 缺 agentId 明确报错", async () => {
+    const result = await dispatchSubagentTool.execute(makeCtx(makePuppetDispatcher()), {
+      task: "hi",
+      kind: "delegate",
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("agentId 缺失");
+  });
+
+  it("kind=puppet 未接线 PuppetRunner 时明确报错", async () => {
+    const result = await dispatchSubagentTool.execute(makeCtx(makeDispatcher()), {
+      task: "hi",
+      kind: "puppet",
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("PuppetRunner not available");
   });
 });

@@ -3,14 +3,17 @@ import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { MAX_FOREGROUND_TIMEOUT_MS } from "../../subagent/dispatcher.js";
 
 const parameters = z.object({
-  agentId: z.string().describe("要借用的目标 Agent id"),
+  agentId: z
+    .string()
+    .optional()
+    .describe("要借用的目标 Agent id（kind=delegate 时必填；kind=puppet 时忽略、可缺省——傀儡是调用方自己的分身）"),
   task: z.string().describe("交给子 Agent 执行的任务描述"),
   mode: z.enum(["foreground", "background"]).default("foreground"),
   timeoutMs: z.number().int().positive().optional(),
   kind: z
     .enum(["puppet", "delegate"])
     .optional()
-    .describe("子 Agent 分型：delegate=借用人形（默认，现状语义）；puppet=傀儡（预留，暂按 delegate 执行）"),
+    .describe("子 Agent 分型：delegate=借用人形（默认）；puppet=傀儡（自己的一次性分身，无人格无记忆）"),
 });
 
 export const dispatchSubagentTool: Tool = {
@@ -25,7 +28,10 @@ export const dispatchSubagentTool: Tool = {
     "⑥ 子 Agent 运行中不并行重做它的搜索/读取，不中途抛弃它手动收尾（两者都会抵消委派省下的上下文）；" +
     "⑦ 子 Agent 的结果只对调用者可见——用户需要看到时，由你在自己的回复里转述要点。" +
     "foreground 模式等待并返回子 Agent 的最终文本；background 模式立即返回 taskId，" +
-    "结果写入后台任务记录（你无法自助查询，用户可查看）。不能借用自己。",
+    "结果写入后台任务记录（你无法自助查询，用户可查看）。不能借用自己。" +
+    "kind=puppet 时派遣傀儡而非借用：傀儡是你的一次性分身——无人格无记忆、记忆即弃，" +
+    "用你的模型与工具裸跑（写类操作：前台模式桥接回当前会话审批，后台模式无审批通道一律拒绝），适合批量/重型中间过程；" +
+    "同类批量任务建议等后续 swarm 能力，勿循环串行派遣。",
   parameters,
   accesses: [],
   // P2-5（安全 review 注入 Major-6）：派生子 agent 是跨 agent confused
@@ -52,11 +58,18 @@ export const dispatchSubagentTool: Tool = {
         ? Math.min(parsed.timeoutMs ?? 120_000, MAX_FOREGROUND_TIMEOUT_MS)
         : parsed.timeoutMs;
 
+    const kind = parsed.kind ?? "delegate";
+    if (kind !== "puppet" && !parsed.agentId) {
+      return { success: false, error: "agentId 缺失：kind=delegate 必须指定借用目标（puppet 模式可缺省）" };
+    }
+
     try {
-      const result = await dispatcher.dispatch(ctx.agentId, parsed.agentId, parsed.task, {
+      const result = await dispatcher.dispatch(ctx.agentId, parsed.agentId ?? ctx.agentId, parsed.task, {
         mode: parsed.mode,
         timeoutMs,
-        kind: parsed.kind,
+        kind,
+        // puppet 前台的审批桥接：傀儡的写类工具回 owner 发起会话的审批通道
+        approve: ctx.approve,
       });
       if (typeof result === "string") {
         return { success: true, output: { taskId: result } };

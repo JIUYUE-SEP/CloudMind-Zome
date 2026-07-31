@@ -71,7 +71,11 @@ export class BackgroundManager {
   private listeners: Array<(task: BackgroundSubagent) => void> = [];
 
   constructor(
-    private deps: { runAgent(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string> },
+    private deps: {
+      runAgent(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string>;
+      /** puppet 后台执行口（2b）：傀儡任务不走 AgentWorker，经 PuppetRunner 裸跑 */
+      runPuppet?(ownerAgentId: string, taskDescription: string, opts?: { signal?: AbortSignal }): Promise<string>;
+    },
     private repository: SubagentTaskRepository,
   ) {}
 
@@ -112,8 +116,14 @@ export class BackgroundManager {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // puppet 走傀儡裸跑（owner=parentAgentId，无审批通道——写类工具 fail-closed）；
+      // delegate 走 AgentWorker 队列（现状路径）
+      const execution =
+        bg.kind === "puppet" && this.deps.runPuppet
+          ? this.deps.runPuppet(bg.parentAgentId, bg.taskDescription, { signal: controller.signal })
+          : this.deps.runAgent(bg.config.id, bg.task.messages, { signal: controller.signal });
       const full = await Promise.race([
-        this.deps.runAgent(bg.config.id, bg.task.messages, { signal: controller.signal }),
+        execution,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("timeout")), bg.timeoutMs);
         }),

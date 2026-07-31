@@ -144,6 +144,23 @@ describe("Subagents API", () => {
     expect(byId.get("t-kind-2")).toMatchObject({ kind: "puppet" });
   });
 
+  it("puppet 任务 REST 暴露：agentId=owner、kind=puppet", async () => {
+    // dispatcher 对 puppet 传 owner 配置（记 owner 而非借用目标），此处按同一语义注册
+    const ownerConfig: AgentConfig = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    backgroundManager.register(makeTask("t-puppet"), ownerConfig, 60_000, "puppet");
+    await vi.waitFor(() => expect(backgroundManager.get("t-puppet")?.status).toBe("completed"));
+
+    const res = await authedRequest(app.server).get("/subagents/background/t-puppet");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      taskId: "t-puppet",
+      parentAgentId: "a1",
+      agentId: "a1",
+      kind: "puppet",
+      status: "completed",
+    });
+  });
+
   it("输出双轨：summary 是截尾 preview，/output 端点返回全量", async () => {
     const big = "y".repeat(5000) + "END";
     await app.close();

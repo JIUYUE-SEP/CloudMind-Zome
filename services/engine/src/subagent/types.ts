@@ -23,6 +23,8 @@ export interface SubagentResult {
 export interface SubagentOptions {
   mode: "foreground" | "background";
   timeoutMs?: number;
-  /** 缺省 "delegate"（兼容现状）；kind=puppet 在 2b 前按 delegate 同等执行 */
+  /** 缺省 "delegate"（兼容现状）；kind=puppet 走傀儡执行路径（忽略借用目标，记 owner） */
   kind?: SubagentTaskKind;
+  /** puppet 前台审批桥接：owner 发起会话的 approve 回调（无则写类工具 fail-closed） */
+  approve?: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
 }

@@ -33,6 +33,7 @@ import { PlanRepository } from "./plan/repository.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
 import { SubagentTaskRepository } from "./subagent/task-repository.js";
+import { PuppetRunner, type PuppetRuntime } from "./subagent/puppet.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
@@ -125,14 +126,51 @@ async function main() {
     });
   }
 
+  // puppet 执行路径（2b）：傀儡 = 调用方的一次性分身（无 SOUL/无记忆/记忆即弃），
+  // provider/model/工具复用 worker 创建链（resilient(record(provider))，含 MCP 工具），
+  // LLM 调用落档记 owner；不走 AgentWorker，runTurn 裸跑
+  const puppetRunner = new PuppetRunner({
+    getRuntime: async (ownerAgentId): Promise<PuppetRuntime | undefined> => {
+      const agentConfig = await agentRepository.get(ownerAgentId);
+      if (!agentConfig) return undefined;
+      const recordLLM = (p: LLMProvider) =>
+        withLLMCallRecording(p, new LLMCallRepository(ownerAgentId), ownerAgentId);
+      const primaryProviderConfig = await findProviderConfig(agentConfig.providerId);
+      const provider = new ResilientLLMProvider(recordLLM(await createLLMProvider(agentConfig)), {
+        maxRetries: primaryProviderConfig?.maxRetries ?? 2,
+        fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
+        fallbackFactory: async (id) => {
+          const fallback = await createFallbackLLMProvider(id, agentConfig);
+          return fallback ? recordLLM(fallback) : undefined;
+        },
+      });
+      return {
+        provider,
+        model: agentConfig.modelId || agentConfig.model || "gpt-4o",
+        tools: [
+          ...getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name)),
+          // MCP 工具动态命名（mcp__ 前缀），与 worker 同一份快照
+          ...mcpManager.getTools(),
+        ],
+        workspaceDir: getAgentDir(ownerAgentId),
+        services: { subagentDispatcher },
+      };
+    },
+  });
+
   const backgroundManager = new BackgroundManager(
-    { runAgent: runAgentCollect },
+    {
+      runAgent: runAgentCollect,
+      runPuppet: (ownerAgentId, taskDescription, opts) =>
+        puppetRunner.run(ownerAgentId, taskDescription, { signal: opts?.signal }),
+    },
     new SubagentTaskRepository(),
   );
   const subagentDispatcher = new SubagentDispatcher({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
     runAgent: runAgentCollect,
     background: backgroundManager,
+    puppet: puppetRunner,
   });
 
   const planManagers = new Map<string, PlanManager>();
