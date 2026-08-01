@@ -39,6 +39,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   restoreDataDir(originalDataDir);
   await fsp.rm(tmpDir, { recursive: true, force: true });
 });
@@ -59,6 +60,22 @@ function makeTask(id: string): SubagentTask {
   };
 }
 
+/**
+ * register() 里的 run() 是 fire-and-forget：status 翻 completed 只是执行主体完成，
+ * 尾巴（persist、notified 落盘、终态通知回调）仍在飞。等 notified 落盘 = 该尾巴的
+ * 最后一次持久化已收尾，resume 或下一用例开始前不存在迟到写覆盖/跨目录漂移。
+ */
+async function waitForBackgroundTail(
+  repository: SubagentTaskRepository,
+  taskId: string,
+  attempts = 1,
+): Promise<void> {
+  await vi.waitFor(async () => {
+    const record = (await repository.loadAll()).find((r) => r.taskId === taskId);
+    expect(record).toMatchObject({ status: "completed", attempts, notified: true });
+  });
+}
+
 describe("① resume 傀儡任务", () => {
   it("终态→running→completed，taskId 复用、attempts+1、双轨输出更新", async () => {
     let round = 0;
@@ -71,6 +88,7 @@ describe("① resume 傀儡任务", () => {
     );
     manager.register(makeTask("t-p"), ownerConfig, 60_000, "puppet");
     await vi.waitFor(() => expect(manager.get("t-p")?.status).toBe("completed"));
+    await waitForBackgroundTail(repository, "t-p");
     expect(manager.get("t-p")?.output).toBe("puppet round 1");
 
     const handle = manager.resume("t-p");
@@ -90,13 +108,22 @@ describe("① resume 傀儡任务", () => {
   });
 
   it("running 任务 resume 拒绝；不存在抛错", async () => {
+    vi.useFakeTimers();
+    let releaseRun!: () => void;
+    // 受控 gate 代替 `new Promise(() => {})`：断言期间任务保持 running，
+    // 断言后放行让 run() 正常收尾——不留永挂 promise 和 60s 真实定时器给后续用例
+    const gate = new Promise<string>((resolve) => {
+      releaseRun = () => resolve("puppet done");
+    });
     const manager = new BackgroundManager(
-      { runAgent: () => new Promise(() => {}), runPuppet: () => new Promise(() => {}) },
+      { runAgent: () => new Promise(() => {}), runPuppet: () => gate },
       repository,
     );
     manager.register(makeTask("t-running"), ownerConfig, 60_000, "puppet");
     expect(() => manager.resume("t-running")).toThrow("still running");
     expect(() => manager.resume("ghost")).toThrow("not found");
+    releaseRun();
+    await waitForBackgroundTail(repository, "t-running");
   });
 });
 
@@ -117,6 +144,7 @@ describe("② resume delegate", () => {
     );
     manager.register(makeTask("t-d"), borrowedConfig, 60_000, "delegate");
     await vi.waitFor(() => expect(manager.get("t-d")?.status).toBe("completed"));
+    await waitForBackgroundTail(repository, "t-d");
 
     const handle = manager.resume("t-d");
     const output = await handle.completion;
@@ -157,12 +185,15 @@ describe("④ 通知注入", () => {
 
     manager.register(makeTask("t-notify"), ownerConfig, 60_000, "puppet");
     await vi.waitFor(() => expect(manager.get("t-notify")?.status).toBe("completed"));
+    await waitForBackgroundTail(repository, "t-notify");
 
     // 感知回合：通知（user）+ 产出（assistant）进 owner 历史
     await vi.waitFor(async () => {
       const history = await messageRepository.listBySession("notice_t-notify");
       expect(history.length).toBeGreaterThanOrEqual(2);
     });
+    // 通知 job 已入队并跑完（worker 回 idle）后再快照，避免固定 sleep 猜时序
+    await worker.waitForIdle();
     const history = await messageRepository.listBySession("notice_t-notify");
     expect(history[0]).toMatchObject({ role: "user" });
     const noticeText = history[0]!.content.map((c) => (c.type === "text" ? c.text : "")).join("");
@@ -176,7 +207,9 @@ describe("④ 通知注入", () => {
       const records = await repository.loadAll();
       expect(records.find((r) => r.taskId === "t-notify")).toMatchObject({ notified: true, attempts: 2 });
     });
-    await new Promise((r) => setTimeout(r, 300)); // 给潜在重复通知留出暴露窗口
+    // 确定性替代 300ms 暴露窗口：resume 不会再入队通知（notified 幂等），
+    // 若真有迟到/重复 job，waitForIdle 会等它排空后再断言
+    await worker.waitForIdle();
     const after = await messageRepository.listBySession("notice_t-notify");
     expect(after.length).toBe(history.length);
   });
@@ -210,13 +243,22 @@ describe("⑤ 开关关闭时无注入", () => {
       messageRepository,
       approve: () => true,
     });
+    // notifier 内部是 fire-and-forget 的 async IIFE，完成与否无直接可观测点：
+    // 用受控 gate 卡住配置读取，等 notifier 确定已进入判定后再放行，
+    // 替代固定 300ms "暴露窗口"（判定是否完成由此可观测、无墙钟依赖）
+    let resolveOwnerConfig!: (config: AgentConfig | undefined) => void;
+    const ownerConfigGate = new Promise<AgentConfig | undefined>((resolve) => {
+      resolveOwnerConfig = resolve;
+    });
+    const getAgentConfig = vi.fn(() => ownerConfigGate);
+    const getWorker = vi.fn(async () => worker);
     const manager = new BackgroundManager(
       {
         runAgent: async () => "delegate",
         runPuppet: async () => "傀儡结论",
         onTaskTerminal: createSubagentTerminalNotifier({
-          getAgentConfig: async () => ({ ...ownerConfig, subagentNotify: false }),
-          getWorker: async () => worker,
+          getAgentConfig,
+          getWorker,
         }),
       },
       repository,
@@ -224,8 +266,14 @@ describe("⑤ 开关关闭时无注入", () => {
 
     manager.register(makeTask("t-off"), ownerConfig, 60_000, "puppet");
     await vi.waitFor(() => expect(manager.get("t-off")?.status).toBe("completed"));
-    await new Promise((r) => setTimeout(r, 300)); // 给潜在误注入留出暴露窗口
+    await vi.waitFor(() => expect(getAgentConfig).toHaveBeenCalled());
+    resolveOwnerConfig({ ...ownerConfig, subagentNotify: false });
+    // gate resolve 后 notifier 续体只剩同步微任务（开关判定 → return），
+    // 两次 await 让判定落地，无需墙钟窗口
+    await Promise.resolve();
+    await Promise.resolve();
 
+    expect(getWorker).not.toHaveBeenCalled();
     expect(await messageRepository.listBySession("notice_t-off")).toHaveLength(0);
     expect(worker.status).toBe("idle");
   });
