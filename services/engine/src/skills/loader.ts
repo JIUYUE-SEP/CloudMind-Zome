@@ -77,7 +77,7 @@ function extractFrontmatter(content: string): Record<string, string> | undefined
 function parseSkillManifest(content: string): SkillManifest {
   // 双格式支持（2026-08-01 起）：
   // 1. YAML frontmatter（--- 包裹，小写 name/description/version）——对齐外部技能生态
-  //    （kimi/Claude skills 通用格式），存在时优先；
+  //    （kimi/Claude skills 通用格式），name 非空时优先（空块回退 legacy）；
   // 2. 行前缀格式（Name:/Description:/Version:）——CMZ 早期格式，向后兼容回退。
   const fm = extractFrontmatter(content);
   // 优先级判据是 fm.name 非空而非"块存在"：空块/仅无关键的 frontmatter 回退 legacy（review P2-2）
