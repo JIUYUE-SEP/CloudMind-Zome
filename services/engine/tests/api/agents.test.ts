@@ -299,4 +299,34 @@ describe("Agent API", () => {
     expect(saved.tags).toEqual(["test", "extended"]);
     await app.close();
   });
+
+  it("PUT 合并语义：未传字段保留原值（真机踩坑修复）", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "人格设定", model: "mock", skills: ["s1"], tools: ["read_file"], subagentNotify: true };
+    await authedRequest(app.server).post("/agents").send(agent);
+
+    // 部分更新：只改 name
+    const putRes = await authedRequest(app.server).put("/agents/a1").send({ name: "Renamed" });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.name).toBe("Renamed");
+
+    // 未传字段全部保留
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.body.persona).toBe("人格设定");
+    expect(getRes.body.skills).toEqual(["s1"]);
+    expect(getRes.body.tools).toEqual(["read_file"]);
+    expect(getRes.body.subagentNotify).toBe(true);
+    await app.close();
+  });
+
+  it("POST/PUT 接受 subagentNotify 字段（白名单补全）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server)
+      .post("/agents")
+      .send({ id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [], subagentNotify: false });
+    expect(res.status).toBe(200);
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.body.subagentNotify).toBe(false);
+    await app.close();
+  });
 });

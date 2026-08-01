@@ -55,7 +55,37 @@ async function loadSkill(skillDir: string): Promise<Skill | undefined> {
   }
 }
 
+// 极简 frontmatter 提取：仅解析顶层 `key: value` 标量行（剥首尾引号），
+// 不支持多行值/嵌套——清单三字段够用，不为此引入 YAML 依赖。
+function extractFrontmatter(content: string): Record<string, string> | undefined {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+  if (!m) return undefined;
+  const out: Record<string, string> = {};
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    let v = kv[2].trim();
+    if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+      v = v.slice(1, -1);
+    }
+    out[kv[1]] = v;
+  }
+  return out;
+}
+
 function parseSkillManifest(content: string): SkillManifest {
+  // 双格式支持（2026-08-01 起）：
+  // 1. YAML frontmatter（--- 包裹，小写 name/description/version）——对齐外部技能生态
+  //    （kimi/Claude skills 通用格式），存在时优先；
+  // 2. 行前缀格式（Name:/Description:/Version:）——CMZ 早期格式，向后兼容回退。
+  const fm = extractFrontmatter(content);
+  if (fm) {
+    return {
+      name: fm["name"] || "unnamed",
+      description: fm["description"] || "",
+      version: fm["version"] || "0.1.0",
+    };
+  }
   const lines = content.split("\n");
   const name = extractHeader(lines, "Name:") || "unnamed";
   const description = extractHeader(lines, "Description:") || "";

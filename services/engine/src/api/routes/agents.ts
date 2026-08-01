@@ -13,6 +13,7 @@ const KNOWN_AGENT_FIELDS = new Set([
   "id", "name", "codename", "description", "persona", "tags", "representColor",
   "providerId", "modelId", "model", "embedderProviderId", "embedderModelId",
   "fallbackProviderIds",
+  "subagentNotify",
   "imageProviderId", "imageModelId", "temperature", "topP", "maxContextTokens",
   "compressionModel", "topicDetectionWindowMinutes", "topicMessageThreshold",
   "semanticSearchEnabled", "semanticTopK", "semanticMinScore",
@@ -98,8 +99,13 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     if (config.id !== undefined && !isValidAgentId(config.id)) {
       return reply.status(400).send({ error: "Invalid agent id in body" });
     }
-    await context.agentRepository.save(id, config);
-    return config;
+    // 合并语义（2026-08-01 起，真机验证踩坑修复）：未传字段保留原值，
+    // 不再整体覆盖——部分更新的调用方曾把 persona/skills/tools 等字段静默洗掉。
+    // 显式清空字段传空数组/空串；前端全量表单提交行为不受影响。
+    const existing = await context.agentRepository.get(id);
+    const merged = existing ? { ...existing, ...config, id } : config;
+    await context.agentRepository.save(id, merged);
+    return merged;
   });
 
   app.delete("/agents/:id", {

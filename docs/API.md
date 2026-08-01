@@ -23,7 +23,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /agents` — 列出所有 Agent
 - `POST /agents` — 创建 Agent
 - `GET /agents/:id` — 获取 Agent
-- `PUT /agents/:id` — 更新 Agent
+- `PUT /agents/:id` — 更新 Agent（**合并语义**：未传字段保留原值；显式清空传空数组/空串。2026-08-01 前为整体覆盖，部分更新会丢失未传字段）
 - `DELETE /agents/:id` — 删除 Agent
 
 **Agent 配置项（`AgentConfig`，创建/更新时可传的可选字段）**：
