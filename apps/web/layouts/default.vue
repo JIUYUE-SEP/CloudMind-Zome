@@ -23,7 +23,6 @@
           <span>我</span>
         </button>
         <button class="bar-btn" @click="navigateTo('/self-image')">心智侧写</button>
-        <button class="bar-btn" @click="navigateTo('/user-profile')">用户档案</button>
         <button class="bar-btn" @click="navigateTo('/compute')">算力余量</button>
       </div>
     </footer>
