@@ -329,4 +329,24 @@ describe("Agent API", () => {
     expect(getRes.body.subagentNotify).toBe(false);
     await app.close();
   });
+
+  it("PUT 显式清空数组字段（skills: []）生效", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/agents").send({ id: "a1", name: "A1", persona: "", model: "mock", skills: ["s1"], tools: ["read_file"] });
+    const putRes = await authedRequest(app.server).put("/agents/a1").send({ skills: [] });
+    expect(putRes.status).toBe(200);
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.body.skills).toEqual([]);
+    expect(getRes.body.tools).toEqual(["read_file"]);
+    await app.close();
+  });
+
+  it("PUT 对不存在 id 走 upsert 创建", async () => {
+    const app = await makeApp();
+    const putRes = await authedRequest(app.server).put("/agents/newbie").send({ name: "Newbie", persona: "", model: "mock", skills: [], tools: [] });
+    expect(putRes.status).toBe(200);
+    const getRes = await authedRequest(app.server).get("/agents/newbie");
+    expect(getRes.body.name).toBe("Newbie");
+    await app.close();
+  });
 });

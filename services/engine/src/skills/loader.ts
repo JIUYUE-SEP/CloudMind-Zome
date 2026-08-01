@@ -33,7 +33,8 @@ async function loadSkill(skillDir: string): Promise<Skill | undefined> {
   const manifestPath = path.join(skillDir, "SKILL.md");
   const schemaPath = path.join(skillDir, "schema.json");
   try {
-    const manifestContent = await fs.readFile(manifestPath, "utf-8");
+    // 剥 UTF-8 BOM：Windows 编辑器（记事本等）保存的 SKILL.md 常带 BOM，不剥会让 frontmatter 正则静默失配
+    const manifestContent = (await fs.readFile(manifestPath, "utf-8")).replace(/^\uFEFF/, "");
     const manifest = parseSkillManifest(manifestContent);
     let configSchema: unknown | undefined;
     try {
@@ -79,9 +80,10 @@ function parseSkillManifest(content: string): SkillManifest {
   //    （kimi/Claude skills 通用格式），存在时优先；
   // 2. 行前缀格式（Name:/Description:/Version:）——CMZ 早期格式，向后兼容回退。
   const fm = extractFrontmatter(content);
-  if (fm) {
+  // 优先级判据是 fm.name 非空而非"块存在"：空块/仅无关键的 frontmatter 回退 legacy（review P2-2）
+  if (fm && fm["name"]) {
     return {
-      name: fm["name"] || "unnamed",
+      name: fm["name"],
       description: fm["description"] || "",
       version: fm["version"] || "0.1.0",
     };
