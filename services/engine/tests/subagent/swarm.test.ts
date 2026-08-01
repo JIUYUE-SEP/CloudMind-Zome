@@ -81,6 +81,14 @@ describe("⑤ 任务记录与限流续跑", () => {
     // 真实时钟：runTracked 的落盘是真实 fs I/O，与 fake timers 交织易悬置；
     // 限流退避 3s 真实等待（测试超时放宽到 15s）
     const 甲Attempts: string[] = [];
+    // 乙挂起闸门替代固定 200ms 墙钟窗口：甲首次 429 时乙必须仍未完成，
+    // 甲才会回队续跑而非末位 failed。以甲首次失败的终态 onUpdate 为放行
+    // 信号——该信号之后只剩微任务链上的 requeue 判定，乙的落盘链必在其后，
+    // 无墙钟时序依赖
+    let release乙!: () => void;
+    const 乙Gate = new Promise<string>((resolve) => {
+      release乙 = () => resolve("done:处理 乙");
+    });
     const { swarm, background } = makeSwarm(async (_owner, prompt) => {
       if (prompt.includes("甲")) {
         甲Attempts.push(prompt);
@@ -89,11 +97,15 @@ describe("⑤ 任务记录与限流续跑", () => {
         }
       }
       if (prompt.includes("乙")) {
-        // 乙挂起闸门：甲首次 429 时乙未完成，甲才会回队续跑而非末位 failed
-        // （只需盖过甲的首次失败，甲第二次即成功）
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        return 乙Gate;
       }
       return `done:${prompt}`;
+    });
+    const off = background.onUpdate((bg) => {
+      if (bg.taskDescription.includes("甲") && bg.status === "failed" && bg.notified) {
+        off();
+        release乙();
+      }
     });
 
     const results = await swarm.run("a1", items(["甲", "乙"]));

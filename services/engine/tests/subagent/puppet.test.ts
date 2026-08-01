@@ -5,7 +5,7 @@
  * ③ 记忆即弃（调用方热存储/工作区零新增）；
  * ④ kind=puppet 落盘 agentId=owner；⑤ 后台模式 taskId 可查询；⑥ delegate 回归。
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -15,6 +15,7 @@ import { PuppetRunner, buildPuppetSystemPrompt, type PuppetRuntime } from "../..
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
+import { waitForTerminalTail } from "../helpers/background-tail.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { getAgentDir } from "../../src/config/paths.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -192,7 +193,8 @@ describe("④⑤ kind=puppet 后台：落盘 agentId=owner + taskId 可查询", 
     })) as string;
     expect(typeof taskId).toBe("string");
 
-    await vi.waitFor(() => expect(background.get(taskId)?.status).toBe("completed"));
+    // 确定性等后台尾巴收完（落盘/notified），替代 1s 轮询预算
+    await waitForTerminalTail(background, taskId);
     expect(background.get(taskId)).toMatchObject({
       parentAgentId: "a1",
       agentId: "a1", // 傀儡无独立人形，记 owner
@@ -200,10 +202,6 @@ describe("④⑤ kind=puppet 后台：落盘 agentId=owner + taskId 可查询", 
       output: "傀儡后台结果",
     });
 
-    await vi.waitFor(async () => {
-      const records = await repository.loadAll();
-      expect(records.find((r) => r.taskId === taskId)?.status).toBe("completed");
-    });
     const record = (await repository.loadAll())[0]!;
     expect(record).toMatchObject({ agentId: "a1", kind: "puppet", outputPreview: "傀儡后台结果" });
   });

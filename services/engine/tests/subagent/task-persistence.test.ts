@@ -16,6 +16,7 @@ import {
   SubagentTaskRepository,
 } from "../../src/subagent/task-repository.js";
 import type { SubagentTask } from "../../src/subagent/types.js";
+import { waitForTerminalTail } from "../helpers/background-tail.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { AgentConfig } from "@mindcloud/shared";
 
@@ -33,6 +34,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   restoreDataDir(originalDataDir);
   await fsp.rm(tmpDir, { recursive: true, force: true });
 });
@@ -60,12 +62,9 @@ describe("① 持久化往返", () => {
 
     manager.register(makeTask(randomUUID()), config, 60_000);
     const taskId = manager.list()[0]!.taskId;
-    await vi.waitFor(() => expect(manager.get(taskId)?.status).toBe("completed"));
-    // 完成路径的落盘在状态翻转后异步完成，等落盘追平
-    await vi.waitFor(async () => {
-      const records = await repository.loadAll();
-      expect(records.find((r) => r.taskId === taskId)?.status).toBe("completed");
-    });
+    // 终态尾巴（output.log/终态落盘/notified 落盘）收完再断言，
+    // 不依赖 1s 轮询预算与内存状态先于落盘翻转的时序
+    await waitForTerminalTail(manager, taskId);
 
     const records = await repository.loadAll();
     expect(records).toHaveLength(1);
@@ -95,10 +94,7 @@ describe("① 持久化往返", () => {
 
     manager.register(makeTask(randomUUID()), config, 60_000);
     const taskId = manager.list()[0]!.taskId;
-    await vi.waitFor(async () => {
-      const records = await repository.loadAll();
-      expect(records.find((r) => r.taskId === taskId)?.status).toBe("failed");
-    });
+    await waitForTerminalTail(manager, taskId);
 
     const record = (await repository.loadAll())[0]!;
     expect(record.error).toContain("bg boom");
@@ -107,6 +103,10 @@ describe("① 持久化往返", () => {
 
 describe("② 重启 lost 语义", () => {
   it("新 repository/manager 实例 load()：running 标 lost 且可查询", async () => {
+    // fake timers：模拟崩溃的"永不返回"任务不再挂真实 60s 超时定时器
+    // （真实定时器会让本文件 fork 多活 60s）；vi.waitFor 在 fake timers
+    // 下自动推进，落盘轮询不受影响
+    vi.useFakeTimers();
     // 上一世：任务一直处于 running（runAgent 永不返回），模拟 engine 崩溃/重启
     const repository = new SubagentTaskRepository(repoPath);
     const manager = new BackgroundManager({ runAgent: () => new Promise(() => {}) }, repository);
@@ -136,10 +136,7 @@ describe("② 重启 lost 语义", () => {
     const manager = new BackgroundManager({ runAgent: async () => "ok" }, repository);
     manager.register(makeTask(randomUUID()), config, 60_000);
     const taskId = manager.list()[0]!.taskId;
-    await vi.waitFor(async () => {
-      const records = await repository.loadAll();
-      expect(records.find((r) => r.taskId === taskId)?.status).toBe("completed");
-    });
+    await waitForTerminalTail(manager, taskId);
 
     const manager2 = new BackgroundManager(
       { runAgent: async () => "" },
@@ -159,10 +156,11 @@ describe("③ kind 分型埋入", () => {
     manager.register(makeTask(randomUUID()), config, 60_000);
     manager.register(makeTask(randomUUID()), config, 60_000, "puppet");
     const [delegateTask, puppetTask] = manager.list();
-    await vi.waitFor(async () => {
-      const records = await repository.loadAll();
-      expect(records.filter((r) => r.status === "completed")).toHaveLength(2);
-    });
+    // 两个任务的异步尾巴都收完再断言（确定性信号，无 1s 轮询预算）
+    await Promise.all([
+      waitForTerminalTail(manager, delegateTask!.taskId),
+      waitForTerminalTail(manager, puppetTask!.taskId),
+    ]);
 
     expect(manager.get(delegateTask!.taskId)?.kind).toBe("delegate");
     expect(manager.get(puppetTask!.taskId)?.kind).toBe("puppet");
@@ -182,7 +180,9 @@ describe("④ 输出双轨", () => {
     );
     manager.register(makeTask(randomUUID()), config, 60_000);
     const taskId = manager.list()[0]!.taskId;
-    await vi.waitFor(() => expect(manager.get(taskId)?.status).toBe("completed"));
+    // 等尾巴收完再断言：内存状态翻转先于 output.log 落盘，
+    // 直接断言会撞上日志尚未写入的窗口
+    await waitForTerminalTail(manager, taskId);
 
     // 内存/任务表只存截尾 preview（末尾 4096 字符，结尾通常是结论）
     const bg = manager.get(taskId)!;
@@ -206,7 +206,7 @@ describe("④ 输出双轨", () => {
     const manager = new BackgroundManager({ runAgent: async () => "small" }, repository);
     manager.register(makeTask(randomUUID()), config, 60_000);
     const taskId = manager.list()[0]!.taskId;
-    await vi.waitFor(() => expect(manager.get(taskId)?.status).toBe("completed"));
+    await waitForTerminalTail(manager, taskId);
 
     expect(manager.get(taskId)?.outputTruncated).toBe(false);
     expect(await manager.readFullOutput(taskId)).toBe("small");
