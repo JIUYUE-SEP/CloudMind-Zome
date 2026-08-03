@@ -154,7 +154,7 @@ async function main() {
           ...mcpManager.getTools(),
         ],
         workspaceDir: getAgentDir(ownerAgentId),
-        services: { subagentDispatcher },
+        services: { subagentDispatcher, configRepository: configRepo },
       };
     },
   });
@@ -255,7 +255,7 @@ async function main() {
       embedder,
       imageProvider,
       // swarm 只接 worker（主人会话）；傀儡 runtime 故意不接——防嵌套批量（16×16）
-      services: { subagentDispatcher, subagentSwarm, skillService },
+      services: { subagentDispatcher, subagentSwarm, skillService, configRepository: configRepo },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),
       // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）

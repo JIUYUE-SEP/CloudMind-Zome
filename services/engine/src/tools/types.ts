@@ -2,6 +2,7 @@ import type { ZodTypeAny } from "zod";
 import type { SubagentDispatcher } from "../subagent/dispatcher.js";
 import type { SubagentSwarm } from "../subagent/batch.js";
 import type { SkillService } from "../skills/service.js";
+import type { ConfigRepository } from "../config/repository.js";
 
 export interface ToolAccess {
   resource: "file" | "network" | "process" | "memory";
@@ -16,6 +17,8 @@ export interface ToolServices {
   subagentSwarm?: SubagentSwarm;
   /** 技能目录/正文通道（skill 工具） */
   skillService?: SkillService;
+  /** 系统设置（web_search 等工具读 tavilyApiKey 等全局配置） */
+  configRepository?: ConfigRepository;
 }
 
 export interface ToolContext {
