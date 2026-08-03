@@ -62,7 +62,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /compute/providers/:id` — 更新 Provider
 - `DELETE /compute/providers/:id` — 删除 Provider
 - `POST /compute/providers/:id/test` — 测试 Provider 连接
-- `GET /compute/usage` — 获取用量统计
+- `GET /compute/usage` — 获取用量统计。实时扫描 `DATA_DIR/agents/*/llm_calls.jsonl`（逐行流式读，无 100MB 上限；不缓存）。响应骨架 `{ dates, tokens, byAgent }`：`dates: [{ date, promptTokens, completionTokens, calls, errorCalls }]`（`date` 为本地时区 `YYYY-MM-DD`）、`tokens: [{ provider, model, promptTokens, completionTokens, calls }]`（provider+model 联合键，缺省 provider 记 `"unknown"`）、`byAgent: [{ agentId, promptTokens, completionTokens, calls }]`。仅统计 token 用量，不折算费用；token 为 0 的历史记录照常计入调用数
 - `POST /compute/providers/:id/models` — 为 Provider 添加模型
 - `PUT /compute/providers/:id/models/:modelId` — 更新模型
 - `DELETE /compute/providers/:id/models/:modelId` — 删除模型

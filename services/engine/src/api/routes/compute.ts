@@ -2,6 +2,7 @@ import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import OpenAI from "openai";
+import { aggregateUsage } from "../../compute/usage.js";
 
 function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
   return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
@@ -162,7 +163,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
   app.get("/compute/usage", {
     schema: { summary: "Get compute usage statistics", tags: ["compute"] },
   }, async () => {
-    return { dates: [], tokens: [] };
+    return aggregateUsage();
   });
 
   app.post("/compute/providers/:id/models", {
