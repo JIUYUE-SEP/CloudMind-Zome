@@ -111,6 +111,75 @@ describe("web_search 工具", () => {
     expect(totalChars).toBeLessThanOrEqual(4000);
   });
 
+  it("空结果集：返回成功 + 空列表", async () => {
+    await seedConfig("tvly-test");
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ results: [] })));
+
+    const result = await webSearchTool.execute(ctx, { query: "q" });
+    expect(result.success).toBe(true);
+    const mapped = (result as { output: { results: unknown[] } }).output.results;
+    expect(mapped).toEqual([]);
+  });
+
+  it("单条超过 4000 预算：仍至少保留一条", async () => {
+    await seedConfig("tvly-test");
+    const results = [
+      {
+        title: longContent(5000),
+        url: "https://example.com/single",
+        content: longContent(600),
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ results })));
+
+    const result = await webSearchTool.execute(ctx, { query: "q" });
+    expect(result.success).toBe(true);
+    const mapped = (result as { output: { results: { title: string; url: string; content: string }[] } })
+      .output.results;
+    expect(mapped).toHaveLength(1);
+    expect(mapped[0].title).toHaveLength(5000);
+    const totalChars =
+      mapped[0].title.length + mapped[0].url.length + mapped[0].content.length;
+    expect(totalChars).toBeGreaterThan(4000);
+  });
+
+  it("results 含 null/非对象条目：跳过不抛错", async () => {
+    await seedConfig("tvly-test");
+    const results = [
+      null,
+      42,
+      "str",
+      { title: "t", url: "https://example.com/t", content: "c" },
+      undefined,
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ results })));
+
+    const result = await webSearchTool.execute(ctx, { query: "q" });
+    expect(result.success).toBe(true);
+    const mapped = (result as { output: { results: { title: string; url: string; content: string }[] } })
+      .output.results;
+    expect(mapped).toEqual([{ title: "t", url: "https://example.com/t", content: "c" }]);
+  });
+
+  it("响应 JSON 解析失败：返回结构化错误不抛裸异常", async () => {
+    await seedConfig("tvly-test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("not-json{", {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+
+    const result = await webSearchTool.execute(ctx, { query: "q" });
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain("响应解析失败");
+    expect(String(result.error)).not.toContain("Cannot read properties");
+  });
+
   it("未配置 tavilyApiKey：工具照常注册，调用返回明确错误且不发请求", async () => {
     await seedConfig();
     const fetchMock = vi.fn();

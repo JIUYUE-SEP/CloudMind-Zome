@@ -35,6 +35,8 @@ function mapResults(payload: unknown): SearchResultItem[] {
   if (!Array.isArray(raw.results)) return [];
   const items: SearchResultItem[] = [];
   for (const entry of raw.results) {
+    // null/非对象条目（防御）：跳过而不是在 record.title 上抛 TypeError
+    if (typeof entry !== "object" || entry === null) continue;
     const record = entry as Record<string, unknown>;
     const title = typeof record.title === "string" ? record.title : "";
     const url = typeof record.url === "string" ? record.url : "";
@@ -59,6 +61,14 @@ function fitTotalBudget(items: SearchResultItem[]): SearchResultItem[] {
   return result;
 }
 
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+function timeoutError(): ToolResult {
+  return { success: false, error: `web_search 请求超时（${TIMEOUT_MS}ms）` };
+}
+
 async function searchTavily(
   apiKey: string,
   query: string,
@@ -66,47 +76,53 @@ async function searchTavily(
 ): Promise<ToolResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let response: Response;
   try {
-    response = await fetch(TAVILY_API_URL, {
+    // timer 覆盖到响应体读完：fetch 只返回响应头，response.text()/json()
+    // 的 body 读取也可能悬挂，不能在 fetch resolve 后提前 clear
+    const response = await fetch(TAVILY_API_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ api_key: apiKey, query, max_results: maxResults }),
       signal: controller.signal,
     });
+
+    // 非 2xx：结构化错误（状态码 + 响应正文简述），不抛裸异常
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = await response.text();
+      } catch (err) {
+        if (isAbortError(err)) return timeoutError();
+        // 读错误正文失败不致命：按无正文处理，仍返回 HTTP 结构化错误
+      }
+      const snippet = truncateText(detail.trim() || "无响应正文", 200);
+      return {
+        success: false,
+        error: `web_search 请求失败：HTTP ${response.status}（${snippet}）`,
+        output: { statusCode: response.status },
+      };
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      if (isAbortError(err)) return timeoutError();
+      return {
+        success: false,
+        error: `web_search 响应解析失败：${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    return { success: true, output: { results: fitTotalBudget(mapResults(payload)) } };
   } catch (err) {
-    const aborted = err instanceof Error && err.name === "AbortError";
+    if (isAbortError(err)) return timeoutError();
     return {
       success: false,
-      error: aborted
-        ? `web_search 请求超时（${TIMEOUT_MS}ms）`
-        : `web_search 请求失败（网络错误）：${err instanceof Error ? err.message : String(err)}`,
+      error: `web_search 请求失败（网络错误）：${err instanceof Error ? err.message : String(err)}`,
     };
   } finally {
     clearTimeout(timer);
   }
-
-  // 非 2xx：结构化错误（状态码 + 响应正文简述），不抛裸异常
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    const snippet = truncateText(detail.trim() || "无响应正文", 200);
-    return {
-      success: false,
-      error: `web_search 请求失败：HTTP ${response.status}（${snippet}）`,
-      output: { statusCode: response.status },
-    };
-  }
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch (err) {
-    return {
-      success: false,
-      error: `web_search 响应解析失败：${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  return { success: true, output: { results: fitTotalBudget(mapResults(payload)) } };
 }
 
 /**
