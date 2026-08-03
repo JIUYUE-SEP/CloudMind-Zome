@@ -35,6 +35,7 @@ import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
 import { SubagentTaskRepository } from "./subagent/task-repository.js";
 import { PuppetRunner, type PuppetRuntime } from "./subagent/puppet.js";
+import { createPuppetModelService } from "./subagent/puppet-models.js";
 import { SubagentSwarm } from "./subagent/batch.js";
 import { createSubagentTerminalNotifier } from "./subagent/notify.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
@@ -96,6 +97,8 @@ async function main() {
       return dirs;
     },
   });
+  // Puppet 型号库（单 3）：内置四型号 + DATA_DIR/puppet-models/*.json 自定义（同名覆盖）
+  const puppetModelService = createPuppetModelService();
 
   // MCP servers：启动时按 DATA_DIR/mcp-servers.json 连接，单个失败降级不影响整体
   const mcpManager = McpClientManager.loadDefault();
@@ -131,6 +134,7 @@ async function main() {
   // provider/model/工具复用 worker 创建链（resilient(record(provider))，含 MCP 工具），
   // LLM 调用落档记 owner；不走 AgentWorker，runTurn 裸跑
   const puppetRunner = new PuppetRunner({
+    getPuppetModel: (name) => puppetModelService.get(name),
     getRuntime: async (ownerAgentId): Promise<PuppetRuntime | undefined> => {
       const agentConfig = await agentRepository.get(ownerAgentId);
       if (!agentConfig) return undefined;
@@ -154,7 +158,7 @@ async function main() {
           ...mcpManager.getTools(),
         ],
         workspaceDir: getAgentDir(ownerAgentId),
-        services: { subagentDispatcher, configRepository: configRepo },
+        services: { subagentDispatcher, configRepository: configRepo, puppetModelService },
       };
     },
   });
@@ -163,7 +167,10 @@ async function main() {
     {
       runAgent: runAgentCollect,
       runPuppet: (ownerAgentId, taskDescription, opts) =>
-        puppetRunner.run(ownerAgentId, taskDescription, { signal: opts?.signal }),
+        puppetRunner.run(ownerAgentId, taskDescription, {
+          signal: opts?.signal,
+          puppetModel: opts?.puppetModel,
+        }),
       // 终态通知（阶段 4）：任务 completed/failed → owner worker 注入感知回合
       // （开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
       onTaskTerminal: createSubagentTerminalNotifier({
@@ -255,7 +262,13 @@ async function main() {
       embedder,
       imageProvider,
       // swarm 只接 worker（主人会话）；傀儡 runtime 故意不接——防嵌套批量（16×16）
-      services: { subagentDispatcher, subagentSwarm, skillService, configRepository: configRepo },
+      services: {
+        subagentDispatcher,
+        subagentSwarm,
+        skillService,
+        configRepository: configRepo,
+        puppetModelService,
+      },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),
       // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）
@@ -384,6 +397,7 @@ async function main() {
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,
     skillService,
+    puppetModelService,
     retireAgentWorker: (agentId) => workerRegistry.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];

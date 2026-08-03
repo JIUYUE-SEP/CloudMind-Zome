@@ -107,8 +107,10 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /subagents/background/:taskId` — 查询单个后台任务
 - `GET /subagents/background/:taskId/output` — 读取任务全量输出（超 10MB 返回 413）
 - `POST /agents/:agentId/subagents/:taskId/resume` — 续跑终态任务（completed/failed/lost）：同简报重跑、复用原记录（taskId 不变、attempts+1）；running 拒绝 409，非 owner 404
+- `GET /puppet-models` — 列出 Puppet 型号（内置 + 自定义），每项 `{ name, description, personaSnippet, suggestedTools?, source }`，`source` 为 `builtin` / `custom`；自定义走 `DATA_DIR/puppet-models/*.json`（同名覆盖内置），第一版只读
 
 > 子代理通过 `dispatch_subagent` / `dispatch_subagent_batch` 工具创建，无 REST 创建端点。任务持久化于 `subagent-tasks.jsonl`（engine 重启时 running 标 `lost`，不自动续跑）；列表/详情中 `output` 为截尾 preview（超 ~4KB，`outputTruncated` 标记），全量走 output 端点；`kind` 区分 `delegate`（借用人形）/ `puppet`（傀儡分身）。
+> `dispatch_subagent` 的 `kind=puppet` 可选 `puppetModel`（型号名）：persona 片段拼入傀儡基础设定，`suggestedTools` 对傀儡工具集做交集窄化（只窄化不扩权；交集为空或型号不存在返回明确错误）。
 
 ### Memory
 

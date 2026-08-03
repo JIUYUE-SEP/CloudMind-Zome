@@ -7,6 +7,8 @@ import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
 import { PuppetRunner } from "../../src/subagent/puppet.js";
+import type { PuppetModelDefinition } from "../../src/subagent/puppet-models.js";
+import type { PuppetModelService } from "../../src/subagent/puppet-models.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ToolContext } from "../../src/tools/types.js";
 import type { AgentConfig } from "@mindcloud/shared";
@@ -56,18 +58,31 @@ function makeDispatcher(runAgent: (agentId: string) => Promise<string> = async (
 }
 
 /** 带 puppet 执行路径的 dispatcher（Mock provider 裸跑，runtime 仅 owner 可解析） */
-function makePuppetDispatcher() {
+function makePuppetDispatcher(
+  getPuppetModel?: (name: string) => Promise<PuppetModelDefinition | undefined>,
+) {
   const runner = new PuppetRunner({
     getRuntime: async (id) =>
       id === "a1"
         ? { provider: new MockLLMProvider(), model: "mock", tools: [], workspaceDir: tmpDir }
         : undefined,
+    getPuppetModel,
   });
   return new SubagentDispatcher({
     getAgentConfig: async (id) => (id === "a1" ? ownerConfig : id === "a2" ? borrowedConfig : undefined),
     runAgent: async () => "delegate result",
     puppet: runner,
   });
+}
+
+function makeModelService(
+  over: Partial<PuppetModelService> = {},
+): PuppetModelService {
+  return {
+    list: async () => [],
+    get: async () => undefined,
+    ...over,
+  };
 }
 
 describe("dispatch_subagent tool", () => {
@@ -152,5 +167,73 @@ describe("dispatch_subagent tool", () => {
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain("PuppetRunner not available");
+  });
+
+  it("kind=puppet 指定不存在的型号：明确错误并列出可用型号", async () => {
+    const dispatcher = makePuppetDispatcher();
+    const service = makeModelService({
+      list: async () => [
+        {
+          name: "规划师",
+          description: "d",
+          personaSnippet: "p",
+          source: "builtin",
+        },
+      ],
+    });
+    const ctx: ToolContext = {
+      agentId: "a1",
+      workspaceDir: "/tmp",
+      approve: async () => true,
+      services: { subagentDispatcher: dispatcher, puppetModelService: service },
+    };
+
+    const result = await dispatchSubagentTool.execute(ctx, {
+      task: "hi",
+      kind: "puppet",
+      puppetModel: "幽灵",
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("型号「幽灵」不存在");
+    expect(result.error).toContain("可用型号：规划师");
+  });
+
+  it("kind=puppet 指定型号但型号服务未注入：明确报错", async () => {
+    const result = await dispatchSubagentTool.execute(makeCtx(makePuppetDispatcher()), {
+      task: "hi",
+      kind: "puppet",
+      puppetModel: "规划师",
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Puppet model service not available");
+  });
+
+  it("kind=puppet 指定合法型号：校验通过后正常派遣", async () => {
+    const dispatcher = makePuppetDispatcher(async () => ({
+      name: "规划师",
+      description: "d",
+      personaSnippet: "p",
+    }));
+    const service = makeModelService({
+      get: async () => ({
+        name: "规划师",
+        description: "d",
+        personaSnippet: "p",
+      }),
+    });
+    const ctx: ToolContext = {
+      agentId: "a1",
+      workspaceDir: "/tmp",
+      approve: async () => true,
+      services: { subagentDispatcher: dispatcher, puppetModelService: service },
+    };
+
+    const result = await dispatchSubagentTool.execute(ctx, {
+      task: "summarize this",
+      kind: "puppet",
+      puppetModel: "规划师",
+    });
+    expect(result.success).toBe(true);
+    expect((result.output as { output: string }).output).toBe("Hello from mock");
   });
 });

@@ -93,7 +93,13 @@ export class SubagentDispatcher {
         throw new Error("BackgroundManager not available");
       }
       // 任务表 record 的 agentId 记 owner（傀儡无独立人形）
-      this.deps.background.register(task, ownerConfig, options.timeoutMs ?? 120_000, "puppet");
+      this.deps.background.register(
+        task,
+        ownerConfig,
+        options.timeoutMs ?? 120_000,
+        "puppet",
+        options.puppetModel,
+      );
       return task.id;
     }
 
@@ -105,6 +111,7 @@ export class SubagentDispatcher {
         this.deps.puppet.run(ownerAgentId, taskDescription, {
           signal: controller.signal,
           approve: options.approve,
+          puppetModel: options.puppetModel,
         }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);

@@ -28,6 +28,8 @@ export interface BackgroundSubagent {
   attempts: number;
   /** 终态通知幂等标记：任务记录生命周期内 notify 只发一次 */
   notified: boolean;
+  /** puppet 任务的型号名（派发时指定；随记录持久化，resume 按名重新解析） */
+  puppetModel?: string;
   /** 运行期专用（任务消息与借用 agent 配置）；重启恢复的历史记录没有 */
   task?: SubagentTask;
   config?: AgentConfig;
@@ -49,6 +51,7 @@ function toRecord(bg: BackgroundSubagent): SubagentTaskRecord {
     timeoutMs: bg.timeoutMs,
     attempts: bg.attempts,
     notified: bg.notified,
+    ...(bg.puppetModel !== undefined ? { puppetModel: bg.puppetModel } : {}),
   };
 }
 
@@ -68,6 +71,7 @@ function fromRecord(record: SubagentTaskRecord): BackgroundSubagent {
     timeoutMs: record.timeoutMs,
     attempts: record.attempts ?? 1,
     notified: record.notified ?? false,
+    ...(record.puppetModel !== undefined ? { puppetModel: record.puppetModel } : {}),
   };
 }
 
@@ -83,7 +87,11 @@ export class BackgroundManager {
     private deps: {
       runAgent(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string>;
       /** puppet 后台执行口（2b）：傀儡任务不走 AgentWorker，经 PuppetRunner 裸跑 */
-      runPuppet?(ownerAgentId: string, taskDescription: string, opts?: { signal?: AbortSignal }): Promise<string>;
+      runPuppet?(
+        ownerAgentId: string,
+        taskDescription: string,
+        opts?: { signal?: AbortSignal; puppetModel?: string },
+      ): Promise<string>;
       /**
        * 终态通知钩子（阶段 4）：任务进入 completed/failed 时调用（bootstrap 接线到
        * owner worker 的注入通道）。幂等由管理器保证（notified 标记只发一次）；
@@ -106,7 +114,13 @@ export class BackgroundManager {
     }
   }
 
-  register(task: SubagentTask, config: AgentConfig, timeoutMs: number, kind: SubagentTaskKind = "delegate"): void {
+  register(
+    task: SubagentTask,
+    config: AgentConfig,
+    timeoutMs: number,
+    kind: SubagentTaskKind = "delegate",
+    puppetModel?: string,
+  ): void {
     const bg: BackgroundSubagent = {
       taskId: task.id,
       parentAgentId: task.parentAgentId,
@@ -120,6 +134,7 @@ export class BackgroundManager {
       timeoutMs,
       attempts: 1,
       notified: false,
+      ...(puppetModel !== undefined ? { puppetModel } : {}),
       task,
       config,
     };
@@ -193,7 +208,9 @@ export class BackgroundManager {
 
     const execute = (): Promise<string> => {
       if (bg.kind === "puppet" && this.deps.runPuppet) {
-        return this.deps.runPuppet(bg.parentAgentId, bg.taskDescription);
+        return this.deps.runPuppet(bg.parentAgentId, bg.taskDescription, {
+          puppetModel: bg.puppetModel,
+        });
       }
       // delegate：原简报重建 user 消息（与 dispatcher 首次派发同构），走 AgentWorker 路径
       const messages: ChatMessage[] = [
@@ -254,7 +271,10 @@ export class BackgroundManager {
       // delegate 走 AgentWorker 队列（现状路径）
       const execution =
         bg.kind === "puppet" && this.deps.runPuppet
-          ? this.deps.runPuppet(bg.parentAgentId, bg.taskDescription, { signal: controller.signal })
+          ? this.deps.runPuppet(bg.parentAgentId, bg.taskDescription, {
+              signal: controller.signal,
+              puppetModel: bg.puppetModel,
+            })
           : this.deps.runAgent(bg.config.id, bg.task.messages, { signal: controller.signal });
       const full = await Promise.race([
         execution,

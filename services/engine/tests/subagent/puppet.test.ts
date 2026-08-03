@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { PuppetRunner, buildPuppetSystemPrompt, type PuppetRuntime } from "../../src/subagent/puppet.js";
+import type { PuppetModelDefinition } from "../../src/subagent/puppet-models.js";
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
@@ -50,15 +51,20 @@ function makeDispatcher(opts: {
   tools?: Tool[];
   repository: SubagentTaskRepository;
   runPuppetViaRunner?: boolean;
+  getPuppetModel?: (name: string) => Promise<PuppetModelDefinition | undefined>;
 }) {
   const runner = new PuppetRunner({
     getRuntime: async (id) => (id === "a1" ? makeRuntime(opts.provider, opts.tools) : undefined),
+    getPuppetModel: opts.getPuppetModel,
   });
   const background = new BackgroundManager(
     {
       runAgent: async () => "delegate result",
       runPuppet: (ownerAgentId, taskDescription, runOpts) =>
-        runner.run(ownerAgentId, taskDescription, { signal: runOpts?.signal }),
+        runner.run(ownerAgentId, taskDescription, {
+          signal: runOpts?.signal,
+          puppetModel: runOpts?.puppetModel,
+        }),
     },
     opts.repository,
   );
@@ -225,5 +231,154 @@ describe("⑥ delegate 回归", () => {
     const result = await dispatcher.dispatch("a1", "a2", "do work", { mode: "foreground" });
     expect(result).toMatchObject({ output: "delegate result" });
     expect(provider.captured).toHaveLength(0);
+  });
+});
+
+describe("⑦ puppet 型号：persona 注入 + 工具窄化", () => {
+  function dummyTool(name: string): Tool {
+    return {
+      name,
+      description: name,
+      parameters: z.object({}),
+      accesses: [],
+      requiresApproval: false,
+      async execute() {
+        return { success: true, output: name };
+      },
+    };
+  }
+
+  const sampleModel = (over: Partial<PuppetModelDefinition> = {}): PuppetModelDefinition => ({
+    name: "规划师",
+    description: "测试型号",
+    personaSnippet: "你是测试特化傀儡。你按测试设定行事。",
+    suggestedTools: ["read_file", "write_file"],
+    ...over,
+  });
+
+  function capturedToolNames(provider: SpyProvider): string[] {
+    const params = provider.captured[0]!;
+    return (params.tools as { function: { name: string } }[]).map((t) => t.function.name);
+  }
+
+  function capturedSystemText(provider: SpyProvider): string {
+    const messages = provider.captured[0]!.messages;
+    return messages[0]!.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+  }
+
+  it("型号 persona 片段拼入傀儡基础设定（system 含型号特化块）", async () => {
+    const provider = new SpyProvider();
+    const runner = new PuppetRunner({
+      getRuntime: async () => makeRuntime(provider, [dummyTool("read_file")]),
+      getPuppetModel: async () => sampleModel({ suggestedTools: undefined }),
+    });
+
+    await runner.run("a1", "do work", { puppetModel: "规划师" });
+    const systemText = capturedSystemText(provider);
+    expect(systemText).toContain("a1 的傀儡分机");
+    expect(systemText).toContain("型号特化：");
+    expect(systemText).toContain("你是测试特化傀儡。你按测试设定行事。");
+    expect(systemText).toContain("你没有记忆"); // 基础设定守则仍在（不改傀儡制语义）
+  });
+
+  it("suggestedTools 窄化：傀儡工具 = 调用方可用 ∩ 型号推荐（交集语义）", async () => {
+    const provider = new SpyProvider();
+    const runner = new PuppetRunner({
+      getRuntime: async () =>
+        makeRuntime(provider, [
+          dummyTool("read_file"),
+          dummyTool("write_file"),
+          dummyTool("run_command"),
+          dummyTool("web_search"),
+        ]),
+      getPuppetModel: async () => sampleModel({ suggestedTools: ["read_file", "write_file"] }),
+    });
+
+    await runner.run("a1", "do work", { puppetModel: "规划师" });
+    expect(capturedToolNames(provider)).toEqual(["read_file", "write_file"]);
+  });
+
+  it("suggestedTools 缺省：工具集不窄化（保持调用方全部工具）", async () => {
+    const provider = new SpyProvider();
+    const runner = new PuppetRunner({
+      getRuntime: async () => makeRuntime(provider, [dummyTool("read_file"), dummyTool("bash")]),
+      getPuppetModel: async () => sampleModel({ suggestedTools: undefined }),
+    });
+
+    await runner.run("a1", "do work", { puppetModel: "规划师" });
+    expect(capturedToolNames(provider)).toEqual(["read_file", "bash"]);
+  });
+
+  it("交集为空：明确报错，不派遣", async () => {
+    const runner = new PuppetRunner({
+      getRuntime: async () => makeRuntime(new SpyProvider(), [dummyTool("read_file")]),
+      getPuppetModel: async () => sampleModel({ suggestedTools: ["web_search"] }),
+    });
+
+    await expect(runner.run("a1", "do work", { puppetModel: "规划师" })).rejects.toThrow(
+      "交集为空",
+    );
+  });
+
+  it("型号不存在：明确报错", async () => {
+    const runner = new PuppetRunner({
+      getRuntime: async () => makeRuntime(new SpyProvider()),
+      getPuppetModel: async () => undefined,
+    });
+
+    await expect(runner.run("a1", "do work", { puppetModel: "幽灵" })).rejects.toThrow(
+      "Puppet model 幽灵 not found",
+    );
+  });
+
+  it("dispatcher 前台链：puppetModel 贯通 tool→dispatcher→runner，persona 注入 system", async () => {
+    const provider = new SpyProvider();
+    const repository = new SubagentTaskRepository(path.join(tmpDir, "tasks.jsonl"));
+    const { dispatcher } = makeDispatcher({
+      provider,
+      tools: [dummyTool("read_file"), dummyTool("write_file")],
+      repository,
+      getPuppetModel: async () => sampleModel({ suggestedTools: ["read_file"] }),
+    });
+
+    const result = await dispatcher.dispatch("a1", "ignored", "do work", {
+      mode: "foreground",
+      kind: "puppet",
+      puppetModel: "规划师",
+    });
+    expect(result).toMatchObject({ output: "蒸馏结论" });
+    expect(capturedSystemText(provider)).toContain("你是测试特化傀儡。你按测试设定行事。");
+    expect(capturedToolNames(provider)).toEqual(["read_file"]);
+  });
+
+  it("后台 puppet 带型号：persona 生效、型号名落盘、resume 按名重新解析", async () => {
+    const repository = new SubagentTaskRepository(path.join(tmpDir, "tasks.jsonl"));
+    const provider = new SpyProvider("傀儡型号后台结果");
+    const { dispatcher, background } = makeDispatcher({
+      provider,
+      tools: [dummyTool("read_file"), dummyTool("write_file")],
+      repository,
+      getPuppetModel: async () => sampleModel({ suggestedTools: ["read_file"] }),
+    });
+
+    const taskId = (await dispatcher.dispatch("a1", "ignored", "bg work", {
+      mode: "background",
+      kind: "puppet",
+      puppetModel: "规划师",
+    })) as string;
+    await waitForTerminalTail(background, taskId);
+
+    expect(provider.captured).toHaveLength(1);
+    expect(capturedSystemText(provider)).toContain("你是测试特化傀儡。你按测试设定行事。");
+    expect(capturedToolNames(provider)).toEqual(["read_file"]);
+    expect(background.get(taskId)?.puppetModel).toBe("规划师");
+    const record = (await repository.loadAll())[0]!;
+    expect(record.puppetModel).toBe("规划师");
+
+    // resume：同简报重跑，型号名从记录回读并重新解析注入
+    const { completion } = background.resume(taskId);
+    await completion;
+    expect(provider.captured).toHaveLength(2);
+    expect(capturedSystemText(provider)).toContain("你是测试特化傀儡。你按测试设定行事。");
   });
 });

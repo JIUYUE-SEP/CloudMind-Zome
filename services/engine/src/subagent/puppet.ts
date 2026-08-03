@@ -5,6 +5,7 @@ import type { LLMProvider } from "../provider/types.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import { runTurn } from "../core/react/turn.js";
 import { auditFailClosed } from "../api/ws/approval-audit.js";
+import type { PuppetModelDefinition } from "./puppet-models.js";
 
 /**
  * 傀儡（puppet）执行路径：调用方 agent 的一次性分身——
@@ -31,11 +32,13 @@ export interface PuppetRunOptions {
    * 门与 fail-closed）。缺省 = 无审批通道：写类工具一律拒绝（同 delegate 后台语义）。
    */
   approve?: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
+  /** 型号名：persona 片段拼入基础设定；suggestedTools 对傀儡工具集做交集窄化 */
+  puppetModel?: string;
 }
 
 /** 基础设定模板（出厂程序）：身份 + 守则 + 能力边界 */
-export function buildPuppetSystemPrompt(ownerAgentId: string): string {
-  return [
+export function buildPuppetSystemPrompt(ownerAgentId: string, personaSnippet?: string): string {
+  const base = [
     `你是 ${ownerAgentId} 的傀儡分机，执行她指派的任务。`,
     "守则：",
     "- 你零上下文启动，严格按任务简报执行，不要假设简报之外的背景。",
@@ -45,6 +48,9 @@ export function buildPuppetSystemPrompt(ownerAgentId: string): string {
     "- 你不代表主人对外承诺。",
     "能力边界：你的可用工具与主人相同；写类操作需指挥官审批后才会执行。",
   ].join("\n");
+  if (!personaSnippet) return base;
+  // 型号特化：角色定位片段拼入基础设定（不改变傀儡制语义——仍无 SOUL/无 MIND）
+  return `${base}\n型号特化：\n${personaSnippet}`;
 }
 
 function toToolDescriptions(tools: Tool[]) {
@@ -62,6 +68,8 @@ export class PuppetRunner {
   constructor(
     private deps: {
       getRuntime(ownerAgentId: string): Promise<PuppetRuntime | undefined>;
+      /** 型号名 → 定义（puppetModel 参数存在时必需；bootstrap 接 puppetModelService.get） */
+      getPuppetModel?(name: string): Promise<PuppetModelDefinition | undefined>;
     },
   ) {}
 
@@ -73,12 +81,35 @@ export class PuppetRunner {
     const runtime = await this.deps.getRuntime(ownerAgentId);
     if (!runtime) throw new Error(`Agent ${ownerAgentId} not found`);
 
+    let personaSnippet: string | undefined;
+    let tools = runtime.tools;
+    if (opts.puppetModel) {
+      if (!this.deps.getPuppetModel) {
+        throw new Error("Puppet model resolver not available");
+      }
+      const model = await this.deps.getPuppetModel(opts.puppetModel);
+      if (!model) {
+        throw new Error(`Puppet model ${opts.puppetModel} not found`);
+      }
+      personaSnippet = model.personaSnippet;
+      // 窄化：傀儡最终工具 = 调用方可用工具 ∩ 型号 suggestedTools（只窄化、绝不扩权）
+      if (model.suggestedTools !== undefined) {
+        const allowed = new Set(model.suggestedTools);
+        tools = runtime.tools.filter((t) => allowed.has(t.name));
+        if (tools.length === 0) {
+          throw new Error(
+            `型号「${model.name}」的推荐工具与调用方工具白名单交集为空，无法派遣该型号傀儡`,
+          );
+        }
+      }
+    }
+
     const now = new Date().toISOString();
     const messages: ChatMessage[] = [
       {
         id: randomUUID(),
         role: "system",
-        content: [{ type: "text", text: buildPuppetSystemPrompt(ownerAgentId) }],
+        content: [{ type: "text", text: buildPuppetSystemPrompt(ownerAgentId, personaSnippet) }],
         createdAt: now,
       },
       {
@@ -89,13 +120,13 @@ export class PuppetRunner {
       },
     ];
 
-    const toolsMap = new Map(runtime.tools.map((t) => [t.name, t]));
+    const toolsMap = new Map(tools.map((t) => [t.name, t]));
     const result = await runTurn(
       {
         provider: runtime.provider,
         model: runtime.model,
         messages,
-        tools: toToolDescriptions(runtime.tools),
+        tools: toToolDescriptions(tools),
         toolCtx: {
           agentId: ownerAgentId,
           workspaceDir: runtime.workspaceDir,

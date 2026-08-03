@@ -19,6 +19,7 @@ import { registerBlueprintRoutes } from "./routes/blueprints.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPlanRoutes } from "./routes/plans.js";
 import { registerSubagentRoutes } from "./routes/subagents.js";
+import { registerPuppetModelRoutes } from "./routes/puppet-models.js";
 import { registerLogRoutes } from "./routes/logs.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 import { registerSessionWebSocket } from "./ws/session-handler.js";
@@ -82,6 +83,7 @@ export async function createServer(context: ApiContext) {
   await registerSessionRoutes(app, context);
   await registerPlanRoutes(app, context);
   await registerSubagentRoutes(app, context);
+  await registerPuppetModelRoutes(app, context);
   await registerLogRoutes(app);
   await registerSessionWebSocket(app, context);
   await registerWebSocketHandler(app, context);

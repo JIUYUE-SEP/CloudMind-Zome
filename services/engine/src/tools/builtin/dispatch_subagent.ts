@@ -14,6 +14,14 @@ const parameters = z.object({
     .enum(["puppet", "delegate"])
     .optional()
     .describe("子 Agent 分型：delegate=借用人形（默认）；puppet=傀儡（自己的一次性分身，无人格无记忆）"),
+  puppetModel: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "kind=puppet 时可选：傀儡型号名（规划师/码农/调研员/审查员或自定义型号）——" +
+        "型号 persona 片段拼入傀儡基础设定，推荐工具白名单只窄化不扩权",
+    ),
 });
 
 export const dispatchSubagentTool: Tool = {
@@ -31,7 +39,9 @@ export const dispatchSubagentTool: Tool = {
     "结果写入后台任务记录（你无法自助查询，用户可查看）。不能借用自己。" +
     "kind=puppet 时派遣傀儡而非借用：傀儡是你的一次性分身——无人格无记忆、记忆即弃，" +
     "用你的模型与工具裸跑（写类操作：前台模式桥接回当前会话审批，后台模式无审批通道一律拒绝），适合批量/重型中间过程；" +
-    "同类批量任务建议等后续 swarm 能力，勿循环串行派遣。",
+    "同类批量任务建议等后续 swarm 能力，勿循环串行派遣。" +
+    "可选 puppetModel 指定型号：persona 片段注入傀儡基础设定，" +
+    "推荐工具白名单按交集窄化傀儡工具集（型号不存在或交集为空返回明确错误）。",
   parameters,
   accesses: [],
   // P2-5（安全 review 注入 Major-6）：派生子 agent 是跨 agent confused
@@ -63,11 +73,31 @@ export const dispatchSubagentTool: Tool = {
       return { success: false, error: "agentId 缺失：kind=delegate 必须指定借用目标（puppet 模式可缺省）" };
     }
 
+    if (kind === "puppet" && parsed.puppetModel) {
+      const modelService = ctx.services?.puppetModelService;
+      if (!modelService) {
+        return { success: false, error: "Puppet model service not available" };
+      }
+      try {
+        const model = await modelService.get(parsed.puppetModel);
+        if (!model) {
+          const names = (await modelService.list()).map((m) => m.name);
+          return {
+            success: false,
+            error: `型号「${parsed.puppetModel}」不存在。可用型号：${names.length > 0 ? names.join("、") : "（无）"}`,
+          };
+        }
+      } catch (err) {
+        return { success: false, error: `Puppet model 查询失败：${String(err)}` };
+      }
+    }
+
     try {
       const result = await dispatcher.dispatch(ctx.agentId, parsed.agentId ?? ctx.agentId, parsed.task, {
         mode: parsed.mode,
         timeoutMs,
         kind,
+        puppetModel: parsed.puppetModel,
         // puppet 前台的审批桥接：傀儡的写类工具回 owner 发起会话的审批通道
         approve: ctx.approve,
       });

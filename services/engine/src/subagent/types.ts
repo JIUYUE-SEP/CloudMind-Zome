@@ -27,4 +27,6 @@ export interface SubagentOptions {
   kind?: SubagentTaskKind;
   /** puppet 前台审批桥接：owner 发起会话的 approve 回调（无则写类工具 fail-closed） */
   approve?: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
+  /** kind=puppet 时可选：傀儡型号名（persona 注入 + suggestedTools 窄化工具集） */
+  puppetModel?: string;
 }

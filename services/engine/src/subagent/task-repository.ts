@@ -30,6 +30,8 @@ export interface SubagentTaskRecord {
   attempts?: number;
   /** 终态通知幂等标记：任务记录生命周期内 notify 只发一次（resume 后再终态不重复通知） */
   notified?: boolean;
+  /** puppet 任务的型号名（可选；resume 时按名重新解析型号定义） */
+  puppetModel?: string;
 }
 
 /** taskId 只作路径段用，字符白名单防路径穿越（生产为 UUID，测试可见短横线 id） */

@@ -15,6 +15,7 @@ import type { BackgroundManager } from "../subagent/background.js";
 import type { SidecarClient } from "../sidecar/client.js";
 import type { McpClientManager } from "../tools/mcp/index.js";
 import type { SkillService } from "../skills/service.js";
+import type { PuppetModelService } from "../subagent/puppet-models.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 export interface ApiContext {
@@ -40,6 +41,8 @@ export interface ApiContext {
   mcpManager?: McpClientManager;
   /** 技能目录/正文/调用记录通道（skill 工具与 skills 路由共用） */
   skillService?: SkillService;
+  /** Puppet 型号库（GET /puppet-models） */
+  puppetModelService?: PuppetModelService;
   /** 退役 agent 的 worker（skills/reload 复用配置变更的退役/重建机制：下次使用按新目录重建） */
   retireAgentWorker?(agentId: string): void;
 }
