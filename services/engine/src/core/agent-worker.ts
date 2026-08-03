@@ -33,7 +33,7 @@ import {
   type MindChunk,
 } from "../mind/mind-files.js";
 import { UnsupportedSchemaVersionError } from "../versioning.js";
-import { auditFailClosed } from "../api/ws/approval-audit.js";
+import { auditFailClosed, auditTrustedAutoApprove } from "../api/ws/approval-audit.js";
 
 logger.info("[agent-worker] module loaded");
 
@@ -73,6 +73,8 @@ export interface AgentWorkerConfig {
   topicCompression?: Partial<TopicCompressionConfig>;
   /** 语义检索配置（Phase 3）；缺省按 DEFAULT_SEMANTIC_SEARCH_CONFIG（开启） */
   semanticSearch?: Partial<SemanticSearchConfig>;
+  /** 全部信任开关：有审批通道时 requiresApproval 工具自动批准（仍审计留痕）；缺省 false */
+  trustAllTools?: boolean;
 }
 
 export interface Job {
@@ -553,6 +555,19 @@ export class AgentWorker {
               // P4-3：fail-closed 也入审计（scheduler/subagent/blueprint 路径的拒绝可见）
               auditFailClosed({ agentId: this.config.agentId, toolName: name, toolCallId });
               return false;
+            }
+            // trustAllTools（用户主权最终体现）：有审批通道时自动批准，不再询问前端；
+            // 仍然审计留痕（事件 trusted-auto-approve：工具名 + 参数摘要）。
+            // 无审批通道路径不受影响——上面已 fail-closed，开关不静默越权。
+            if (this.config.trustAllTools === true) {
+              auditTrustedAutoApprove({
+                agentId: this.config.agentId,
+                sessionId: job.sessionId ?? "",
+                toolName: name,
+                toolCallId,
+                args,
+              });
+              return true;
             }
             return job.onApprovalRequest({ id: randomUUID(), toolCallId, toolName: name, arguments: args });
           },

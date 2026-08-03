@@ -84,6 +84,16 @@ export function auditAutoApproved(base: AuditBase): void {
   logger.info(base, "[approval] 免问名单命中，自动放行");
 }
 
+/** trustAllTools 信任模式自动放行（用户主权最终体现，必须留痕：工具名 + 参数摘要） */
+export function auditTrustedAutoApprove(
+  base: AuditBase & { toolCallId?: string; args: unknown },
+): void {
+  logger.info(
+    { ...base, toolCallId: base.toolCallId, args: summarizeArgs(base.toolName, base.args) },
+    "[approval] 信任模式自动放行",
+  );
+}
+
 /** 无审批通道的 fail-closed 拒绝（scheduler/subagent/blueprint 路径） */
 export function auditFailClosed(base: Omit<AuditBase, "sessionId"> & { toolCallId?: string }): void {
   logger.warn(base, "[approval] 无审批通道，fail-closed 拒绝");

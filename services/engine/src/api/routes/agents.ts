@@ -15,6 +15,7 @@ const KNOWN_AGENT_FIELDS = new Set([
   "fallbackProviderIds",
   "subagentNotify",
   "imageProviderId", "imageModelId", "temperature", "topP", "maxContextTokens",
+  "trustAllTools",
   "compressionModel", "topicDetectionWindowMinutes", "topicMessageThreshold",
   "semanticSearchEnabled", "semanticTopK", "semanticMinScore",
   "skills", "tools", "schemaVersion",

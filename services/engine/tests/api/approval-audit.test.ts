@@ -8,6 +8,7 @@ import {
   auditRemembered,
   auditRememberRejected,
   auditAutoApproved,
+  auditTrustedAutoApprove,
   auditFailClosed,
 } from "../../src/api/ws/approval-audit.js";
 
@@ -41,7 +42,7 @@ describe("summarizeArgs 审计参摘要（P4-3）", () => {
 describe("审批审计事件（P4-3）", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("请求/批准/拒绝/超时/免问记入/免问被拒/免问命中/fail-closed 各有结构化日志", () => {
+  it("请求/批准/拒绝/超时/免问记入/免问被拒/免问命中/信任放行/fail-closed 各有结构化日志", () => {
     const info = vi.spyOn(logger, "info").mockImplementation(() => {});
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const base = { agentId: "a1", sessionId: "s1", toolName: "write_file" };
@@ -53,11 +54,18 @@ describe("审批审计事件（P4-3）", () => {
     auditRemembered(base);
     auditRememberRejected(base);
     auditAutoApproved(base);
+    auditTrustedAutoApprove({ ...base, toolCallId: "tc-trust", args: { command: "rm -rf x" } });
     auditFailClosed({ agentId: "a1", toolName: "run_command", toolCallId: "tc-9" });
 
     const infoMsgs = info.mock.calls.map((c) => c[1]);
     expect(infoMsgs).toEqual(
-      expect.arrayContaining(["[approval] 请求审批", "[approval] 批准", "[approval] 拒绝", "[approval] 免问名单命中，自动放行"]),
+      expect.arrayContaining([
+        "[approval] 请求审批",
+        "[approval] 批准",
+        "[approval] 拒绝",
+        "[approval] 免问名单命中，自动放行",
+        "[approval] 信任模式自动放行",
+      ]),
     );
     const warnMsgs = warn.mock.calls.map((c) => c[1]);
     expect(warnMsgs).toEqual(
@@ -84,6 +92,17 @@ describe("审批审计事件（P4-3）", () => {
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "a1", toolName: "run_command", toolCallId: "tc-9" }),
       "[approval] 无审批通道，fail-closed 拒绝",
+    );
+    // 信任放行：工具名 + 参数摘要（沿用既有脱敏：command 截 500）
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "a1",
+        sessionId: "s1",
+        toolName: "write_file",
+        toolCallId: "tc-trust",
+        args: "command=rm -rf x",
+      }),
+      "[approval] 信任模式自动放行",
     );
   });
 });

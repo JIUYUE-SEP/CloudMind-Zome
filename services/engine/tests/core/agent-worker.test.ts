@@ -51,7 +51,8 @@ class CapturingProvider implements LLMProvider {
 function makeConfig(
   provider: LLMProvider = new MockLLMProvider(),
   messageRepository: Partial<IMessageRepository> = {},
-  tools: Tool[] = [dummyTool]
+  tools: Tool[] = [dummyTool],
+  trustAllTools?: boolean,
 ): {
   agentId: string;
   model: string;
@@ -60,6 +61,7 @@ function makeConfig(
   workspaceDir: string;
   messageRepository: IMessageRepository;
   approve: () => Promise<true>;
+  trustAllTools?: boolean;
 } {
   return {
     agentId: "agent-1",
@@ -73,6 +75,7 @@ function makeConfig(
       ...messageRepository,
     } as IMessageRepository,
     approve: async () => true,
+    ...(trustAllTools !== undefined ? { trustAllTools } : {}),
   };
 }
 
@@ -870,6 +873,84 @@ ${SECURITY_GUIDELINE}` },
 
       expect(executed.flag).toBe(false);
     });
+
+    it("trustAllTools=true 且有审批通道：需审批工具自动放行，不调 onApprovalRequest，审计落盘", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)], true),
+      );
+      const requests: unknown[] = [];
+      const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+
+      worker.enqueue({
+        id: "j-t1",
+        messages: [userMessage("go")],
+        sessionId: "s-t1",
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(executed.flag).toBe(true);
+      expect(requests).toHaveLength(0);
+      expect(info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "agent-1",
+          sessionId: "s-t1",
+          toolName: "danger_tool",
+          toolCallId: "tc_d",
+          args: '{"x":1}',
+        }),
+        "[approval] 信任模式自动放行",
+      );
+      info.mockRestore();
+    });
+
+    it("trustAllTools=true 但无审批通道：仍 fail-closed 拒绝（开关不静默越权）", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)], true),
+      );
+      const events: LLMEvent[] = [];
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+      worker.enqueue({ id: "j-t2", messages: [userMessage("go")], onEvent: (e) => events.push(e) });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(executed.flag).toBe(false);
+      const result = events.find((e) => e.type === "tool.result");
+      expect(JSON.stringify((result as { output: unknown }).output)).toContain("Approval denied");
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "agent-1", toolName: "danger_tool", toolCallId: "tc_d" }),
+        "[approval] 无审批通道，fail-closed 拒绝",
+      );
+      warn.mockRestore();
+    });
+
+    it("trustAllTools=false：正常走 onApprovalRequest（不回归）", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)], false),
+      );
+      const requests: unknown[] = [];
+
+      worker.enqueue({
+        id: "j-t3",
+        messages: [userMessage("go")],
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(requests).toHaveLength(1);
+      expect(executed.flag).toBe(true);
+    });
   });
 
   describe("dispatch_subagent 审批（P2-5）", () => {
@@ -895,9 +976,12 @@ ${SECURITY_GUIDELINE}` },
       }
     }
 
-    function makeWorkerWithDispatcher(dispatch: ReturnType<typeof vi.fn>) {
+    function makeWorkerWithDispatcher(
+      dispatch: ReturnType<typeof vi.fn>,
+      trustAllTools?: boolean,
+    ) {
       return new AgentWorker({
-        ...makeConfig(new DispatchProvider(), {}, [dispatchSubagentTool]),
+        ...makeConfig(new DispatchProvider(), {}, [dispatchSubagentTool], trustAllTools),
         services: { subagentDispatcher: { dispatch } as never },
       });
     }
@@ -953,6 +1037,38 @@ ${SECURITY_GUIDELINE}` },
       await vi.waitFor(() => expect(worker.status).toBe("idle"));
 
       expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it("trustAllTools=true：dispatch_subagent（不可免问五工具）自动放行并执行 + 审计", async () => {
+      const dispatch = vi.fn(async () => ({ taskId: "t1", output: "sub done" }));
+      const worker = makeWorkerWithDispatcher(dispatch, true);
+      const requests: ApprovalRequest[] = [];
+      const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+
+      worker.enqueue({
+        id: "j-t4",
+        messages: [userMessage("go")],
+        sessionId: "s-t4",
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(0);
+      expect(info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "agent-1",
+          sessionId: "s-t4",
+          toolName: "dispatch_subagent",
+          args: expect.stringContaining("agentId=a2"),
+        }),
+        "[approval] 信任模式自动放行",
+      );
+      info.mockRestore();
     });
   });
 });

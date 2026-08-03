@@ -37,6 +37,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `semanticSearchEnabled` | boolean | true | 语义检索（L4）开关，同时门控检索与 embed 索引 |
 | `semanticTopK` | number | 10 | L4 注入条数上限 |
 | `semanticMinScore` | number | 0 | L4 最低相关度（相似度 × 时间衰减，0-1） |
+| `trustAllTools` | boolean | false | 全部信任开关：开启后该 agent 有审批通道时所有工具自动批准（含不可免问五工具），每次自动放行写审计事件 `trusted-auto-approve`；无审批通道仍 fail-closed |
 
 > 非法取值由引擎归一并 warn：`topicMessageThreshold < 4` clamp 到 4；`semanticTopK < 1` 重置为默认值 10。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
 

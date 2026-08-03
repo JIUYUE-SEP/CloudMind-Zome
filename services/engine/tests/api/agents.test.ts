@@ -114,6 +114,43 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  it("POST/PUT 接受 trustAllTools 字段并持久化（缺省不强制）", async () => {
+    const app = await makeApp();
+    const agent = {
+      id: "a1",
+      name: "A1",
+      persona: "",
+      model: "mock",
+      skills: [],
+      tools: [],
+      trustAllTools: true,
+    };
+    const createRes = await authedRequest(app.server).post("/agents").send(agent);
+    expect(createRes.status).toBe(200);
+    expect(createRes.body.trustAllTools).toBe(true);
+
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.trustAllTools).toBe(true);
+
+    // PUT 合并语义：显式 false 可关闭
+    const putRes = await authedRequest(app.server)
+      .put("/agents/a1")
+      .send({ ...agent, trustAllTools: false });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.trustAllTools).toBe(false);
+    await app.close();
+  });
+
+  it("trustAllTools 缺省：agent 配置不含该字段（安全默认）", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    const createRes = await authedRequest(app.server).post("/agents").send(agent);
+    expect(createRes.status).toBe(200);
+    expect(createRes.body.trustAllTools).toBeUndefined();
+    await app.close();
+  });
+
   it("POST/PUT 未知字段显式 400 并指出字段名与提示（功能 Minor-1）", async () => {
     const app = await makeApp();
     // provider（错）vs providerId（对）：400 + 提示正确字段名

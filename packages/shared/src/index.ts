@@ -38,6 +38,8 @@ export interface AgentConfig {
   semanticMinScore?: number;
   /** subagent 任务终态通知注入（completed/failed 时向 owner 注入感知回合），缺省 true */
   subagentNotify?: boolean;
+  /** 全部信任开关（缺省 false=安全默认）：开启后该 agent 有审批通道时所有工具自动批准（含不可免问工具），无审批通道仍 fail-closed；每次自动放行均写审计事件 */
+  trustAllTools?: boolean;
   skills: string[];
   tools: string[];
 }
