@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,13 +14,22 @@ const config: AgentConfig = { id: "a2", name: "A2", persona: "", model: "mock", 
 
 // 共享临时目录：BackgroundManager 的状态变更落盘指向这里，不污染真实 DATA_DIR
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-dispatcher-test-"));
-// 输出全量日志（writeTaskOutput 走 getAgentDir）也指向临时目录，
-// 否则会落到真实 ~/.cloudmind-zome/agents/...（共享 fixture 未隔离）
-const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
-process.env.CLOUDMIND_DATA_DIR = tmpDir;
 let repoSeq = 0;
-afterAll(() => {
+let originalDataDir: string | undefined;
+
+beforeEach(() => {
+  // 输出全量日志（writeTaskOutput 走 getAgentDir）也指向临时目录，
+  // 否则会落到真实 ~/.cloudmind-zome/agents/...（共享 fixture 未隔离）；
+  // 与兄弟文件同款 beforeEach/afterEach 隔离，免疫测试池配置漂移
+  originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+  process.env.CLOUDMIND_DATA_DIR = tmpDir;
+});
+
+afterEach(() => {
   restoreDataDir(originalDataDir);
+});
+
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -153,8 +162,10 @@ describe("SubagentDispatcher", () => {
       background,
     });
     const taskId = (await dispatcher.dispatch("a1", "a2", "do work", { mode: "background" })) as string;
-    await vi.waitFor(() => expect(background.get(taskId)?.status).toBe("completed"));
-    expect(background.get(taskId)?.output).toBe("final text");
+    // 注册后立即挂尾巴信号，终态收尾后直接断言（与同文件 timeout 用例同范式）
+    const tail = waitForTerminalTail(background, taskId);
+    await tail;
+    expect(background.get(taskId)).toMatchObject({ status: "completed", output: "final text" });
   });
 
   it("marks background task failed when runAgent rejects", async () => {
@@ -167,7 +178,9 @@ describe("SubagentDispatcher", () => {
       background,
     });
     const taskId = (await dispatcher.dispatch("a1", "a2", "do work", { mode: "background" })) as string;
-    await vi.waitFor(() => expect(background.get(taskId)?.status).toBe("failed"));
+    const tail = waitForTerminalTail(background, taskId);
+    await tail;
+    expect(background.get(taskId)?.status).toBe("failed");
     expect(background.get(taskId)?.error).toContain("boom");
   });
 });

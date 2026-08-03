@@ -21,6 +21,7 @@ import type { SubagentTask } from "../../src/subagent/types.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
+import { waitForTerminalTail } from "../helpers/background-tail.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { AgentConfig } from "@mindcloud/shared";
 
@@ -60,22 +61,6 @@ function makeTask(id: string): SubagentTask {
   };
 }
 
-/**
- * register() 里的 run() 是 fire-and-forget：status 翻 completed 只是执行主体完成，
- * 尾巴（persist、notified 落盘、终态通知回调）仍在飞。等 notified 落盘 = 该尾巴的
- * 最后一次持久化已收尾，resume 或下一用例开始前不存在迟到写覆盖/跨目录漂移。
- */
-async function waitForBackgroundTail(
-  repository: SubagentTaskRepository,
-  taskId: string,
-  attempts = 1,
-): Promise<void> {
-  await vi.waitFor(async () => {
-    const record = (await repository.loadAll()).find((r) => r.taskId === taskId);
-    expect(record).toMatchObject({ status: "completed", attempts, notified: true });
-  });
-}
-
 describe("① resume 傀儡任务", () => {
   it("终态→running→completed，taskId 复用、attempts+1、双轨输出更新", async () => {
     let round = 0;
@@ -88,7 +73,7 @@ describe("① resume 傀儡任务", () => {
     );
     manager.register(makeTask("t-p"), ownerConfig, 60_000, "puppet");
     await vi.waitFor(() => expect(manager.get("t-p")?.status).toBe("completed"));
-    await waitForBackgroundTail(repository, "t-p");
+    await waitForTerminalTail(manager, "t-p");
     expect(manager.get("t-p")?.output).toBe("puppet round 1");
 
     const handle = manager.resume("t-p");
@@ -123,7 +108,7 @@ describe("① resume 傀儡任务", () => {
     expect(() => manager.resume("t-running")).toThrow("still running");
     expect(() => manager.resume("ghost")).toThrow("not found");
     releaseRun();
-    await waitForBackgroundTail(repository, "t-running");
+    await waitForTerminalTail(manager, "t-running");
   });
 });
 
@@ -144,7 +129,7 @@ describe("② resume delegate", () => {
     );
     manager.register(makeTask("t-d"), borrowedConfig, 60_000, "delegate");
     await vi.waitFor(() => expect(manager.get("t-d")?.status).toBe("completed"));
-    await waitForBackgroundTail(repository, "t-d");
+    await waitForTerminalTail(manager, "t-d");
 
     const handle = manager.resume("t-d");
     const output = await handle.completion;
@@ -185,7 +170,7 @@ describe("④ 通知注入", () => {
 
     manager.register(makeTask("t-notify"), ownerConfig, 60_000, "puppet");
     await vi.waitFor(() => expect(manager.get("t-notify")?.status).toBe("completed"));
-    await waitForBackgroundTail(repository, "t-notify");
+    await waitForTerminalTail(manager, "t-notify");
 
     // 感知回合：通知（user）+ 产出（assistant）进 owner 历史
     await vi.waitFor(async () => {

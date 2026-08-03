@@ -8,6 +8,10 @@ import type { BackgroundManager } from "../../src/subagent/background.js";
  * 替代"内存状态翻转后立即断言文件/日志"的墙钟窗口，以及
  * vi.waitFor 默认 1s 轮询预算——CI 慢环境下状态翻转先于落盘、落盘链
  * 超过轮询预算都会挂（flaky 家族二期根因）。
+ *
+ * 契约：只对"会走到终态 notify"的任务生效。若任务已终态但 notified 恒为
+ * false（如 lost 状态），或 taskId 从未注册（未知 id），该 promise 会一直
+ * 悬挂，由测试自身超时兜底——这是调用方契约，不是 helper 缺陷。
  */
 export function waitForTerminalTail(
   manager: BackgroundManager,
