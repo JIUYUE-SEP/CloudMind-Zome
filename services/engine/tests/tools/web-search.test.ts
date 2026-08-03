@@ -57,7 +57,9 @@ function longContent(chars: number): string {
 describe("web_search 工具", () => {
   it("请求体形状正确：api_key/query/max_results（缺省 5、显式 7）", async () => {
     await seedConfig("tvly-test");
-    const fetchMock = vi.fn(async () => jsonResponse({ results: [] }));
+    const fetchMock = vi.fn<(url: string, init: RequestInit) => Promise<Response>>(async () =>
+      jsonResponse({ results: [] }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const defaultResult = await webSearchTool.execute(ctx, { query: "hello world" });
@@ -66,8 +68,8 @@ describe("web_search 工具", () => {
     expect(explicitResult.success).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    const [url1, init1] = fetchMock.mock.calls[0];
-    const [url2, init2] = fetchMock.mock.calls[1];
+    const [url1, init1] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url2, init2] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(url1).toBe("https://api.tavily.com/search");
     expect(url2).toBe("https://api.tavily.com/search");
     expect(JSON.parse(String(init1.body))).toEqual({
