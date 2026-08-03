@@ -64,7 +64,6 @@ describe("审批审计事件（P4-3）", () => {
         "[approval] 批准",
         "[approval] 拒绝",
         "[approval] 免问名单命中，自动放行",
-        "[approval] 信任模式自动放行",
       ]),
     );
     const warnMsgs = warn.mock.calls.map((c) => c[1]);
@@ -73,6 +72,7 @@ describe("审批审计事件（P4-3）", () => {
         "[approval] 审批超时按拒绝处理",
         "[approval] 记入本会话免问名单",
         "[approval] remember 被引擎拒绝（该工具每次必批）",
+        "[approval] 信任模式自动放行",
         "[approval] 无审批通道，fail-closed 拒绝",
       ]),
     );
@@ -93,8 +93,8 @@ describe("审批审计事件（P4-3）", () => {
       expect.objectContaining({ agentId: "a1", toolName: "run_command", toolCallId: "tc-9" }),
       "[approval] 无审批通道，fail-closed 拒绝",
     );
-    // 信任放行：工具名 + 参数摘要（沿用既有脱敏：command 截 500）
-    expect(info).toHaveBeenCalledWith(
+    // 信任放行：warn 级，工具名 + 参数摘要（沿用既有脱敏：command 截 500）
+    expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "a1",
         sessionId: "s1",

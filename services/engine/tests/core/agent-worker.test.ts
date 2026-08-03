@@ -8,6 +8,9 @@ import { AgentWorker } from "../../src/core/agent-worker.js";
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
 import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
 import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
+import { mcpToolToEngine } from "../../src/tools/mcp/wrapper.js";
+import type { McpToolCaller } from "../../src/tools/mcp/wrapper.js";
+import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
@@ -880,7 +883,7 @@ ${SECURITY_GUIDELINE}` },
         makeConfig(new DangerCallProvider(), {}, [makeDangerTool(executed)], true),
       );
       const requests: unknown[] = [];
-      const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
       worker.enqueue({
         id: "j-t1",
@@ -896,7 +899,7 @@ ${SECURITY_GUIDELINE}` },
 
       expect(executed.flag).toBe(true);
       expect(requests).toHaveLength(0);
-      expect(info).toHaveBeenCalledWith(
+      expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: "agent-1",
           sessionId: "s-t1",
@@ -906,7 +909,7 @@ ${SECURITY_GUIDELINE}` },
         }),
         "[approval] 信任模式自动放行",
       );
-      info.mockRestore();
+      warn.mockRestore();
     });
 
     it("trustAllTools=true 但无审批通道：仍 fail-closed 拒绝（开关不静默越权）", async () => {
@@ -1043,7 +1046,7 @@ ${SECURITY_GUIDELINE}` },
       const dispatch = vi.fn(async () => ({ taskId: "t1", output: "sub done" }));
       const worker = makeWorkerWithDispatcher(dispatch, true);
       const requests: ApprovalRequest[] = [];
-      const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
       worker.enqueue({
         id: "j-t4",
@@ -1059,7 +1062,7 @@ ${SECURITY_GUIDELINE}` },
 
       expect(dispatch).toHaveBeenCalledOnce();
       expect(requests).toHaveLength(0);
-      expect(info).toHaveBeenCalledWith(
+      expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: "agent-1",
           sessionId: "s-t4",
@@ -1068,7 +1071,112 @@ ${SECURITY_GUIDELINE}` },
         }),
         "[approval] 信任模式自动放行",
       );
-      info.mockRestore();
+      warn.mockRestore();
+    });
+  });
+
+  describe("trustAllTools × MCP 工具（toolOverrides 强制审批）", () => {
+    class McpCallProvider implements LLMProvider {
+      name = "mcp-call";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls === 1) {
+          yield {
+            type: "tool.call",
+            toolCallId: "tc_mcp",
+            name: "mcp__srv__mutate",
+            arguments: { key: "k" },
+          };
+        } else {
+          yield { type: "text.delta", delta: "done" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    function makeMcpTool(executed: { flag: boolean }): Tool {
+      const mcpTool: McpTool = {
+        name: "mutate",
+        description: "写操作",
+        inputSchema: {
+          type: "object",
+          properties: { key: { type: "string" } },
+          required: ["key"],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true },
+      };
+      const caller: McpToolCaller = {
+        callTool: async () => {
+          executed.flag = true;
+          return { content: [{ type: "text", text: "mutated:k" }] };
+        },
+        ping: async () => ({}),
+      };
+      return mcpToolToEngine("srv", mcpTool, caller, {
+        override: { requiresApproval: true },
+      });
+    }
+
+    it("trustAllTools=true：mcp__ 工具（toolOverrides 强制审批）自动放行并执行 + 审计", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new McpCallProvider(), {}, [makeMcpTool(executed)], true),
+      );
+      const requests: unknown[] = [];
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+      worker.enqueue({
+        id: "j-m1",
+        messages: [userMessage("go")],
+        sessionId: "s-m1",
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(executed.flag).toBe(true);
+      expect(requests).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "agent-1",
+          sessionId: "s-m1",
+          toolName: "mcp__srv__mutate",
+          toolCallId: "tc_mcp",
+          args: '{"key":"k"}',
+        }),
+        "[approval] 信任模式自动放行",
+      );
+      warn.mockRestore();
+    });
+
+    it("trustAllTools=false：mcp__ 强制审批工具仍走 onApprovalRequest（不回归）", async () => {
+      const executed = { flag: false };
+      const worker = new AgentWorker(
+        makeConfig(new McpCallProvider(), {}, [makeMcpTool(executed)], false),
+      );
+      const requests: unknown[] = [];
+
+      worker.enqueue({
+        id: "j-m2",
+        messages: [userMessage("go")],
+        onEvent: () => {},
+        onApprovalRequest: async (req) => {
+          requests.push(req);
+          return true;
+        },
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ toolName: "mcp__srv__mutate" });
+      expect(executed.flag).toBe(true);
     });
   });
 });

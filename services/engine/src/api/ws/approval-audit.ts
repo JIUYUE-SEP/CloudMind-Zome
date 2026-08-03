@@ -88,7 +88,8 @@ export function auditAutoApproved(base: AuditBase): void {
 export function auditTrustedAutoApprove(
   base: AuditBase & { toolCallId?: string; args: unknown },
 ): void {
-  logger.info(
+  // 信任模式放行影响面大，warn 级留痕（与 remember 记入同级，提升可追溯可见性）
+  logger.warn(
     { ...base, toolCallId: base.toolCallId, args: summarizeArgs(base.toolName, base.args) },
     "[approval] 信任模式自动放行",
   );
