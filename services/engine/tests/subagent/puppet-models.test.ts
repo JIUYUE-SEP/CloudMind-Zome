@@ -95,6 +95,35 @@ describe("Puppet 型号库", () => {
     warn.mockRestore();
   });
 
+  it("额外字段（字段拼写错误）strictObject 拒绝：按坏文件跳过 warn", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    await writeCustom("typo.json", {
+      name: "拼错字段型号",
+      description: "d",
+      personaSnippet: "你是拼错字段的型号。",
+      suggestedTool: ["read_file"], // 拼错：suggestedTools 会静默丢失，strictObject 必须拒绝
+    });
+
+    const models = await createPuppetModelService().list();
+    expect(models.map((m) => m.name)).not.toContain("拼错字段型号");
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("personaSnippet 超上限（2000 字符）按坏文件跳过 warn", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    await writeCustom("long.json", {
+      name: "超长型号",
+      description: "d",
+      personaSnippet: "x".repeat(2001),
+    });
+
+    const models = await createPuppetModelService().list();
+    expect(models.map((m) => m.name)).not.toContain("超长型号");
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it("同名自定义覆盖内置并 warn（用户主权）", async () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     await writeCustom("override.json", {

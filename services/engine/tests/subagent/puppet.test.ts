@@ -309,6 +309,18 @@ describe("⑦ puppet 型号：persona 注入 + 工具窄化", () => {
     expect(capturedToolNames(provider)).toEqual(["read_file", "bash"]);
   });
 
+  it("suggestedTools 含未知/MCP 名：未知名静默过滤不报错，不扩权", async () => {
+    const provider = new SpyProvider();
+    const runner = new PuppetRunner({
+      getRuntime: async () => makeRuntime(provider, [dummyTool("read_file"), dummyTool("bash")]),
+      getPuppetModel: async () =>
+        sampleModel({ suggestedTools: ["read_file", "ghost_tool", "mcp__srv__tool"] }),
+    });
+
+    await runner.run("a1", "do work", { puppetModel: "规划师" });
+    expect(capturedToolNames(provider)).toEqual(["read_file"]);
+  });
+
   it("交集为空：明确报错，不派遣", async () => {
     const runner = new PuppetRunner({
       getRuntime: async () => makeRuntime(new SpyProvider(), [dummyTool("read_file")]),
@@ -380,5 +392,79 @@ describe("⑦ puppet 型号：persona 注入 + 工具窄化", () => {
     await completion;
     expect(provider.captured).toHaveLength(2);
     expect(capturedSystemText(provider)).toContain("你是测试特化傀儡。你按测试设定行事。");
+  });
+
+  it("重启恢复：新 BackgroundManager load() 从 JSONL 恢复型号名，resume 仍按原型号跑", async () => {
+    const repository = new SubagentTaskRepository(path.join(tmpDir, "tasks.jsonl"));
+    const tools = [dummyTool("read_file"), dummyTool("write_file")];
+    const provider1 = new SpyProvider("第一次执行");
+    const { dispatcher, background } = makeDispatcher({
+      provider: provider1,
+      tools,
+      repository,
+      getPuppetModel: async () => sampleModel({ suggestedTools: ["read_file"] }),
+    });
+
+    const taskId = (await dispatcher.dispatch("a1", "ignored", "bg work", {
+      mode: "background",
+      kind: "puppet",
+      puppetModel: "规划师",
+    })) as string;
+    await waitForTerminalTail(background, taskId);
+    expect(provider1.captured).toHaveLength(1);
+
+    // 模拟重启：同一仓库 + 全新 manager/runner（内存索引从 JSONL 重建）
+    const provider2 = new SpyProvider("重启后执行");
+    const runner2 = new PuppetRunner({
+      getRuntime: async () => makeRuntime(provider2, tools),
+      getPuppetModel: async () => sampleModel({ suggestedTools: ["read_file"] }),
+    });
+    const background2 = new BackgroundManager(
+      {
+        runAgent: async () => "delegate result",
+        runPuppet: (ownerAgentId, taskDescription, runOpts) =>
+          runner2.run(ownerAgentId, taskDescription, {
+            signal: runOpts?.signal,
+            puppetModel: runOpts?.puppetModel,
+          }),
+      },
+      repository,
+    );
+    await background2.load();
+
+    expect(background2.get(taskId)?.puppetModel).toBe("规划师");
+    const { completion } = background2.resume(taskId);
+    await completion;
+    expect(provider2.captured).toHaveLength(1);
+    expect(capturedSystemText(provider2)).toContain("你是测试特化傀儡。你按测试设定行事。");
+    expect(capturedToolNames(provider2)).toEqual(["read_file"]);
+  });
+
+  it("resume 前型号文件被删：明确失败而非静默无型号重跑", async () => {
+    const repository = new SubagentTaskRepository(path.join(tmpDir, "tasks.jsonl"));
+    let modelAvailable = true;
+    const provider = new SpyProvider("原型号结果");
+    const { dispatcher, background } = makeDispatcher({
+      provider,
+      tools: [dummyTool("read_file")],
+      repository,
+      getPuppetModel: async () =>
+        modelAvailable ? sampleModel({ suggestedTools: ["read_file"] }) : undefined,
+    });
+
+    const taskId = (await dispatcher.dispatch("a1", "ignored", "bg work", {
+      mode: "background",
+      kind: "puppet",
+      puppetModel: "规划师",
+    })) as string;
+    await waitForTerminalTail(background, taskId);
+    expect(provider.captured).toHaveLength(1);
+
+    modelAvailable = false; // 模拟自定义型号文件被删除
+    const { completion } = background.resume(taskId);
+    await expect(completion).rejects.toThrow("Puppet model 规划师 not found");
+    expect(background.get(taskId)).toMatchObject({ status: "failed", puppetModel: "规划师" });
+    expect(String(background.get(taskId)?.error)).toContain("not found");
+    expect(provider.captured).toHaveLength(1); // 未静默按无型号重跑
   });
 });

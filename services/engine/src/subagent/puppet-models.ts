@@ -71,12 +71,32 @@ const BUILTIN_PUPPET_MODELS: PuppetModelDefinition[] = [
 ];
 
 /** 自定义型号文件 schema（字段校验失败 = 坏文件，跳过并 warn） */
-const modelFileSchema = z.object({
-  name: z.string().min(1, "name 必填"),
-  description: z.string().min(1, "description 必填"),
-  personaSnippet: z.string().min(1, "personaSnippet 必填"),
-  suggestedTools: z.array(z.string().min(1)).optional(),
+const MODEL_NAME_MAX = 64;
+const DESCRIPTION_MAX = 500;
+const PERSONA_SNIPPET_MAX = 2000;
+const SUGGESTED_TOOLS_MAX = 50;
+const SUGGESTED_TOOL_NAME_MAX = 128;
+
+// strictObject：字段拼写错误（suggestedTool/tools）按坏文件跳过 warn，
+// 不静默剥离导致 suggestedTools 丢失、窄化静默失效
+const modelFileSchema = z.strictObject({
+  name: z.string().min(1, "name 必填").max(MODEL_NAME_MAX, `name 最长 ${MODEL_NAME_MAX} 字符`),
+  description: z
+    .string()
+    .min(1, "description 必填")
+    .max(DESCRIPTION_MAX, `description 最长 ${DESCRIPTION_MAX} 字符`),
+  personaSnippet: z
+    .string()
+    .min(1, "personaSnippet 必填")
+    .max(PERSONA_SNIPPET_MAX, `personaSnippet 最长 ${PERSONA_SNIPPET_MAX} 字符`),
+  suggestedTools: z
+    .array(z.string().min(1).max(SUGGESTED_TOOL_NAME_MAX, `工具名最长 ${SUGGESTED_TOOL_NAME_MAX} 字符`))
+    .max(SUGGESTED_TOOLS_MAX, `suggestedTools 最多 ${SUGGESTED_TOOLS_MAX} 项`)
+    .optional(),
 });
+
+/** 覆盖内置 warn 的进程内去重（get() 内调 list()，避免一次派发刷多条日志） */
+const warnedOverrideNames = new Set<string>();
 
 async function loadCustomModels(): Promise<PuppetModelDefinition[]> {
   const dir = path.join(getDataDir(), "puppet-models");
@@ -120,7 +140,8 @@ export function createPuppetModelService(): PuppetModelService {
       byName.set(model.name, { ...model, source: "builtin" });
     }
     for (const custom of customs) {
-      if (byName.has(custom.name)) {
+      if (byName.has(custom.name) && !warnedOverrideNames.has(custom.name)) {
+        warnedOverrideNames.add(custom.name);
         logger.warn(`[puppet-models] 自定义型号「${custom.name}」覆盖内置型号`);
       }
       byName.set(custom.name, { ...custom, source: "custom" });
