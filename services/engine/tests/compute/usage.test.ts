@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { aggregateUsage } from "../../src/compute/usage.js";
+import { logger } from "../../src/logger.js";
 import { createServer } from "../../src/api/server.js";
 import { AgentRepository } from "../../src/memory/repositories/agent.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
@@ -109,6 +110,83 @@ describe("aggregateUsage", () => {
     ]);
   });
 
+  it("null/true 等非对象行按坏行跳过，不崩溃", async () => {
+    await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
+      "null",
+      "true",
+      JSON.stringify({
+        id: "1", agentId: "a1", provider: "openai", model: "gpt-4o",
+        promptTokens: 10, completionTokens: 5, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+    ]);
+
+    const usage = await aggregateUsage();
+    expect(usage).toEqual({
+      dates: [{ date: "2026-08-03", promptTokens: 10, completionTokens: 5, calls: 1, errorCalls: 0 }],
+      tokens: [{ provider: "openai", model: "gpt-4o", promptTokens: 10, completionTokens: 5, calls: 1 }],
+      byAgent: [{ agentId: "a1", promptTokens: 10, completionTokens: 5, calls: 1 }],
+    });
+  });
+
+  it("负数 token 按 0 计入，调用数照常", async () => {
+    await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
+      JSON.stringify({
+        id: "neg", agentId: "a1", provider: "openai", model: "gpt-4o",
+        promptTokens: -5, completionTokens: 10, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+    ]);
+
+    const usage = await aggregateUsage();
+    expect(usage.dates).toEqual([
+      { date: "2026-08-03", promptTokens: 0, completionTokens: 10, calls: 1, errorCalls: 0 },
+    ]);
+    expect(usage.tokens).toEqual([
+      { provider: "openai", model: "gpt-4o", promptTokens: 0, completionTokens: 10, calls: 1 },
+    ]);
+  });
+
+  it("记录 agentId 与目录名不一致：warn 且目录名胜出", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
+        JSON.stringify({
+          id: "drift", agentId: "a2", provider: "openai", model: "gpt-4o",
+          promptTokens: 10, completionTokens: 5, status: "ok",
+          createdAt: localISO(2026, 8, 3),
+        }),
+      ]);
+
+      const usage = await aggregateUsage();
+      expect(usage.byAgent).toEqual([{ agentId: "a1", promptTokens: 10, completionTokens: 5, calls: 1 }]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ recordAgentId: "a2", agentId: "a1" }),
+        expect.stringContaining("不一致"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("单文件读失败（EISDIR）只跳过该 agent，不中断聚合", async () => {
+    // Windows 下目录可 open 但读流抛 EISDIR；POSIX 下 open 即抛 EISDIR——两条路径都覆盖
+    await fs.mkdir(path.join(tmpDir, "agents", "a1", "llm_calls.jsonl"), { recursive: true });
+    await writeLlmCalls(path.join(tmpDir, "agents", "a2"), [
+      JSON.stringify({
+        id: "1", agentId: "a2", provider: "openai", model: "gpt-4o",
+        promptTokens: 10, completionTokens: 5, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+    ]);
+
+    const usage = await aggregateUsage();
+    expect(usage.byAgent).toEqual([{ agentId: "a2", promptTokens: 10, completionTokens: 5, calls: 1 }]);
+    expect(usage.dates).toEqual([
+      { date: "2026-08-03", promptTokens: 10, completionTokens: 5, calls: 1, errorCalls: 0 },
+    ]);
+  });
+
   it("agents 目录缺失/为空/无 llm_calls.jsonl 时返回空数组不报错", async () => {
     expect(await aggregateUsage()).toEqual({ dates: [], tokens: [], byAgent: [] });
 
@@ -153,6 +231,22 @@ describe("GET /compute/usage", () => {
       tokens: [{ provider: "openai", model: "gpt-4o", promptTokens: 10, completionTokens: 5, calls: 1 }],
       byAgent: [{ agentId: "a1", promptTokens: 10, completionTokens: 5, calls: 1 }],
     });
+    await app.close();
+  });
+
+  it("单文件读失败不拖垮端点", async () => {
+    await fs.mkdir(path.join(tmpDir, "agents", "a1", "llm_calls.jsonl"), { recursive: true });
+    await writeLlmCalls(path.join(tmpDir, "agents", "a2"), [
+      JSON.stringify({
+        id: "1", agentId: "a2", provider: "openai", model: "gpt-4o",
+        promptTokens: 10, completionTokens: 5, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+    ]);
+    const app = await makeApp();
+    const res = await authedRequest(app.server).get("/compute/usage");
+    expect(res.status).toBe(200);
+    expect(res.body.byAgent).toEqual([{ agentId: "a2", promptTokens: 10, completionTokens: 5, calls: 1 }]);
     await app.close();
   });
 });

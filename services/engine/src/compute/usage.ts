@@ -1,3 +1,10 @@
+/**
+ * 跨 agent LLM 用量聚合（GET /compute/usage 数据源）。
+ *
+ * 注意：本聚合直接逐行 JSON.parse llm_calls.jsonl，绕过 DocumentStore 的
+ * schemaVersion 迁移门——llm_calls 升格式时需同步本文件的解析逻辑
+ * （当前 v1 无迁移链，落档行仅多一个可忽略的 schemaVersion 冗余字段）。
+ */
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -58,6 +65,12 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+const DEBUG_LINE_MAX = 200;
+
+function truncateForDebug(line: string): string {
+  return line.length > DEBUG_LINE_MAX ? `${line.slice(0, DEBUG_LINE_MAX)}…` : line;
+}
+
 function newAccumulators(): UsageAccumulators {
   return { byDate: new Map(), byModel: new Map(), byAgent: new Map() };
 }
@@ -83,9 +96,22 @@ async function accumulateAgentFile(
         if (!line.trim()) continue;
         let record: Partial<LLMCallRecord>;
         try {
-          record = JSON.parse(line) as Partial<LLMCallRecord>;
+          const parsed: unknown = JSON.parse(line);
+          // P2-1：JSON.parse("null")/"true" 成功但非对象，同样按坏行跳过，
+          // 否则后续字段访问 TypeError 会让端点 500
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            logger.debug(
+              { filePath },
+              `[compute/usage] 跳过非对象行：${truncateForDebug(line)}`,
+            );
+            continue;
+          }
+          record = parsed as Partial<LLMCallRecord>;
         } catch (err) {
-          logger.debug({ err: err }, `[compute/usage] 跳过坏行（${filePath}）：${line}`);
+          logger.debug(
+            { err: err },
+            `[compute/usage] 跳过坏行（${filePath}）：${truncateForDebug(line)}`,
+          );
           continue;
         }
         const createdAt = new Date(record.createdAt ?? "");
@@ -97,8 +123,16 @@ async function accumulateAgentFile(
         const completionTokens = toTokens(record.completionTokens);
         const provider = nonEmptyString(record.provider) ?? "unknown";
         const model = nonEmptyString(record.model) ?? "unknown";
-        // 历史记录可能没有 agentId（P4-5 之前的落档）：按所在目录归属
-        const recordAgentId = nonEmptyString(record.agentId) ?? agentId;
+        // P2-3：目录名是落盘存储不变量（getAgentDir），归属以目录名为准；
+        // 记录字段仅在缺失时兜底（本实现目录名恒有，即聚合恒按目录归属），
+        // 两者不一致时 warn 一条提示落档漂移
+        const recordAgentId = nonEmptyString(record.agentId);
+        if (recordAgentId !== undefined && recordAgentId !== agentId) {
+          logger.warn(
+            { filePath, recordAgentId, agentId },
+            "[compute/usage] 记录 agentId 与目录名不一致，以目录名为准",
+          );
+        }
         const isError = record.status === "error";
 
         const dateKey = formatLocalDate(createdAt);
@@ -122,10 +156,10 @@ async function accumulateAgentFile(
         modelAgg.completionTokens += completionTokens;
         modelAgg.calls += 1;
 
-        let agentAgg = acc.byAgent.get(recordAgentId);
+        let agentAgg = acc.byAgent.get(agentId);
         if (!agentAgg) {
-          agentAgg = { agentId: recordAgentId, promptTokens: 0, completionTokens: 0, calls: 0 };
-          acc.byAgent.set(recordAgentId, agentAgg);
+          agentAgg = { agentId, promptTokens: 0, completionTokens: 0, calls: 0 };
+          acc.byAgent.set(agentId, agentAgg);
         }
         agentAgg.promptTokens += promptTokens;
         agentAgg.completionTokens += completionTokens;
@@ -135,8 +169,10 @@ async function accumulateAgentFile(
       rl.close();
     }
   } catch (err) {
+    // P2-2：单文件故障隔离——文件缺失（ENOENT）静默跳过；
+    // 其他读失败（EACCES/EISDIR/流中断）只 warn 跳过该 agent，不拖垮整个端点
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw err;
+    logger.warn({ err: err, filePath }, "[compute/usage] 读取 llm_calls.jsonl 失败，跳过该 agent");
   } finally {
     await handle?.close();
   }
@@ -167,10 +203,10 @@ export async function aggregateUsage(dataDir: string = getDataDir()): Promise<Co
   }
 
   return {
-    dates: [...acc.byDate.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    dates: [...acc.byDate.values()].sort((a, b) => a.date.localeCompare(b.date, "en")),
     tokens: [...acc.byModel.values()].sort(
-      (a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
+      (a, b) => a.provider.localeCompare(b.provider, "en") || a.model.localeCompare(b.model, "en"),
     ),
-    byAgent: [...acc.byAgent.values()].sort((a, b) => a.agentId.localeCompare(b.agentId)),
+    byAgent: [...acc.byAgent.values()].sort((a, b) => a.agentId.localeCompare(b.agentId, "en")),
   };
 }
