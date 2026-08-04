@@ -131,6 +131,7 @@ export class PuppetRunner {
           agentId: ownerAgentId,
           workspaceDir: runtime.workspaceDir,
           tools: toolsMap,
+          isPuppet: true,
           approve: async (name, args, toolCallId) => {
             // 有桥接：回 owner 发起会话的审批通道（同 delegate 审批体验）；
             // 无桥接：危险工具 fail-closed 拒绝，只读工具放行（同现状语义）

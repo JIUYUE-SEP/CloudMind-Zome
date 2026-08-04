@@ -18,6 +18,10 @@ export interface ToolExecutionContext {
   workspaceDir: string;
   projectRoot?: string;
   tools: Map<string, Tool>;
+  /** puppet 上下文标记（透传给工具：send_private_message 硬拒） */
+  isPuppet?: boolean;
+  /** 私信唤醒回合标记（透传给工具：回信搭车不唤醒） */
+  intermindRide?: boolean;
   approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   emit: (event: LLMEvent) => void;
   services?: ToolContext["services"];
@@ -75,6 +79,8 @@ export async function runToolCallBatch(
             agentId: ctx.agentId,
             workspaceDir: ctx.workspaceDir,
             projectRoot: ctx.projectRoot,
+            isPuppet: ctx.isPuppet,
+            intermindRide: ctx.intermindRide,
             approve: ctx.approve,
             services: ctx.services,
           };

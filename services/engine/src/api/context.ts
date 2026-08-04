@@ -16,6 +16,7 @@ import type { SidecarClient } from "../sidecar/client.js";
 import type { McpClientManager } from "../tools/mcp/index.js";
 import type { SkillService } from "../skills/service.js";
 import type { PuppetModelService } from "../subagent/puppet-models.js";
+import type { IntermindService } from "../intermind/service.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 export interface ApiContext {
@@ -43,6 +44,8 @@ export interface ApiContext {
   skillService?: SkillService;
   /** Puppet 型号库（GET /puppet-models） */
   puppetModelService?: PuppetModelService;
+  /** Intermind 人形间私信（send_private_message 工具与 REST 共用） */
+  intermindService?: IntermindService;
   /** 退役 agent 的 worker（skills/reload 复用配置变更的退役/重建机制：下次使用按新目录重建） */
   retireAgentWorker?(agentId: string): void;
 }

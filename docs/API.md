@@ -113,6 +113,13 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 > 子代理通过 `dispatch_subagent` / `dispatch_subagent_batch` 工具创建，无 REST 创建端点。任务持久化于 `subagent-tasks.jsonl`（engine 重启时 running 标 `lost`，不自动续跑）；列表/详情中 `output` 为截尾 preview（超 ~4KB，`outputTruncated` 标记），全量走 output 端点；`kind` 区分 `delegate`（借用人形）/ `puppet`（傀儡分身）。
 > `dispatch_subagent` 的 `kind=puppet` 可选 `puppetModel`（型号名）：persona 片段拼入傀儡基础设定，`suggestedTools` 对傀儡工具集做交集窄化（只窄化不扩权；交集为空或型号不存在返回明确错误）。
 
+### Intermind（人形间私信）
+
+- `GET /agents/:id/intermind` — 列出该 Agent 的 intermind 会话：`[{ peer, lastMessageAt, count }]`（对端、最后消息时间、条数，按最后时间倒序）
+- `GET /agents/:id/intermind/:peerId/messages?limit=&before=` — 分页读取与对端的来往消息（消息带 `agentId` 发送方归属；limit 默认 100、上限 200，before 为消息 id 游标）
+
+> 私信经 `send_private_message` 工具发送（免审批但需 agent 白名单授权；傀儡上下文不可用）。会话空间按对端一个会话（`intermind:<peerId>`），邮箱对称双写——接收方来信线程与发送方来往线程各持全量往来；信到触发接收方感知回合，感知回合内回信搭车（只入队不再次唤醒）。设计文档：`docs/design/intermind.md`。
+
 ### Memory
 
 - `GET /memory/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的记忆

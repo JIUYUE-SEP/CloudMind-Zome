@@ -8,6 +8,7 @@ import { dispatchSubagentTool } from "./dispatch_subagent.js";
 import { dispatchSubagentBatchTool } from "./dispatch_subagent_batch.js";
 import { skillTool } from "./skill.js";
 import { webSearchTool } from "./web-search.js";
+import { sendPrivateMessageTool } from "./send_private_message.js";
 import type { Tool } from "../types.js";
 
 export function getBuiltinTools(): Tool[] {
@@ -22,5 +23,6 @@ export function getBuiltinTools(): Tool[] {
     dispatchSubagentBatchTool,
     skillTool,
     webSearchTool,
+    sendPrivateMessageTool,
   ];
 }

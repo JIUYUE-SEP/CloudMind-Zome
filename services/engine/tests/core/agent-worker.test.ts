@@ -1179,6 +1179,64 @@ ${SECURITY_GUIDELINE}` },
       expect(executed.flag).toBe(true);
     });
   });
+
+  describe("Intermind 搭车标记透传（enqueueSystemNotice → Job → ToolContext）", () => {
+    class RideProbeProvider implements LLMProvider {
+      name = "ride-probe";
+      private calls = 0;
+      supportsModel() {
+        return true;
+      }
+      async *chat(): AsyncIterable<LLMEvent> {
+        this.calls++;
+        if (this.calls === 1) {
+          yield {
+            type: "tool.call",
+            toolCallId: "tc_ride",
+            name: "ride_probe",
+            arguments: {},
+          };
+        } else {
+          yield { type: "text.delta", delta: "done" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    function makeRideProbe(record: { ride?: boolean }): Tool {
+      return {
+        name: "ride_probe",
+        description: "probe",
+        parameters: z.object({}),
+        accesses: [],
+        requiresApproval: false,
+        execute: async (ctx: ToolContext) => {
+          record.ride = ctx.intermindRide;
+          return { success: true, output: "ok" };
+        },
+      };
+    }
+
+    it("enqueueSystemNotice 带 intermindRide=true：工具上下文收到搭车标记", async () => {
+      const record: { ride?: boolean } = {};
+      const worker = new AgentWorker(
+        makeConfig(new RideProbeProvider(), {}, [makeRideProbe(record)]),
+      );
+      worker.enqueueSystemNotice("notice", "s1", { intermindRide: true });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+      expect(record.ride).toBe(true);
+    });
+
+    it("普通系统通知（subagent 终态等）不带搭车标记", async () => {
+      const record: { ride?: boolean } = {};
+      const worker = new AgentWorker(
+        makeConfig(new RideProbeProvider(), {}, [makeRideProbe(record)]),
+      );
+      worker.enqueueSystemNotice("notice", "s1");
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+      expect(record.ride).toBeUndefined();
+    });
+  });
 });
 
 describe("AgentWorker 话题压缩集成（Phase 2）", () => {

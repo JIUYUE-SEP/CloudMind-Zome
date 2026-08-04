@@ -36,6 +36,7 @@ import { BackgroundManager } from "./subagent/background.js";
 import { SubagentTaskRepository } from "./subagent/task-repository.js";
 import { PuppetRunner, type PuppetRuntime } from "./subagent/puppet.js";
 import { createPuppetModelService } from "./subagent/puppet-models.js";
+import { IntermindService } from "./intermind/service.js";
 import { SubagentSwarm } from "./subagent/batch.js";
 import { createSubagentTerminalNotifier } from "./subagent/notify.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
@@ -99,6 +100,13 @@ async function main() {
   });
   // Puppet 型号库（单 3）：内置四型号 + DATA_DIR/puppet-models/*.json 自定义（同名覆盖）
   const puppetModelService = createPuppetModelService();
+  // Intermind 人形间私信（一期）：写信/唤醒/会话检索（getOrCreateWorker 为函数声明，可提前引用）
+  const intermindService = new IntermindService({
+    getAgentConfig: (agentId) => agentRepository.get(agentId),
+    listAgents: () => agentRepository.list(),
+    getMessageRepository: (agentId) => new MessageRepository(agentId),
+    getAgentWorker: (agentId) => getOrCreateWorker(agentId),
+  });
 
   // MCP servers：启动时按 DATA_DIR/mcp-servers.json 连接，单个失败降级不影响整体
   const mcpManager = McpClientManager.loadDefault();
@@ -158,7 +166,12 @@ async function main() {
           ...mcpManager.getTools(),
         ],
         workspaceDir: getAgentDir(ownerAgentId),
-        services: { subagentDispatcher, configRepository: configRepo, puppetModelService },
+        services: {
+          subagentDispatcher,
+          configRepository: configRepo,
+          puppetModelService,
+          intermindService,
+        },
       };
     },
   });
@@ -269,6 +282,7 @@ async function main() {
         skillService,
         configRepository: configRepo,
         puppetModelService,
+        intermindService,
       },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),
@@ -399,6 +413,7 @@ async function main() {
     sidecarClient,
     skillService,
     puppetModelService,
+    intermindService,
     retireAgentWorker: (agentId) => workerRegistry.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];

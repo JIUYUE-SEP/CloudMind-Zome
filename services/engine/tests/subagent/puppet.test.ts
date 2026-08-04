@@ -169,6 +169,31 @@ describe("② approve 桥接", () => {
     await runner.run("a1", "do work");
     expect(executions).toEqual([]);
   });
+
+  it("puppet 工具上下文带 isPuppet 标记（send_private_message 硬拒的判定依据）", async () => {
+    const record: { isPuppet?: boolean } = {};
+    const probe: Tool = {
+      name: "is_puppet_probe",
+      description: "probe",
+      parameters: z.object({}),
+      accesses: [],
+      requiresApproval: false,
+      execute: async (ctx) => {
+        record.isPuppet = ctx.isPuppet;
+        return { success: true, output: "ok" };
+      },
+    };
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([
+      { toolCallId: "tc_p", name: "is_puppet_probe", arguments: {} },
+    ]);
+    const runner = new PuppetRunner({
+      getRuntime: async () => makeRuntime(provider, [probe]),
+    });
+
+    await runner.run("a1", "do work");
+    expect(record.isPuppet).toBe(true);
+  });
 });
 
 describe("③ 记忆即弃", () => {

@@ -90,6 +90,8 @@ export interface Job {
   onDone?: (err?: unknown) => void;
   /** 危险工具（requiresApproval）的人工审批通道；未提供时危险工具一律拒绝 */
   onApprovalRequest?: (req: ApprovalRequest) => Promise<boolean>;
+  /** 本回合由 Intermind 私信唤醒触发：回信搭车（只入队、不再次唤醒对方） */
+  intermindRide?: boolean;
 }
 
 export interface ApprovalRequest {
@@ -176,7 +178,11 @@ export class AgentWorker {
    * 通知文本先落热存储（感知回合的产出写历史——她"记得"这件事发生过），
    * 再入队触发一轮正常感知（感知回合无审批通道：写类工具一律 fail-closed，含嵌套 dispatch——防环因此平凡成立）。
    */
-  enqueueSystemNotice(text: string, sourceId: string): void {
+  enqueueSystemNotice(
+    text: string,
+    sourceId: string,
+    opts?: { intermindRide?: boolean },
+  ): void {
     const message: ChatMessage = {
       id: randomUUID(),
       role: "user",
@@ -192,6 +198,7 @@ export class AgentWorker {
       id: `notice_${randomUUID()}`,
       sessionId: sourceId,
       messages: [message],
+      intermindRide: opts?.intermindRide,
       onEvent: () => {},
       onDone: (err) => {
         if (err) logger.warn({ err: err }, "[agent-worker] 系统通知感知回合失败");
@@ -545,6 +552,7 @@ export class AgentWorker {
           workspaceDir: this.config.workspaceDir,
           projectRoot: job.projectRoot,
           tools: toolsMap,
+          intermindRide: job.intermindRide,
           approve: async (name, args, toolCallId) => {
             // 全局策略门（当前生产环境放行）
             if (!(await this.config.approve(name, args, toolCallId))) return false;
