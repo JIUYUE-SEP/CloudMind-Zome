@@ -165,9 +165,10 @@ describe("① 压缩写入 usedSkills", () => {
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: {
-        append: async () => {},
-        listBySession: async () => [],
-        getByIds: async () => [],
+      append: async () => {},
+      listBySession: async () => [],
+      listBySessionPrefix: async () => [],
+      getByIds: async () => [],
         archiveAndRemove: async (ids) => {
           archived.push(ids);
         },

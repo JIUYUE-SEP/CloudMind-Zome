@@ -62,7 +62,7 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 - 目标 agent 不存在：明确错误，不写信、不唤醒；
 - 傀儡上下文调用：明确错误「傀儡无社交权」，不写信；
 - 给自己写信：明确拒绝（与「不能借用自己」同一哲学）；
-- 写消息落盘失败：抛错返回，不静默（任一侧写入失败即失败；局部写入可能残留，由审计留痕可回溯）；
+- 写消息落盘失败：抛错返回，不静默（任一侧写入失败即失败）；若接收方已落盘而发送方留底失败（双写分叉），额外落「私信双写分叉（部分落盘）」补偿审计（含 persistedSide），分叉状态有账可查；
 - 接收方无可用 worker：信照常落盘，唤醒跳过并 warn（信不丢，感知延后/由用户会话自然读到）；
 - 审计/日志失败：只记 warn，不影响写信（与既有审计同策略）。
 
@@ -71,12 +71,13 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 - 工具需 agent 白名单显式授权（`agentConfig.tools` 含 `send_private_message` 才可用），fail-closed 不变；
 - 免审批只针对私信本身；感知回合内其他危险工具仍受「无审批通道 fail-closed」约束；
 - 傀儡硬禁邮，swarm 批量派发（全傀儡）天然无法轰炸；
+- 蓝图显式禁邮：`send_private_message` 在蓝图工作流中直接拒绝（蓝图不是人形，无社交权），不依赖服务注入的偶然结果；
 - PUT 合并语义、审计脱敏风格沿用既有约定。
 
 ## REST
 
-- `GET /agents/:id/intermind` — 列出该 agent 的 intermind 会话：`[{ peer, lastMessageAt, count }]`，按最后消息时间倒序；
-- `GET /agents/:id/intermind/:peerId/messages?limit=&before=` — 分页读取与对端的来往消息（`sessionId = intermind:<peerId>`，消息带 `agentId` 归属，limit 默认 100、上限 200）。
+- `GET /agents/:id/intermind` — 列出该 agent 的 intermind 会话：`[{ peer, lastMessageAt, count }]`，按最后消息时间倒序；对端集合由消息前缀扫描推导，与 messages 端点同口径（已删除 agent / 历史非人形对端也列出）；
+- `GET /agents/:id/intermind/:peerId/messages?limit=&before=` — 分页读取与对端的来往消息（`sessionId = intermind:<peerId>`，消息带 `agentId` 归属，limit 默认 100、上限 200，`before` 必须是会话内真实消息 id，未知游标返回 400）。
 
 ## 待办清单（本期不做）
 
@@ -85,3 +86,4 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 - `sessions.jsonl` 显式会话记录与生命周期（删除/归档）；
 - 未读计数 / 已读回执；
 - 私信对 ContextPipeline 的可检索性（交情检索）深化。
+- 收信箱读取工具（二期）：感知回合目前只注入 200 字摘要，完整来信无工具可读——加 read 类工具（如 `read_private_messages`）让 agent 能取全文。

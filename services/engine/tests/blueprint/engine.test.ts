@@ -83,4 +83,31 @@ describe("executeBlueprint", () => {
       expect(result.outputs["tool"]).toContain("requires approval");
     },
   );
+
+  it("refuses send_private_message in blueprints（蓝图不是人形，无社交权）", async () => {
+    const blueprint: Blueprint = {
+      id: "b1",
+      name: "Test",
+      nodes: [
+        { id: "start", type: "start", x: 0, y: 0 },
+        {
+          id: "tool",
+          type: "tool",
+          x: 200,
+          y: 0,
+          config: { toolName: "send_private_message", arguments: { to: "a2", content: "hi" } },
+        },
+        { id: "end", type: "end", x: 400, y: 0 },
+      ],
+      edges: [
+        { source: "start", target: "tool" },
+        { source: "tool", target: "end" },
+      ],
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const result = await executeBlueprint(blueprint, mockContext);
+    expect(result.status).toBe("completed");
+    expect(result.outputs["tool"]).toContain("无社交权");
+  });
 });

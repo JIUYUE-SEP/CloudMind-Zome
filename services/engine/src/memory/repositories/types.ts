@@ -44,6 +44,8 @@ export interface IAgentRepository {
 export interface IMessageRepository {
   append(message: ChatMessageRecord): Promise<void>;
   listBySession(sessionId: string, options?: { limit?: number; before?: string }): Promise<ChatMessageRecord[]>;
+  /** 按 sessionId 前缀扫描（Intermind 会话推导等场景；无前缀匹配返回空） */
+  listBySessionPrefix(prefix: string): Promise<ChatMessageRecord[]>;
   getByIds(ids: string[]): Promise<ChatMessageRecord[]>;
   /**
    * 话题压缩后的热存储清理：先把 ids 对应记录追加到 messages_archived.jsonl，

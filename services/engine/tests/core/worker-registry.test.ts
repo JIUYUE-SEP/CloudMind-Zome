@@ -25,6 +25,7 @@ function makeWorker(provider: LLMProvider): AgentWorker {
     messageRepository: {
       append: async () => {},
       listBySession: async () => [],
+      listBySessionPrefix: async () => [],
       getByIds: async () => [],
       archiveAndRemove: async () => {},
       getArchivedByIds: async () => [],

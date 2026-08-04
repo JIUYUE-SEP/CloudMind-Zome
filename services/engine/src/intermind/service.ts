@@ -3,7 +3,11 @@ import type { AgentConfig, ChatMessageRecord } from "@mindcloud/shared";
 import { logger } from "../logger.js";
 import type { AgentWorker } from "../core/agent-worker.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
-import { auditPrivateMessage, PRIVATE_MESSAGE_SUMMARY_MAX } from "./audit.js";
+import {
+  auditPrivateMessage,
+  auditPrivateMessagePartialWrite,
+  PRIVATE_MESSAGE_SUMMARY_MAX,
+} from "./audit.js";
 
 /**
  * Intermind 人形间私信服务（一期）。
@@ -37,7 +41,6 @@ export interface IntermindSendResult {
 
 export interface IntermindServiceDeps {
   getAgentConfig(agentId: string): Promise<AgentConfig | undefined>;
-  listAgents(): Promise<AgentConfig[]>;
   getMessageRepository(agentId: string): IMessageRepository;
   getAgentWorker(agentId: string): Promise<AgentWorker | undefined>;
 }
@@ -90,10 +93,22 @@ export class IntermindService {
       ...record,
       sessionId: recipientSessionId,
     });
-    await this.deps.getMessageRepository(fromAgentId).append({
-      ...record,
-      sessionId: intermindSessionId(toAgentId),
-    });
+    try {
+      await this.deps.getMessageRepository(fromAgentId).append({
+        ...record,
+        sessionId: intermindSessionId(toAgentId),
+      });
+    } catch (err) {
+      // 接收方已落盘、发送方留底失败：分叉状态必须有账可查（补偿 warn），再抛错
+      auditPrivateMessagePartialWrite({
+        fromAgentId,
+        toAgentId,
+        sessionId: recipientSessionId,
+        content,
+        persistedSide: "recipient",
+      });
+      throw err;
+    }
 
     auditPrivateMessage({
       fromAgentId,
@@ -123,22 +138,26 @@ export class IntermindService {
 
   /** 列出该 agent 的 intermind 会话（对端 + 最后消息时间 + 条数，最后时间倒序） */
   async listSessions(agentId: string): Promise<IntermindSessionSummary[]> {
-    const agents = await this.deps.listAgents();
-    const sessions: IntermindSessionSummary[] = [];
-    for (const peer of agents) {
-      if (peer.id === agentId) continue;
-      const records = await this.deps
-        .getMessageRepository(agentId)
-        .listBySession(intermindSessionId(peer.id));
-      if (records.length > 0) {
-        sessions.push({
-          peer: peer.id,
-          lastMessageAt: records[records.length - 1]!.createdAt,
-          count: records.length,
-        });
-      }
+    // 按消息前缀扫描推导会话：与 messages 端点同口径——
+    // 对端即使是已删除 agent 或非人形发送者（如历史数据）也照常列出
+    const records = await this.deps
+      .getMessageRepository(agentId)
+      .listBySessionPrefix(INTERMIND_SESSION_PREFIX);
+    const byPeer = new Map<string, ChatMessageRecord[]>();
+    for (const record of records) {
+      const peer = record.sessionId.slice(INTERMIND_SESSION_PREFIX.length);
+      if (!peer) continue;
+      const list = byPeer.get(peer) ?? [];
+      list.push(record);
+      byPeer.set(peer, list);
     }
-    return sessions.sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+    return Array.from(byPeer.entries())
+      .map(([peer, msgs]) => ({
+        peer,
+        lastMessageAt: msgs[msgs.length - 1]!.createdAt,
+        count: msgs.length,
+      }))
+      .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
   }
 
   /** 分页读取与对端的来往消息（limit 由调用方 clamp，before 为消息 id 游标） */
@@ -147,6 +166,13 @@ export class IntermindService {
     peerId: string,
     options?: { limit?: number; before?: string },
   ): Promise<ChatMessageRecord[]> {
-    return this.deps.getMessageRepository(agentId).listBySession(intermindSessionId(peerId), options);
+    const repo = this.deps.getMessageRepository(agentId);
+    if (options?.before) {
+      const all = await repo.listBySession(intermindSessionId(peerId));
+      if (!all.some((m) => m.id === options.before)) {
+        throw new Error(`Invalid before cursor: ${options.before}`);
+      }
+    }
+    return repo.listBySession(intermindSessionId(peerId), options);
   }
 }

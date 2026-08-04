@@ -31,6 +31,11 @@ export class MessageRepository implements IMessageRepository {
     return filtered.slice(-limit);
   }
 
+  async listBySessionPrefix(prefix: string): Promise<ChatMessageRecord[]> {
+    const all = await this.store().readLines();
+    return all.filter((m) => m.sessionId.startsWith(prefix));
+  }
+
   async getByIds(ids: string[]): Promise<ChatMessageRecord[]> {
     if (ids.length === 0) return [];
     const wanted = new Set(ids);

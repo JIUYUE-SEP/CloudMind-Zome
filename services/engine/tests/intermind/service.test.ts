@@ -13,6 +13,7 @@ import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { ChatMessageRecord } from "@mindcloud/shared";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
+import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 
 function textOf(record: ChatMessageRecord): string {
   const part = record.content[0]!;
@@ -56,7 +57,6 @@ beforeEach(async () => {
   wakeSpy = worker.enqueueSystemNotice as ReturnType<typeof vi.fn>;
   service = new IntermindService({
     getAgentConfig: (id) => agentRepository.get(id),
-    listAgents: () => agentRepository.list(),
     getMessageRepository: (id) => new MessageRepository(id),
     getAgentWorker: async () => worker,
   });
@@ -127,10 +127,44 @@ describe("IntermindService.send", () => {
     expect(wakeSpy).not.toHaveBeenCalled();
   });
 
+  it("双写中途失败：接收方已落盘、发送方留底失败——报错 + 分叉审计留痕", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const failingSender: IMessageRepository = {
+      append: async () => {
+        throw new Error("disk full");
+      },
+      listBySession: async () => [],
+      listBySessionPrefix: async () => [],
+      getByIds: async () => [],
+      archiveAndRemove: async () => {},
+      getArchivedByIds: async () => [],
+    };
+    const broken = new IntermindService({
+      getAgentConfig: (id) => agentRepository.get(id),
+      getMessageRepository: (id) =>
+        id === "a1" ? failingSender : new MessageRepository(id),
+      getAgentWorker: async () => undefined,
+    });
+
+    await expect(broken.send("a1", "a2", "hi")).rejects.toThrow("disk full");
+    // 分叉状态有账可查：接收方有信、发送方无留底，且落分叉审计
+    expect(await new MessageRepository("a2").listBySession("intermind:a1")).toHaveLength(1);
+    expect(await new MessageRepository("a1").listBySession("intermind:a2")).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromAgentId: "a1",
+        toAgentId: "a2",
+        sessionId: "intermind:a1",
+        persistedSide: "recipient",
+      }),
+      "[intermind] 私信双写分叉（部分落盘）",
+    );
+    warn.mockRestore();
+  });
+
   it("接收方无可用 worker：信照常落盘，唤醒跳过并 warn", async () => {
     const workerless = new IntermindService({
       getAgentConfig: (id) => agentRepository.get(id),
-      listAgents: () => agentRepository.list(),
       getMessageRepository: (id) => new MessageRepository(id),
       getAgentWorker: async () => undefined,
     });
@@ -158,6 +192,22 @@ describe("IntermindService 会话检索", () => {
     );
   });
 
+  it("listSessions 与 messages 同口径：非 agent 列表的对端（历史/已删除）也列出", async () => {
+    await new MessageRepository("a2").append({
+      id: "m-ghost",
+      sessionId: "intermind:ghost",
+      role: "user",
+      content: [{ type: "text", text: "旧信" }],
+      agentId: "ghost",
+      createdAt: new Date().toISOString(),
+    });
+
+    const sessions = await service.listSessions("a2");
+    expect(sessions.map((s) => s.peer)).toContain("ghost");
+    const msgs = await service.listMessages("a2", "ghost");
+    expect(msgs).toHaveLength(1);
+  });
+
   it("listMessages：分页读取来往消息（limit/before）", async () => {
     for (let i = 1; i <= 3; i++) {
       await service.send("a1", "a2", `第${i}条`, { wake: false });
@@ -179,5 +229,12 @@ describe("IntermindService 会话检索", () => {
     expect(notice).toHaveLength("【来自 甲 的私信】".length + 200 + 1);
     expect(notice.endsWith("…")).toBe(true);
     expect(intermindSessionId("a2")).toBe("intermind:a2");
+  });
+
+  it("before 未知游标：明确抛错（REST 映射 400）", async () => {
+    await service.send("a1", "a2", "hi", { wake: false });
+    await expect(
+      service.listMessages("a2", "a1", { before: "no-such-id" }),
+    ).rejects.toThrow("Invalid before cursor: no-such-id");
   });
 });

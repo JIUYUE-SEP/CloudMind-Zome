@@ -28,3 +28,23 @@ export function auditPrivateMessage(base: {
     "[intermind] 私信",
   );
 }
+
+/** 双写分叉补偿留痕：一侧已落盘、另一侧失败——分叉状态必须有账可查 */
+export function auditPrivateMessagePartialWrite(base: {
+  fromAgentId: string;
+  toAgentId: string;
+  sessionId: string;
+  content: string;
+  persistedSide: "recipient" | "sender";
+}): void {
+  logger.warn(
+    {
+      fromAgentId: base.fromAgentId,
+      toAgentId: base.toAgentId,
+      sessionId: base.sessionId,
+      persistedSide: base.persistedSide,
+      content: truncate(base.content, PRIVATE_MESSAGE_SUMMARY_MAX),
+    },
+    "[intermind] 私信双写分叉（部分落盘）",
+  );
+}

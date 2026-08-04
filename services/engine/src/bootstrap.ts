@@ -103,7 +103,6 @@ async function main() {
   // Intermind 人形间私信（一期）：写信/唤醒/会话检索（getOrCreateWorker 为函数声明，可提前引用）
   const intermindService = new IntermindService({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
-    listAgents: () => agentRepository.list(),
     getMessageRepository: (agentId) => new MessageRepository(agentId),
     getAgentWorker: (agentId) => getOrCreateWorker(agentId),
   });

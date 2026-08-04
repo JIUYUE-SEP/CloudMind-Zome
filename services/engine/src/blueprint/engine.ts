@@ -164,6 +164,11 @@ async function executeTool(
   if (tool.requiresApproval) {
     return `tool requires approval and cannot run in blueprints: ${toolName}`;
   }
+  // Intermind 私信是「她和她」之间的事：蓝图不是人形，无社交权——显式拒绝，
+  // 不依赖 services 缺注入的偶然结果
+  if (toolName === "send_private_message") {
+    return "send_private_message 不能在蓝图工作流中执行：蓝图不是人形，无社交权";
+  }
   const workspaceDir = path.join(getDataDir(), "blueprint-workspace", executionId);
   await fs.mkdir(workspaceDir, { recursive: true });
   try {

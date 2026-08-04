@@ -46,7 +46,6 @@ beforeEach(async () => {
   });
   intermindService = new IntermindService({
     getAgentConfig: (id) => agentRepository.get(id),
-    listAgents: () => agentRepository.list(),
     getMessageRepository: (id) => new MessageRepository(id),
     getAgentWorker: async () => undefined,
   });
@@ -124,6 +123,31 @@ describe("Intermind REST", () => {
       "第1条",
       "第2条",
     ]);
+
+    const invalid = await authedRequest(app.server).get(
+      "/agents/a2/intermind/a1/messages?before=no-such-id",
+    );
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("Invalid before cursor");
+  });
+
+  it("会话列表与 messages 同口径：非 agent 列表的对端（历史/已删除）也列出且可读", async () => {
+    await new MessageRepository("a2").append({
+      id: "m-ghost",
+      sessionId: "intermind:ghost",
+      role: "user",
+      content: [{ type: "text", text: "旧信" }],
+      agentId: "ghost",
+      createdAt: new Date().toISOString(),
+    });
+
+    const list = await authedRequest(app.server).get("/agents/a2/intermind");
+    expect(list.status).toBe(200);
+    expect(list.body.map((s: { peer: string }) => s.peer)).toContain("ghost");
+
+    const msgs = await authedRequest(app.server).get("/agents/a2/intermind/ghost/messages");
+    expect(msgs.status).toBe(200);
+    expect(msgs.body).toHaveLength(1);
   });
 
   it("非法 agent id → 400；未知 agent → 404；无消息的对端 → 空列表", async () => {

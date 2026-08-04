@@ -39,11 +39,18 @@ export async function registerIntermindRoutes(app: FastifyInstance, context: Api
       MAX_LIMIT,
     );
     const before = (request.query as { before?: string }).before;
-    return (
-      (await context.intermindService?.listMessages(id, peerId, {
-        limit,
-        ...(before !== undefined ? { before } : {}),
-      })) ?? []
-    );
+    try {
+      return (
+        (await context.intermindService?.listMessages(id, peerId, {
+          limit,
+          ...(before !== undefined ? { before } : {}),
+        })) ?? []
+      );
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("Invalid before cursor")) {
+        return reply.status(400).send({ error: String(err) });
+      }
+      throw err;
+    }
   });
 }

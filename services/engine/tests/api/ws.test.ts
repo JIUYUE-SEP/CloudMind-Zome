@@ -53,6 +53,7 @@ async function buildWsContext(
     messageRepository: {
       append: async () => {},
       listBySession: async () => [],
+      listBySessionPrefix: async () => [],
       getByIds: async () => [],
       archiveAndRemove: async () => {},
       getArchivedByIds: async () => [],
@@ -390,6 +391,7 @@ describe("WebSocket API", () => {
       messageRepository: {
         append: async () => {},
         listBySession: async () => [],
+        listBySessionPrefix: async () => [],
         getByIds: async () => [],
         archiveAndRemove: async () => {},
         getArchivedByIds: async () => [],
