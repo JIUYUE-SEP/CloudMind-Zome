@@ -23,6 +23,12 @@ export const useChatStore = defineStore("chat", () => {
   let connection: ReturnType<typeof client.connect> | null = null;
   // 历史加载代际：每次加载/断连自增，迟到的过期响应不得覆盖当前会话
   let loadSeq = 0;
+  // 当前视图所属 agent：切换/卸载时区分「当前会话」与「已被替换的旧视图」。
+  // 真机 #6 根因：Vue 替换 keyed ChatView 时先挂新组件、后跑旧组件 onUnmounted，
+  // 旧组件卸载的 disconnect() 会作废新 agent 正在加载的历史并清空 messages——
+  // 与 A 聊完切到 B 再切回 A，A 的消息列表变空。switchTo 先认领新 agent，
+  // 旧组件迟到的卸载清理因 agentId 不匹配直接跳过。
+  let currentAgentId = "";
   // Date.now() 同毫秒会撞 id（v-for key 冲突），挂自增序号
   let msgSeq = 0;
   const nextMsgId = (prefix: string) => `${prefix}_${Date.now()}_${msgSeq++}`;
@@ -35,6 +41,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   function connect(agentId: string) {
+    currentAgentId = agentId;
     if (connection) connection.close();
     isConnected.value = false;
     isStreaming.value = false;
@@ -202,7 +209,26 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 切换到目标 agent（ChatView 挂载/切换）：先认领新 agent 再清旧状态 */
+  function switchTo(agentId: string) {
+    currentAgentId = agentId;
+    disconnectInternal();
+  }
+
+  /**
+   * 离开当前会话/组件卸载。传入 agentId 时只清理「仍然当前」的视图：
+   * 被替换的旧 ChatView 卸载是迟到回调，不得清掉新会话的状态。
+   */
+  function disconnectFor(agentId: string) {
+    if (agentId !== currentAgentId) return;
+    disconnectInternal();
+  }
+
   function disconnect() {
+    disconnectInternal();
+  }
+
+  function disconnectInternal() {
     // 作废在途的历史加载：否则切走后迟到的响应会把消息列表写回已离开的会话
     loadSeq++;
     connection?.close();
@@ -214,5 +240,19 @@ export const useChatStore = defineStore("chat", () => {
     messages.value = [];
   }
 
-  return { sessionId, messages, isConnected, isStreaming, reconnectAttempts, engineTerminated, loadMessages, connect, send, respondApproval, disconnect };
+  return {
+    sessionId,
+    messages,
+    isConnected,
+    isStreaming,
+    reconnectAttempts,
+    engineTerminated,
+    loadMessages,
+    connect,
+    switchTo,
+    disconnect,
+    disconnectFor,
+    send,
+    respondApproval,
+  };
 });

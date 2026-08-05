@@ -56,7 +56,8 @@ watch(
   async (id) => {
     if (!id) return;
     const seq = ++connectSeq;
-    chat.disconnect();
+    // switchTo 先认领新 agent：旧 ChatView 迟到的 onUnmounted 不会清掉本会话
+    chat.switchTo(id);
     try {
       await chat.loadMessages(id);
     } catch {
@@ -86,7 +87,8 @@ watch(
 
 onUnmounted(() => {
   connectSeq++;
-  chat.disconnect();
+  // 只清理仍然当前的视图：切换后旧组件卸载是迟到回调，不得清掉新会话
+  chat.disconnectFor(props.agentId);
 });
 
 function onSend(text: string) {

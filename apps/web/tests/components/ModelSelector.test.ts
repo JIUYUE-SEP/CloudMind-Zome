@@ -63,4 +63,22 @@ describe("ModelSelector", () => {
     expect(wrapper.emitted("update:providerId")?.[0]).toEqual([""]);
     expect(wrapper.emitted("update:modelId")?.[0]).toEqual([""]);
   });
+
+  it("已配置但模型列表未收录：补兜底选项并回显当前值（UI 杂项修复）", async () => {
+    await useComputeStore().load();
+    const wrapper = mount(ModelSelector, {
+      props: {
+        modelType: "llm",
+        providerId: "p1",
+        modelId: "gpt-4o-legacy",
+      },
+    });
+    await flushPromises();
+    const select = wrapper.find("select");
+    // 列表里只有 gpt-4o，但下拉必须仍显示已配置的 gpt-4o-legacy
+    expect(select.element.value).toBe("p1:gpt-4o-legacy");
+    const values = wrapper.findAll("option").map((o) => o.attributes("value"));
+    expect(values).toContain("p1:gpt-4o-legacy");
+    expect(values).toContain("p1:gpt-4o");
+  });
 });

@@ -16,11 +16,13 @@ import {
  * 邮箱对称双写——A 给 B 写信时，消息同时写入 B 的空间（`intermind:A`，来信线程）
  * 和 A 自己的空间（`intermind:B`，来往线程留底），两侧各自可读全量往来。
  * 唤醒：写信后经 enqueueSystemNotice 触发接收方一轮感知回合（带 intermindRide 标记，
- * 感知回合内回信搭车不再次唤醒）。信不参与主对话历史。
+ * 感知回合内回信搭车不再次唤醒）。通知注入接收方主会话（default，与前端私聊同口径），
+ * 裸原文只进 intermind 来信线程——主会话只见通知，避免同一封信双注入。
  */
 
 export const INTERMIND_SESSION_PREFIX = "intermind:";
-export const INTERMIND_NOTICE_SESSION_PREFIX = "notice_intermind:";
+/** 私信通知注入的主会话：与前端私聊 WS/REST 的缺省会话同 id */
+export const INTERMIND_NOTICE_SESSION_ID = "default";
 
 export function intermindSessionId(peerAgentId: string): string {
   return `${INTERMIND_SESSION_PREFIX}${peerAgentId}`;
@@ -45,13 +47,21 @@ export interface IntermindServiceDeps {
   getAgentWorker(agentId: string): Promise<AgentWorker | undefined>;
 }
 
-/** `【来自 {name} 的私信】{content 摘要}`——感知回合的唤醒通知文本 */
-export function buildPrivateMessageNotice(senderName: string, content: string): string {
+/**
+ * `【来自 {name} 的私信】{content 摘要}——可用 send_private_message 给 ta 回信（to: {senderId}）`
+ * ——感知回合的唤醒通知文本。回信指引必须带 senderId：真机实证接收方被唤醒后
+ * 直接开口说话、回复进了自己的主会话，发送方永远收不到（#7）。
+ */
+export function buildPrivateMessageNotice(
+  senderName: string,
+  senderId: string,
+  content: string,
+): string {
   const summary =
     content.length > PRIVATE_MESSAGE_SUMMARY_MAX
       ? `${content.slice(0, PRIVATE_MESSAGE_SUMMARY_MAX)}…`
       : content;
-  return `【来自 ${senderName} 的私信】${summary}`;
+  return `【来自 ${senderName} 的私信】${summary}——可用 send_private_message 给 ta 回信（to: ${senderId}）`;
 }
 
 export class IntermindService {
@@ -126,8 +136,8 @@ export class IntermindService {
         );
       } else {
         worker.enqueueSystemNotice(
-          buildPrivateMessageNotice(senderName, content),
-          `${INTERMIND_NOTICE_SESSION_PREFIX}${messageId}`,
+          buildPrivateMessageNotice(senderName, fromAgentId, content),
+          INTERMIND_NOTICE_SESSION_ID,
           { intermindRide: true },
         );
         woke = true;

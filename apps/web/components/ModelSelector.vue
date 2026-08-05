@@ -32,7 +32,22 @@ const models = computed(() => {
   const all = store.providers.flatMap((p) =>
     p.models.filter((m) => m.modelType === props.modelType).map((m) => ({ ...m, providerId: p.id })),
   );
-  return props.providerId ? all.filter((m) => m.providerId === props.providerId) : all;
+  const filtered = props.providerId ? all.filter((m) => m.providerId === props.providerId) : all;
+  // 回显当前值：agent.json 已配置（providerId+modelId/model）但模型列表未收录时
+  // （provider 列表尚未加载 / 模型已下架 / 列表与配置漂移），下拉不能显示空占位。
+  // 补一个以当前配置为值的兜底项，保证打开编辑页能看见并保留既有选择。
+  if (props.providerId && props.modelId && !filtered.some((m) => m.id === props.modelId)) {
+    return [
+      {
+        id: props.modelId,
+        displayName: props.modelId,
+        modelType: props.modelType,
+        providerId: props.providerId,
+      },
+      ...filtered,
+    ];
+  }
+  return filtered;
 });
 
 const currentValue = computed(() =>

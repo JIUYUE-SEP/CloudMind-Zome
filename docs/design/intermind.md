@@ -31,7 +31,7 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 - 接收方 B 的空间：`intermind:A`（B 收到 A 的来信）；
 - 发送方 A 自己的空间：`intermind:B`（A 与 B 的来往线程留底）。
 
-两侧各自持有与对端的完整来往线程，任意一侧的 REST 都可读全量往来；消息记录带 `agentId`（发送方）归属，REST 可区分方向。不参与主对话历史（`default`/普通 session），不进话题压缩管线。
+两侧各自持有与对端的完整来往线程，任意一侧的 REST 都可读全量往来；消息记录带 `agentId`（发送方）归属，REST 可区分方向。来信原文不参与主对话历史（`default`/普通 session），只落在 intermind 线程；唤醒通知注入主会话，作为接收方可读的一条通知消息。
 
 ## 唤醒 / 搭车机制
 
@@ -39,8 +39,8 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 
 信写入后，接收方有可用 worker 时调用 `worker.enqueueSystemNotice(通知文本, sourceId, { intermindRide: true })`：
 
-- 通知文本：`【来自 {发送方 name} 的私信】{content 摘要（截 200 字）}`；
-- sourceId：`notice_intermind:<messageId>`——通知与感知回合的产出落在独立 notice 会话，不污染 intermind 来信线程；
+- 通知文本：`【来自 {发送方 name} 的私信】{content 摘要（截 200 字）}——可用 send_private_message 给 ta 回信（to: {发送方 id}）`——回信指引必须带发送方 id，真机实证接收方被唤醒后不知道回信通道，直接开口说话会让发送方永远收不到；
+- sourceId：`default`（接收方主会话，与前端私聊 WS/REST 缺省会话同口径）——主会话只见这一条通知，来信原文只进 intermind 线程（防同一封信双注入）；
 - 感知回合经既有串行队列入队：忙碌排队、空闲即感知，不插队、不并行。
 
 ### 搭车（ride）

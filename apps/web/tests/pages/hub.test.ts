@@ -206,3 +206,71 @@ describe("Hub page group chat code mode", () => {
     expect(msgs.map((m) => m.id)).toEqual(["new-s2"]);
   });
 });
+
+describe("Hub page private chat switching（#6 切会话消息丢失）", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    MockWebSocket.instances = [];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    MockWebSocket.instances.forEach((ws) => ws.close());
+  });
+
+  function record(id: string, text: string) {
+    return {
+      id,
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text }],
+      createdAt: "2026-07-21T00:00:00.000Z",
+    };
+  }
+
+  it("与 A 聊完切到 B 再切回 A：A 的消息列表不丢（旧 ChatView 迟到卸载不清新会话）", async () => {
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/agents")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve([
+              { id: "a", name: "Alice", persona: "", skills: [], tools: [] },
+              { id: "b", name: "Bob", persona: "", skills: [], tools: [] },
+            ]),
+        } as unknown as Response);
+      }
+      if (url.includes("/chat/a/messages")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([record("m-a", "A 的历史")]),
+        } as unknown as Response);
+      }
+      if (url.includes("/chat/b/messages")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([record("m-b", "B 的历史")]),
+        } as unknown as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as unknown as Response);
+    }) as unknown as typeof globalThis.fetch;
+
+    const wrapper = mount(Hub);
+    await flushPromises();
+
+    const items = () => wrapper.findAll(".comm-item");
+    await items().find((el) => el.text().includes("Alice"))!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("A 的历史");
+
+    await items().find((el) => el.text().includes("Bob"))!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("B 的历史");
+
+    await items().find((el) => el.text().includes("Alice"))!.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("A 的历史");
+    expect(wrapper.text()).not.toContain("B 的历史");
+  });
+});

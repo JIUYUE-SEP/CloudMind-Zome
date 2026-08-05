@@ -13,7 +13,9 @@ import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { ChatMessageRecord } from "@mindcloud/shared";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
+import { AgentWorker as RealAgentWorker } from "../../src/core/agent-worker.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
+import { MockLLMProvider } from "../../src/provider/llm.js";
 
 function textOf(record: ChatMessageRecord): string {
   const part = record.content[0]!;
@@ -92,8 +94,11 @@ describe("IntermindService.send", () => {
     // 唤醒：一次 enqueueSystemNotice，文本格式 + 独立 notice 会话 + ride 标记
     expect(wakeSpy).toHaveBeenCalledTimes(1);
     const [text, sourceId, opts] = wakeSpy.mock.calls[0] as [string, string, { intermindRide?: boolean }];
-    expect(text).toBe("【来自 甲 的私信】你好，乙");
-    expect(sourceId.startsWith("notice_intermind:")).toBe(true);
+    expect(text).toBe(
+      "【来自 甲 的私信】你好，乙——可用 send_private_message 给 ta 回信（to: a1）",
+    );
+    // 通知注入接收方主会话（与前端私聊同一会话），裸原文不写主会话（#8）
+    expect(sourceId).toBe("default");
     expect(opts.intermindRide).toBe(true);
     // 审计：谁给谁写了什么（warn 级，内容摘要）
     expect(warn).toHaveBeenCalledWith(
@@ -176,6 +181,44 @@ describe("IntermindService.send", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("唤醒跳过"));
     warn.mockRestore();
   });
+
+  it("收信后主会话只增一条通知消息：裸原文不进主会话，只在 intermind 线程（#8）", async () => {
+    const recipientRepo = new MessageRepository("a2");
+    const worker = new RealAgentWorker({
+      agentId: "a2",
+      model: "mock",
+      provider: new MockLLMProvider(),
+      tools: [],
+      workspaceDir: "/tmp",
+      messageRepository: recipientRepo,
+      approve: async () => true,
+    });
+    const withRealWorker = new IntermindService({
+      getAgentConfig: (id) => agentRepository.get(id),
+      getMessageRepository: (id) => new MessageRepository(id),
+      getAgentWorker: async () => worker,
+    });
+
+    await withRealWorker.send("a1", "a2", "你好，乙");
+    // 等感知回合跑完：通知落盘 + 回合产出都稳定后再断言
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 主会话：user 角色只有一条通知（带回信指引与 senderId），绝无裸原文
+    const main = await recipientRepo.listBySession("default");
+    const mainUser = main.filter((m) => m.role === "user");
+    expect(mainUser).toHaveLength(1);
+    expect(mainUser[0]!.content[0]!.type).toBe("text");
+    expect(textOf(mainUser[0]!)).toContain("【来自 甲 的私信】");
+    expect(textOf(mainUser[0]!)).toContain("send_private_message");
+    expect(textOf(mainUser[0]!)).toContain("to: a1");
+    expect(textOf(mainUser[0]!)).not.toBe("你好，乙");
+
+    // intermind 来信线程：裸原文恰好一条（不带前缀）
+    const thread = await recipientRepo.listBySession("intermind:a1");
+    expect(thread).toHaveLength(1);
+    expect(textOf(thread[0]!)).toBe("你好，乙");
+    expect(textOf(thread[0]!)).not.toContain("【来自");
+  });
 });
 
 describe("IntermindService 会话检索", () => {
@@ -223,11 +266,13 @@ describe("IntermindService 会话检索", () => {
     expect(before.map((m) => textOf(m))).toEqual(["第1条", "第2条"]);
   });
 
-  it("通知文本：内容摘要截 200 字", () => {
-    const notice = buildPrivateMessageNotice("甲", "x".repeat(250));
+  it("通知文本：内容摘要截 200 字 + 回信指引带 senderId（#7）", () => {
+    const notice = buildPrivateMessageNotice("甲", "a1", "x".repeat(250));
     expect(notice.startsWith("【来自 甲 的私信】")).toBe(true);
-    expect(notice).toHaveLength("【来自 甲 的私信】".length + 200 + 1);
-    expect(notice.endsWith("…")).toBe(true);
+    expect(notice).toContain("send_private_message");
+    expect(notice).toContain("to: a1");
+    expect(notice).toContain("x".repeat(200) + "…");
+    expect(notice.endsWith("——可用 send_private_message 给 ta 回信（to: a1）")).toBe(true);
     expect(intermindSessionId("a2")).toBe("intermind:a2");
   });
 
