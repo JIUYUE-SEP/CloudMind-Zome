@@ -4,6 +4,7 @@ import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
 import type { ApprovalRequestPayload } from "@/utils/approval";
 import { ref } from "vue";
 import { fetchWithTimeout } from "@/utils/fetch";
+import { resolveEngineToken, fetchEngineTokenFromServer } from "@/utils/engine-token";
 
 // REST DTO 权威定义在 packages/shared（P5-2 收敛），此处再导出保持既有引用不变
 // （ScheduledTask 由 stores/scheduler.ts 再导出，避免 Nuxt 自动导入重名告警）
@@ -134,8 +135,9 @@ const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 // 模块级鉴权 token 单例（与 sharedBaseUrl 同一模式）。engine 本地 token 鉴权（P0-2）：
 // 除 /health 外 REST 全部要求 Bearer，WS 握手要求子协议携带 token。
 // 分发通道：desktop 由 Rust 侧读数据目录 auth-token 文件经 IPC 下发；
-// web 开发经 NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage["cloudmind.engineToken"] 手动配置
-// （engine 启动日志会打印 token 文件路径提示）。
+// web 开发默认由 nitro dev server 读 engine 数据目录 auth-token 文件经
+// /api/engine-token 运行时下发（零配置）；NUXT_PUBLIC_ENGINE_TOKEN /
+// localStorage["cloudmind.engineToken"] 仍是优先级更高的显式覆盖。
 const sharedToken = ref("");
 
 // desktop sidecar 意外退出（kill_on_drop 会连带杀掉 engine，WS 随之断开）：
@@ -190,10 +192,18 @@ export function useEngineClient(options?: EngineClientOptions) {
     runtimeConfigApplied = true;
     if (config.public.engineUrl) sharedBaseUrl.value = normalizeBaseUrl(config.public.engineUrl as string);
     const configuredToken = config.public.engineToken as string | undefined;
-    if (configuredToken) {
-      sharedToken.value = configuredToken;
-    } else if (typeof localStorage !== "undefined") {
-      sharedToken.value = localStorage.getItem("cloudmind.engineToken") ?? "";
+    const localToken =
+      typeof localStorage !== "undefined"
+        ? (localStorage.getItem("cloudmind.engineToken") ?? undefined)
+        : undefined;
+    // 优先级：显式配置 > localStorage 覆盖 > server 自动读文件
+    sharedToken.value = resolveEngineToken(configuredToken, localToken, undefined);
+    // 前两档都缺时才异步拉 server 档（仅浏览器端；token 运行时下发，不进 bundle）
+    if (!sharedToken.value && typeof window !== "undefined") {
+      void fetchEngineTokenFromServer().then((serverToken) => {
+        // 拉取期间用户显式配了 token：server token 不得覆盖更高优先级档
+        if (serverToken && !sharedToken.value) sharedToken.value = serverToken;
+      });
     }
   }
   const baseUrl = options?.baseUrl ? ref(normalizeBaseUrl(options.baseUrl)) : sharedBaseUrl;
