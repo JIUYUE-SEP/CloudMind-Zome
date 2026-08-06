@@ -113,12 +113,58 @@ describe("IntermindService.send", () => {
     warn.mockRestore();
   });
 
-  it("搭车（wake=false）：只入队不唤醒", async () => {
+  it("搭车（wake=false）：不唤醒，但同一格式通知落接收方主会话（#9）", async () => {
     const result = await service.send("a2", "a1", "回信", { wake: false });
     expect(result.woke).toBe(false);
     expect(wakeSpy).not.toHaveBeenCalled();
+
+    // 接收方 a1 主会话：一条格式化通知（前缀 + 回信指引 + senderId），不是裸原文
+    const main = await new MessageRepository("a1").listBySession("default");
+    expect(main).toHaveLength(1);
+    expect(main[0]!.role).toBe("user");
+    expect(textOf(main[0]!)).toBe(
+      "【来自 乙 的私信】回信——可用 send_private_message 给 ta 回信（to: a2）",
+    );
+    expect(textOf(main[0]!)).not.toBe("回信");
+
+    // intermind 来往线程：裸原文照常落盘（不带前缀）
     const received = await new MessageRepository("a1").listBySession("intermind:a2");
     expect(received).toHaveLength(1);
+    expect(textOf(received[0]!)).toBe("回信");
+    expect(textOf(received[0]!)).not.toContain("【来自");
+  });
+
+  it("唤醒与搭车两条路径的消息格式一致（仅唤醒行为不同，#9）", async () => {
+    const content = "同一封信的内容";
+    // 唤醒路径：通知经 enqueueSystemNotice 注入主会话 + 触发感知回合
+    const woke = await service.send("a1", "a2", content);
+    expect(woke.woke).toBe(true);
+    expect(wakeSpy).toHaveBeenCalledTimes(1);
+    const [wakeText, sourceId, opts] = wakeSpy.mock.calls[0] as [
+      string,
+      string,
+      { intermindRide?: boolean },
+    ];
+    expect(sourceId).toBe("default");
+    expect(opts.intermindRide).toBe(true);
+    expect(wakeText).toBe(buildPrivateMessageNotice("甲", "a1", content));
+
+    // 搭车路径：同一格式通知直接落接收方主会话，不再入队感知回合
+    const ride = await service.send("a2", "a1", content, { wake: false });
+    expect(ride.woke).toBe(false);
+    expect(wakeSpy).toHaveBeenCalledTimes(1); // 搭车不触发第二次唤醒
+    const rideMain = await new MessageRepository("a1").listBySession("default");
+    expect(rideMain).toHaveLength(1);
+    const rideText = textOf(rideMain[0]!);
+    expect(rideText).toBe(buildPrivateMessageNotice("乙", "a2", content));
+
+    // 两条路径同一格式：前缀 + 全文摘要 + 回信指引（senderId 各自归属）
+    for (const text of [wakeText, rideText]) {
+      expect(text).toContain("【来自");
+      expect(text).toContain(content);
+      expect(text).toContain("send_private_message");
+      expect(text).toContain("——可用 send_private_message 给 ta 回信（to: ");
+    }
   });
 
   it("目标 agent 不存在：明确抛错，不写信不唤醒", async () => {

@@ -16,8 +16,9 @@ import {
  * 邮箱对称双写——A 给 B 写信时，消息同时写入 B 的空间（`intermind:A`，来信线程）
  * 和 A 自己的空间（`intermind:B`，来往线程留底），两侧各自可读全量往来。
  * 唤醒：写信后经 enqueueSystemNotice 触发接收方一轮感知回合（带 intermindRide 标记，
- * 感知回合内回信搭车不再次唤醒）。通知注入接收方主会话（default，与前端私聊同口径），
- * 裸原文只进 intermind 来信线程——主会话只见通知，避免同一封信双注入。
+ * 感知回合内回信搭车不再次唤醒）。唤醒与搭车两条路径都经 buildPrivateMessageNotice
+ * 注入同一格式的通知到接收方主会话（default，与前端私聊同口径）——唯一区别是
+ * 搭车只落通知不触发感知回合。裸原文只进 intermind 来信线程，主会话只见通知。
  */
 
 export const INTERMIND_SESSION_PREFIX = "intermind:";
@@ -127,6 +128,10 @@ export class IntermindService {
       content,
     });
 
+    // 两条路径共用同一通知格式（#9）：唤醒/搭车都以【来自 {name} 的私信】+摘要+
+    // 回信指引（to: senderId）注入接收方主会话，区别仅在是否触发感知回合
+    const noticeText = buildPrivateMessageNotice(senderName, fromAgentId, content);
+
     let woke = false;
     if (opts.wake !== false) {
       const worker = await this.deps.getAgentWorker(toAgentId);
@@ -136,12 +141,23 @@ export class IntermindService {
         );
       } else {
         worker.enqueueSystemNotice(
-          buildPrivateMessageNotice(senderName, fromAgentId, content),
+          noticeText,
           INTERMIND_NOTICE_SESSION_ID,
           { intermindRide: true },
         );
         woke = true;
       }
+    } else {
+      // 搭车（回信）：同一格式通知落接收方主会话，但不触发感知回合——
+      // 真机 #9：此前注入的是裸信件原文，接收方分不清「对方回信」与「用户怪话」。
+      // 落盘失败抛错不静默（与写信同哲学）：静默失败会重现「没收到回信」。
+      await this.deps.getMessageRepository(toAgentId).append({
+        id: randomUUID(),
+        role: "user",
+        content: [{ type: "text", text: noticeText }],
+        createdAt: new Date().toISOString(),
+        sessionId: INTERMIND_NOTICE_SESSION_ID,
+      });
     }
     return { messageId, recipientSessionId, woke };
   }
