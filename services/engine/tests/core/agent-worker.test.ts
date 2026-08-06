@@ -18,7 +18,8 @@ import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/ty
 import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { reconcileOrphanedTopic, reconcilePendingSegments } from "../../src/memory/reconcile.js";
-import { loadTopicState } from "../../src/memory/topic/state.js";
+import { loadTopicState, saveTopicState } from "../../src/memory/topic/state.js";
+import { archivedMessageIds } from "../../src/memory/topic/store.js";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -1445,7 +1446,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     warn.mockRestore();
   });
 
-  it("M-b：崩溃打在 step 落盘与 turn 终点之间——已落盘 step 在对账视野内（P1-6 尾巴闭合）", async () => {
+  it("M-b：崩溃打在 step 落盘与 turn 终点之间——已落盘 step 在 topic-state 视野内（P1-6 尾巴闭合，开放话题保留）", async () => {
     const controller = new AbortController();
     const abortingTool: Tool = {
       name: "aborter",
@@ -1485,16 +1486,17 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(state?.open?.messageIds).toContain("tool_tc-1");
     expect(state?.open?.messageIds).toHaveLength(3);
 
-    // 启动对账：3 条（< MIN_SEGMENT_MESSAGES）archiveOnly 归档，热存储清空
+    // 启动对账：开放话题跳过（#10 方案 2）——热存储与 open 状态原样保留，
+    // 已落盘 step 在 topic-state 视野内，由运行时自然收
     const count = await reconcileOrphanedTopic("agent-1", repo, {
       agentId: "agent-1",
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: repo,
     });
-    expect(count).toBe(3);
-    expect(await repo.listBySession("agent-1")).toHaveLength(0);
-    expect(await loadTopicState("agent-1")).toBeUndefined();
+    expect(count).toBe(0);
+    expect(await repo.listBySession("agent-1")).toHaveLength(3);
+    expect((await loadTopicState("agent-1"))?.open?.messageIds).toHaveLength(3);
   });
 
   it("TopicTracker 交接（P3-6）：restoreOpen 后新 worker 的开放话题含交接消息 id（不分叉）", async () => {
@@ -1522,7 +1524,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(state?.open?.messageIds!.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("异常 turn 的已落盘消息纳入话题体系（Minor-3）：进 tracker、进索引、可正常归档", async () => {
+  it("异常 turn 的已落盘消息纳入话题体系（Minor-3）：进 tracker、进索引、留待运行时收", async () => {
     class CrashMidStreamProvider implements LLMProvider {
       name = "crash-mid";
       supportsModel() {
@@ -1566,15 +1568,61 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(indexed).toContain("u-crash");
     expect(indexed).toContain(incompleteId);
 
-    // 能正常归档（对账按开放话题处理，不永久滞留热存储）
+    // 启动对账跳过开放话题（#10 方案 2）：半截消息留在热存储与 open 状态，由运行时收
     const count = await reconcileOrphanedTopic("agent-1", repo, {
       agentId: "agent-1",
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: repo,
     });
-    expect(count).toBe(2);
-    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+    expect(count).toBe(0);
+    expect(await repo.listBySession("agent-1")).toHaveLength(2);
+    expect((await loadTopicState("agent-1"))?.open?.messageIds).toContain("u-crash");
+  });
+
+  it("reconcile 跳过的开放话题：运行时到阈值仍正常压缩归档（端到端，#10 方案 2）", async () => {
+    const repo = new MessageRepository("agent-1");
+    // 重启现场：热存储 2 条 + open 状态已落盘（未到阈值 20）
+    const pre = [seqMessage("u1", "重启前的问题一", 0), seqMessage("u2", "重启前的问题二", 1)];
+    for (const m of pre) await repo.append({ ...m, sessionId: "agent-1" });
+    await saveTopicState("agent-1", {
+      messageIds: pre.map((m) => m.id),
+      startedAt: pre[0]!.createdAt,
+      sourceId: "agent-1",
+    });
+
+    // 启动对账：跳过开放话题——消息留在热存储，状态不消费
+    const count = await reconcileOrphanedTopic("agent-1", repo, {
+      agentId: "agent-1",
+      provider: new CapturingProvider(),
+      model: "mock",
+      messageRepository: repo,
+    });
+    expect(count).toBe(0);
+    expect(await repo.listBySession("agent-1")).toHaveLength(2);
+    expect((await loadTopicState("agent-1"))?.open?.messageIds).toEqual(["u1", "u2"]);
+
+    // 运行时：新 worker 交接开放话题，继续聊到阈值（4）→ 正常压缩归档
+    const worker = new AgentWorker({
+      ...makeConfig(new CapturingProvider()),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 4 },
+    });
+    worker.restoreTopicOpen(pre, "agent-1");
+    const u3 = seqMessage("u3", "继续聊", 2);
+    await repo.append({ ...u3, sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [u3], sessionId: "agent-1", onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    await vi.waitFor(async () => {
+      expect(await repo.listBySession("agent-1")).toHaveLength(0);
+    });
+    // 压缩档生成（L5 可用），开放状态消费
+    const archived = await archivedMessageIds("agent-1");
+    expect(archived.size).toBe(4);
+    expect(archived.has("u1")).toBe(true);
+    expect(archived.has("u2")).toBe(true);
+    expect(archived.has("u3")).toBe(true);
+    expect((await loadTopicState("agent-1"))?.open).toBeNull();
   });
 });
 

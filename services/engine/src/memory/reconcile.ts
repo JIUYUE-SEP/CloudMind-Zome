@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { logger } from "../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { IMessageRepository } from "./repositories/types.js";
@@ -7,10 +7,8 @@ import {
   clearTopicState,
   loadTopicState,
   removePendingSegment,
-  saveTopicState,
 } from "./topic/state.js";
 import { runCompressionTask, type CompressionTaskDeps } from "./topic/compression-task.js";
-import { MIN_SEGMENT_MESSAGES, type TopicSegment } from "./topic/types.js";
 
 /**
  * 启动对账（Phase 2 review M3 建议的"压缩档 msgIds ∩ 热存储"补归档）。
@@ -19,9 +17,10 @@ import { MIN_SEGMENT_MESSAGES, type TopicSegment } from "./topic/types.js";
  * 进程在"写压缩档 → 归档"两步之间退出，或压缩队列在退出时丢弃了未完成项。
  * 这类消息已有 L5 摘要，留在热存储会被 L4 重复检索注入，且永不再被归档。
  *
- * 另一类孤儿——进程退出时尚在未关闭话题里的消息——由本模块的
- * reconcileOrphanedTopic 覆盖（P1-2：tracker 状态已按事件落盘到
- * topic-state.json，可据此识别并补压缩/归档）。
+ * 进程退出时尚在未关闭话题里的消息（开放话题，tracker 状态已按事件落盘到
+ * topic-state.json）由本模块的 reconcileOrphanedTopic 处理：真机 #10 设计
+ * 定案后，开放话题在启动时**保留不处理**（reconcile 只收尸），由运行时
+ * TopicTracker 自然收——详见 reconcileOrphanedTopic 注释。
  *
  * 已存在于 messages_archived.jsonl 的记录不在此去重：归档写（append 循环）
  * 与热存储删除（mutateLines）之间的崩溃窗口极小，重复行只影响"最后防线"
@@ -47,55 +46,32 @@ export async function reconcileHotStorage(
 }
 
 /**
- * 启动对账扩展（P1-2，review M6）：处理 tracker 落盘状态指向的未压缩消息
- * （重启孤儿——进程退出时仍在未关闭话题里的消息）。
+ * 启动对账（P1-2 review M6 → 真机 #10 方案 2 精细化）：开放话题**跳过**。
  *
- * 按落盘的 messageIds 从热存储回读正文（已不在热存储的自然过滤），重建
- * segment：达到 MIN_SEGMENT_MESSAGES 的走 LLM 补压缩，更短的 archiveOnly
- * 归档——与正常话题关闭走同一 runCompressionTask。
+ * 设计定案：重启应该是「她睡一觉」，不是「话题屠杀」。topic-state.json 的
+ * open 状态原样保留——不消费、不归档、不调 LLM——留给运行时自然结束：
+ * TopicTracker 在阈值（默认 20）/显式切换词/时间窗超时（默认 30min）时收。
+ * 幂等：每次启动看到同一个 open 状态都跳过，不累积副作用。
  *
- * 失败语义：压缩/归档异常向调用方抛错（启动流程 catch 记 warn），状态文件
- * 保留、消息留在热存储，下次启动重试，不丢消息。
+ * 此前 #10 现场：退出时未关闭的话题在重启时被整段强制归档，十几条
+ * （未到 messageThreshold）也全量 archiveAndRemove，前端体感「重启=失忆」。
  *
- * @returns 处理掉的孤儿消息条数
+ * @returns 恒 0——开放话题不在启动时处理
  */
 export async function reconcileOrphanedTopic(
   agentId: string,
-  repo: IMessageRepository,
-  deps: CompressionTaskDeps,
+  _repo: IMessageRepository,
+  _deps: CompressionTaskDeps,
 ): Promise<number> {
+  // 签名保留（bootstrap 三入口统一传 repo/deps）；跳过路径不使用它们
+  void _repo;
+  void _deps;
   const state = await loadTopicState(agentId);
   if (!state?.open || state.open.messageIds.length === 0) return 0;
-
-  // 消息正文以热存储为单事实源，按 id 回读；已归档/已删除的 id 自然过滤
-  const messages = await repo.getByIds(state.open.messageIds);
-  if (messages.length === 0) {
-    await consumeOpenState(agentId);
-    return 0;
-  }
-
-  const segment: TopicSegment = {
-    topicId: `tp_${Date.now()}_reconcile_${randomUUID().slice(0, 8)}`,
-    messages,
-    sourceId: state.open.sourceId,
-    sourceName: state.open.sourceName,
-    startedAt: messages[0]!.createdAt,
-    endedAt: messages[messages.length - 1]!.createdAt,
-    // 与 tracker 同一规则：短话题不浪费 LLM 调用，仅归档
-    archiveOnly: messages.length < MIN_SEGMENT_MESSAGES,
-  };
-  await runCompressionTask(segment, deps);
-  await consumeOpenState(agentId);
-  return messages.length;
-}
-
-/** open 已消费：清 open 字段；pending 也空时删整个状态文件 */
-async function consumeOpenState(agentId: string): Promise<void> {
-  await saveTopicState(agentId, null);
-  const state = await loadTopicState(agentId);
-  if (!state || ((state.pending ?? []).length === 0 && state.open === null)) {
-    await clearTopicState(agentId);
-  }
+  logger.info(
+    `[reconcile] agent=${agentId} 开放话题保留 ${state.open.messageIds.length} 条，留待运行时自然收`,
+  );
+  return 0;
 }
 
 /**
@@ -165,4 +141,3 @@ async function hasCompressedTopic(agentId: string, topicId: string): Promise<boo
     return false;
   }
 }
-

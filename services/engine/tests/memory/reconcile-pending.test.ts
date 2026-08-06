@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,8 @@ import {
   type PendingSegmentSnapshot,
 } from "../../src/memory/topic/state.js";
 import { archivedMessageIds, writeCompressedTopic } from "../../src/memory/topic/store.js";
+import { withLLMCallRecording } from "../../src/provider/record-calls.js";
+import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { restoreDataDir } from "../helpers/env.js";
 
 class CountingProvider implements LLMProvider {
@@ -165,6 +167,51 @@ describe("reconcilePendingSegments 已入队未压缩段对账（M-b）", () => 
     const count = await reconcilePendingSegments("a1", repo, deps(repo, new CountingProvider("x")));
     expect(count).toBe(0);
     expect((await loadTopicState("a1"))?.open?.messageIds).toEqual(["x"]);
+  });
+
+  it("open 与 pending 并存：pending 照常收尸归档，open 原样保留", async () => {
+    const repo = new MessageRepository("a1");
+    for (const id of ["o1", "o2"]) await repo.append(makeMsg(id, "open-s"));
+    for (const id of ["p1", "p2"]) await repo.append(makeMsg(id));
+    await saveTopicState("a1", {
+      messageIds: ["o1", "o2"],
+      startedAt: "2026-07-24T10:00:00.000Z",
+      sourceId: "open-s",
+    });
+    await addPendingSegment("a1", makePending("tp_mixed", ["p1", "p2"], true));
+    const provider = new CountingProvider("不该被调用");
+
+    const count = await reconcilePendingSegments("a1", repo, deps(repo, provider));
+    expect(count).toBe(2);
+    expect(provider.calls).toBe(0);
+    // pending 已归档收尸
+    expect(await repo.listBySession("s1")).toEqual([]);
+    expect((await loadTopicState("a1"))?.pending ?? []).toHaveLength(0);
+    // open 话题不受 pending 收尸影响：热存储与状态原样保留
+    expect((await repo.listBySession("open-s")).map((m) => m.id)).toEqual(["o1", "o2"]);
+    expect((await loadTopicState("a1"))?.open?.messageIds).toEqual(["o1", "o2"]);
+  });
+
+  it("reconcile 路径 provider 经 withLLMCallRecording 包装后 LLM 调用落档（P4 Minor-2）", async () => {
+    const ids = ["m1", "m2", "m3", "m4"]; // ≥ MIN_SEGMENT_MESSAGES(4)：触发真实 LLM 压缩调用
+    const repo = await seedPending(ids, false, "tp_recorded");
+    const callRepo = new LLMCallRepository("a1");
+    // 与 bootstrap.ts reconcile 路径同款接线：裸 provider 包装落档装饰器
+    const recorded = withLLMCallRecording(
+      new CountingProvider("话题主题：x\n关键结论：\n- y"),
+      callRepo,
+      "a1",
+    );
+
+    const count = await reconcilePendingSegments("a1", repo, deps(repo, recorded));
+    expect(count).toBe(4);
+
+    // 落档 fire-and-forget：等写盘完成再断言
+    await vi.waitFor(async () => {
+      expect((await callRepo.list()).length).toBe(1);
+    });
+    const [record] = await callRepo.list();
+    expect(record).toMatchObject({ agentId: "a1", provider: "counting", model: "mock-model", status: "ok" });
   });
 
   it("state 读写串行：open 更新不丢 pending，pending 清除不丢 open", async () => {
