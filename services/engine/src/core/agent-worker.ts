@@ -10,9 +10,10 @@ import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
 import { ContextPipeline } from "../context/pipeline.js";
 import { SECURITY_GUIDELINE } from "../context/security-guideline.js";
-import { TopicTracker } from "../memory/topic/tracker.js";
+import { TopicTracker, type PendingTopicJudge } from "../memory/topic/tracker.js";
 import { CompressionQueue } from "../memory/topic/queue.js";
 import { runCompressionTask } from "../memory/topic/compression-task.js";
+import { judgeTopicBoundary } from "../memory/topic/judge.js";
 import { addPendingSegment, removePendingSegment, saveTopicState } from "../memory/topic/state.js";
 import { latestSummaries } from "../memory/topic/store.js";
 import {
@@ -110,6 +111,8 @@ export class AgentWorker {
   private topicConfig: TopicCompressionConfig;
   private topicTracker: TopicTracker;
   private compressionQueue: CompressionQueue;
+  /** 话题边界裁判/复核模型链（boundaryModel || compressionModel || 主模型） */
+  private boundaryModel: string;
   private semanticConfig: SemanticSearchConfig;
   private semanticRetriever?: SemanticRetriever;
   /** 当前开放话题内 Skill 工具成功调用过的技能名（阶段 5 二期，话题关闭时写入摘要） */
@@ -126,12 +129,15 @@ export class AgentWorker {
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
     this.topicConfig = normalizeTopicCompressionConfig(config.topicCompression);
+    this.boundaryModel =
+      this.topicConfig.boundaryModel || this.topicConfig.compressionModel || config.model;
     this.topicTracker = new TopicTracker(this.topicConfig);
     this.compressionQueue = new CompressionQueue(async (segment) => {
       await runCompressionTask(segment, {
         agentId: this.config.agentId,
         provider: this.config.provider,
         model: this.topicConfig.compressionModel || this.config.model,
+        boundaryModel: this.boundaryModel,
         messageRepository: this.config.messageRepository,
       });
       // M-b：任务成功完成才清 pending；失败由队列捕获告警，pending 保留待对账
@@ -355,6 +361,33 @@ export class AgentWorker {
   }
 
   /**
+   * 话题边界 LLM 裁判（方案 C）：回合结束后异步 fire-and-forget，绝不挡热路径。
+   * judgeTopicBoundary 内部对失败/超时/乱输出按 SAME 兜底；判切结果回写时
+   * 若话题已被规则关闭则由 tracker 作废，不会重复切段。
+   */
+  private maybeRunTopicJudge(): void {
+    const judge = this.topicTracker.peekPendingJudge();
+    if (judge) void this.runTopicJudge(judge);
+  }
+
+  private async runTopicJudge(judge: PendingTopicJudge): Promise<void> {
+    try {
+      const verdict = await judgeTopicBoundary(this.config.provider, this.boundaryModel, {
+        anchor: judge.anchor,
+        recentMessages: judge.recentMessages,
+      });
+      const closed = this.topicTracker.resolvePendingJudge(judge.id, verdict);
+      if (closed) {
+        closed.usedSkills = this.drainTopicSkills();
+        await this.enqueueCompression(closed);
+      }
+    } catch (err) {
+      // judgeTopicBoundary 已内部兜底 SAME；此处仅防御收尾（enqueue 等）意外
+      logger.warn({ err: err }, "[topic] 话题边界裁判收尾失败（跳过）");
+    }
+  }
+
+  /**
    * 向量索引（fire-and-forget）：turn 的用户输入与新增消息。
    * 成功与异常（Minor-3）两条路径共用；与检索同开关，enabled=false 时全免
    */
@@ -381,6 +414,11 @@ export class AgentWorker {
     // catch 路径也要触达（P3 review Minor-3）：提升出 try 作用域
     let lastUser: ChatMessage | undefined;
     const stepPersisted: ChatMessage[] = [];
+    // 成功路径已把 result.appended 并入 tracker 后，catch 不得再并入 stepPersisted
+    // （否则同一轮消息/轮数双计——典型触发点：测试 mock indexer 缺 indexMessage 时
+    // 成功 turn 的 indexTurnMessages 抛错落进 catch）。异常 turn（runTurn 未走到
+    // 成功路径）仍按原语义并入。
+    let turnAppended = false;
     const sessionId = job.sessionId || this.config.agentId;
     try {
       // 排队期间已被外部取消（如 subagent 前台超时）的 job 直接跳过
@@ -622,12 +660,15 @@ export class AgentWorker {
 
       // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
       const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
+      turnAppended = true;
       if (closedByCount) {
         closedByCount.usedSkills = this.drainTopicSkills();
         await this.enqueueCompression(closedByCount);
       }
       // 话题状态落盘（P1-2，turn 终点）
       await this.persistTopicState();
+      // 回合结束：攒够 6 轮则异步挂起一次 LLM 裁判（不阻塞主流程）
+      this.maybeRunTopicJudge();
 
       // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
       // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去。
@@ -641,13 +682,14 @@ export class AgentWorker {
       // 永久滞留热存储且每轮进上下文；P3-3 起每次 provider 抖动都产生一条）。
       // incomplete 半截消息同样入话题：它是用户上屏的真实内容，incomplete
       // 标记仅供排查，不影响其作为正常 assistant 消息归档/压缩/索引
-      if (stepPersisted.length > 0) {
+      if (!turnAppended && stepPersisted.length > 0) {
         const closedOnError = this.topicTracker.onTurnAppended(stepPersisted, sessionId);
         if (closedOnError) {
           closedOnError.usedSkills = this.drainTopicSkills();
           await this.enqueueCompression(closedOnError);
         }
         await this.persistTopicState();
+        this.maybeRunTopicJudge();
         this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...stepPersisted]);
       }
       // abort 是用户主动中断（正常操作），不刷错误气泡；其余异常保留错误文本

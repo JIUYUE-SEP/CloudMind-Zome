@@ -32,8 +32,9 @@ function buildPrompt(segment: TopicSegment): string {
   ].join("\n");
 }
 
-/** 非流式收集一次 chat 调用的全部文本（至 step.end 或迭代结束），带超时保护 */
-async function collectChatText(
+/** 非流式收集一次 chat 调用的全部文本（至 step.end 或迭代结束），带超时保护。
+ * 压缩/话题边界裁判/压缩前复核共用同一 LLM 收集通道 */
+export async function collectChatText(
   provider: LLMProvider,
   model: string,
   prompt: string,

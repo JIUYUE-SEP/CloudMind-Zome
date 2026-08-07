@@ -288,6 +288,9 @@ async function main() {
       // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）
       topicCompression: {
         ...(agentConfig.compressionModel !== undefined ? { compressionModel: agentConfig.compressionModel } : {}),
+        ...(agentConfig.topicBoundaryModel !== undefined
+          ? { boundaryModel: agentConfig.topicBoundaryModel }
+          : {}),
         ...(agentConfig.topicDetectionWindowMinutes !== undefined
           ? { windowMinutes: agentConfig.topicDetectionWindowMinutes }
           : {}),
@@ -457,6 +460,12 @@ async function main() {
               agent.id,
             ),
             model: agent.compressionModel || agent.modelId || agent.model || "gpt-4o",
+            boundaryModel:
+              agent.topicBoundaryModel ||
+              agent.compressionModel ||
+              agent.modelId ||
+              agent.model ||
+              "gpt-4o",
             messageRepository: repo,
           };
           // M-b：先补"已关闭已入队未压缩"的 pending 段（desktop /F 主路径缺口）

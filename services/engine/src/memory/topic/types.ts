@@ -59,6 +59,8 @@ export interface TopicCompressionConfig {
   enabled: boolean;
   /** 压缩模型；缺省用主模型。指定后压缩失败不 fallback（设计决策 2） */
   compressionModel?: string;
+  /** 话题边界裁判/压缩前复核模型；缺省用 compressionModel，再缺省用主模型 */
+  boundaryModel?: string;
   /** 时间间隔超过该分钟数视为新话题，默认 30 */
   windowMinutes: number;
   /** 当前话题消息数达到该阈值即关闭压缩，默认 20 */
@@ -76,6 +78,12 @@ export const DEFAULT_TOPIC_COMPRESSION_CONFIG: TopicCompressionConfig = {
 
 /** 短话题不调用 LLM 压缩（一两句话就产一个压缩档只会制造噪声），仅归档 */
 export const MIN_SEGMENT_MESSAGES = 4;
+
+/**
+ * 话题边界 LLM 裁判的判决间隔（方案 C 六点定案 1）：
+ * 每攒 6 轮判一次（一轮 = 一条用户消息 + 一条助手回复；tool 消息不计数）。
+ */
+export const JUDGE_ROUND_INTERVAL = 6;
 
 /**
  * 配置归一：非法取值会造成静默失效（threshold < MIN 时压缩永不发生、
@@ -98,6 +106,12 @@ export function normalizeTopicCompressionConfig(
     config.windowMinutes = DEFAULT_TOPIC_COMPRESSION_CONFIG.windowMinutes;
   }
   if (config.hotMemoryCount < 0) config.hotMemoryCount = 0;
+  if (config.boundaryModel !== undefined && config.boundaryModel.trim() === "") {
+    logger.warn(
+      `[topic] boundaryModel 为空串，回退 compressionModel/主模型`,
+    );
+    config.boundaryModel = undefined;
+  }
   return config;
 }
 

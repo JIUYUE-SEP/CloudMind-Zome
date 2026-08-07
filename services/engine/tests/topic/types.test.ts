@@ -38,16 +38,29 @@ describe("normalizeTopicCompressionConfig", () => {
     expect(normalizeTopicCompressionConfig({ hotMemoryCount: -1 }).hotMemoryCount).toBe(0);
   });
 
+  it("boundaryModel 合法取值原样保留，空串回退并 warn", () => {
+    const config = normalizeTopicCompressionConfig({ boundaryModel: "judge-1" });
+    expect(config.boundaryModel).toBe("judge-1");
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const empty = normalizeTopicCompressionConfig({ boundaryModel: "   " });
+    expect(empty.boundaryModel).toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
   it("合法取值原样保留", () => {
     const config = normalizeTopicCompressionConfig({
       messageThreshold: 50,
       windowMinutes: 120,
       hotMemoryCount: 5,
       compressionModel: "k3-cheap",
+      boundaryModel: "judge-1",
     });
     expect(config.messageThreshold).toBe(50);
     expect(config.windowMinutes).toBe(120);
     expect(config.hotMemoryCount).toBe(5);
     expect(config.compressionModel).toBe("k3-cheap");
+    expect(config.boundaryModel).toBe("judge-1");
   });
 });

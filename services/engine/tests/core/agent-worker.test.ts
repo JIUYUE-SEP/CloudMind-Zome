@@ -52,6 +52,36 @@ class CapturingProvider implements LLMProvider {
   }
 }
 
+/** 话题边界裁判集成测试用：按 prompt 分流 裁判/复核/压缩/正常对话 */
+class TopicJudgeProvider implements LLMProvider {
+  name = "topic-judge";
+  judgeCalls = 0;
+  constructor(
+    private judgeReply: string,
+    private failJudge = false,
+  ) {}
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    const prompt = params.messages
+      .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+      .join("\n");
+    if (prompt.includes("话题边界裁判")) {
+      this.judgeCalls += 1;
+      if (this.failJudge) throw new Error("judge down");
+      yield { type: "text.delta", delta: this.judgeReply };
+    } else if (prompt.includes("对话归档复核裁判")) {
+      yield { type: "text.delta", delta: "SINGLE_TOPIC" };
+    } else if (prompt.includes("对话归档助手")) {
+      yield { type: "text.delta", delta: "话题主题：旧话题\n关键结论：\n- x\n经验：\n" };
+    } else {
+      yield { type: "text.delta", delta: "ok" };
+    }
+    yield { type: "step.end" };
+  }
+}
+
 function makeConfig(
   provider: LLMProvider = new MockLLMProvider(),
   messageRepository: Partial<IMessageRepository> = {},
@@ -1306,6 +1336,79 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       .filter((m) => m.role === "user")
       .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""));
     expect(userTexts.some((t) => t.includes("用户之前聊过"))).toBe(true);
+  });
+
+  it("LLM 裁判判 NEW_TOPIC：段关闭、切点在判决依据消息之前、新消息开新话题", async () => {
+    const provider = new TopicJudgeProvider("NEW_TOPIC");
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      // 阈值/时间窗拉大：规则沉默，裁判独占触发权
+      topicCompression: { messageThreshold: 100, windowMinutes: 30 },
+    });
+
+    // 6 轮攒够判决；每轮用户消息先按 ws/scheduler 路径落盘
+    for (let i = 1; i <= 6; i++) {
+      const u = seqMessage(`u${i}`, `问题${i}`, i - 1);
+      await repo.append({ ...u, sessionId: "agent-1" });
+      worker.enqueue({ id: `j${i}`, messages: [u], sessionId: "agent-1", onEvent: () => {} });
+    }
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    await vi.waitFor(() => expect(provider.judgeCalls).toBe(1));
+
+    // 切点：u1..u5（判决依据 u6 之前）旧段关闭并归档；u6 留在热存储开新话题
+    await vi.waitFor(async () => {
+      const archived = await repo.getArchivedByIds(["u1", "u2", "u3", "u4", "u5"]);
+      expect(archived.map((m) => m.id).sort()).toEqual(["u1", "u2", "u3", "u4", "u5"]);
+      // archiveAndRemove 是先写归档再删热存储：归档可见不代表热存储已清，
+      // 两侧都稳定后再断言切点
+      const hotNow = await repo.listBySession("agent-1");
+      expect(hotNow.map((m) => m.id)).not.toContain("u1");
+    });
+    const hot = await repo.listBySession("agent-1");
+    const hotIds = hot.map((m) => m.id);
+    expect(hotIds).toContain("u6");
+    for (const id of ["u1", "u2", "u3", "u4", "u5"]) {
+      expect(hotIds).not.toContain(id);
+    }
+    // 旧段一份压缩档
+    const files = await fs.readdir(path.join(tmpDir, "agents", "agent-1", "_compressed"));
+    expect(files.filter((f) => f.endsWith(".md"))).toHaveLength(1);
+    await worker.drainCompression();
+  });
+
+  it("裁判乱输出：按 SAME 处理并 warn，对话主流程无感", async () => {
+    const provider = new TopicJudgeProvider("今天天气不错");
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 100, windowMinutes: 30 },
+    });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    for (let i = 1; i <= 6; i++) {
+      const u = seqMessage(`u${i}`, `问题${i}`, i - 1);
+      await repo.append({ ...u, sessionId: "agent-1" });
+      worker.enqueue({ id: `j${i}`, messages: [u], sessionId: "agent-1", onEvent: () => {} });
+    }
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    await vi.waitFor(() => expect(provider.judgeCalls).toBe(1));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("无法解析"));
+
+    // 无事发生：全部消息留在热存储、无压缩档
+    const hot = await repo.listBySession("agent-1");
+    expect(hot.map((m) => m.id)).toContain("u6");
+    expect(hot.length).toBeGreaterThanOrEqual(12);
+    expect(await archivedMessageIds("agent-1")).toEqual(new Set());
+
+    // 主流程无感：还能继续下一轮
+    const u7 = seqMessage("u7", "继续聊", 6);
+    await repo.append({ ...u7, sessionId: "agent-1" });
+    worker.enqueue({ id: "j7", messages: [u7], sessionId: "agent-1", onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    warn.mockRestore();
   });
 
   it("短话题不调用 LLM：仅归档、不产生压缩档", async () => {

@@ -98,7 +98,9 @@ describe("reconcilePendingSegments 已入队未压缩段对账（M-b）", () => 
 
     const count = await reconcilePendingSegments("a1", repo, deps(repo, provider));
     expect(count).toBe(4);
-    expect(provider.calls).toBe(1);
+    // 方案 C：压缩前复核一次 + 压缩一次（同一 CountingProvider 对复核 prompt
+    // 也返回摘要文本，解析失败按单话题兜底，仍走一次压缩）
+    expect(provider.calls).toBe(2);
     expect(await repo.listBySession("s1")).toEqual([]);
     expect(await archivedMessageIds("a1")).toEqual(new Set(ids));
     expect(await loadTopicState("a1")).toBeUndefined();
@@ -208,7 +210,7 @@ describe("reconcilePendingSegments 已入队未压缩段对账（M-b）", () => 
 
     // 落档 fire-and-forget：等写盘完成再断言
     await vi.waitFor(async () => {
-      expect((await callRepo.list()).length).toBe(1);
+      expect((await callRepo.list()).length).toBe(2);
     });
     const [record] = await callRepo.list();
     expect(record).toMatchObject({ agentId: "a1", provider: "counting", model: "mock-model", status: "ok" });

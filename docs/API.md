@@ -32,6 +32,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 |---|---|---|---|
 | `maxContextTokens` | number | 80000 | 上下文窗口总预算（32k/128k 窗口模型应显式配置） |
 | `compressionModel` | string | 主模型 | 话题压缩模型；压缩失败不 fallback 主模型 |
+| `topicBoundaryModel` | string | compressionModel → 主模型 | 话题边界 LLM 裁判/压缩前复核模型（方案 C）：每攒 6 轮异步语义判切，压缩前复核拆分 |
 | `topicDetectionWindowMinutes` | number | 30 | 话题检测时间窗（分钟），超过视为新话题 |
 | `topicMessageThreshold` | number | 20 | 当前话题消息数达到该值即关闭并压缩 |
 | `semanticSearchEnabled` | boolean | true | 语义检索（L4）开关，同时门控检索与 embed 索引 |

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { LLMProvider, LLMEvent } from "../../src/provider/types.js";
+import type { LLMProvider, LLMEvent, LLMChatParams } from "../../src/provider/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
 import { runCompressionTask, type CompressionTaskDeps } from "../../src/memory/topic/compression-task.js";
@@ -79,7 +79,9 @@ describe("runCompressionTask 摘要注入检测（P2 review Major-3）", () => {
     expect(await fs.readdir(compressedDir("a1")).catch(() => [])).toEqual([]);
     expect(await repo.listBySession("s1")).toEqual([]);
     expect((await repo.getArchivedByIds(ids)).map((m) => m.id).sort()).toEqual(ids);
-    expect(warn).toHaveBeenCalledOnce();
+    // 复核 prompt 在同一固定回复 provider 下也会 warn（解析失败按单话题），
+    // 注入检测的 warn 单独断言，不再依赖总次数
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("摘要命中注入检测"));
     warn.mockRestore();
   });
 
@@ -109,5 +111,115 @@ describe("runCompressionTask 摘要注入检测（P2 review Major-3）", () => {
 
     expect(await repo.listBySession("s1")).toEqual([]);
     expect(await fs.stat(compressedDir("a1")).catch(() => null)).toBeNull();
+  });
+});
+
+describe("runCompressionTask 压缩前复核拆分（方案 C 定案 4）", () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "compression-review-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
+  /** 复核 prompt 与压缩 prompt 分流；复核可注入失败 */
+  class ReviewBranchProvider implements LLMProvider {
+    name = "review-branch";
+    constructor(
+      private reviewReply: string,
+      private failReview = false,
+    ) {}
+    supportsModel() {
+      return true;
+    }
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      const prompt = params.messages
+        .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+        .join("\n");
+      if (prompt.includes("对话归档复核裁判")) {
+        if (this.failReview) throw new Error("review down");
+        yield { type: "text.delta", delta: this.reviewReply };
+      } else {
+        yield { type: "text.delta", delta: "话题主题：子话题\n关键结论：\n- 结论\n经验：\n" };
+      }
+      yield { type: "step.end" };
+    }
+  }
+
+  function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
+    return { agentId: "a1", provider, model: "mock", messageRepository: repo };
+  }
+
+  async function compressedMsgIdSets(agentId: string): Promise<string[][]> {
+    const dir = compressedDir(agentId);
+    const files = (await fs.readdir(dir)).filter((f) => f.endsWith(".md")).sort();
+    const sets: string[][] = [];
+    for (const file of files) {
+      const raw = await fs.readFile(path.join(dir, file), "utf-8");
+      const ids = (raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1] ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      sets.push(ids);
+    }
+    return sets;
+  }
+
+  it("混合段拆成两段：各自落档、msgIds 无交叉、全部归档", async () => {
+    const ids = ["m1", "m2", "m3", "m4", "m5", "m6"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new ReviewBranchProvider("MULTI_TOPIC 3");
+
+    await runCompressionTask(makeSegment(ids), deps(repo, provider));
+
+    const sets = await compressedMsgIdSets("a1");
+    expect(sets).toHaveLength(2);
+    expect(sets[0]).toEqual(["m1", "m2", "m3"]);
+    expect(sets[1]).toEqual(["m4", "m5", "m6"]);
+    // msgIds 无交叉且并集为全量
+    expect(sets[0]!.filter((id) => sets[1]!.includes(id))).toEqual([]);
+    expect([...sets[0]!, ...sets[1]!].sort()).toEqual(ids);
+    expect(await repo.listBySession("s1")).toEqual([]);
+    expect((await repo.getArchivedByIds(ids)).map((m) => m.id).sort()).toEqual(ids);
+  });
+
+  it("复核判单话题：照旧一份压缩档", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new ReviewBranchProvider("SINGLE_TOPIC");
+
+    await runCompressionTask(makeSegment(ids), deps(repo, provider));
+
+    const sets = await compressedMsgIdSets("a1");
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).toEqual(ids);
+  });
+
+  it("复核失败：整段单话题压缩（回退现状）并 warn", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new ReviewBranchProvider("", true);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    await runCompressionTask(makeSegment(ids), deps(repo, provider));
+
+    const sets = await compressedMsgIdSets("a1");
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).toEqual(ids);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining("复核裁判调用失败"),
+    );
+    warn.mockRestore();
   });
 });

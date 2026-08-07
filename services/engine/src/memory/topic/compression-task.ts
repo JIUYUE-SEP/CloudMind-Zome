@@ -4,6 +4,7 @@ import type { LLMProvider } from "../../provider/types.js";
 import { appendMindExperiences } from "../../mind/mind-files.js";
 import { isInjectionSuspect } from "../../mind/injection-filter.js";
 import { compressTopic } from "./compressor.js";
+import { reviewTopicSegments } from "./judge.js";
 import { removeCompressedTopic, writeCompressedTopic } from "./store.js";
 import type { TopicSegment } from "./types.js";
 
@@ -16,6 +17,8 @@ export interface CompressionTaskDeps {
   provider: LLMProvider;
   /** 压缩模型（compressionModel || 主模型，调用方解析好） */
   model: string;
+  /** 裁判/复核模型链（boundaryModel || compressionModel || 主模型，调用方解析好） */
+  boundaryModel?: string;
   messageRepository: IMessageRepository;
 }
 
@@ -28,6 +31,24 @@ export async function runCompressionTask(
     await deps.messageRepository.archiveAndRemove(segment.messages.map((m) => m.id));
     return;
   }
+  // 压缩前复核（方案 C 六点定案 4，内嵌）：判单话题/多话题——多则拆成子段
+  // 各自独立压缩落档（各一份压缩档）；复核失败/解析失败整段当单话题（现状，
+  // 永不更差）。模型链：boundaryModel → compressionModel → 主模型。
+  const subSegments = await reviewTopicSegments(
+    segment,
+    deps.provider,
+    deps.boundaryModel ?? deps.model,
+  );
+  for (const sub of subSegments) {
+    await compressAndArchiveSegment(sub, deps);
+  }
+}
+
+/** 单段压缩落档 + 归档（复核拆分后每个子段各走一遍；原有单段路径语义不变） */
+async function compressAndArchiveSegment(
+  segment: TopicSegment,
+  deps: CompressionTaskDeps,
+): Promise<void> {
   // 压缩失败不 fallback 主模型语义：异常由调用方（队列/对账）统一告警，原始消息留在热存储
   const compressed = await compressTopic(segment, deps.provider, deps.model);
   // 阶段 5 二期：话题内 Skill 使用清单随摘要落档（活跃保护——组装时自动重取依据）
