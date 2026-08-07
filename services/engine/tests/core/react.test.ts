@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
-import { runTurn } from "../../src/core/react/turn.js";
+import {
+  runTurn,
+  MAX_STEPS_SUMMARY_HINT,
+  MAX_STEPS_FALLBACK_REPLY,
+} from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { ContextPipeline } from "../../src/context/pipeline.js";
 import { getTokenCounter } from "../../src/context/token-counter.js";
@@ -15,6 +19,13 @@ function userMessage(text: string): ChatMessage {
     content: [{ type: "text", text }],
     createdAt: "2024-01-01",
   };
+}
+
+function assistantText(message: ChatMessage): string {
+  return message.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("");
 }
 
 const dummyTool: Tool = {
@@ -67,6 +78,61 @@ class ApprovalProvider implements LLMProvider {
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
     void params;
     yield { type: "tool.call", toolCallId: "tc_1", name: "tracked", arguments: {} };
+    yield { type: "step.end" };
+  }
+}
+
+/** 连续工具调用直到撞顶；兜底总结调用按配置产文本/抛错/空文本，并记录每次调用参数 */
+class ToolLoopThenSummaryProvider implements LLMProvider {
+  name = "tool-loop-summary";
+  calls: LLMChatParams[] = [];
+  constructor(
+    private summaryBehavior: "text" | "throw" | "empty" = "text",
+  ) {}
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    this.calls.push(params);
+    const hasHint = params.messages.some(
+      (m) =>
+        m.role === "system" &&
+        m.content.some((c) => c.type === "text" && c.text.includes("工具调用步数已用完")),
+    );
+    if (hasHint) {
+      if (this.summaryBehavior === "throw") throw new Error("summary down");
+      if (this.summaryBehavior === "empty") {
+        yield { type: "step.end" };
+        return;
+      }
+      yield { type: "text.delta", delta: "最终答案" };
+    } else {
+      yield {
+        type: "tool.call",
+        toolCallId: `tc_${this.calls.length}`,
+        name: "dummy",
+        arguments: { value: "x" },
+      };
+    }
+    yield { type: "step.end" };
+  }
+}
+
+/** 工具一步后正常停止，并记录每次调用参数（未撞顶对照组） */
+class ToolThenStopCaptureProvider implements LLMProvider {
+  name = "tool-then-stop-capture";
+  calls: LLMChatParams[] = [];
+  private step = 0;
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    this.calls.push(params);
+    if (this.step++ === 0) {
+      yield { type: "tool.call", toolCallId: "tc_1", name: "dummy", arguments: { value: "x" } };
+    } else {
+      yield { type: "text.delta", delta: "done" };
+    }
     yield { type: "step.end" };
   }
 }
@@ -279,7 +345,11 @@ describe("runTurn", () => {
 
     expect(flags.a).toBe(true);
     expect(flags.b).toBe(true);
-    expect(events.filter((e) => e.type === "tool.result").length).toBe(2);
+    const successfulResults = events.filter(
+      (e): e is LLMEvent & { type: "tool.result"; output: ToolResult } =>
+        e.type === "tool.result" && (e.output as ToolResult)?.success === true,
+    );
+    expect(successfulResults).toHaveLength(2);
   });
 
   it("denies tool execution when approval is rejected", async () => {
@@ -391,5 +461,112 @@ describe("runTurn", () => {
     const serialized = JSON.stringify({ success: true, output: hugeText });
     expect(text.startsWith(serialized.slice(0, 100))).toBe(true);
     expect(text.endsWith(serialized.slice(-100))).toBe(true);
+  });
+
+  it("撞顶兜底：maxSteps 全部消耗在工具循环时，强制一次无工具总结并产出最终回复", async () => {
+    const provider = new ToolLoopThenSummaryProvider();
+    const events: LLMEvent[] = [];
+    const result = await runTurn(
+      {
+        provider,
+        model: "tool-loop-summary",
+        messages: [userMessage("查资料")],
+        tools: [
+          { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+        ],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["dummy", dummyTool]]),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+        maxSteps: 2,
+      },
+      (e) => events.push(e),
+    );
+
+    // 2 次工具步 + 1 次兜底总结 = 3 次 LLM 调用
+    expect(provider.calls).toHaveLength(3);
+    const summaryParams = provider.calls[2]!;
+    // 兜底调用不带工具、尾部有 system 提示
+    expect(summaryParams.tools).toBeUndefined();
+    expect(
+      summaryParams.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(MAX_STEPS_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
+    // 回合产出 assistant 文本，绝不静默
+    expect(assistantText(result.assistantMessage)).toBe("最终答案");
+    expect(
+      result.appended.at(-1)!.content.some((c) => c.type === "text" && c.text === "最终答案"),
+    ).toBe(true);
+    expect(events.some((e) => e.type === "text.delta" && e.delta === "最终答案")).toBe(true);
+    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
+  });
+
+  it("撞顶兜底调用失败/空文本：产出兜底回复（不静默）", async () => {
+    for (const behavior of ["throw", "empty"] as const) {
+      const provider = new ToolLoopThenSummaryProvider(behavior);
+      const events: LLMEvent[] = [];
+      const result = await runTurn(
+        {
+          provider,
+          model: "tool-loop-summary",
+          messages: [userMessage("查资料")],
+          tools: [
+            { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+          ],
+          toolCtx: {
+            agentId: "a",
+            workspaceDir: "/tmp",
+            tools: new Map([["dummy", dummyTool]]),
+            approve: async () => true,
+            emit: (e) => events.push(e),
+          },
+          maxSteps: 2,
+        },
+        (e) => events.push(e),
+      );
+
+      expect(assistantText(result.assistantMessage)).toBe(MAX_STEPS_FALLBACK_REPLY);
+      expect(
+        result.appended
+          .at(-1)!
+          .content.some((c) => c.type === "text" && c.text === MAX_STEPS_FALLBACK_REPLY),
+      ).toBe(true);
+      expect(
+        events.some((e) => e.type === "text.delta" && e.delta === MAX_STEPS_FALLBACK_REPLY),
+      ).toBe(true);
+    }
+  });
+
+  it("未撞顶时行为不变：正常工具循环不触发兜底总结", async () => {
+    const provider = new ToolThenStopCaptureProvider();
+    const events: LLMEvent[] = [];
+    const result = await runTurn(
+      {
+        provider,
+        model: "tool-then-stop-capture",
+        messages: [userMessage("call dummy")],
+        tools: [
+          { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+        ],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["dummy", dummyTool]]),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+      },
+      (e) => events.push(e),
+    );
+
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls.some((p) => p.messages.some((m) => m.role === "system"))).toBe(false);
+    expect(assistantText(result.assistantMessage)).toBe("done");
   });
 });

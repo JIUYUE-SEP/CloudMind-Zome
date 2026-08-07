@@ -275,6 +275,7 @@ async function main() {
       approve: () => true,
       temperature: agentConfig.temperature,
       topP: agentConfig.topP,
+      reactMaxSteps: agentConfig.reactMaxSteps,
       trustAllTools: agentConfig.trustAllTools,
       // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
       skillCatalog: (await skillService.list(agentId)).map((s) => `- ${s.name}：${s.description}`),

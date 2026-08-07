@@ -6,6 +6,12 @@ import type { AssembleInput, ContextPipeline } from "../../context/pipeline.js";
 import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
 import { stripUnansweredToolCalls } from "../../context/history-sanitize.js";
 
+/** 撞顶兜底（真机实锤：连续工具调用后回合静默结束）：追加一次无工具总结的 system 提示 */
+export const MAX_STEPS_SUMMARY_HINT =
+  "工具调用步数已用完，请根据已获得的信息直接给出最终回复，不要再调用工具";
+/** 兜底总结也失败/空文本时的最终兜底回复——回合永远要有 assistant 回复，绝不静默 */
+export const MAX_STEPS_FALLBACK_REPLY = "我查了很多资料但没能整理好答案，请再问我一次";
+
 export interface TurnInput {
   provider: LLMProvider;
   model: string;
@@ -45,6 +51,69 @@ export interface TurnResult {
   appended: ChatMessage[];
 }
 
+function assistantText(message: ChatMessage): string {
+  return message.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+}
+
+function makeFallbackReply(emit: (event: LLMEvent) => void): ChatMessage {
+  const message: ChatMessage = {
+    id: `msg_${Date.now()}`,
+    role: "assistant",
+    content: [{ type: "text", text: MAX_STEPS_FALLBACK_REPLY }],
+    createdAt: new Date().toISOString(),
+  };
+  // 兜底文本不经 provider，需手动补流式帧，前端才不会空白等待
+  emit({ type: "text.delta", delta: MAX_STEPS_FALLBACK_REPLY });
+  return message;
+}
+
+/**
+ * 撞顶兜底总结调用：maxSteps 全部消耗在工具循环（最后一次仍是 tool_use）时，
+ * 在 messages 尾部追加 system 提示、tools 传空，强制模型产出最终文本。
+ * 调用失败/违规工具调用/空文本 → 产出兜底回复文本（绝不静默）。
+ */
+async function runMaxStepsSummary(
+  input: TurnInput,
+  messages: ChatMessage[],
+  maxToolResultTokens: number | undefined,
+  emit: (event: LLMEvent) => void,
+): Promise<ChatMessage> {
+  const hint: ChatMessage = {
+    id: `msg_${Date.now()}`,
+    role: "system",
+    content: [{ type: "text", text: MAX_STEPS_SUMMARY_HINT }],
+    createdAt: new Date().toISOString(),
+  };
+  let result: StepResult;
+  try {
+    result = await executeLoopStep(
+      {
+        provider: input.provider,
+        model: input.model,
+        messages: [...messages, hint],
+        // 不带工具：模型必须产出文本；即便模型违规发 tool.call，
+        // 空工具表也只会得到 "Unknown tool" 错误结果（防御）
+        tools: [],
+        toolCtx: { ...input.toolCtx, tools: new Map() },
+        maxTokens: input.maxTokens,
+        temperature: input.temperature,
+        topP: input.topP,
+        maxToolResultTokens,
+      },
+      emit,
+    );
+  } catch {
+    return makeFallbackReply(emit);
+  }
+  if (result.stopReason === "tool_use" || assistantText(result.assistantMessage).length === 0) {
+    return makeFallbackReply(emit);
+  }
+  return result.assistantMessage;
+}
+
 export async function runTurn(
   input: TurnInput,
   emit: (event: LLMEvent) => void
@@ -76,7 +145,8 @@ export async function runTurn(
   const toolMessages: ChatMessage[] = [];
   const appended: ChatMessage[] = [];
 
-  for (let step = 0; step < maxSteps; step++) {
+  let step = 0;
+  for (; step < maxSteps; step++) {
     if (input.signal?.aborted) {
       throw new Error("aborted");
     }
@@ -128,6 +198,18 @@ export async function runTurn(
 
     if (result.stopReason !== "tool_use") {
       break;
+    }
+  }
+
+  // 撞顶兜底（真机实锤）：循环耗尽且最后一次仍是工具调用——直接退出会让
+  // 回合静默结束（无 assistant 回复）。追加一次无工具总结调用，绝不静默。
+  if (step >= maxSteps) {
+    const summary = await runMaxStepsSummary(input, messages, maxToolResultTokens, emit);
+    messages.push(summary);
+    appended.push(summary);
+    assistantMessage = summary;
+    if (input.onStepAppended) {
+      await input.onStepAppended([summary]);
     }
   }
 

@@ -38,6 +38,33 @@ import { auditFailClosed, auditTrustedAutoApprove } from "../api/ws/approval-aud
 
 logger.info("[agent-worker] module loaded");
 
+/** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）缺省与边界 */
+const REACT_MAX_STEPS_DEFAULT = 10;
+const REACT_MAX_STEPS_MIN = 1;
+const REACT_MAX_STEPS_MAX = 50;
+
+/**
+ * reactMaxSteps 归一：缺省 10；越界 clamp 1-50；非有限值回退缺省并 warn。
+ * （真机：recall 的 topics→read→offset 翻找链天然多步，5 步太紧且撞顶曾静默死亡）
+ */
+export function normalizeReactMaxSteps(value: number | undefined): number {
+  if (value === undefined) return REACT_MAX_STEPS_DEFAULT;
+  if (!Number.isFinite(value)) {
+    logger.warn(
+      `[agent-worker] reactMaxSteps=${value} 非法，已按缺省 ${REACT_MAX_STEPS_DEFAULT} 处理`,
+    );
+    return REACT_MAX_STEPS_DEFAULT;
+  }
+  const clamped = Math.min(
+    Math.max(Math.round(value), REACT_MAX_STEPS_MIN),
+    REACT_MAX_STEPS_MAX,
+  );
+  if (clamped !== value) {
+    logger.warn(`[agent-worker] reactMaxSteps=${value} 越界，已 clamp 到 ${clamped}`);
+  }
+  return clamped;
+}
+
 /**
  * Skills 段固定纪律话术（阶段 5 一期，Skill 工具化语义，迁移 kimi skill.md 的
  * 「命中即遵循」精神）：L1 只注目录（名字+一句话），正文经 Skill 工具按需取回。
@@ -60,6 +87,8 @@ export interface AgentWorkerConfig {
   approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   temperature?: number;
   topP?: number;
+  /** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）；缺省 10，clamp 1-50 */
+  reactMaxSteps?: number;
   /** L1 技能目录（名字+一句话，发现入口）；正文不预注，经 Skill 工具按需取回（阶段 5 一期） */
   skillCatalog?: string[];
   /** 向量记忆索引（sidecar 可用时生效），用于跨会话语义检索 */
@@ -108,6 +137,7 @@ export class AgentWorker {
   private queue: Job[] = [];
   private runningJob: Job | null = null;
   private pipeline: ContextPipeline;
+  private reactMaxSteps: number;
   private topicConfig: TopicCompressionConfig;
   private topicTracker: TopicTracker;
   private compressionQueue: CompressionQueue;
@@ -128,6 +158,7 @@ export class AgentWorker {
 
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
+    this.reactMaxSteps = normalizeReactMaxSteps(config.reactMaxSteps);
     this.topicConfig = normalizeTopicCompressionConfig(config.topicCompression);
     this.boundaryModel =
       this.topicConfig.boundaryModel || this.topicConfig.compressionModel || config.model;
@@ -620,7 +651,7 @@ export class AgentWorker {
           emit: job.onEvent,
           services: this.config.services,
         },
-        maxSteps: 5,
+        maxSteps: this.reactMaxSteps,
         temperature: this.config.temperature,
         topP: this.config.topP,
         signal: job.signal,

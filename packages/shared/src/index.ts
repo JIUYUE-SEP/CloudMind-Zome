@@ -24,6 +24,8 @@ export interface AgentConfig {
   topP?: number;
   /** 上下文窗口总预算（token），缺省由引擎按 80000 处理；32k/128k 窗口模型应显式配置 */
   maxContextTokens?: number;
+  /** ReAct 循环单轮最大步数；缺省 10，越界 clamp 1-50 */
+  reactMaxSteps?: number;
   /** 话题压缩模型；缺省用主模型，压缩失败不 fallback（ContextPipeline Phase 2） */
   compressionModel?: string;
   /** 话题边界 LLM 裁判/压缩前复核模型；缺省用 compressionModel，再缺省用主模型 */

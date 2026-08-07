@@ -4,7 +4,7 @@ import { z } from "zod";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { AgentWorker } from "../../src/core/agent-worker.js";
+import { AgentWorker, normalizeReactMaxSteps } from "../../src/core/agent-worker.js";
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
 import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
 import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
@@ -2085,5 +2085,20 @@ describe("AgentWorker SOUL/MIND 集成", () => {
     expect(notice).toBeTruthy();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("normalizeReactMaxSteps", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("缺省 10；越界 clamp 1-50；非有限值回退缺省", () => {
+    expect(normalizeReactMaxSteps(undefined)).toBe(10);
+    expect(normalizeReactMaxSteps(0)).toBe(1);
+    expect(normalizeReactMaxSteps(-3)).toBe(1);
+    expect(normalizeReactMaxSteps(99)).toBe(50);
+    expect(normalizeReactMaxSteps(7)).toBe(7);
+    expect(normalizeReactMaxSteps(NaN)).toBe(10);
   });
 });
