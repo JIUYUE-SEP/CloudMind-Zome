@@ -17,6 +17,10 @@ function rec(id: string, sessionId = "s1"): ChatMessageRecord {
   };
 }
 
+function recAt(id: string, createdAt: string, sessionId = "s1"): ChatMessageRecord {
+  return { ...rec(id, sessionId), createdAt };
+}
+
 describe("MessageRepository 归档", () => {
   let tmpDir: string;
   let originalDataDir: string | undefined;
@@ -100,5 +104,95 @@ describe("MessageRepository 归档", () => {
     const archived = await repo.getArchivedByIds(["m1", "m2"]);
     expect(archived.map((m) => m.id).sort()).toEqual(["m1", "m2"]);
     expect(await repo.getArchivedByIds(["ghost"])).toEqual([]);
+  }, 60_000);
+
+  it("listBySessionWithArchived：归档 + 热存储合并，按 createdAt 时间序返回完整历史", async () => {
+    const repo = new MessageRepository("a1");
+    await repo.append(recAt("a1", "2026-08-01T00:00:00.000Z"));
+    await repo.append(recAt("a2", "2026-08-02T00:00:00.000Z"));
+    await repo.append(recAt("a3", "2026-08-03T00:00:00.000Z"));
+    await repo.archiveAndRemove(["a1", "a3"]);
+    await repo.append(recAt("h1", "2026-08-04T00:00:00.000Z"));
+    await repo.append(recAt("h2", "2026-08-05T00:00:00.000Z"));
+
+    const all = await repo.listBySessionWithArchived("s1");
+    expect(all.map((m) => m.id)).toEqual(["a1", "a2", "a3", "h1", "h2"]);
+
+    // 归档消息不再只存在于"她的压缩"里：用户可见完整历史含归档侧
+    expect(await repo.listBySession("s1")).toEqual([
+      expect.objectContaining({ id: "a2" }),
+      expect.objectContaining({ id: "h1" }),
+      expect.objectContaining({ id: "h2" }),
+    ]);
+  });
+
+  it("listBySessionWithArchived：limit 切在归档/热存储边界（跨存储分页）", async () => {
+    const repo = new MessageRepository("a1");
+    for (let i = 1; i <= 5; i++) {
+      await repo.append(recAt(`m${i}`, `2026-08-0${i}T00:00:00.000Z`));
+    }
+    await repo.archiveAndRemove(["m1", "m2", "m3"]);
+
+    // 最近 3 条：m3 是归档尾、m4/m5 是热存储——窗口恰好跨边界
+    expect((await repo.listBySessionWithArchived("s1", { limit: 3 })).map((m) => m.id)).toEqual([
+      "m3",
+      "m4",
+      "m5",
+    ]);
+    expect((await repo.listBySessionWithArchived("s1", { limit: 4 })).map((m) => m.id)).toEqual([
+      "m2",
+      "m3",
+      "m4",
+      "m5",
+    ]);
+    // 窗口完全落在热存储时也正确（不误读归档尾部）
+    expect((await repo.listBySessionWithArchived("s1", { limit: 2 })).map((m) => m.id)).toEqual([
+      "m4",
+      "m5",
+    ]);
+  });
+
+  it("listBySessionWithArchived：before 游标跨存储翻页（命中归档继续在归档里翻）", async () => {
+    const repo = new MessageRepository("a1");
+    for (let i = 1; i <= 5; i++) {
+      await repo.append(recAt(`m${i}`, `2026-08-0${i}T00:00:00.000Z`));
+    }
+    await repo.archiveAndRemove(["m1", "m2", "m3"]);
+
+    // 游标在热存储、窗口伸进归档：m4 之前最近 3 条 = m1/m2/m3
+    expect(
+      (await repo.listBySessionWithArchived("s1", { limit: 3, before: "m4" })).map((m) => m.id),
+    ).toEqual(["m1", "m2", "m3"]);
+    // 游标命中归档：继续在归档内部翻页
+    expect(
+      (await repo.listBySessionWithArchived("s1", { limit: 2, before: "m3" })).map((m) => m.id),
+    ).toEqual(["m1", "m2"]);
+    // 未知游标：与 listBySession 同语义，回落最近 limit 条
+    expect(
+      (await repo.listBySessionWithArchived("s1", { limit: 2, before: "ghost" })).map((m) => m.id),
+    ).toEqual(["m4", "m5"]);
+  });
+
+  it("listBySessionWithArchived：>100MB 归档只取尾部，不触发 readLines 上限（流式分页）", async () => {
+    const repo = new MessageRepository("a1");
+    await repo.append(recAt("m1", "2026-08-01T00:00:00.000Z"));
+    await repo.append(recAt("m2", "2026-08-02T00:00:00.000Z"));
+    await repo.archiveAndRemove(["m1", "m2"]);
+
+    // 把归档灌到 100MB 以上（createdAt 介于 m2 与热存储 m3 之间）
+    const archivePath = path.join(getAgentDir("a1"), "messages_archived.jsonl");
+    const filler = JSON.stringify({
+      id: "filler",
+      sessionId: "s1",
+      role: "user",
+      content: [{ type: "text", text: "x".repeat(4096) }],
+      createdAt: "2026-08-02T12:00:00.000Z",
+    }) + "\n";
+    const lineCount = Math.ceil((100 * 1024 * 1024 + Buffer.byteLength(filler)) / Buffer.byteLength(filler));
+    await fs.appendFile(archivePath, filler.repeat(lineCount), "utf-8");
+    await repo.append(recAt("m3", "2026-08-03T00:00:00.000Z"));
+
+    const tail = await repo.listBySessionWithArchived("s1", { limit: 2 });
+    expect(tail.map((m) => m.id)).toEqual(["filler", "m3"]);
   }, 60_000);
 });

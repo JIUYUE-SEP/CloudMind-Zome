@@ -44,6 +44,16 @@ export interface IAgentRepository {
 export interface IMessageRepository {
   append(message: ChatMessageRecord): Promise<void>;
   listBySession(sessionId: string, options?: { limit?: number; before?: string }): Promise<ChatMessageRecord[]>;
+  /**
+   * 跨存储读（用户可见完整历史）：热存储 + 归档合并、按 createdAt 时间序，
+   * limit/before 跨存储分页正确。归档可能巨大，实现必须流式/分段，
+   * 内存与归档大小无关（"她的意识"路径——上下文组装/L4/reconcile/压缩——
+   * 继续走 listBySession，不经此方法）。
+   */
+  listBySessionWithArchived(
+    sessionId: string,
+    options?: { limit?: number; before?: string },
+  ): Promise<ChatMessageRecord[]>;
   /** 按 sessionId 前缀扫描（Intermind 会话推导等场景；无前缀匹配返回空） */
   listBySessionPrefix(prefix: string): Promise<ChatMessageRecord[]>;
   getByIds(ids: string[]): Promise<ChatMessageRecord[]>;

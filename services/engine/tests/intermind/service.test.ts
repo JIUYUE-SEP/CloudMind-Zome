@@ -187,6 +187,7 @@ describe("IntermindService.send", () => {
         throw new Error("disk full");
       },
       listBySession: async () => [],
+      listBySessionWithArchived: async () => [],
       listBySessionPrefix: async () => [],
       getByIds: async () => [],
       archiveAndRemove: async () => {},

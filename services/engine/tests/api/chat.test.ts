@@ -82,6 +82,63 @@ describe("Chat API", () => {
     await app.close();
   });
 
+  it("returns archived + hot messages as user-visible full history", async () => {
+    const app = await makeApp();
+    const repo = context.getMessageRepository("agent-1");
+    const recAt = (id: string, createdAt: string): ChatMessageRecord => ({
+      id,
+      sessionId: "s1",
+      role: "user",
+      content: [{ type: "text", text: `msg ${id}` }],
+      createdAt,
+    });
+    await repo.append(recAt("m1", "2026-08-01T00:00:00.000Z"));
+    await repo.append(recAt("m2", "2026-08-02T00:00:00.000Z"));
+    await repo.append(recAt("m3", "2026-08-03T00:00:00.000Z"));
+    await repo.archiveAndRemove(["m1"]);
+
+    const res = await authedRequest(app.server).get("/chat/agent-1/messages?sessionId=s1");
+    expect(res.status).toBe(200);
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["m1", "m2", "m3"]);
+    await app.close();
+  });
+
+  it("paginates across archive/hot boundary with limit and before", async () => {
+    const app = await makeApp();
+    const repo = context.getMessageRepository("agent-1");
+    const recAt = (id: string, createdAt: string): ChatMessageRecord => ({
+      id,
+      sessionId: "s1",
+      role: "user",
+      content: [{ type: "text", text: `msg ${id}` }],
+      createdAt,
+    });
+    for (let i = 1; i <= 5; i++) {
+      await repo.append(recAt(`m${i}`, `2026-08-0${i}T00:00:00.000Z`));
+    }
+    await repo.archiveAndRemove(["m1", "m2", "m3"]);
+
+    // limit 切在归档/热存储边界
+    const tail = await authedRequest(app.server).get("/chat/agent-1/messages?sessionId=s1&limit=3");
+    expect(tail.status).toBe(200);
+    expect(tail.body.map((m: { id: string }) => m.id)).toEqual(["m3", "m4", "m5"]);
+
+    // before 游标在热存储、窗口伸进归档
+    const beforeHot = await authedRequest(app.server).get(
+      "/chat/agent-1/messages?sessionId=s1&limit=3&before=m4",
+    );
+    expect(beforeHot.status).toBe(200);
+    expect(beforeHot.body.map((m: { id: string }) => m.id)).toEqual(["m1", "m2", "m3"]);
+
+    // before 游标命中归档：继续在归档里翻页
+    const beforeArchived = await authedRequest(app.server).get(
+      "/chat/agent-1/messages?sessionId=s1&limit=2&before=m3",
+    );
+    expect(beforeArchived.status).toBe(200);
+    expect(beforeArchived.body.map((m: { id: string }) => m.id)).toEqual(["m1", "m2"]);
+    await app.close();
+  });
+
   it("requires sessionId", async () => {
     const app = await makeApp();
     const res = await authedRequest(app.server).get("/chat/agent-1/messages");

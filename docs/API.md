@@ -43,7 +43,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 ### Chat
 
-- `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx` — 获取历史消息（`sessionId` 必填）
+- `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx&before=xxx` — 获取用户可见完整历史（`sessionId` 必填）：热存储与话题压缩归档合并、按时间序返回；`before` 为消息 id 游标，支持跨归档/热存储边界翻页。话题压缩只收她的上下文，聊天记录不因压缩消失
 - WebSocket `GET /ws/:agentId?sessionId=xxx` — 与单个 Agent 实时对话（sessionId 缺省 `default`）
 
 ### Sessions（群聊）

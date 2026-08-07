@@ -89,6 +89,7 @@ function makeRepo(records: ChatMessageRecord[]): IMessageRepository {
   return {
     append: async () => {},
     listBySession: async () => [],
+    listBySessionWithArchived: async () => [],
     listBySessionPrefix: async () => [],
     getByIds: async (ids: string[]) => records.filter((r) => ids.includes(r.id)),
     archiveAndRemove: async () => {},

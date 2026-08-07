@@ -31,6 +31,60 @@ export class MessageRepository implements IMessageRepository {
     return filtered.slice(-limit);
   }
 
+  /**
+   * 跨存储读（用户可见完整历史）：热存储 + 归档两条流按 createdAt 归并，
+   * 只保留最近 limit 条的滚动窗口——内存与归档大小无关（归档可能远超
+   * readLines 的 100MB 上限，这里逐行流式读、可提前 break）。
+   *
+   * 时间序前提：两个文件各自按 createdAt 递增追加（归档按热存储移除顺序追加，
+   * 先归档后热存储）；同 createdAt 时归档优先。before 游标命中任一侧后，
+   * 其前最近 limit 条即本页（未知游标按无游标处理，与 listBySession 同语义）。
+   */
+  async listBySessionWithArchived(
+    sessionId: string,
+    options?: { limit?: number; before?: string },
+  ): Promise<ChatMessageRecord[]> {
+    const rawLimit = options?.limit;
+    const limit = Number.isInteger(rawLimit) && (rawLimit as number) > 0 ? (rawLimit as number) : 100;
+    const before = options?.before;
+    const aIt = this.archiveStore().readLinesLazy()[Symbol.asyncIterator]();
+    const hIt = this.store().readLinesLazy()[Symbol.asyncIterator]();
+
+    // 滚动尾部窗口：只保留最近 limit 条，内存 O(limit)
+    const tail: ChatMessageRecord[] = [];
+    const push = (record: ChatMessageRecord) => {
+      tail.push(record);
+      if (tail.length > limit) tail.shift();
+    };
+
+    try {
+      let a = await aIt.next();
+      let h = await hIt.next();
+      while (a.done === false || h.done === false) {
+        // 三元先窄化：done 的返回侧没有 value（TS 对 AsyncGenerator 的
+        // IteratorResult 判别窄化在此不作用于赋值，显式展开避免 union 残留）
+        const aRecord = a.done ? null : a.value;
+        const hRecord = h.done ? null : h.value;
+        let record: ChatMessageRecord;
+        if (aRecord !== null && (hRecord === null || aRecord.createdAt <= hRecord.createdAt)) {
+          record = aRecord;
+          a = await aIt.next();
+        } else {
+          record = hRecord!;
+          h = await hIt.next();
+        }
+        if (record.sessionId !== sessionId) continue;
+        // before 游标：其前已累积的滚动窗口即本页，游标之后的消息无关，提前停读
+        if (before !== undefined && record.id === before) break;
+        push(record);
+      }
+    } finally {
+      await aIt.return?.();
+      await hIt.return?.();
+    }
+    return tail;
+  }
+
   async listBySessionPrefix(prefix: string): Promise<ChatMessageRecord[]> {
     const all = await this.store().readLines();
     return all.filter((m) => m.sessionId.startsWith(prefix));

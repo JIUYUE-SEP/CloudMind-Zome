@@ -60,6 +60,7 @@ async function buildSessionWsContext(
         messageRepository: {
           append: async () => {},
           listBySession: async () => [],
+          listBySessionWithArchived: async () => [],
           listBySessionPrefix: async () => [],
           getByIds: async () => [],
           archiveAndRemove: async () => {},

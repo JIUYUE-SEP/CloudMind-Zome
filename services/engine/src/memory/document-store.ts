@@ -183,6 +183,34 @@ export class DocumentStore<T extends object> {
     }
   }
 
+  /**
+   * 惰性逐行读：逐行解析、按需 yield，内存与文件大小无关，且调用方可随时 break
+   * 提前停止（for-await 的 break 会走 iterator.return()，流与句柄在 finally 关闭）。
+   * 不进读缓存（缓存是全量驻留语义）——适合跨存储归并分页这类
+   * "只取尾部/游标前一段"的场景（如聊天接口读超大归档）。
+   */
+  async *readLinesLazy(): AsyncGenerator<T, void, void> {
+    let handle: fs.FileHandle | undefined;
+    try {
+      handle = await fs.open(this.filePath, "r");
+      const stream = handle.createReadStream();
+      const rl = createInterface({ input: stream });
+      try {
+        for await (const line of rl) {
+          const record = this.parseRecordLine(line);
+          if (record !== undefined) yield record;
+        }
+      } finally {
+        rl.close();
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    } finally {
+      await handle?.close();
+    }
+  }
+
   async readLines(options?: { limit?: number; offset?: number }): Promise<T[]> {
     const stat = await fs.stat(this.filePath).catch(() => null);
     if (stat && stat.size > 100 * 1024 * 1024) {

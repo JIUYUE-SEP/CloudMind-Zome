@@ -167,6 +167,7 @@ describe("① 压缩写入 usedSkills", () => {
       messageRepository: {
       append: async () => {},
       listBySession: async () => [],
+      listBySessionWithArchived: async () => [],
       listBySessionPrefix: async () => [],
       getByIds: async () => [],
         archiveAndRemove: async (ids) => {
