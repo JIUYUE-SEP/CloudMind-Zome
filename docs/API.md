@@ -118,7 +118,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /agents/:id/intermind` — 列出该 Agent 的 intermind 会话：`[{ peer, lastMessageAt, count }]`（对端、最后消息时间、条数，按最后时间倒序）
 - `GET /agents/:id/intermind/:peerId/messages?limit=&before=` — 分页读取与对端的来往消息（消息带 `agentId` 发送方归属；limit 默认 100、上限 200，before 为消息 id 游标）
 
-> 私信经 `send_private_message` 工具发送（免审批但需 agent 白名单授权；傀儡上下文不可用）。会话空间按对端一个会话（`intermind:<peerId>`），邮箱对称双写——接收方来信线程与发送方来往线程各持全量往来；信到触发接收方感知回合，感知回合内回信搭车（只入队不再次唤醒）。设计文档：`docs/design/intermind.md`。
+> 私信经 `send_private_message` 工具发送（免审批但需 agent 白名单授权；傀儡上下文不可用）。会话空间按对端一个会话（`intermind:<peerId>`），邮箱对称双写——接收方来信线程与发送方来往线程各持全量往来；信到触发接收方感知回合，感知回合内回信搭车（只入队不再次唤醒）。感知通知只带 200 字摘要，内容被截断时通知追加读全文指引，agent 可用 `read_private_messages` 工具（参数 `from: {senderId}`，免审批、需白名单授权、傀儡不可用）从 `intermind:<from>` 会话读取完整来往信件（含方向/时间/全文；对端无会话返回空列表）。设计文档：`docs/design/intermind.md`。
 
 ### Memory
 

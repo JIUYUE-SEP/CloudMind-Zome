@@ -58,11 +58,15 @@ export function buildPrivateMessageNotice(
   senderId: string,
   content: string,
 ): string {
-  const summary =
-    content.length > PRIVATE_MESSAGE_SUMMARY_MAX
-      ? `${content.slice(0, PRIVATE_MESSAGE_SUMMARY_MAX)}…`
-      : content;
-  return `【来自 ${senderName} 的私信】${summary}——可用 send_private_message 给 ta 回信（to: ${senderId}）`;
+  const truncated = content.length > PRIVATE_MESSAGE_SUMMARY_MAX;
+  const summary = truncated
+    ? `${content.slice(0, PRIVATE_MESSAGE_SUMMARY_MAX)}…`
+    : content;
+  // 摘要截断时补读全文指引（P2-4）：长信后半只有 read_private_messages 能读到
+  const readFullHint = truncated
+    ? `……（信太长只显示了摘要，可用 read_private_messages 读全文，from: ${senderId}）`
+    : "";
+  return `【来自 ${senderName} 的私信】${summary}${readFullHint}——可用 send_private_message 给 ta 回信（to: ${senderId}）`;
 }
 
 export class IntermindService {

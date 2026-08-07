@@ -9,12 +9,14 @@ import {
   intermindSessionId,
   buildPrivateMessageNotice,
 } from "../../src/intermind/service.js";
+import { readPrivateMessagesTool } from "../../src/tools/builtin/read_private_messages.js";
 import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { ChatMessageRecord } from "@mindcloud/shared";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import { AgentWorker as RealAgentWorker } from "../../src/core/agent-worker.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
+import type { ToolContext } from "../../src/tools/types.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 
 function textOf(record: ChatMessageRecord): string {
@@ -312,14 +314,56 @@ describe("IntermindService 会话检索", () => {
     expect(before.map((m) => textOf(m))).toEqual(["第1条", "第2条"]);
   });
 
-  it("通知文本：内容摘要截 200 字 + 回信指引带 senderId（#7）", () => {
+  it("通知文本：内容摘要截 200 字 + 回信指引带 senderId（#7）+ 截断时补读全文指引（P2-4）", () => {
     const notice = buildPrivateMessageNotice("甲", "a1", "x".repeat(250));
     expect(notice.startsWith("【来自 甲 的私信】")).toBe(true);
     expect(notice).toContain("send_private_message");
     expect(notice).toContain("to: a1");
     expect(notice).toContain("x".repeat(200) + "…");
+    expect(notice).toContain(
+      "……（信太长只显示了摘要，可用 read_private_messages 读全文，from: a1）",
+    );
     expect(notice.endsWith("——可用 send_private_message 给 ta 回信（to: a1）")).toBe(true);
     expect(intermindSessionId("a2")).toBe("intermind:a2");
+  });
+
+  it("通知文本：未截断时不追加读全文指引（短信不啰嗦）", () => {
+    const notice = buildPrivateMessageNotice("甲", "a1", "短信");
+    expect(notice).not.toContain("read_private_messages");
+    expect(notice).toBe(
+      "【来自 甲 的私信】短信——可用 send_private_message 给 ta 回信（to: a1）",
+    );
+  });
+
+  it("read_private_messages：写入若干长信后返回完整内容与方向；无会话返回空", async () => {
+    const longContent = `开头${"长".repeat(250)}结尾`;
+    await service.send("a1", "a2", longContent, { wake: false });
+    await service.send("a2", "a1", "回信", { wake: false });
+
+    const ctx: ToolContext = {
+      agentId: "a2",
+      workspaceDir: "/tmp",
+      approve: async () => true,
+      services: { intermindService: service },
+    };
+    const result = await readPrivateMessagesTool.execute(ctx, { from: "a1" });
+    expect(result.success).toBe(true);
+    const output = result.output as {
+      count: number;
+      messages: Array<{ direction: string; from: string; text: string }>;
+    };
+    expect(output.count).toBe(2);
+    expect(output.messages[0]).toMatchObject({
+      direction: "received",
+      from: "a1",
+      text: longContent,
+    });
+    expect(output.messages[1]).toMatchObject({ direction: "sent", from: "a2", text: "回信" });
+
+    // 对端无会话：空列表不报错
+    const empty = await readPrivateMessagesTool.execute(ctx, { from: "ghost" });
+    expect(empty.success).toBe(true);
+    expect((empty.output as { count: number }).count).toBe(0);
   });
 
   it("before 未知游标：明确抛错（REST 映射 400）", async () => {

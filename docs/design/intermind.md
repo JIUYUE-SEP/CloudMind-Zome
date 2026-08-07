@@ -18,7 +18,7 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 1. **送信 = 写信型 + 唤醒混合**：信写入接收方 intermind 会话后，触发接收方一轮感知回合即时读信；感知回合里她的回信走【搭车】——进对方队列但**不触发对方唤醒**（防连环惊醒，机制上不可能连环）。
 2. **记忆分开存**：`Session.type="intermind"` 独立会话空间，按对端一个会话（`intermind:<peerAgentId>`），不参与主对话历史；交情可检索、可审计。一期会话为**派生空间**（由消息记录按 `sessionId` 前缀推导，不写 `sessions.jsonl`），不做会话生命周期管理。
 3. **免审批 + 审计留痕**：私信是社交动作不是危险操作，`requiresApproval: false`；但谁给谁写了什么必须留痕（warn 级，内容摘要）。
-4. **傀儡硬禁邮**：`send_private_message` 对 puppet 上下文不可用（返回「傀儡无社交权」）——傀儡无人格无社交权，防 swarm 轰炸。
+4. **傀儡硬禁邮**：`send_private_message` / `read_private_messages` 对 puppet 上下文不可用（返回「傀儡无社交权」）——傀儡无人格无社交权，防 swarm 轰炸。
 5. **免打扰开关 = 待办**：本期不做（见待办清单），设计上留位置（将来按 agent 开关抑制唤醒、只落信）。
 6. **监护权**：REST 可读取人形间对话（`GET /agents/:id/intermind` 与会话消息端点）；前端 UI 后续单。
 
@@ -42,6 +42,8 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 - 通知文本：`【来自 {发送方 name} 的私信】{content 摘要（截 200 字）}——可用 send_private_message 给 ta 回信（to: {发送方 id}）`——回信指引必须带发送方 id，真机实证接收方被唤醒后不知道回信通道，直接开口说话会让发送方永远收不到；
 - sourceId：`default`（接收方主会话，与前端私聊 WS/REST 缺省会话同口径）——主会话只见这一条通知，来信原文只进 intermind 线程（防同一封信双注入）；
 - 感知回合经既有串行队列入队：忙碌排队、空闲即感知，不插队、不并行。
+
+摘要截断时，通知末尾追加读全文指引（`read_private_messages`，`from: {senderId}`）——感知回合可用它从 `intermind:<senderId>` 取完整来往信件（含方向/时间/全文，免审批、需白名单授权、傀儡硬禁；对端无会话返回空列表）。
 
 ### 搭车（ride）
 
@@ -86,4 +88,4 @@ Intermind 是**两个独立人形作为「她和她」说话**——对方是另
 - `sessions.jsonl` 显式会话记录与生命周期（删除/归档）；
 - 未读计数 / 已读回执；
 - 私信对 ContextPipeline 的可检索性（交情检索）深化。
-- 收信箱读取工具（二期）：感知回合目前只注入 200 字摘要，完整来信无工具可读——加 read 类工具（如 `read_private_messages`）让 agent 能取全文。
+- ~~收信箱读取工具（二期）：感知回合目前只注入 200 字摘要，完整来信无工具可读——加 read 类工具（如 `read_private_messages`）让 agent 能取全文。~~（已实现：`read_private_messages` 工具，2026-08-07）
