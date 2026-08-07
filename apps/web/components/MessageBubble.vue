@@ -19,19 +19,21 @@
       </p>
 
       <!-- 工具调用卡片 -->
-      <div
+      <details
         v-for="tool in toolCalls"
         :key="tool.toolCallId"
         class="tool-card"
         :class="`tool-${statusOf(tool)}`"
+        :open="isToolExpanded(tool)"
+        @toggle="onToolToggle(tool, $event)"
       >
-        <div class="tool-header">
+        <summary class="tool-summary">
           <span class="tool-icon" aria-hidden="true">⚙</span>
           <span class="tool-name">{{ tool.name }}</span>
           <span class="tool-badge">{{ statusLabel(statusOf(tool)) }}</span>
-        </div>
+        </summary>
         <pre class="tool-args">{{ formatArgs(tool.arguments) }}</pre>
-      </div>
+      </details>
     </div>
   </div>
 </template>
@@ -64,6 +66,26 @@ const displayedText = computed(() =>
   props.isStreaming ? props.text.slice(0, displayedLen.value) : props.text,
 );
 const showCursor = computed(() => props.role === "assistant" && props.isStreaming);
+
+// ---- 工具卡片折叠 ----
+// 展开/收起状态按 toolCallId 记住：用户点过的以用户选择为准；
+// 未点过的按状态取缺省——进行中（执行中/等待审批）默认展开便于实时观察，
+// 完成/失败默认收起只留一行摘要（长 JSON 占半屏的 UI 诉求）
+const toolExpanded = ref(new Map<string, boolean>());
+
+function isToolExpanded(tool: DisplayToolCall): boolean {
+  const explicit = toolExpanded.value.get(tool.toolCallId);
+  if (explicit !== undefined) return explicit;
+  const status = statusOf(tool);
+  return status === "running" || status === "awaiting-approval";
+}
+
+function onToolToggle(tool: DisplayToolCall, event: Event) {
+  const open = (event.target as HTMLDetailsElement).open;
+  const next = new Map(toolExpanded.value);
+  next.set(tool.toolCallId, open);
+  toolExpanded.value = next;
+}
 
 function tick() {
   const target = props.text.length;
@@ -243,11 +265,26 @@ function formatArgs(args: unknown): string {
   font-size: 12px;
   overflow: hidden;
 }
-.tool-header {
+.tool-summary {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.tool-summary::-webkit-details-marker {
+  display: none;
+}
+.tool-summary::before {
+  content: "▸";
+  font-size: 10px;
+  color: #8899aa;
+  transition: transform 0.15s;
+}
+.tool-card[open] .tool-summary::before {
+  transform: rotate(90deg);
 }
 .tool-icon {
   color: var(--mc-accent, #00e5c9);

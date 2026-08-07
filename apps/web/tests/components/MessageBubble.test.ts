@@ -42,10 +42,59 @@ describe("MessageBubble", () => {
     });
     const card = wrapper.find(".tool-card");
     expect(card.exists()).toBe(true);
-    expect(wrapper.find(".tool-name").text()).toBe("search");
+    // 完成态默认收起：摘要行（图标+名称+状态 pill）可见，详情折叠
+    expect(card.attributes("open")).toBeUndefined();
+    const summary = wrapper.find(".tool-summary");
+    expect(summary.text()).toContain("search");
+    expect(summary.text()).toContain("已完成");
     expect(wrapper.find(".tool-args").text()).toContain('"q": "x"');
-    expect(wrapper.find(".tool-badge").text()).toBe("已完成");
     expect(card.classes()).toContain("tool-done");
+  });
+
+  it("工具卡片默认收起：点击展开显示 JSON，再点收起", async () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "send_private_message",
+            arguments: { to: "a2", content: "长信正文".repeat(100) },
+          },
+        ],
+      },
+    });
+    const details = wrapper.find(".tool-card");
+    const summary = wrapper.find(".tool-summary");
+
+    // 默认收起：只显示摘要行，JSON 详情不展开
+    expect(details.attributes("open")).toBeUndefined();
+    expect(summary.text()).toContain("send_private_message");
+    expect(summary.text()).toContain("已完成");
+
+    await summary.trigger("click");
+    expect(details.attributes("open")).toBeDefined();
+    expect(wrapper.find(".tool-args").text()).toContain('"to": "a2"');
+
+    await summary.trigger("click");
+    expect(details.attributes("open")).toBeUndefined();
+  });
+
+  it("进行中的工具调用：默认展开显示 JSON，状态 pill 显示执行中", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        isStreaming: true,
+        toolCalls: [{ toolCallId: "t1", name: "bash", arguments: { cmd: "ls" } }],
+      },
+    });
+    const card = wrapper.find(".tool-card");
+    expect(card.attributes("open")).toBeDefined();
+    expect(wrapper.find(".tool-badge").text()).toBe("执行中");
+    expect(wrapper.find(".tool-args").text()).toContain('"cmd": "ls"');
+    expect(card.classes()).toContain("tool-running");
   });
 
   it("审批中的工具调用高亮显示", () => {
