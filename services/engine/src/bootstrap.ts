@@ -24,6 +24,7 @@ import { Scheduler } from "./scheduler/scheduler.js";
 import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
 import { createSkillService } from "./skills/service.js";
+import { RecallService } from "./memory/recall.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
 import { reconcileHotStorage, reconcileOrphanedTopic, reconcilePendingSegments } from "./memory/reconcile.js";
@@ -98,6 +99,11 @@ async function main() {
       return dirs;
     },
   });
+
+  // 回忆服务（recall 工具）：只读本 agent 自己的压缩档目录与归档原文
+  const recallService = new RecallService({
+    getMessageRepository: (agentId) => new MessageRepository(agentId),
+  });
   // Puppet 型号库（单 3）：内置四型号 + DATA_DIR/puppet-models/*.json 自定义（同名覆盖）
   const puppetModelService = createPuppetModelService();
   // Intermind 人形间私信（一期）：写信/唤醒/会话检索（getOrCreateWorker 为函数声明，可提前引用）
@@ -170,6 +176,7 @@ async function main() {
           configRepository: configRepo,
           puppetModelService,
           intermindService,
+          recallService,
         },
       };
     },
@@ -282,6 +289,7 @@ async function main() {
         configRepository: configRepo,
         puppetModelService,
         intermindService,
+        recallService,
       },
       // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
       contextPipeline: createContextPipelineForAgent(agentConfig),

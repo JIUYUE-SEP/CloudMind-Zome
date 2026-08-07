@@ -58,6 +58,7 @@ async function buildWsContext(
       getByIds: async () => [],
       archiveAndRemove: async () => {},
       getArchivedByIds: async () => [],
+      listArchivedLazy: async function* () {},
     },
     approve: () => true,
   });
@@ -397,6 +398,7 @@ describe("WebSocket API", () => {
         getByIds: async () => [],
         archiveAndRemove: async () => {},
         getArchivedByIds: async () => [],
+        listArchivedLazy: async function* () {},
       },
       approve: () => true,
     });

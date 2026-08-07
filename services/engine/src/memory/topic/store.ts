@@ -39,6 +39,8 @@ export async function writeCompressedTopic(
     `source_id: ${topic.sourceId}`,
     `source_name: ${fmValue(topic.sourceName ?? "")}`,
     `compressed_at: ${topic.compressedAt}`,
+    `started_at: ${topic.startedAt ?? ""}`,
+    `ended_at: ${topic.endedAt ?? ""}`,
     `msg_count: ${topic.msgCount}`,
     `used_skills: ${(topic.usedSkills ?? []).map(fmValue).join(", ")}`,
     "---",
@@ -69,6 +71,92 @@ export async function writeCompressedTopic(
 /** 删除压缩档（归档失败时隔离用：避免"摘要已注入 + 原文仍在热存储"的重复） */
 export async function removeCompressedTopic(agentId: string, topicId: string): Promise<void> {
   await fs.unlink(path.join(compressedDir(agentId), `${topicId}.md`)).catch(() => {});
+}
+
+/** 压缩档元信息（recall topics 浏览记忆目录用） */
+export interface CompressedTopicMeta {
+  topicId: string;
+  label: string;
+  startedAt: string;
+  endedAt: string;
+  msgCount: number;
+  sourceId: string;
+}
+
+/**
+ * topicId 作为文件名段，只放本系统生成的 `tp_<ts>_<rand>`（复核子段带 _1/_2 后缀）。
+ * 白名单校验防 LLM 传任意字符串拼路径穿越。
+ */
+const SAFE_TOPIC_ID = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * 列出压缩档元信息（recall 浏览记忆目录）：按开始时间倒序，offset/limit 分页。
+ * 目录文件数有限（单档体积小），逐个读 frontmatter；损坏档跳过不中断。
+ */
+export async function listCompressedTopicMeta(
+  agentId: string,
+  options?: { limit?: number; offset?: number },
+): Promise<CompressedTopicMeta[]> {
+  const dir = compressedDir(agentId);
+  let files: string[];
+  try {
+    files = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const metas: CompressedTopicMeta[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".md")) continue;
+    try {
+      const raw = await fs.readFile(path.join(dir, file), "utf-8");
+      assertCompressedVersion(raw, path.join(dir, file));
+      const fm = parseFrontmatterBlock(raw.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "");
+      const compressedAt = fm["compressed_at"] ?? "";
+      const rawCount = Number(fm["msg_count"] ?? 0);
+      metas.push({
+        topicId: fm["topic_id"] || file.replace(/\.md$/, ""),
+        label: fm["label"] || "（未命名话题）",
+        startedAt: fm["started_at"] || compressedAt,
+        endedAt: fm["ended_at"] || compressedAt,
+        msgCount: Number.isFinite(rawCount) ? rawCount : 0,
+        sourceId: fm["source_id"] ?? "",
+      });
+    } catch (err) {
+      // 版本过高显式上抛；其余损坏档跳过（与 latestSummaries 同口径）
+      if (err instanceof UnsupportedSchemaVersionError) throw err;
+      logger.warn({ err: err }, `[topic] 压缩档读取失败，已跳过：${file}`);
+    }
+  }
+  const offset = Math.max(0, Math.floor(options?.offset ?? 0));
+  const limit = Math.max(1, Math.floor(options?.limit ?? 20));
+  return metas
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    .slice(offset, offset + limit);
+}
+
+/**
+ * 读压缩档的 msgIds（recall read by topicId 用）；档不存在或 topicId 非法返回 null。
+ */
+export async function readCompressedTopicMsgIds(
+  agentId: string,
+  topicId: string,
+): Promise<string[] | null> {
+  if (!SAFE_TOPIC_ID.test(topicId)) return null;
+  try {
+    const filePath = path.join(compressedDir(agentId), `${topicId}.md`);
+    const raw = await fs.readFile(filePath, "utf-8");
+    assertCompressedVersion(raw, filePath);
+    const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
+    return section
+      ? section
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  } catch (err) {
+    if (err instanceof UnsupportedSchemaVersionError) throw err;
+    return null;
+  }
 }
 
 /**

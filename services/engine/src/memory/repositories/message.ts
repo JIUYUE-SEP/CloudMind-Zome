@@ -117,4 +117,9 @@ export class MessageRepository implements IMessageRepository {
     // 而恢复路径必须在任意大小归档下可用；按 id 集合逐行过滤，内存与文件大小无关。
     return this.archiveStore().readLinesWhere((m) => wanted.has(m.id));
   }
+
+  /** 惰性逐行读归档（recall 关键词过滤等全量扫描场景；内存与归档大小无关） */
+  async *listArchivedLazy(): AsyncGenerator<ChatMessageRecord, void, void> {
+    yield* this.archiveStore().readLinesLazy();
+  }
 }

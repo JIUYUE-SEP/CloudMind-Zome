@@ -174,6 +174,7 @@ describe("① 压缩写入 usedSkills", () => {
           archived.push(ids);
         },
         getArchivedByIds: async () => [],
+        listArchivedLazy: async function* () {},
       },
     });
 

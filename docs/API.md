@@ -75,6 +75,19 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /config` — 更新系统设置
 - `GET /config/tools` — 列出内置工具
 
+### 内置工具（agent 白名单授权）
+
+内置工具经 `agentConfig.tools` 白名单显式授权后可用（`GET /config/tools` 返回完整清单）；傀儡上下文、蓝图等无审批/无记忆场景按工具各自 fail-closed。
+
+- `read_file` / `list_files` — 读文件、列目录（免审批）
+- `write_file` / `edit_file` / `bash` / `run_command` — 写类/执行操作（需人工审批；`run_command`/`write_file`/`edit_file` 不可本会话免问）
+- `dispatch_subagent` / `dispatch_subagent_batch` — 派发子任务/swarm 批量傀儡（需人工审批）
+- `skill` — 按名取技能规程正文（免审批）
+- `web_search` — Tavily 联网搜索（需人工审批，可本会话免问）
+- `send_private_message` — Intermind 人形间私信（免审批、审计留痕；傀儡不可用）
+- `read_private_messages` — Intermind 读全文（免审批；傀儡不可用）
+- `recall` — 回忆工具（上阁楼）：`action=topics` 浏览压缩档目录、`action=read` 按 `topicId`/`query` 取归档原文（分页 + 翻页指引，单条/总输出截断护栏；免审批、需白名单授权、傀儡硬禁；归档原文不经 L4 自动注入）
+
 ### Blueprints
 
 - `GET /blueprints` — 列出 Blueprint

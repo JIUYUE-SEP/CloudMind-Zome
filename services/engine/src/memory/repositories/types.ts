@@ -64,6 +64,8 @@ export interface IMessageRepository {
   archiveAndRemove(ids: string[]): Promise<void>;
   /** 从归档恢复（压缩档丢失时的最后防线） */
   getArchivedByIds(ids: string[]): Promise<ChatMessageRecord[]>;
+  /** 惰性逐行读归档（recall 关键词过滤等全量扫描场景；内存与归档大小无关） */
+  listArchivedLazy(): AsyncGenerator<ChatMessageRecord, void, void>;
 }
 
 export interface IMemoryRepository {

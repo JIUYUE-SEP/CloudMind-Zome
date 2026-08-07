@@ -30,6 +30,7 @@ function makeWorker(provider: LLMProvider): AgentWorker {
       getByIds: async () => [],
       archiveAndRemove: async () => {},
       getArchivedByIds: async () => [],
+      listArchivedLazy: async function* () {},
     } as IMessageRepository,
     approve: async () => true,
   });

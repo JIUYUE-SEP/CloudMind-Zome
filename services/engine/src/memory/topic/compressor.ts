@@ -160,6 +160,8 @@ export async function compressTopic(
     sourceId: segment.sourceId,
     sourceName: segment.sourceName,
     compressedAt: new Date().toISOString(),
+    startedAt: segment.startedAt,
+    endedAt: segment.endedAt,
     // Phase 7：同一次调用顺手提取的经验（0-N 条）；由调用方在落档后写入 MIND.md
     experiences: parseExperiences(reply),
   };

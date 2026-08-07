@@ -35,6 +35,9 @@ export interface CompressedTopic {
   sourceId: string;
   sourceName?: string;
   compressedAt: string;
+  /** 话题起止时间（recall 浏览记忆目录用；旧档无字段时回退 compressedAt） */
+  startedAt?: string;
+  endedAt?: string;
   /** 预留：Phase 3 接向量索引后反查 */
   embeddingId?: string;
   /** Phase 7：同一次压缩调用顺手提取的经验（0-N 条，没有为空数组） */

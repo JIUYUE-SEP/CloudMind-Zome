@@ -192,6 +192,7 @@ describe("IntermindService.send", () => {
       getByIds: async () => [],
       archiveAndRemove: async () => {},
       getArchivedByIds: async () => [],
+      listArchivedLazy: async function* () {},
     };
     const broken = new IntermindService({
       getAgentConfig: (id) => agentRepository.get(id),

@@ -5,6 +5,7 @@ import type { SkillService } from "../skills/service.js";
 import type { ConfigRepository } from "../config/repository.js";
 import type { PuppetModelService } from "../subagent/puppet-models.js";
 import type { IntermindService } from "../intermind/service.js";
+import type { RecallService } from "../memory/recall.js";
 
 export interface ToolAccess {
   resource: "file" | "network" | "process" | "memory";
@@ -25,6 +26,8 @@ export interface ToolServices {
   puppetModelService?: PuppetModelService;
   /** Intermind 人形间私信（send_private_message 工具：写信/唤醒/会话检索） */
   intermindService?: IntermindService;
+  /** 回忆服务（recall 工具：浏览压缩档目录/取归档原文，只读本 agent 自己的记忆） */
+  recallService?: RecallService;
 }
 
 export interface ToolContext {

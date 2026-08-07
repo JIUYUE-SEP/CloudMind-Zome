@@ -65,6 +65,7 @@ async function buildSessionWsContext(
           getByIds: async () => [],
           archiveAndRemove: async () => {},
           getArchivedByIds: async () => [],
+          listArchivedLazy: async function* () {},
         },
         approve: () => true,
       })
