@@ -5,6 +5,7 @@
       <details v-if="thinking" class="thinking-block">
         <summary class="thinking-summary">
           <span class="thinking-label">Thinking</span>
+          <span v-if="isStreaming" class="thinking-hint">正在思考…</span>
           <span v-if="isStreaming" class="thinking-dots" aria-hidden="true">
             <span /><span /><span />
           </span>
@@ -194,6 +195,10 @@ function formatArgs(args: unknown): string {
 }
 .thinking-label {
   font-style: italic;
+}
+.thinking-hint {
+  font-style: normal;
+  opacity: 0.8;
 }
 .thinking-dots {
   display: inline-flex;

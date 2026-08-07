@@ -112,6 +112,18 @@ export const useChatStore = defineStore("chat", () => {
         const last = messages.value[messages.value.length - 1];
         if (last && last.role === "assistant" && last.isStreaming) {
           last.thinking += delta;
+        } else {
+          // engine 通常先流思考再流正文：thinking.delta 先于 text.delta 到达时
+          // 没有现成气泡可挂，照 text.delta 的管道先建一个流式助手气泡承载思考，
+          // 正文到达后追加进同一气泡（真机 #11）
+          messages.value.push({
+            id: nextMsgId("stream"),
+            role: "assistant",
+            text: "",
+            thinking: delta,
+            toolCalls: [],
+            isStreaming: true,
+          });
         }
       },
       onToolCall: (toolCall) => {

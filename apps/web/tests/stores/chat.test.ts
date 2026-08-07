@@ -133,6 +133,27 @@ describe("chat store 流式状态以 turn 为界", () => {
     expect(store.messages.at(-1)!.isStreaming).toBe(false);
   });
 
+  it("thinking.delta 先于正文到达：建立流式气泡累积思考，正文进同一气泡", async () => {
+    const store = useChatStore();
+    store.connect("a1");
+    await new Promise((r) => setTimeout(r, 0));
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    const frame = (data: unknown) => ws.onmessage?.({ data: JSON.stringify(data) });
+
+    frame({ type: "thinking.delta", delta: "想一" });
+    frame({ type: "thinking.delta", delta: "想二" });
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0]!.thinking).toBe("想一想二");
+    expect(store.messages[0]!.isStreaming).toBe(true);
+
+    frame({ type: "text.delta", delta: "答" });
+    expect(store.messages[0]!.text).toBe("答");
+
+    frame({ type: "turn.end" });
+    expect(store.messages[0]!.isStreaming).toBe(false);
+    expect(store.messages[0]!.thinking).toBe("想一想二");
+  });
+
   it("连接干净关闭时复位流式态", async () => {
     const { store, ws, frame } = await connectAndSend();
     frame({ type: "text.delta", delta: "半截" });

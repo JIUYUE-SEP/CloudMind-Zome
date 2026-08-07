@@ -81,4 +81,23 @@ describe("MessageBubble", () => {
     expect(wrapper.find(".message-text").text()).toBe("full text");
     expect(wrapper.find(".cursor").exists()).toBe(false);
   });
+
+  it("流式思考中显示「正在思考…」，非流式后保留完整内容可展开", async () => {
+    const wrapper = mount(MessageBubble, {
+      props: { role: "assistant", text: "", thinking: "思考中", isStreaming: true },
+    });
+    expect(wrapper.find(".thinking-hint").text()).toBe("正在思考…");
+    expect(wrapper.find(".thinking-dots").exists()).toBe(true);
+
+    await wrapper.setProps({ isStreaming: false });
+    expect(wrapper.find(".thinking-hint").exists()).toBe(false);
+    expect(wrapper.find(".thinking-dots").exists()).toBe(false);
+
+    const details = wrapper.find(".thinking-block");
+    expect(details.exists()).toBe(true);
+    expect(wrapper.find(".thinking-body").text()).toBe("思考中");
+    expect(details.attributes("open")).toBeUndefined();
+    await wrapper.find(".thinking-summary").trigger("click");
+    expect(details.attributes("open")).toBeDefined();
+  });
 });
