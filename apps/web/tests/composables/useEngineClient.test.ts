@@ -1,6 +1,20 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { useEngineClient } from "@/composables/useEngineClient";
 
+// token 就绪链不真发 /api/engine-token：立即 resolve 空串，行为等同“无 token 降级”
+vi.mock("@/utils/engine-token", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/engine-token")>();
+  return {
+    ...actual,
+    fetchEngineTokenFromServer: vi.fn(async () => ""),
+  };
+});
+
+// 建连现在要等 token 就绪（微任务链，mock 下无定时器）：连续 await 排空即可
+async function flushTokenReady(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
+
 // 捕获 WebSocket 实例，手动驱动 onmessage 验证帧路由
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -35,11 +49,12 @@ describe("useEngineClient WS 帧路由", () => {
     vi.unstubAllGlobals();
   });
 
-  it("connect: thinking.delta 帧路由到 onThinkingDelta（与 engine 帧名一致）", () => {
+  it("connect: thinking.delta 帧路由到 onThinkingDelta（与 engine 帧名一致）", async () => {
     const client = useEngineClient();
     const onThinkingDelta = vi.fn();
     const onTextDelta = vi.fn();
     client.connect("agent-1", "default", { onThinkingDelta, onTextDelta });
+    await flushTokenReady();
 
     lastSocket().onmessage?.({ data: JSON.stringify({ type: "thinking.delta", delta: "先想一下" }) });
     expect(onThinkingDelta).toHaveBeenCalledWith("先想一下");
@@ -48,12 +63,13 @@ describe("useEngineClient WS 帧路由", () => {
     expect(onTextDelta).toHaveBeenCalledWith("正文");
   });
 
-  it("connectSession: thinking.delta 帧同样路由，并透出群聊帧携带的 agentId", () => {
+  it("connectSession: thinking.delta 帧同样路由，并透出群聊帧携带的 agentId", async () => {
     const client = useEngineClient();
     const onThinkingDelta = vi.fn();
     const onTextDelta = vi.fn();
     const onStepEnd = vi.fn();
     client.connectSession("session-1", { onThinkingDelta, onTextDelta, onStepEnd });
+    await flushTokenReady();
 
     lastSocket().onmessage?.({
       data: JSON.stringify({ type: "thinking.delta", delta: "群聊思考", agentId: "a1" }),
@@ -71,23 +87,26 @@ describe("useEngineClient WS 帧路由", () => {
     expect(onTextDelta).toHaveBeenCalledWith("无归属", undefined);
   });
 
-  it("turn.end 帧路由到 onTurnEnd（群聊透出 agentId，私聊为 undefined）", () => {
+  it("turn.end 帧路由到 onTurnEnd（群聊透出 agentId，私聊为 undefined）", async () => {
     const client = useEngineClient();
     const onTurnEnd = vi.fn();
     client.connectSession("session-1", { onTurnEnd });
+    await flushTokenReady();
     lastSocket().onmessage?.({ data: JSON.stringify({ type: "turn.end", agentId: "a1" }) });
     expect(onTurnEnd).toHaveBeenCalledWith("a1");
 
     const onPrivateTurnEnd = vi.fn();
     client.connect("agent-1", "default", { onTurnEnd: onPrivateTurnEnd });
+    await flushTokenReady();
     lastSocket().onmessage?.({ data: JSON.stringify({ type: "turn.end" }) });
     expect(onPrivateTurnEnd).toHaveBeenCalledWith();
   });
 
-  it("旧的 think.delta 帧名不再路由（engine 只发 thinking.delta）", () => {
+  it("旧的 think.delta 帧名不再路由（engine 只发 thinking.delta）", async () => {
     const client = useEngineClient();
     const onThinkingDelta = vi.fn();
     client.connect("agent-1", "default", { onThinkingDelta });
+    await flushTokenReady();
 
     lastSocket().onmessage?.({ data: JSON.stringify({ type: "think.delta", delta: "旧帧名" }) });
     expect(onThinkingDelta).not.toHaveBeenCalled();
@@ -242,13 +261,14 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     vi.unstubAllGlobals();
   });
 
-  it("异常断开（1006）后按 1s 退避自动重连，重连成功触发 onReconnected", () => {
+  it("异常断开（1006）后按 1s 退避自动重连，重连成功触发 onReconnected", async () => {
     const client = useEngineClient();
     const onOpen = vi.fn();
     const onReconnecting = vi.fn();
     const onReconnected = vi.fn();
     const onClose = vi.fn();
     client.connect("agent-1", "default", { onOpen, onReconnecting, onReconnected, onClose });
+    await flushTokenReady();
 
     lastReconnectSocket().open();
     expect(onOpen).toHaveBeenCalledTimes(1);
@@ -269,10 +289,11 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(onReconnected).toHaveBeenCalledTimes(1);
   });
 
-  it("退避间隔 1s/2s/4s…指数增长并封顶 30s", () => {
+  it("退避间隔 1s/2s/4s…指数增长并封顶 30s", async () => {
     const client = useEngineClient();
     const onReconnecting = vi.fn();
     client.connect("agent-1", "default", { onReconnecting });
+    await flushTokenReady();
     lastReconnectSocket().open();
 
     const delays: number[] = [];
@@ -286,11 +307,12 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(ReconnectMockWebSocket.instances).toHaveLength(8);
   });
 
-  it("终态关闭码（4001 agent 不存在）不重连，onClose 原样透传", () => {
+  it("终态关闭码（4001 agent 不存在）不重连，onClose 原样透传", async () => {
     const client = useEngineClient();
     const onClose = vi.fn();
     const onReconnecting = vi.fn();
     client.connect("agent-1", "default", { onClose, onReconnecting });
+    await flushTokenReady();
     lastReconnectSocket().open();
 
     lastReconnectSocket().drop(4001, "Agent not found");
@@ -301,11 +323,12 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(ReconnectMockWebSocket.instances).toHaveLength(1);
   });
 
-  it("调用方 close() 后不再重连", () => {
+  it("调用方 close() 后不再重连", async () => {
     const client = useEngineClient();
     const onReconnecting = vi.fn();
     const onClose = vi.fn();
     const conn = client.connect("agent-1", "default", { onReconnecting, onClose });
+    await flushTokenReady();
     lastReconnectSocket().open();
 
     conn.close();
@@ -316,12 +339,13 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(ReconnectMockWebSocket.instances).toHaveLength(1);
   });
 
-  it("首次握手即失败也进入重连，但不算 onReconnected", () => {
+  it("首次握手即失败也进入重连，但不算 onReconnected", async () => {
     const client = useEngineClient();
     const onOpen = vi.fn();
     const onReconnecting = vi.fn();
     const onReconnected = vi.fn();
     client.connect("agent-1", "default", { onOpen, onReconnecting, onReconnected });
+    await flushTokenReady();
 
     // engine 未起：首次握手直接失败
     lastReconnectSocket().drop(1006);
@@ -333,11 +357,12 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(onReconnected).not.toHaveBeenCalled();
   });
 
-  it("重连期间 onError 不刷气泡（P0 review 返工）", () => {
+  it("重连期间 onError 不刷气泡（P0 review 返工）", async () => {
     const client = useEngineClient();
     const onError = vi.fn();
     const onReconnecting = vi.fn();
     client.connect("agent-1", "default", { onError, onReconnecting });
+    await flushTokenReady();
     lastReconnectSocket().open();
 
     // 模拟 engine 停机期间连接被拒：每次失败尝试 error + close(1006) 连续触发
@@ -349,10 +374,11 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("首连失败只透传一次 onError，后续失败尝试不再刷（P0 review 返工）", () => {
+  it("首连失败只透传一次 onError，后续失败尝试不再刷（P0 review 返工）", async () => {
     const client = useEngineClient();
     const onError = vi.fn();
     client.connect("agent-1", "default", { onError });
+    await flushTokenReady();
 
     for (let n = 0; n < 5; n++) {
       lastReconnectSocket().fail();

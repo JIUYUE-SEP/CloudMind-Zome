@@ -152,6 +152,9 @@ describe("chat store 流式状态以 turn 为界", () => {
     // 切到新连接（旧 socket 的关闭握手尚未完成）
     store.connect("a2");
     await new Promise((r) => setTimeout(r, 0));
+    // 建连现在先等 token 就绪（微任务）再 new WebSocket：onopen 定时器比
+    // 测试自身的 flush 晚一拍，再排空一轮事件循环
+    await new Promise((r) => setTimeout(r, 0));
 
     oldWs.onmessage?.({ data: JSON.stringify({ type: "text.delta", delta: "旧连接的帧" }) });
     oldWs.onclose?.();

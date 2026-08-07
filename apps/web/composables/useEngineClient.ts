@@ -140,6 +140,11 @@ const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 // localStorage["cloudmind.engineToken"] 仍是优先级更高的显式覆盖。
 const sharedToken = ref("");
 
+// token 就绪 Promise 单例（与 sharedToken 配套）：模块首次解析 token 时创建，
+// engineFetch / WS 建连前 await 它，避免首屏请求抢跑 /api/engine-token 异步拉取
+// （真机 #12）。就绪只等一次：后续请求直接复用已解析的 Promise，不重复拉 server。
+let engineTokenReadyPromise: Promise<string> | null = null;
+
 // desktop sidecar 意外退出（kill_on_drop 会连带杀掉 engine，WS 随之断开）：
 // Tauri 侧 emit 事件到这里置位，UI 据此提示"engine 进程已退出"，
 // 而不是永远停在"重连中"（P0-3 D-B1）
@@ -164,15 +169,23 @@ if (tauriGlobal?.core?.invoke) {
     .catch(() => {
       // backend 未就绪或 IPC 失败：保留默认 8848
     });
-  tauriGlobal.core
-    .invoke("get_engine_token")
-    .then((token: unknown) => {
-      if (typeof token === "string" && token) sharedToken.value = token;
-    })
-    .catch(() => {
-      // token 未就绪：REST/WS 会被 401/4401 拒绝，界面走既有错误路径提示
-    });
 }
+
+// Tauri：token 经 IPC 异步下发（模块加载即开始），同样纳入就绪 Promise——
+// 首屏 REST/WS 请求必须等 IPC 解析链走完，而不是带着空 token 抢跑
+const tauriTokenReady: Promise<string> = tauriGlobal?.core?.invoke
+  ? tauriGlobal.core
+      .invoke("get_engine_token")
+      .then((token: unknown) => {
+        const resolved = typeof token === "string" ? token : "";
+        if (resolved) sharedToken.value = resolved;
+        return resolved;
+      })
+      .catch(() => {
+        // token 未就绪：REST/WS 会被 401/4401 拒绝，界面走既有错误路径提示
+        return "";
+      })
+  : Promise.resolve("");
 
 // sidecar 意外退出事件（desktop）：engine 被连带杀掉，UI 需要明确提示而非静默重连
 if (tauriGlobal?.event?.listen) {
@@ -188,28 +201,49 @@ let runtimeConfigApplied = false;
 
 export function useEngineClient(options?: EngineClientOptions) {
   const config = useRuntimeConfig();
-  if (!runtimeConfigApplied && !tauriGlobal) {
-    runtimeConfigApplied = true;
-    if (config.public.engineUrl) sharedBaseUrl.value = normalizeBaseUrl(config.public.engineUrl as string);
-    const configuredToken = config.public.engineToken as string | undefined;
-    const localToken =
-      typeof localStorage !== "undefined"
-        ? (localStorage.getItem("cloudmind.engineToken") ?? undefined)
-        : undefined;
-    // 优先级：显式配置 > localStorage 覆盖 > server 自动读文件
-    sharedToken.value = resolveEngineToken(configuredToken, localToken, undefined);
-    // 前两档都缺时才异步拉 server 档（仅浏览器端；token 运行时下发，不进 bundle）
-    if (!sharedToken.value && typeof window !== "undefined") {
-      void fetchEngineTokenFromServer().then((serverToken) => {
-        // 拉取期间用户显式配了 token：server token 不得覆盖更高优先级档
-        if (serverToken && !sharedToken.value) sharedToken.value = serverToken;
-      });
+
+  // web 端 token 解析链（非 Tauri）：应用 runtime 显式档/localStorage 档，
+  // 前两档都缺时异步拉 server 档。返回的 Promise 由模块级就绪单例缓存，
+  // 首次调用即开始，后续所有 engineFetch / WS 建连只等这一次
+  async function resolveWebToken(): Promise<string> {
+    if (!runtimeConfigApplied) {
+      runtimeConfigApplied = true;
+      if (config.public.engineUrl) sharedBaseUrl.value = normalizeBaseUrl(config.public.engineUrl as string);
     }
+    const configuredToken = config.public.engineToken as string | undefined;
+    let localToken: string | undefined;
+    if (typeof localStorage !== "undefined") {
+      try {
+        localToken = localStorage.getItem("cloudmind.engineToken") ?? undefined;
+      } catch {
+        // 隐私模式等场景 localStorage 可能抛错：降级为未设置，走 server 档
+        localToken = undefined;
+      }
+    }
+    // 优先级：显式配置 > localStorage 覆盖 > server 自动读文件
+    const initialToken = resolveEngineToken(configuredToken, localToken, undefined);
+    sharedToken.value = initialToken;
+    if (initialToken) return initialToken;
+    if (typeof window === "undefined") return "";
+    // 仅浏览器端异步拉 server 档（token 运行时下发，不进 bundle）
+    const serverToken = await fetchEngineTokenFromServer();
+    // 拉取期间用户显式配了 token：server token 不得覆盖更高优先级档
+    if (serverToken && !sharedToken.value) sharedToken.value = serverToken;
+    return sharedToken.value;
+  }
+
+  function ensureEngineTokenReady(): Promise<string> {
+    if (!engineTokenReadyPromise) {
+      engineTokenReadyPromise = tauriGlobal ? tauriTokenReady : resolveWebToken();
+    }
+    return engineTokenReadyPromise;
   }
   const baseUrl = options?.baseUrl ? ref(normalizeBaseUrl(options.baseUrl)) : sharedBaseUrl;
 
   // REST 统一携带 Bearer token（engine 除 /health 外全部要求鉴权）
-  function engineFetch(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+  async function engineFetch(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+    // 首屏请求不得抢跑 token 异步拉取（真机 #12）：发出前先等解析链走完
+    await ensureEngineTokenReady();
     const headers = new Headers(init?.headers);
     if (sharedToken.value) headers.set("Authorization", `Bearer ${sharedToken.value}`);
     return fetchWithTimeout(url, { ...init, headers }, timeoutMs);
@@ -549,7 +583,12 @@ export function useEngineClient(options?: EngineClientOptions) {
       };
     };
 
-    open();
+    // 建连前必须等 token 就绪（真机 #12）：REST 与 WS 都不能带着空 token 抢跑
+    // /api/engine-token / Tauri IPC 的异步解析；就绪 Promise 模块级缓存，只等一次。
+    // 重连仍直接 open()——首次建连成功时 token 必然已就绪
+    void ensureEngineTokenReady().then(() => {
+      if (!closedByCaller) open();
+    });
 
     const sendRawFrame = (message: object): boolean => {
       if (socket && socket.readyState === WebSocket.OPEN) {

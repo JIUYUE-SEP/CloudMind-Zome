@@ -1,0 +1,163 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+const { fetchEngineTokenFromServerMock } = vi.hoisted(() => ({
+  fetchEngineTokenFromServerMock: vi.fn(),
+}));
+
+vi.mock("@/utils/engine-token", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/engine-token")>();
+  return {
+    ...actual,
+    // 就绪链的 server 拉取由各测试注入 deferred / 立即值，避免真发网络请求
+    fetchEngineTokenFromServer: fetchEngineTokenFromServerMock,
+  };
+});
+
+// 就绪链在 mock 下全走微任务（无定时器）：连续 await 排空即可，不用 sleep
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+}
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = [];
+  static readonly OPEN = 1;
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
+
+  constructor(
+    public url: string,
+    public protocols?: string | string[],
+  ) {
+    MockWebSocket.instances.push(this);
+  }
+
+  send(_data: string) {}
+  close() {
+    this.readyState = 3;
+  }
+}
+
+function okResponse(body: unknown): Response {
+  return { ok: true, json: () => Promise.resolve(body) } as unknown as Response;
+}
+
+describe("useEngineClient token 就绪（真机 #12）", () => {
+  beforeEach(() => {
+    // 就绪 Promise 是模块级单例：每个用例重新加载模块，拿到干净状态
+    vi.resetModules();
+    fetchEngineTokenFromServerMock.mockReset();
+    MockWebSocket.instances = [];
+    localStorage.clear();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("token 未就绪时发起的 engineFetch 会等待，请求发出时已注入 Bearer token", async () => {
+    let resolveToken!: (token: string) => void;
+    fetchEngineTokenFromServerMock.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveToken = resolve;
+      }),
+    );
+
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(okResponse({})),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const pending = client.listAgents();
+    await flushMicrotasks();
+    // server 档尚未 resolve：engineFetch 必须原地等待，不得抢跑发请求
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    resolveToken("secret");
+    await expect(pending).resolves.toEqual({});
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = fetchSpy.mock.calls[0]![1]!;
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer secret");
+  });
+
+  it("token 就绪只拉一次 server：重复 engineFetch / 重复 useEngineClient 不重复请求", async () => {
+    fetchEngineTokenFromServerMock.mockResolvedValue("cached");
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(okResponse({}))),
+    );
+
+    await client.listAgents();
+    await client.listSessions();
+    const again = useEngineClient();
+    await again.getConfig();
+
+    expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("拉取失败/空 token 时正常降级：请求照发，401 由界面层透出", async () => {
+    fetchEngineTokenFromServerMock.mockResolvedValue("");
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: "Unauthorized" }),
+      } as unknown as Response),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(client.listAgents()).rejects.toThrow("Failed to list agents: Unauthorized");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = fetchSpy.mock.calls[0]![1]!;
+    expect(new Headers(init.headers).get("Authorization")).toBeNull();
+  });
+
+  it("WS 建连前等 token 就绪，并以子协议携带 token", async () => {
+    let resolveToken!: (token: string) => void;
+    fetchEngineTokenFromServerMock.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveToken = resolve;
+      }),
+    );
+
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+
+    client.connect("a1", "s1", {});
+    await flushMicrotasks();
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    resolveToken("ws-secret");
+    await flushMicrotasks();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(MockWebSocket.instances[0]!.protocols).toBe("ws-secret");
+  });
+
+  it("显式/local token 时直接就绪，不拉 server", async () => {
+    localStorage.setItem("cloudmind.engineToken", "local-secret");
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(okResponse({})),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await client.listAgents();
+
+    expect(fetchEngineTokenFromServerMock).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = fetchSpy.mock.calls[0]![1]!;
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer local-secret");
+  });
+});
