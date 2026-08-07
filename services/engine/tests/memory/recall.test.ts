@@ -89,6 +89,36 @@ describe("RecallService（上阁楼）", () => {
     expect(page2.items.map((t) => t.topicId)).toEqual(["tp_1"]);
   });
 
+  it("listTopics：>20 个话题时 offset 分页正确（总数不被截断）", async () => {
+    for (let i = 1; i <= 25; i++) {
+      const day = String((i % 28) + 1).padStart(2, "0");
+      await writeCompressedTopic(
+        "a1",
+        makeTopic(
+          `tp_${String(i).padStart(2, "0")}`,
+          `话题 ${i}`,
+          [`m${i}`],
+          `2026-08-${day}T00:00:00.000Z`,
+          `2026-08-${day}T01:00:00.000Z`,
+        ),
+      );
+    }
+
+    const page1 = await service.listTopics("a1");
+    expect(page1.total).toBe(25);
+    expect(page1.items).toHaveLength(20);
+    expect(page1.items[0]!.topicId).toBe("tp_25");
+    expect(page1.items[19]!.topicId).toBe("tp_06");
+
+    const page2 = await service.listTopics("a1", { offset: 20 });
+    expect(page2.total).toBe(25);
+    expect(page2.items.map((t) => t.topicId)).toEqual(["tp_05", "tp_04", "tp_03", "tp_02", "tp_01"]);
+
+    const page3 = await service.listTopics("a1", { offset: 25 });
+    expect(page3.items).toEqual([]);
+    expect(page3.total).toBe(25);
+  });
+
   it("readByTopicId：按 msgIds 取归档原文、按时间升序、带时间戳", async () => {
     const repo = await seedArchived([
       msg("m1", "第一条", "2026-08-01T00:00:00.000Z"),

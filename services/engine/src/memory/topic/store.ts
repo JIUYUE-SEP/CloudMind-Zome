@@ -90,8 +90,10 @@ export interface CompressedTopicMeta {
 const SAFE_TOPIC_ID = /^[A-Za-z0-9_-]+$/;
 
 /**
- * 列出压缩档元信息（recall 浏览记忆目录）：按开始时间倒序，offset/limit 分页。
- * 目录文件数有限（单档体积小），逐个读 frontmatter；损坏档跳过不中断。
+ * 列出压缩档元信息（recall 浏览记忆目录）：按开始时间倒序，可选 offset/limit 分页。
+ * 缺省 limit=不限（调用方——RecallService——统一负责分页与总数，避免这里先截
+ * 20 条导致 service 侧 offset 越界拿不到后续页）；目录文件数有限（单档体积小），
+ * 逐个读 frontmatter；损坏档跳过不中断。
  */
 export async function listCompressedTopicMeta(
   agentId: string,
@@ -128,7 +130,8 @@ export async function listCompressedTopicMeta(
     }
   }
   const offset = Math.max(0, Math.floor(options?.offset ?? 0));
-  const limit = Math.max(1, Math.floor(options?.limit ?? 20));
+  const limit =
+    options?.limit === undefined ? Infinity : Math.max(1, Math.floor(options.limit));
   return metas
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(offset, offset + limit);
