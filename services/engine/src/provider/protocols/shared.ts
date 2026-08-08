@@ -36,6 +36,49 @@ export function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+/** 可重试的 Node 网络错误码（与 classify.ts RETRYABLE_ERRNO_CODES 同口径） */
+const RETRYABLE_ERRNO_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EPIPE",
+  "EAI_AGAIN",
+]);
+/** undici（Node fetch 底层）错误码前缀：UND_ERR_SOCKET / UND_ERR_CONNECT_TIMEOUT 等 */
+const UND_ERR_PREFIX = "UND_ERR_";
+/** cause 链最大遍历深度（防畸形错误对象成环拖死分类） */
+const MAX_CAUSE_DEPTH = 6;
+
+function isRetryableCode(code: unknown): boolean {
+  return (
+    typeof code === "string" &&
+    (RETRYABLE_ERRNO_CODES.has(code) || code.startsWith(UND_ERR_PREFIX))
+  );
+}
+
+/**
+ * 网络层错误判定，沿 cause 链逐层检查（review P1 修复）：
+ * - Node fetch 把网络错误包装成 `TypeError: fetch failed`，真实码在
+ *   `err.cause.code`（ECONNREFUSED / ECONNRESET / UND_ERR_* 等）；
+ * - AbortSignal.timeout 的拒绝值是 TimeoutError（不是 AbortError），同样可重试；
+ * - undici 偶发抛 AggregateError，errors 数组逐个递归。
+ */
+function isNetworkError(cause: unknown, depth = 0): boolean {
+  if (depth > MAX_CAUSE_DEPTH || cause === undefined || cause === null) return false;
+  if (cause instanceof AggregateError && Array.isArray(cause.errors)) {
+    if (cause.errors.some((e) => isNetworkError(e, depth + 1))) return true;
+  }
+  if (cause instanceof Error) {
+    if (cause.name === "AbortError" || cause.name === "TimeoutError") return true;
+    if (isRetryableCode((cause as NodeJS.ErrnoException).code)) return true;
+  }
+  const nested =
+    typeof cause === "object" && "cause" in cause
+      ? (cause as { cause?: unknown }).cause
+      : undefined;
+  return nested === cause ? false : isNetworkError(nested, depth + 1);
+}
+
 /** 网络层错误（fetch 抛错 / 超时 / 非 2xx）统一包装为 ProviderError */
 export function toProviderError(
   provider: string,
@@ -46,15 +89,6 @@ export function toProviderError(
     options?.retryable ??
     (options?.status !== undefined ? isRetryableStatus(options.status) : isNetworkError(cause));
   return new ProviderError(provider, cause, { retryable });
-}
-
-function isNetworkError(cause: unknown): boolean {
-  const code = (cause as NodeJS.ErrnoException | null)?.code;
-  if (typeof code === "string") {
-    return new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE", "EAI_AGAIN"]).has(code);
-  }
-  if (cause instanceof Error && cause.name === "AbortError") return true;
-  return false;
 }
 
 export interface PostJsonOptions {
@@ -135,6 +169,9 @@ export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGener
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let dataLines: string[] = [];
+  // P2-1（review）：流是否已完整消费；提前 return / 中途断开 / 超时时
+  // 在 finally 里主动 cancel 底层响应体，释放未读完的连接
+  let fullyConsumed = false;
 
   const dispatch = (): void => {
     if (dataLines.length === 0) return;
@@ -151,7 +188,10 @@ export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGener
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        fullyConsumed = true;
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
@@ -174,6 +214,14 @@ export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGener
     dispatch();
     while (pending.length > 0) yield pending.shift() as string;
   } finally {
+    if (!fullyConsumed) {
+      // 流可能已 error（网络断开/超时）：cancel 失败不覆盖原始错误
+      try {
+        await reader.cancel();
+      } catch {
+        // 连接已由 abort/网络层释放，无需再处理
+      }
+    }
     reader.releaseLock();
   }
 }

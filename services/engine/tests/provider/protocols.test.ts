@@ -10,6 +10,7 @@ import {
   AnthropicMessagesProvider,
   createProtocolProvider,
 } from "../../src/provider/protocols/index.js";
+import { toProviderError } from "../../src/provider/protocols/shared.js";
 
 interface MockServer {
   url: string;
@@ -61,6 +62,14 @@ function sse(body: string): string {
     .filter((line) => line.length > 0)
     .map((line) => `data: ${line}`)
     .join("\n\n") + "\n\n";
+}
+
+/** 等 http.ServerResponse 的 close 事件，超时返回 fallback（不 sleep，只做竞速） */
+function waitClose(res: http.ServerResponse, timeoutMs = 3_000): Promise<boolean> {
+  return Promise.race([
+    new Promise<boolean>((resolve) => res.once("close", () => resolve(true))),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
 }
 
 async function collect(provider: {
@@ -444,5 +453,244 @@ describe("resilient 对协议适配器一视同仁", () => {
     expect(calls).toBe(1);
     expect(events.at(-1)?.type).toBe("step.end");
     expect(error).toBeInstanceOf(ProviderError);
+  });
+});
+
+describe("shared 错误分类（cause 链，review P1）", () => {
+  it("fetch 包装的网络错误：真实码在 err.cause.code → 可重试", () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), {
+      code: "ECONNREFUSED",
+    });
+    const err = new TypeError("fetch failed", { cause });
+    expect(toProviderError("t", err).retryable).toBe(true);
+  });
+
+  it("undici UND_ERR_* 前缀错误 → 可重试", () => {
+    const cause = Object.assign(new Error("socket error"), { code: "UND_ERR_SOCKET" });
+    expect(toProviderError("t", new TypeError("fetch failed", { cause })).retryable).toBe(true);
+    const timeout = Object.assign(new Error("connect timeout"), { code: "UND_ERR_CONNECT_TIMEOUT" });
+    expect(toProviderError("t", new TypeError("fetch failed", { cause: timeout })).retryable).toBe(true);
+  });
+
+  it("AbortSignal.timeout 的 TimeoutError → 可重试", () => {
+    const err = new Error("The operation was aborted due to timeout");
+    err.name = "TimeoutError";
+    expect(toProviderError("t", err).retryable).toBe(true);
+  });
+
+  it("多层嵌套 cause 链 → 可重试；AggregateError.errors 递归 → 可重试", () => {
+    const inner = Object.assign(new Error("reset"), { code: "ECONNRESET" });
+    const mid = new Error("boom", { cause: inner });
+    expect(toProviderError("t", mid).retryable).toBe(true);
+
+    const agg = new AggregateError([Object.assign(new Error("x"), { code: "EPIPE" })]);
+    expect(toProviderError("t", agg).retryable).toBe(true);
+  });
+
+  it("顶层 code 回归：ECONNRESET 仍可重试；普通错误仍不可重试", () => {
+    const top = Object.assign(new Error("reset"), { code: "ECONNRESET" });
+    expect(toProviderError("t", top).retryable).toBe(true);
+    expect(toProviderError("t", new Error("boom")).retryable).toBe(false);
+    expect(toProviderError("t", "string error").retryable).toBe(false);
+  });
+});
+
+describe("SSE 韧性（review P2-1 补充测试）", () => {
+  it("中途断流：已产出部分文本后抛 ProviderError，不吞事件", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"type":"response.output_text.delta","delta":"part"}\n\n', () => {
+        res.socket?.destroy();
+      });
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(events.some((e) => e.type === "text.delta" && e.delta === "part")).toBe(true);
+    expect(error).toBeInstanceOf(ProviderError);
+  });
+
+  it("缺终态事件（responses）：文本已产出但流干净结束 → 显式报错", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('data: {"type":"response.output_text.delta","delta":"Hi"}\n\n');
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(events).toMatchObject([{ type: "text.delta", delta: "Hi" }]);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(String(error)).toContain("终态事件");
+  });
+
+  it("缺 message_stop（anthropic）：容错收尾 step.end，保留 usage", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`{"type":"message_start","message":{"usage":{"input_tokens":4,"output_tokens":2}}}`) +
+          sse(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+          sse(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new AnthropicMessagesProvider("k", server.url);
+    const { events, error } = await collect(provider, {
+      model: "m",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events.at(-1)).toEqual({
+      type: "step.end",
+      usage: { promptTokens: 4, completionTokens: 2 },
+    });
+  });
+
+  it("半包粘包：JSON 行跨多个 chunk 分片仍正确解析", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const parts = [
+        'data: {"type":"response.output_text.delta","del',
+        'ta":"Hel',
+        'lo!"}\n\n',
+        'data: {"type":"response.completed","response":{"id":"r1",',
+        '"status":"completed","usage":{"input_tokens":3,"output_tokens":2}}}\n\n',
+      ];
+      for (const part of parts) res.write(part);
+      res.end();
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events).toEqual([
+      { type: "text.delta", delta: "Hello!" },
+      { type: "step.end", usage: { promptTokens: 3, completionTokens: 2 } },
+    ]);
+  });
+
+  it("并发多 tool_call：按 item_id 归并不串台", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`
+{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather"}}
+{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"get_time"}}
+{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"loc"}
+{"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\\"tz"}
+{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"ation\\":\\"NYC\\"}"}
+{"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"\\":\\"UTC\\"}"}
+{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\\"location\\":\\"NYC\\"}"}}
+{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"get_time","arguments":"{\\"tz\\":\\"UTC\\"}"}}
+{"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}
+`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    const toolCalls = events.filter((e) => e.type === "tool.call");
+    expect(toolCalls).toHaveLength(2);
+    expect(toolCalls[0]).toEqual({
+      type: "tool.call",
+      toolCallId: "call_1",
+      name: "get_weather",
+      arguments: { location: "NYC" },
+    });
+    expect(toolCalls[1]).toEqual({
+      type: "tool.call",
+      toolCallId: "call_2",
+      name: "get_time",
+      arguments: { tz: "UTC" },
+    });
+  });
+
+  it("空流：responses 报缺终态；anthropic 容错收尾 step.end", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end();
+    });
+    servers.push(server);
+
+    const params: LLMChatParams = {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    };
+    const r1 = await collect(new OpenAIResponsesProvider("k", server.url), params);
+    expect(r1.events).toHaveLength(0);
+    expect(r1.error).toBeInstanceOf(ProviderError);
+    expect(String(r1.error)).toContain("终态事件");
+
+    const a1 = await collect(new AnthropicMessagesProvider("k", server.url), params);
+    expect(a1.error).toBeUndefined();
+    expect(a1.events).toEqual([{ type: "step.end" }]);
+  });
+});
+
+describe("连接释放（review P2-1）", () => {
+  it("终态事件后提前 return：取消未读完的响应体，服务端观察到连接关闭", async () => {
+    let response: http.ServerResponse | undefined;
+    const server = await startMockServer((_req, res) => {
+      response = res;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      // 只发终态事件，不 end：客户端应在 step.end 后主动 cancel 并断开
+      res.write('data: {"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n');
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+    expect(error).toBeUndefined();
+    expect(events.at(-1)).toMatchObject({ type: "step.end" });
+    expect(response).toBeDefined();
+    expect(await waitClose(response!)).toBe(true);
+  });
+
+  it("requestTimeout 超时中断：抛可重试 ProviderError，连接被释放", async () => {
+    let response: http.ServerResponse | undefined;
+    const server = await startMockServer((_req, res) => {
+      response = res;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      // 发一个事件后挂起，让 AbortSignal.timeout 在读取中途触发
+      res.write('data: {"type":"response.output_text.delta","delta":"hi"}\n\n');
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url, { requestTimeout: 60 });
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(events.some((e) => e.type === "text.delta")).toBe(true);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).retryable).toBe(true);
+    expect(response).toBeDefined();
+    expect(await waitClose(response!)).toBe(true);
   });
 });

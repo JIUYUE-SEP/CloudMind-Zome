@@ -1,6 +1,12 @@
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../types.js";
 import { ProviderError } from "../errors.js";
-import { postJsonStream, trimBaseUrl, parseToolArgs, isRecord } from "./shared.js";
+import {
+  postJsonStream,
+  trimBaseUrl,
+  parseToolArgs,
+  isRecord,
+  toProviderError,
+} from "./shared.js";
 
 /**
  * OpenAI Responses API 适配器（协议族主路新推荐）。
@@ -298,7 +304,9 @@ export class OpenAIResponsesProvider implements LLMProvider {
       throw new ProviderError(this.name, "SSE 流提前结束，缺少终态事件");
     } catch (err) {
       if (err instanceof ProviderError) throw err;
-      throw new ProviderError(this.name, err);
+      // 原始错误（SSE 中途断流/超时的 fetch 网络错误）沿 cause 链分类，
+      // 首事件前失败时 resilient 按可重试/不可重试正确决策
+      throw toProviderError(this.name, err);
     }
   }
 }

@@ -5,6 +5,7 @@ import {
   postJsonStream,
   parseToolArgs,
   isRecord,
+  toProviderError,
 } from "./shared.js";
 
 /**
@@ -309,7 +310,7 @@ export class AnthropicMessagesProvider implements LLMProvider {
       }
     } catch (err) {
       if (err instanceof ProviderError) throw err;
-      throw new ProviderError(this.name, err);
+      throw toProviderError(this.name, err);
     }
   }
 }
