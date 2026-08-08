@@ -100,6 +100,12 @@ export interface ProviderConfig {
   models: ModelInfo[];
   requestTimeout?: number;
   maxRetries?: number;
+  /**
+   * 协议族选择（2026-08-08）：responses（POST {baseURL}/responses，主路新推荐）/
+   * anthropic（POST {baseURL}/anthropic/v1/messages，主路）/
+   * chat_completions（兼容层，缺省；现有配置零破坏）。
+   */
+  apiMode?: "responses" | "anthropic" | "chat_completions";
 }
 
 /**

@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import OpenAI from "openai";
 import { aggregateUsage } from "../../compute/usage.js";
+import { isApiMode } from "../../provider/protocols/index.js";
 
 function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
   return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
@@ -82,10 +83,16 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       providerType?: string;
       baseUrl: string;
       apiKey?: string;
+      apiMode?: string;
       models?: unknown[];
     };
     if (!isAllowedBaseUrl(body.baseUrl)) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
+    }
+    if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
+      return reply.status(400).send({
+        error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
+      });
     }
     const config = await context.configRepository.load();
     const provider = {
@@ -94,6 +101,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       providerType: (body.providerType || "openai") as "openai",
       baseUrl: body.baseUrl,
       apiKey: body.apiKey,
+      ...(body.apiMode !== undefined ? { apiMode: body.apiMode } : {}),
       models: (body.models || []) as { id: string; displayName: string; modelType: "llm" | "embedding" | "image" | "stt" }[],
     };
     config.providers.push(provider);
@@ -109,9 +117,15 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       displayName: string;
       baseUrl: string;
       apiKey: string;
+      apiMode: string;
     }>;
     if (body.baseUrl !== undefined && !isAllowedBaseUrl(body.baseUrl)) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
+    }
+    if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
+      return reply.status(400).send({
+        error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
+      });
     }
     const config = await context.configRepository.load();
     const idx = config.providers.findIndex((p) => p.id === id);
@@ -121,6 +135,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...existing,
       displayName: body.displayName ?? existing.displayName,
       baseUrl: body.baseUrl ?? existing.baseUrl,
+      apiMode: body.apiMode ?? existing.apiMode,
       // 空字符串视为"不修改"，避免编辑表单清空已保存的密钥
       apiKey: body.apiKey || existing.apiKey,
     };

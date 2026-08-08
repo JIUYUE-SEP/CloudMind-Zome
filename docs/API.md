@@ -70,6 +70,23 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /compute/providers/:id/models/:modelId` — 更新模型
 - `DELETE /compute/providers/:id/models/:modelId` — 删除模型
 
+**Provider 配置字段（`ProviderConfig`）**：
+
+| 字段 | 类型 | 缺省 | 说明 |
+|---|---|---|---|
+| `displayName` | string | — | Provider 显示名 |
+| `baseUrl` | string | — | API 根地址（禁内网/文件协议） |
+| `apiKey` | string | — | 落盘 AES-256-GCM 加密，API 返回脱敏为 `"***"` |
+| `models` | ModelInfo[] | `[]` | 模型列表 |
+| `requestTimeout` | number | SDK/网络默认 | 单请求超时（ms），透传协议适配器 |
+| `maxRetries` | number | 2 | 同一 Provider 失败重试次数（resilient 层） |
+| `apiMode` | `"responses" \| "anthropic" \| "chat_completions"` | `chat_completions` | 协议族选择（2026-08-08）：responses 与 anthropic 为主路，chat 为兼容层；POST/PUT 校验三值，非法值 400 |
+
+> `apiMode=responses`：POST `{baseURL}/responses`（input items / SSE 终态事件携带 usage）；
+> `apiMode=anthropic`：POST `{baseURL}/anthropic/v1/messages`（DeepSeek Anthropic 兼容端点，
+> baseUrl 以 `/anthropic` 或 `/anthropic/v1` 结尾时不重复拼接）；
+> `apiMode=chat_completions`（缺省）：OpenAI Chat Completions 兼容层，行为与迁移前一致。
+
 ### Config
 
 - `GET /config` — 获取系统设置（凭据脱敏为 `"***"`）

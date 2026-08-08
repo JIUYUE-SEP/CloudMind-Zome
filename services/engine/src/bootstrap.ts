@@ -8,8 +8,9 @@ import { LLMCallRepository } from "./memory/repositories/llm-call.js";
 import { ConfigRepository } from "./config/repository.js";
 import { resolveConfiguredTools } from "./config/agent-tools.js";
 import { SessionRepository } from "./conductor/repository.js";
-import { OpenAIProvider, MockLLMProvider, ErrorLLMProvider } from "./provider/llm.js";
+import { MockLLMProvider, ErrorLLMProvider } from "./provider/llm.js";
 import { ResilientLLMProvider } from "./provider/resilient.js";
+import { createProtocolProvider } from "./provider/protocols/index.js";
 import type { LLMProvider } from "./provider/types.js";
 import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedder.js";
 import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-gen.js";
@@ -358,7 +359,11 @@ async function main() {
         `配置的 Provider「${agentConfig.providerId}」不存在（可能已被删除），请在本心智的设置中重新选择。`
       );
     }
-    return new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl, {
+    // 2026-08-08 协议族迁移：按 ProviderConfig.apiMode 实例化
+    // responses / anthropic / chat_completions 适配器（缺省 chat_completions）
+    return createProtocolProvider(providerConfig.apiMode, {
+      apiKey: providerConfig.apiKey,
+      baseUrl: providerConfig.baseUrl,
       requestTimeout: providerConfig.requestTimeout,
     });
   }
@@ -376,7 +381,9 @@ async function main() {
       logger.warn(`agent '${agentConfig.id}' 的备用 provider '${providerId}' 不存在，跳过`);
       return undefined;
     }
-    return new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl, {
+    return createProtocolProvider(providerConfig.apiMode, {
+      apiKey: providerConfig.apiKey,
+      baseUrl: providerConfig.baseUrl,
       requestTimeout: providerConfig.requestTimeout,
     });
   }

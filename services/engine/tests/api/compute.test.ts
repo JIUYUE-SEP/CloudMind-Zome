@@ -279,4 +279,54 @@ describe("Compute API", () => {
     expect(res.body.baseUrl).toBe("https://api.openai.com/v1");
     await app.close();
   });
+
+  it("accepts and persists apiMode on create/update", async () => {
+    const app = await makeApp();
+    const createRes = await authedRequest(app.server).post("/compute/providers").send({
+      id: "ds",
+      displayName: "DeepSeek",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com",
+      apiMode: "responses",
+      models: [],
+    });
+    expect(createRes.status).toBe(200);
+    expect(createRes.body.apiMode).toBe("responses");
+
+    const updateRes = await authedRequest(app.server)
+      .put("/compute/providers/ds")
+      .send({ apiMode: "anthropic" });
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.apiMode).toBe("anthropic");
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].apiMode).toBe("anthropic");
+    await app.close();
+  });
+
+  it("rejects invalid apiMode on create/update", async () => {
+    const app = await makeApp();
+    const createRes = await authedRequest(app.server).post("/compute/providers").send({
+      id: "bad",
+      displayName: "Bad",
+      baseUrl: "https://api.deepseek.com",
+      apiMode: "grpc",
+      models: [],
+    });
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.error).toContain("apiMode");
+
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "ok",
+      displayName: "Ok",
+      baseUrl: "https://api.deepseek.com",
+      models: [],
+    });
+    const updateRes = await authedRequest(app.server)
+      .put("/compute/providers/ok")
+      .send({ apiMode: "websocket" });
+    expect(updateRes.status).toBe(400);
+    expect(updateRes.body.error).toContain("apiMode");
+    await app.close();
+  });
 });
