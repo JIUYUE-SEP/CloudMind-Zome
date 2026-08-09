@@ -21,8 +21,8 @@ import {
  * 已按 DeepSeek 官方 Responses API 文档（api-docs.deepseek.com/guides/responses_api）
  * 交叉核对：base_url 根域 + POST /responses；input items 支持 message
  * （user/assistant/system/developer）、function_call、function_call_output、
- * reasoning（plain-text content，summary/encrypted_content 不支持）；
- * 流式无 [DONE]，终态为 response.completed / response.incomplete /
+ * reasoning（content 为 reasoning_text 纯文本 part 数组，summary/encrypted_content
+ * 不支持）；流式无 [DONE]，终态为 response.completed / response.incomplete /
  * response.failed；usage 在终态 response.usage 携带。
  */
 export interface OpenAIResponsesProviderOptions {
@@ -57,10 +57,14 @@ interface ResponsesEvent {
   message?: string | null;
 }
 
-/** DeepSeek 要求 reasoning item 用纯文本 content（OpenAI 的 summary 不支持） */
+/**
+ * DeepSeek 要求 reasoning item 的 content 是数组（reasoning_text 纯文本 part，
+ * OpenAI 官方类型；OpenAI 的 summary/encrypted_content 不支持）。
+ * 真机 400（expected a sequence）实证：content 传裸 string 会被 serde 拒绝。
+ */
 interface ReasoningInputItem {
   type: "reasoning";
-  content: string;
+  content: Array<{ type: "reasoning_text"; text: string }>;
 }
 
 type InputItem = Record<string, unknown> | ReasoningInputItem;
@@ -115,14 +119,16 @@ function lowerMessages(params: LLMChatParams): InputItem[] {
     }
 
     if (message.role === "assistant") {
-      // 文本 → output_text；think → reasoning item（DeepSeek 原生支持，plain-text content）
+      // 文本 → output_text；think → reasoning item（content 内 reasoning_text 纯文本 part）
       const text = message.content
         .filter((c) => c.type === "text")
         .map((c) => c.text)
         .join("");
       if (text) input.push({ role: "assistant", content: [{ type: "output_text", text }] });
       for (const c of message.content) {
-        if (c.type === "think" && c.think) input.push({ type: "reasoning", content: c.think });
+        if (c.type === "think" && c.think) {
+          input.push({ type: "reasoning", content: [{ type: "reasoning_text", text: c.think }] });
+        }
       }
       if (message.toolCalls) {
         for (const tc of message.toolCalls) {

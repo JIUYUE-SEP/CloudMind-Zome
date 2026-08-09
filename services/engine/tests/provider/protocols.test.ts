@@ -190,7 +190,10 @@ describe("OpenAIResponsesProvider（mock server）", () => {
     expect(input[0]).toEqual({ role: "system", content: "你是助手" });
     expect(input[1]).toEqual({ role: "user", content: [{ type: "input_text", text: "北京天气？" }] });
     expect(input[2]).toEqual({ role: "assistant", content: [{ type: "output_text", text: "我来查" }] });
-    expect(input[3]).toEqual({ type: "reasoning", content: "思考中" });
+    expect(input[3]).toEqual({
+      type: "reasoning",
+      content: [{ type: "reasoning_text", text: "思考中" }],
+    });
     expect(input[4]).toEqual({
       type: "function_call",
       call_id: "call_1",
@@ -206,6 +209,95 @@ describe("OpenAIResponsesProvider（mock server）", () => {
         parameters: tools[0].function.parameters,
       },
     ]);
+  });
+
+  it("多轮回传：第二轮请求体含完整历史（含 thinking 块）且四类 item 形状正确（回归真机 400）", async () => {
+    let calls = 0;
+    const server = await startMockServer((_req, res) => {
+      calls++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (calls === 1) {
+        res.end(
+          sse(`
+{"type":"response.output_text.delta","delta":"我来查"}
+{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather"}}
+{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"loc"}
+{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"ation\\":\\"北京\\"}"}
+{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\\"location\\":\\"北京\\"}"}}
+{"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}
+`),
+        );
+        return;
+      }
+      res.end(
+        sse(`
+{"type":"response.output_text.delta","delta":"第二轮回答"}
+{"type":"response.completed","response":{"id":"r2","status":"completed","usage":{"input_tokens":8,"output_tokens":4}}}
+`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("sk-test", server.url);
+    const now = new Date().toISOString();
+    const r1 = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "北京天气？" }], createdAt: now }],
+      tools,
+    });
+    expect(r1.error).toBeUndefined();
+    expect(r1.events.find((e) => e.type === "tool.call")).toMatchObject({
+      type: "tool.call",
+      toolCallId: "call_1",
+      name: "get_weather",
+      arguments: { location: "北京" },
+    });
+
+    // 第二轮回传完整历史：第一轮 user + assistant（思考/正文/工具调用）+ tool 结果 + 新一轮 user
+    const r2 = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [
+        { id: "u1", role: "user", content: [{ type: "text", text: "北京天气？" }], createdAt: now },
+        {
+          id: "a1",
+          role: "assistant",
+          content: [
+            { type: "think", think: "思考一下" },
+            { type: "text", text: "我来查" },
+          ],
+          toolCalls: [{ toolCallId: "call_1", name: "get_weather", arguments: { location: "北京" } }],
+          createdAt: now,
+        },
+        { id: "t1", role: "tool", content: [{ type: "text", text: "20 度" }], toolCallId: "call_1", createdAt: now },
+        { id: "u2", role: "user", content: [{ type: "text", text: "现在呢？" }], createdAt: now },
+      ],
+    });
+    expect(r2.error).toBeUndefined();
+    expect(r2.events.at(-1)).toMatchObject({ type: "step.end" });
+
+    expect(server.requests).toHaveLength(2);
+    const second = server.requests[1].body as Record<string, unknown>;
+    expect(second.model).toBe("deepseek-v4-flash");
+    const input = second.input as Array<Record<string, unknown>>;
+    expect(input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "北京天气？" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "我来查" }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "思考一下" }] },
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "get_weather",
+        arguments: JSON.stringify({ location: "北京" }),
+      },
+      { type: "function_call_output", call_id: "call_1", output: "20 度" },
+      { role: "user", content: [{ type: "input_text", text: "现在呢？" }] },
+    ]);
+    // 回归真机 400：所有 message item 的 content 必须是数组，不能是裸字符串
+    for (const item of input) {
+      if ("content" in item) {
+        expect(Array.isArray(item.content)).toBe(true);
+      }
+    }
   });
 
   it("response.incomplete → step.end finishReason=length", async () => {
