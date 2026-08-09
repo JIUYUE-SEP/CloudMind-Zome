@@ -29,6 +29,22 @@ export const DEFAULT_PIPELINE_CONFIG: ContextPipelineConfig = {
 /** 上下文窗口缺省（水位主裁 W 与 pipeline 预算同值：80000，改动三缺省落点） */
 export const DEFAULT_CONTEXT_WINDOW = DEFAULT_PIPELINE_CONFIG.maxContextTokens;
 
+/**
+ * S6：旧水位提醒（system）的过滤特征——文本以该前缀开头。水位提醒是"当回合"
+ * 的数字快照，跨回合重放会拿过期百分比误导模型；盘上保留不删，仅组装 L3 时
+ * 不再带入新回合。
+ */
+export const WATERMARK_REMINDER_PREFIX = "[系统提醒] 本轮上下文已用";
+
+function isWatermarkReminder(m: ChatMessage): boolean {
+  if (m.role !== "system") return false;
+  const text = m.content
+    .filter((c) => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+  return text.startsWith(WATERMARK_REMINDER_PREFIX);
+}
+
 export interface AssembleInput {
   agentId: string;
   /** 当前会话完整历史（L3） */
@@ -142,7 +158,8 @@ export class ContextPipeline {
     const layers = createLayers({
       l1: input.mindContext,
       l2: input.mentionDesc,
-      l3: [...input.history],
+      // S6：历史中的旧水位提醒不随新回合重放（防过期水位数字误导；文件保留不动）
+      l3: input.history.filter((m) => !isWatermarkReminder(m)),
       // 置信度控制（设计决策 4）：≤ 0.5 直接丢弃；多轮去重：已注入 id 跳过
       l4: (input.semanticMemories ?? []).filter(
         (m) => m.score > CONFIDENCE_DROP && !seen.has(`mem:${m.id}`),

@@ -27,7 +27,12 @@ export interface LLMCallRecord {
   // —— P4-5 扩展字段（可选追加，v1 兼容不升版本）——
   /** 调用归属 */
   agentId?: string;
+  /** 真实 ProviderConfig.id（S5：llm_calls/usage 不再只记适配器名 openai/anthropic-messages） */
+  providerId?: string;
+  /** 真实 ProviderConfig.displayName（缺省回落 providerId/适配器名） */
   provider?: string;
+  /** prompt+completion 合计（S5；历史旧记录无此字段，聚合不依赖） */
+  totalTokens?: number;
   /** 调用耗时（流式全程，毫秒） */
   durationMs?: number;
   status?: "ok" | "error";

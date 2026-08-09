@@ -1059,4 +1059,91 @@ describe("上下文水位主裁（改动一）", () => {
       info.mockRestore();
     }
   });
+
+  it("H4 日志有界：百步循环不逐步刷 info（每回合至多 4 条水位日志）", async () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    try {
+      // 百步保险丝（无水位压力）：只 pre-check + fallback 两条 info，与步数无关
+      const fuse = new WatermarkToolLoopProvider();
+      await runWatermarkTurn(fuse); // 缺省 maxSteps=100
+      expect(fuse.calls).toHaveLength(101);
+      const fuseLogs = info.mock.calls.filter((c) => String(c[1]).includes("[watermark]"));
+      expect(fuseLogs).toHaveLength(2);
+      expect(fuseLogs.length).toBeLessThanOrEqual(4);
+      expect(String(fuseLogs[0]![1])).toContain("首步预检通过");
+      expect(String(fuseLogs[1]![1])).toContain("保险丝耗尽兜底");
+      // 百步循环里没有逐步 info（未达提醒带只走 debug，不刷屏）
+      expect(fuseLogs.some((c) => String(c[1]).includes("步后"))).toBe(false);
+
+      // 完整水位瀑布：pre-check 通过 → 步后提醒 → 步后撞顶 → 兜底 = 4 条封顶。
+      // 用递增 usage 驱动（8000→9100），避免大文本估算拖慢计数
+      info.mockClear();
+      class GrowingUsageWatermarkProvider implements LLMProvider {
+        name = "growing-usage";
+        readonly protocol: LLMProviderProtocol = "chat_completions";
+        private call = 0;
+        supportsModel() {
+          return true;
+        }
+        async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+          const call = this.call++;
+          const hitSummaryHint = params.messages.some(
+            (m) =>
+              m.role === "system" &&
+              m.content.some(
+                (c) =>
+                  c.type === "text" &&
+                  (c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT) ||
+                    c.text.includes(MAX_STEPS_SUMMARY_HINT)),
+              ),
+          );
+          if (hitSummaryHint) {
+            yield { type: "text.delta", delta: "水位收尾" };
+          } else {
+            yield { type: "tool.call", toolCallId: `tc_${call}`, name: "dummy", arguments: {} };
+          }
+          yield {
+            type: "step.end",
+            ...(call === 0
+              ? { usage: { promptTokens: 7900, completionTokens: 100 } } // 0.8W → 提醒
+              : call === 1
+                ? { usage: { promptTokens: 9000, completionTokens: 100 } } // 0.91W → 撞顶
+                : {}),
+          };
+        }
+      }
+      const provider = new GrowingUsageWatermarkProvider();
+      const events: LLMEvent[] = [];
+      await runTurn(
+        {
+          provider,
+          model: "watermark-tool-loop",
+          messages: [userMessage("x".repeat(8000))],
+          tools: [
+            { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+          ],
+          toolCtx: {
+            agentId: "a",
+            workspaceDir: "/tmp",
+            tools: new Map([["dummy", dummyTool]]),
+            approve: async () => true,
+            emit: (e) => events.push(e),
+          },
+          contextWindow: 10000,
+          maxSteps: 20,
+        },
+        (e) => events.push(e),
+      );
+      const waterfallLogs = info.mock.calls.filter((c) => String(c[1]).includes("[watermark]"));
+      expect(waterfallLogs).toHaveLength(4);
+      expect(waterfallLogs.map((c) => String(c[1]))).toEqual([
+        "[watermark] 首步预检通过：正常进循环",
+        "[watermark] 步后提醒：注入 70% 提醒后继续",
+        "[watermark] 步后撞顶：跳出循环走水位兜底",
+        "[watermark] 水位撞顶兜底：追加无工具总结",
+      ]);
+    } finally {
+      info.mockRestore();
+    }
+  });
 });

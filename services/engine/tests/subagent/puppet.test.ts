@@ -569,4 +569,81 @@ describe("⑧ 水位 W 查找链（puppet）", () => {
       ),
     ).toBe(true);
   });
+
+  it("S3：W 缺档回落 agent maxContextTokens（与 worker 三档一致），型号表查不到也生效", async () => {
+    class LoopProvider implements LLMProvider {
+      name = "loop";
+      calls: LLMChatParams[] = [];
+      supportsModel() {
+        return true;
+      }
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        this.calls.push(structuredClone(params));
+        const hit = params.messages.some(
+          (m) =>
+            m.role === "system" &&
+            m.content.some(
+              (c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT),
+            ),
+        );
+        if (hit) {
+          yield { type: "text.delta", delta: "傀儡水位收尾" };
+        } else {
+          yield { type: "tool.call", toolCallId: "tc_1", name: "read_probe", arguments: {} };
+        }
+        yield { type: "step.end" };
+      }
+    }
+    const readTool: Tool = {
+      name: "read_probe",
+      description: "probe",
+      parameters: z.object({}),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute() {
+        return { success: true, output: "ok" };
+      },
+    };
+    const provider = new LoopProvider();
+    // 型号表存在但未配置 contextWindow：W 链应回落 runtime.maxContextTokens=10
+    const configRepository = {
+      load: async () => ({
+        providers: [
+          {
+            id: "p1",
+            displayName: "P1",
+            providerType: "openai" as const,
+            baseUrl: "http://localhost",
+            models: [{ id: "mock", displayName: "Mock", modelType: "llm" as const }],
+          },
+        ],
+        settings: {
+          memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+        },
+      }),
+    } as unknown as ConfigRepository;
+    const runner = new PuppetRunner({
+      getRuntime: async () => ({
+        provider,
+        model: "mock",
+        providerId: "p1",
+        maxContextTokens: 10,
+        configRepository,
+        tools: [readTool],
+        workspaceDir: os.tmpdir(),
+      }),
+    });
+
+    const output = await runner.run("a1", "do work");
+
+    // 若缺 maxContextTokens 档会落 80_000，走工具循环；回退档 10 使首步预检即撞顶
+    expect(output).toBe("傀儡水位收尾");
+    expect(provider.calls).toHaveLength(1);
+    expect(
+      provider.calls[0]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
+  });
 });

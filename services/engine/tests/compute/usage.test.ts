@@ -110,6 +110,33 @@ describe("aggregateUsage", () => {
     ]);
   });
 
+  it("S5：providerId/totalTokens 新字段不破坏聚合，provider 按真实 displayName 分组", async () => {
+    await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
+      JSON.stringify({
+        id: "1",
+        agentId: "a1",
+        provider: "我的算力",
+        providerId: "pv-1",
+        model: "gpt-4o",
+        promptTokens: 100,
+        completionTokens: 50,
+        totalTokens: 150,
+        status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+    ]);
+
+    const usage = await aggregateUsage();
+    expect(usage.tokens).toEqual([
+      { provider: "我的算力", model: "gpt-4o", promptTokens: 100, completionTokens: 50, calls: 1 },
+    ]);
+    expect(usage.dates[0]).toMatchObject({
+      promptTokens: 100,
+      completionTokens: 50,
+      calls: 1,
+    });
+  });
+
   it("null/true 等非对象行按坏行跳过，不崩溃", async () => {
     await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
       "null",

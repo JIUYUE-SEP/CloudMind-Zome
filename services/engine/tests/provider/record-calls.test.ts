@@ -106,6 +106,50 @@ describe("withLLMCallRecording（P4-5）", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
+  it("S5：provider 记录真实 providerId/displayName，totalTokens=prompt+completion 合计", async () => {
+    const { sink, records } = makeSink();
+    const provider = withLLMCallRecording(
+      makeProvider(
+        [
+          { type: "text.delta", delta: "hi" },
+          {
+            type: "step.end",
+            finishReason: "stop",
+            usage: { promptTokens: 120, completionTokens: 40 },
+          },
+        ],
+        { name: "openai" },
+      ),
+      sink,
+      "agent-1",
+      { providerId: "pv-1", providerName: "我的算力" },
+    );
+    await drain(provider);
+
+    const r = records[0]!;
+    expect(r.provider).toBe("我的算力");
+    expect(r.providerId).toBe("pv-1");
+    expect(r.promptTokens).toBe(120);
+    expect(r.completionTokens).toBe(40);
+    expect(r.totalTokens).toBe(160);
+  });
+
+  it("S5：未传 providerInfo 回落适配器名；无 usage 时 totalTokens 记 0 且不硬凑", async () => {
+    const { sink, records } = makeSink();
+    const provider = withLLMCallRecording(
+      makeProvider([{ type: "step.end", finishReason: "stop" }], { name: "openai-responses" }),
+      sink,
+      "agent-1",
+    );
+    await drain(provider);
+
+    expect(records[0]!.provider).toBe("openai-responses");
+    expect(records[0]!.providerId).toBeUndefined();
+    expect(records[0]!.promptTokens).toBe(0);
+    expect(records[0]!.completionTokens).toBe(0);
+    expect(records[0]!.totalTokens).toBe(0);
+  });
+
   it("真实 LLMCallRepository：llm_calls.jsonl 落档可读回（版本字段随 P1-1 盖章）", async () => {
     const fs = await import("node:fs/promises");
     const os = await import("node:os");

@@ -36,15 +36,23 @@ function backoffDelay(attempt: number): number {
  */
 export class ResilientLLMProvider implements LLMProvider {
   name: string;
-  /** F1：透传主 provider 的协议族标识（备用降级后仍按主协议做预检估算） */
-  readonly protocol: LLMProviderProtocol | undefined;
+  /** 当前活跃 provider（主 provider 重试耗尽后切换为备用） */
+  private current: LLMProvider;
 
   constructor(
     private primary: LLMProvider,
     private options: ResilientProviderOptions = {},
   ) {
     this.name = primary.name;
-    this.protocol = primary.protocol;
+    this.current = primary;
+  }
+
+  /**
+   * S2：协议族标识跟随当前活跃 provider——降级到不同协议的备用后，水位预检
+   * 口径（think 块是否占窗口）跟着换，不再固定主 provider 的协议。
+   */
+  get protocol(): LLMProviderProtocol | undefined {
+    return this.current.protocol;
   }
 
   supportsModel(model: string): boolean {
@@ -105,6 +113,7 @@ export class ResilientLLMProvider implements LLMProvider {
         if (!current) attempts.push(`fallback ${id}: 不可用`);
       }
       if (current) {
+        this.current = current;
         logger.warn(`[resilient] provider 降级：${from} → ${current.name}`);
       }
     }

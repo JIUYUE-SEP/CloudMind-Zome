@@ -15,6 +15,15 @@ function fakeRepo(providers: ProviderConfig[]): Pick<ConfigRepository, "load"> {
   return { load: async () => config };
 }
 
+function fakeConfig(providers: ProviderConfig[]): GlobalConfig {
+  return {
+    providers,
+    settings: {
+      memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+    },
+  };
+}
+
 function provider(id: string, models: ProviderConfig["models"]): ProviderConfig {
   return {
     id,
@@ -69,6 +78,58 @@ describe("resolveContextWindow（改动三 W 查找链）", () => {
   it("配置读取失败：返回 undefined 不抛错（水位按缺省兜底）", async () => {
     const repo = { load: async () => { throw new Error("config corrupt"); } };
     expect(await resolveContextWindow(repo, { providerId: "p1", modelId: "m1" })).toBeUndefined();
+  });
+
+  it("S7：mtime 未变时短缓存生效——同一查询只 load 一次，重复 resolve 复用结果", async () => {
+    let loads = 0;
+    const repo = {
+      load: async () => {
+        loads++;
+        return fakeConfig([provider("s7p1", [model("s7m1", 128_000)])]);
+      },
+      getConfigFileMtime: async () => 1000,
+    };
+
+    expect(await resolveContextWindow(repo, { providerId: "s7p1", modelId: "s7m1" })).toBe(128_000);
+    expect(await resolveContextWindow(repo, { providerId: "s7p1", modelId: "s7m1" })).toBe(128_000);
+    expect(await resolveContextWindow(repo, { providerId: "s7p1", modelId: "s7m1" })).toBe(128_000);
+    expect(loads).toBe(1);
+  });
+
+  it("S7：config mtime 变化即失效重读（编辑生效），新窗口立刻可见", async () => {
+    let mtime = 1000;
+    let window = 128_000;
+    const repo = {
+      load: async () => fakeConfig([provider("s7p2", [model("s7m2", window)])]),
+      getConfigFileMtime: async () => mtime,
+    };
+
+    expect(await resolveContextWindow(repo, { providerId: "s7p2", modelId: "s7m2" })).toBe(128_000);
+    mtime = 2000;
+    window = 32_000;
+    expect(await resolveContextWindow(repo, { providerId: "s7p2", modelId: "s7m2" })).toBe(32_000);
+  });
+
+  it("S8：配置读取失败 warn 并入 warnedKeys 去重（首条带 err，同 key 只一次）", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const repo = {
+        load: async () => {
+          throw new Error("config corrupt");
+        },
+        getConfigFileMtime: async () => 1000,
+      };
+      await resolveContextWindow(repo, { providerId: "s8p1", modelId: "s8m1" });
+      await resolveContextWindow(repo, { providerId: "s8p1", modelId: "s8m1" });
+      await resolveContextWindow(repo, { providerId: "s8p1", modelId: "s8m1" });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatchObject({ providerId: "s8p1", modelId: "s8m1" });
+      expect(warn.mock.calls[0]![0]).toHaveProperty("err");
+      expect(String(warn.mock.calls[0]![1])).toContain("配置读取失败");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("G4：查不到 contextWindow 时 warn 留痕（含 providerId/modelId；同 key 只一次）", async () => {

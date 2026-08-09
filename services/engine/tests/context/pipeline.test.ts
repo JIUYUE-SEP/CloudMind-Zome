@@ -111,6 +111,60 @@ describe("ContextPipeline", () => {
     expect(result.tools).toEqual(tools); // 内容一致（管线内部持有副本，不改调用方数组）
   });
 
+  it("S6：组装时跳过历史中的旧水位提醒（role=system 且以 [系统提醒] 本轮上下文已用 开头）", async () => {
+    const pipeline = makePipeline(10000);
+    const staleReminder: ChatMessage = {
+      id: "wm1",
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "[系统提醒] 本轮上下文已用约 85%（17000/20000 tokens）。" +
+            "请收敛工具调用、优先收尾；如任务未完成，先总结当前进展与下一步计划。",
+        },
+      ],
+      createdAt: "2026-07-17T00:00:00Z",
+    };
+    const result = await pipeline.assemble(
+      makeInput({ history: [staleReminder, ...history(2)] }),
+    );
+
+    expect(result.messages.some((m) => m.id === "wm1")).toBe(false);
+    expect(result.messages.map(textOf).some((t) => t.startsWith("[系统提醒] 本轮上下文已用"))).toBe(
+      false,
+    );
+    // 其余历史照常组装
+    expect(result.messages.filter((m) => m.role === "user")).toHaveLength(2);
+  });
+
+  it("S6：不误伤其他 system 消息（L1 人格/普通 system 历史仍组装）", async () => {
+    const pipeline = makePipeline(10000);
+    const normalSystem: ChatMessage = {
+      id: "sys1",
+      role: "system",
+      content: [{ type: "text", text: "用户自定义规则：始终用中文回答" }],
+      createdAt: "2026-07-17T00:00:00Z",
+    };
+    const otherSystemNotice: ChatMessage = {
+      id: "sys2",
+      role: "system",
+      content: [{ type: "text", text: "[系统提醒] 其他系统通知（非水位）" }],
+      createdAt: "2026-07-17T00:00:00Z",
+    };
+    const result = await pipeline.assemble(
+      makeInput({
+        mindContext: "人格",
+        history: [normalSystem, otherSystemNotice, ...history(1)],
+      }),
+    );
+
+    const systems = result.messages.filter((m) => m.role === "system").map(textOf);
+    expect(systems).toContain("人格");
+    expect(systems).toContain("用户自定义规则：始终用中文回答");
+    expect(systems).toContain("[系统提醒] 其他系统通知（非水位）");
+  });
+
   it("超预算时按 L3 逐级截断直到满足预算", async () => {
     // 25 条 × 11 单位 ≈ 275；预算 100 → keep-15（165）→ 仍超 → keep-5（55）→ 满足
     const pipeline = makePipeline(100);
@@ -313,6 +367,22 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
     const all = second.messages.map(textOf).join("");
     expect(all).not.toContain("记忆一");
     expect(all).not.toContain("摘要一");
+  });
+
+  it("S4：syncMaxContextTokens 不重建实例——sync 前后同条目不重复注入（去重状态保留）", async () => {
+    const pipeline = makePipeline(10000);
+    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const input = makeInput({ sourceId: "sess-1", semanticMemories: [memory] });
+
+    const before = await pipeline.assemble(input);
+    expect(before.messages.map(textOf).join("")).toContain("记忆一");
+
+    // 热更窗口（H2）：sync 只改预算，不重建实例
+    expect(pipeline.syncMaxContextTokens(32000)).toBe(true);
+
+    // sync 后同条目再次出现：injectedBySource 去重状态保留，不重复注入
+    const after = await pipeline.assemble(input);
+    expect(after.messages.map(textOf).join("")).not.toContain("记忆一");
   });
 
   it("去重按会话隔离：新会话可再次注入同一记忆", async () => {

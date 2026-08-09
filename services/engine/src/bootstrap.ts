@@ -20,7 +20,7 @@ import { resolveContextWindow } from "./compute/context-window.js";
 import { getBuiltinTools } from "./tools/builtin/index.js";
 import { McpClientManager } from "./tools/mcp/index.js";
 import type { ApiContext } from "./api/context.js";
-import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
+import type { AgentConfig, ChatMessage, ProviderConfig } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
 import { BlueprintRepository } from "./blueprint/repository.js";
@@ -49,6 +49,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAuthToken, getAuthTokenFilePath } from "./config/auth-token.js";
 import { classifyListenError } from "./api/listen-error.js";
+import { getGitShortHash } from "./git-commit.js";
 import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
 
 /** 从 cwd 向上找 monorepo 根下的 packages/skills（内置技能目录） */
@@ -153,21 +154,28 @@ async function main() {
     getRuntime: async (ownerAgentId): Promise<PuppetRuntime | undefined> => {
       const agentConfig = await agentRepository.get(ownerAgentId);
       if (!agentConfig) return undefined;
-      const recordLLM = (p: LLMProvider) =>
-        withLLMCallRecording(p, new LLMCallRepository(ownerAgentId), ownerAgentId);
+      const recordLLM = (p: LLMProvider, providerConfig?: ProviderConfig) =>
+        withLLMCallRecording(p, new LLMCallRepository(ownerAgentId), ownerAgentId, {
+          providerId: providerConfig?.id,
+          providerName: providerConfig?.displayName ?? providerConfig?.id,
+        });
       const primaryProviderConfig = await findProviderConfig(agentConfig.providerId);
-      const provider = new ResilientLLMProvider(recordLLM(await createLLMProvider(agentConfig)), {
-        maxRetries: primaryProviderConfig?.maxRetries ?? 2,
-        fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
-        fallbackFactory: async (id) => {
-          const fallback = await createFallbackLLMProvider(id, agentConfig);
-          return fallback ? recordLLM(fallback) : undefined;
+      const provider = new ResilientLLMProvider(
+        recordLLM(await createLLMProvider(agentConfig), primaryProviderConfig),
+        {
+          maxRetries: primaryProviderConfig?.maxRetries ?? 2,
+          fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
+          fallbackFactory: async (id) => {
+            const fallback = await createFallbackLLMProvider(id, agentConfig);
+            return fallback ? recordLLM(fallback.provider, fallback.config) : undefined;
+          },
         },
-      });
+      );
       return {
         provider,
         model: agentConfig.modelId || agentConfig.model || "gpt-4o",
         providerId: agentConfig.providerId,
+        maxContextTokens: agentConfig.maxContextTokens,
         configRepository: configRepo,
         tools: [
           ...getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name)),
@@ -245,17 +253,23 @@ async function main() {
 
       // 包装顺序 resilient( record( provider ) )：record 在内层，
       // 每次底层尝试（含重试、含备用）独立落档 llm_calls.jsonl
-      const recordLLM = (p: LLMProvider) =>
-        withLLMCallRecording(p, new LLMCallRepository(agentId), agentId);
+      const recordLLM = (p: LLMProvider, providerConfig?: ProviderConfig) =>
+        withLLMCallRecording(p, new LLMCallRepository(agentId), agentId, {
+          providerId: providerConfig?.id,
+          providerName: providerConfig?.displayName ?? providerConfig?.id,
+        });
       const primaryProviderConfig = await findProviderConfig(agentConfig.providerId);
-      const provider = new ResilientLLMProvider(recordLLM(await createLLMProvider(agentConfig)), {
-        maxRetries: primaryProviderConfig?.maxRetries ?? 2,
-        fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
-        fallbackFactory: async (id) => {
-          const fallback = await createFallbackLLMProvider(id, agentConfig);
-          return fallback ? recordLLM(fallback) : undefined;
+      const provider = new ResilientLLMProvider(
+        recordLLM(await createLLMProvider(agentConfig), primaryProviderConfig),
+        {
+          maxRetries: primaryProviderConfig?.maxRetries ?? 2,
+          fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
+          fallbackFactory: async (id) => {
+            const fallback = await createFallbackLLMProvider(id, agentConfig);
+            return fallback ? recordLLM(fallback.provider, fallback.config) : undefined;
+          },
         },
-      });
+      );
       const embedder = await createEmbedderProvider(agentConfig);
     const imageProvider = await createImageProvider(agentConfig);
     const tools = [
@@ -389,20 +403,23 @@ async function main() {
   async function createFallbackLLMProvider(
     providerId: string,
     agentConfig: AgentConfig,
-  ): Promise<LLMProvider | undefined> {
+  ): Promise<{ provider: LLMProvider; config?: ProviderConfig } | undefined> {
     if (process.env.NODE_ENV === "e2e") {
-      return new MockLLMProvider();
+      return { provider: new MockLLMProvider() };
     }
     const providerConfig = await findProviderConfig(providerId);
     if (!providerConfig) {
       logger.warn(`agent '${agentConfig.id}' 的备用 provider '${providerId}' 不存在，跳过`);
       return undefined;
     }
-    return createProtocolProvider(providerConfig.apiMode, {
-      apiKey: providerConfig.apiKey,
-      baseUrl: providerConfig.baseUrl,
-      requestTimeout: providerConfig.requestTimeout,
-    });
+    return {
+      provider: createProtocolProvider(providerConfig.apiMode, {
+        apiKey: providerConfig.apiKey,
+        baseUrl: providerConfig.baseUrl,
+        requestTimeout: providerConfig.requestTimeout,
+      }),
+      config: providerConfig,
+    };
   }
 
   async function createEmbedderProvider(agentConfig: AgentConfig) {
@@ -484,6 +501,7 @@ async function main() {
         const hasOpen = orphanState?.open && orphanState.open.messageIds.length > 0;
         const hasPending = (orphanState?.pending ?? []).length > 0;
         if (hasOpen || hasPending) {
+          const providerConfig = await findProviderConfig(agent.providerId);
           const deps = {
             agentId: agent.id,
             // P4 review Minor-2：reconcile 孤儿压缩同样经 record-calls 落档，与主链路一致
@@ -491,6 +509,10 @@ async function main() {
               await createLLMProvider(agent),
               new LLMCallRepository(agent.id),
               agent.id,
+              {
+                providerId: providerConfig?.id,
+                providerName: providerConfig?.displayName ?? providerConfig?.id,
+              },
             ),
             model: agent.compressionModel || agent.modelId || agent.model || "gpt-4o",
             boundaryModel:
@@ -533,12 +555,13 @@ async function main() {
     );
   }
   const port = Number(process.env.PORT || DEFAULT_ENGINE_PORT);
+  const gitCommit = getGitShortHash();
   try {
     await app.listen({ port, host: "127.0.0.1" });
   } catch (err) {
     // EADDRINUSE 以独立 exit code 2 退出（普通崩溃是 1）：
     // supervisor 据此区分端口冲突与崩溃，不盲目高频重启
-    const classified = classifyListenError(err, port);
+    const classified = classifyListenError(err, port, gitCommit);
     if (classified) {
       logger.error(classified.message);
       process.exit(classified.exitCode);
@@ -552,7 +575,14 @@ async function main() {
       : addr
         ? `${addr.address}:${addr.port}`
         : "unknown";
-  logger.info(`Engine listening on ${addrStr}`);
+  // S1：启动 banner 带 git 短哈希（代码版本），无 git 时省略该字段不崩
+  logger.info(
+    {
+      addr: addrStr,
+      ...(gitCommit !== undefined ? { gitCommit } : {}),
+    },
+    `Engine listening on ${addrStr}${gitCommit !== undefined ? ` (git ${gitCommit})` : ""}`,
+  );
 
   // 优雅关停（P1-2）：SIGTERM/SIGINT 时先 drain 全部 worker 的压缩队列再退出
   // （超时 10s 兜底，不卡死关停）。Windows desktop 的 taskkill /F 强杀不会触发

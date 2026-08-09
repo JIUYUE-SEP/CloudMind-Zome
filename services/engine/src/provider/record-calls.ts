@@ -7,11 +7,19 @@ export interface LLMCallSink {
   append(record: LLMCallRecord): Promise<void>;
 }
 
+export interface LLMCallProviderInfo {
+  /** 真实 ProviderConfig.id（S5 身份核实：落档可溯源到配置条目） */
+  providerId?: string;
+  /** 真实 ProviderConfig.displayName（缺省回落 providerId/适配器名） */
+  providerName?: string;
+}
+
 /**
  * LLM 调用落档装饰器（P4-5，架构 review LLMCallRepository 死代码）：
  * 包装 provider，每次 chat 调用记录一条 llm_calls.jsonl——时间、agent、
  * provider/model、流式全程耗时、token 用量（provider 经 step.end 透传
- * usage 时为真实值，拿不到记 0）、成功/失败与错误信息。
+ * usage 时为真实值，拿不到记 0）、prompt+completion 合计、成功/失败与错误信息。
+ * S5：providerInfo 透传真实 ProviderConfig.id/displayName；未传时回落适配器名。
  *
  * 热路径零阻塞：记录构造在流结束后进行，落盘 fire-and-forget，
  * 失败仅 warn（不影响 LLM 调用）。
@@ -20,6 +28,7 @@ export function withLLMCallRecording(
   provider: LLMProvider,
   sink: LLMCallSink,
   agentId: string,
+  providerInfo?: LLMCallProviderInfo,
 ): LLMProvider {
   return {
     name: provider.name,
@@ -49,10 +58,12 @@ export function withLLMCallRecording(
           const record: LLMCallRecord = {
             id: `llm_${randomUUID()}`,
             agentId,
-            provider: provider.name,
+            provider: providerInfo?.providerName ?? provider.name,
+            ...(providerInfo?.providerId !== undefined ? { providerId: providerInfo.providerId } : {}),
             model: params.model,
             promptTokens,
             completionTokens,
+            totalTokens: promptTokens + completionTokens,
             durationMs: Date.now() - startedAt,
             status,
             ...(error !== undefined ? { error } : {}),

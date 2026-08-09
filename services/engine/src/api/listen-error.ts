@@ -11,12 +11,17 @@ export interface ClassifiedListenError {
 }
 
 /** 是 EADDRINUSE 返回退出码与中文提示，其他错误返回 null（由调用方按原路径抛出） */
-export function classifyListenError(err: unknown, port: number): ClassifiedListenError | null {
+export function classifyListenError(
+  err: unknown,
+  port: number,
+  codeVersion?: string,
+): ClassifiedListenError | null {
   if ((err as NodeJS.ErrnoException)?.code !== "EADDRINUSE") return null;
   return {
     exitCode: EADDRINUSE_EXIT_CODE,
     message:
       `[startup] 端口 ${port} 被占用（EADDRINUSE）：本机已有进程监听该端口。` +
-      `若是上次遗留的 engine，supervisor 会直接收编复用；若是其他程序占用，请释放端口后重启。`,
+      `若是上次遗留的 engine，supervisor 会直接收编复用（当前进程代码版本：${codeVersion ?? "unknown"}）；` +
+      `若是其他程序占用，请释放端口后重启。`,
   };
 }

@@ -75,6 +75,19 @@ export class ConfigRepository {
     this.filePath = path.join(getDataDir(), "config.json");
   }
 
+  /**
+   * S7：W 查找链短缓存的失效依据——返回 config.json 的 mtimeMs；
+   * 文件不存在/stat 失败返回 undefined（调用方此时不启用缓存）。
+   */
+  async getConfigFileMtime(): Promise<number | undefined> {
+    try {
+      const stat = await fs.stat(this.filePath);
+      return stat.mtimeMs;
+    } catch {
+      return undefined;
+    }
+  }
+
   async load(): Promise<GlobalConfig> {
     let text: string;
     try {

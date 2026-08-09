@@ -25,6 +25,8 @@ export interface PuppetRuntime {
   model: string;
   /** 主算力 providerId（水位 W 查找链：providerId + modelId → 型号表 contextWindow） */
   providerId?: string;
+  /** W 链回退档（S3，与 worker 三档一致）：型号表 contextWindow 查不到时回落 agent 显式 maxContextTokens，再回落 80_000；dispatch 调用方可省略 */
+  maxContextTokens?: number;
   /** 配置仓库（水位 W 查找链；缺省时水位窗口按 80_000 兜底） */
   configRepository?: ConfigRepository;
   tools: Tool[];
@@ -128,12 +130,13 @@ export class PuppetRunner {
     ];
 
     const toolsMap = new Map(tools.map((t) => [t.name, t]));
-    // 改动三：W 查找链统一入口（傀儡与 worker 同链）；查不到落 80_000 缺省
+    // 改动三 + S3：W 查找链统一入口（傀儡与 worker 同链）——型号表 contextWindow
+    // → agent 显式 maxContextTokens → 80_000 三档；dispatch 调用方可不传回退档
     const contextWindow =
       (await resolveContextWindow(runtime.configRepository, {
         providerId: runtime.providerId,
         modelId: runtime.model,
-      })) ?? DEFAULT_CONTEXT_WINDOW;
+      })) ?? runtime.maxContextTokens ?? DEFAULT_CONTEXT_WINDOW;
     const result = await runTurn(
       {
         provider: runtime.provider,

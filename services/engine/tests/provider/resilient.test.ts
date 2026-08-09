@@ -172,6 +172,30 @@ describe("ResilientLLMProvider", () => {
     expect(message).toContain("primary");
     expect(message).toContain("backup");
   });
+
+  it("S2：降级到不同协议备用后 protocol 跟随当前活跃 provider（预检口径跟着换）", async () => {
+    const primary = scriptedProvider("primary", [serverError()]);
+    const backup = scriptedProvider("backup", [okEvents]);
+    const resilient = new ResilientLLMProvider(
+      { ...primary.provider, protocol: "chat_completions" },
+      {
+        maxRetries: 0,
+        sleep: noSleep,
+        fallbackProviderIds: ["backup-id"],
+        fallbackFactory: async () => ({ ...backup.provider, protocol: "anthropic" }),
+      },
+    );
+
+    // 降级前：主 provider 的协议（chat_completions 预检剥 think）
+    expect(resilient.protocol).toBe("chat_completions");
+
+    const { events, error } = await collect(resilient);
+    expect(error).toBeUndefined();
+    expect(events).toEqual(okEvents);
+
+    // 降级后：协议切到备用（anthropic 预检含 think），不再固定主协议
+    expect(resilient.protocol).toBe("anthropic");
+  });
 });
 
 describe("OpenAIProvider 配置透传", () => {
