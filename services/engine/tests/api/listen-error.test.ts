@@ -14,6 +14,15 @@ describe("api/listen-error（P0-3 EADDRINUSE）", () => {
   it("S1：getGitShortHash 在 git 可用时返回 trim 后的短哈希", () => {
     mocks.execSync.mockReturnValue("940f500\n");
     expect(getGitShortHash()).toBe("940f500");
+    // F4：固定 engine 源码目录 cwd、2s 超时、windowsHide，防启动挂起/闪窗/目录漂移
+    expect(mocks.execSync).toHaveBeenCalledWith(
+      "git rev-parse --short HEAD",
+      expect.objectContaining({
+        cwd: expect.stringMatching(/services[\\/]engine[\\/]src/),
+        timeout: 2000,
+        windowsHide: true,
+      }),
+    );
   });
 
   it("S1：getGitShortHash 在 git 缺失/失败时返回 undefined 不抛错（启动不崩）", () => {

@@ -106,6 +106,25 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("F5：create provider 拒绝空串/纯空白 displayName（400，不落库）", async () => {
+    const app = await makeApp();
+    for (const displayName of ["", "   "]) {
+      const res = await authedRequest(app.server).post("/compute/providers").send({
+        displayName,
+        providerType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        models: [],
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("displayName");
+    }
+    const listRes = await authedRequest(app.server).get("/compute/providers");
+    expect(listRes.status).toBe(200);
+    expect(listRes.body).toHaveLength(0);
+    await app.close();
+  });
+
   it("updates and deletes a provider", async () => {
     const app = await makeApp();
     const provider = {

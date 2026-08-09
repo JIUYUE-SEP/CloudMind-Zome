@@ -110,7 +110,7 @@ describe("aggregateUsage", () => {
     ]);
   });
 
-  it("S5：providerId/totalTokens 新字段不破坏聚合，provider 按真实 displayName 分组", async () => {
+  it("S5/F2：providerId/totalTokens 新字段不破坏聚合，provider 按真实 displayName 分组且返回 providerId", async () => {
     await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
       JSON.stringify({
         id: "1",
@@ -128,13 +128,79 @@ describe("aggregateUsage", () => {
 
     const usage = await aggregateUsage();
     expect(usage.tokens).toEqual([
-      { provider: "我的算力", model: "gpt-4o", promptTokens: 100, completionTokens: 50, calls: 1 },
+      {
+        provider: "我的算力",
+        providerId: "pv-1",
+        model: "gpt-4o",
+        promptTokens: 100,
+        completionTokens: 50,
+        calls: 1,
+      },
     ]);
     expect(usage.dates[0]).toMatchObject({
       promptTokens: 100,
       completionTokens: 50,
       calls: 1,
     });
+  });
+
+  it("F2：新旧记录混排——旧适配器名按 provider 归组、新记录按 providerId 归组，重名 displayName 不合并", async () => {
+    await writeLlmCalls(path.join(tmpDir, "agents", "a1"), [
+      // 升级前的旧记录：只有适配器名，无 providerId——同适配器名+同型号互相归并
+      JSON.stringify({
+        id: "legacy-1", agentId: "a1", provider: "openai", model: "gpt-4o",
+        promptTokens: 10, completionTokens: 5, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+      JSON.stringify({
+        id: "legacy-2", agentId: "a1", provider: "openai", model: "gpt-4o",
+        promptTokens: 20, completionTokens: 10, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+      // 升级后的新记录：同一 displayName 但不同 providerId——按 id 分开，不再合并
+      JSON.stringify({
+        id: "new-1", agentId: "a1", provider: "alpha", providerId: "pv-1", model: "gpt-4o",
+        promptTokens: 100, completionTokens: 50, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+      JSON.stringify({
+        id: "new-2", agentId: "a1", provider: "alpha", providerId: "pv-1", model: "gpt-4o",
+        promptTokens: 100, completionTokens: 50, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+      JSON.stringify({
+        id: "new-3", agentId: "a1", provider: "alpha", providerId: "pv-2", model: "gpt-4o",
+        promptTokens: 50, completionTokens: 25, status: "ok",
+        createdAt: localISO(2026, 8, 3),
+      }),
+    ]);
+
+    const usage = await aggregateUsage();
+    expect(usage.tokens).toEqual([
+      {
+        provider: "alpha",
+        providerId: "pv-1",
+        model: "gpt-4o",
+        promptTokens: 200,
+        completionTokens: 100,
+        calls: 2,
+      },
+      {
+        provider: "alpha",
+        providerId: "pv-2",
+        model: "gpt-4o",
+        promptTokens: 50,
+        completionTokens: 25,
+        calls: 1,
+      },
+      {
+        provider: "openai",
+        model: "gpt-4o",
+        promptTokens: 30,
+        completionTokens: 15,
+        calls: 2,
+      },
+    ]);
   });
 
   it("null/true 等非对象行按坏行跳过，不崩溃", async () => {

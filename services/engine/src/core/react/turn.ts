@@ -4,6 +4,7 @@ import { executeLoopStep, StepStreamError, type StepInput, type StepResult } fro
 import type { ToolExecutionContext } from "./tool-call.js";
 import {
   DEFAULT_CONTEXT_WINDOW,
+  WATERMARK_REMINDER_PREFIX,
   type AssembleInput,
   type ContextPipeline,
 } from "../../context/pipeline.js";
@@ -185,7 +186,7 @@ function makeWatermarkReminder(used: number, window: number): ChatMessage {
       {
         type: "text",
         text:
-          `[系统提醒] 本轮上下文已用约 ${pct}%（${used}/${window} tokens）。` +
+          `${WATERMARK_REMINDER_PREFIX}约 ${pct}%（${used}/${window} tokens）。` +
           "请收敛工具调用、优先收尾；如任务未完成，先总结当前进展与下一步计划。",
       },
     ],

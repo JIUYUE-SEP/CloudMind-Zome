@@ -23,6 +23,8 @@ export interface UsageDateAggregate {
 
 export interface UsageModelAggregate {
   provider: string;
+  /** 真实 ProviderConfig.id（F2：新记录按 providerId 归组；旧记录无此字段） */
+  providerId?: string;
   model: string;
   promptTokens: number;
   completionTokens: number;
@@ -122,6 +124,7 @@ async function accumulateAgentFile(
         const promptTokens = toTokens(record.promptTokens);
         const completionTokens = toTokens(record.completionTokens);
         const provider = nonEmptyString(record.provider) ?? "unknown";
+        const providerId = nonEmptyString(record.providerId);
         const model = nonEmptyString(record.model) ?? "unknown";
         // P2-3：目录名是落盘存储不变量（getAgentDir），归属以目录名为准；
         // 记录字段仅在缺失时兜底（本实现目录名恒有，即聚合恒按目录归属），
@@ -146,10 +149,20 @@ async function accumulateAgentFile(
         dateAgg.calls += 1;
         if (isError) dateAgg.errorCalls += 1;
 
-        const modelKey = `${provider}\u0000${model}`;
+        // F2：聚合键 = providerId ?? provider——新记录按稳定 id 归组（改 displayName
+        // 不再拆行、重名 displayName 不再合并）；旧记录无 providerId 自然归入
+        // 适配器名组，保持升级前后各自成组、不互相串并。
+        const modelKey = `${providerId ?? provider}\u0000${model}`;
         let modelAgg = acc.byModel.get(modelKey);
         if (!modelAgg) {
-          modelAgg = { provider, model, promptTokens: 0, completionTokens: 0, calls: 0 };
+          modelAgg = {
+            provider,
+            ...(providerId !== undefined ? { providerId } : {}),
+            model,
+            promptTokens: 0,
+            completionTokens: 0,
+            calls: 0,
+          };
           acc.byModel.set(modelKey, modelAgg);
         }
         modelAgg.promptTokens += promptTokens;

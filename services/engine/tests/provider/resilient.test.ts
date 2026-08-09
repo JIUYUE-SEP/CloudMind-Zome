@@ -173,7 +173,7 @@ describe("ResilientLLMProvider", () => {
     expect(message).toContain("backup");
   });
 
-  it("S2：降级到不同协议备用后 protocol 跟随当前活跃 provider（预检口径跟着换）", async () => {
+  it("S2：降级当次调用链内 protocol 跟随当前活跃 provider（预检口径跟着换）", async () => {
     const primary = scriptedProvider("primary", [serverError()]);
     const backup = scriptedProvider("backup", [okEvents]);
     const resilient = new ResilientLLMProvider(
@@ -189,11 +189,45 @@ describe("ResilientLLMProvider", () => {
     // 降级前：主 provider 的协议（chat_completions 预检剥 think）
     expect(resilient.protocol).toBe("chat_completions");
 
-    const { events, error } = await collect(resilient);
-    expect(error).toBeUndefined();
-    expect(events).toEqual(okEvents);
+    // 手动拉流：首事件产出前已降级，当次调用链内 getter 应跟随备用
+    const iterator = resilient.chat({ model: "m", messages: [] })[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(resilient.protocol).toBe("anthropic");
 
-    // 降级后：协议切到备用（anthropic 预检含 think），不再固定主协议
+    const rest: LLMEvent[] = [];
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+      rest.push(next.value);
+    }
+    expect(rest).toEqual([{ type: "step.end" }]);
+    // 调用链结束后复位：下一次预检回到主协议
+    expect(resilient.protocol).toBe("chat_completions");
+  });
+
+  it("F1：降级后新 chat 预检仍按 primary 协议（this.current 随调用开始复位）", async () => {
+    const primary = scriptedProvider("primary", [serverError()]);
+    const backup = scriptedProvider("backup", [okEvents]);
+    const resilient = new ResilientLLMProvider(
+      { ...primary.provider, protocol: "chat_completions" },
+      {
+        maxRetries: 0,
+        sleep: noSleep,
+        fallbackProviderIds: ["backup-id"],
+        fallbackFactory: async () => ({ ...backup.provider, protocol: "anthropic" }),
+      },
+    );
+
+    // 第一次调用降级并结束
+    const { error } = await collect(resilient);
+    expect(error).toBeUndefined();
+    // 链结束复位：下一次预检（runTurn 在 chat 前读 protocol）已回到主协议
+    expect(resilient.protocol).toBe("chat_completions");
+
+    // 新 chat 调用开始（同步复位）时预检口径仍是主协议
+    const iterator = resilient.chat({ model: "m", messages: [] })[Symbol.asyncIterator]();
+    expect(resilient.protocol).toBe("chat_completions");
+    // 当次链内若再次降级，getter 仍跟随备用（S2 语义不变）
+    await iterator.next();
     expect(resilient.protocol).toBe("anthropic");
   });
 });

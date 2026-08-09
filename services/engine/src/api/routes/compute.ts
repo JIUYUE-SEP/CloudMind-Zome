@@ -194,6 +194,10 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       maxRetries?: number;
       models?: unknown[];
     };
+    // F5：displayName 空串/纯空白拒绝（否则落档 providerName="" 会被 usage 聚合归入 unknown）
+    if (typeof body.displayName !== "string" || body.displayName.trim() === "") {
+      return reply.status(400).send({ error: "displayName must be a non-empty string" });
+    }
     if (!isAllowedBaseUrl(body.baseUrl)) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
     }

@@ -36,7 +36,7 @@ function backoffDelay(attempt: number): number {
  */
 export class ResilientLLMProvider implements LLMProvider {
   name: string;
-  /** 当前活跃 provider（主 provider 重试耗尽后切换为备用） */
+  /** 当前活跃 provider（主 provider 重试耗尽后切换为备用；每次 chat 调用开始/结束复位为主） */
   private current: LLMProvider;
 
   constructor(
@@ -59,68 +59,82 @@ export class ResilientLLMProvider implements LLMProvider {
     return this.primary.supportsModel(model);
   }
 
-  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
-    const maxRetries = this.options.maxRetries ?? 2;
-    const sleep =
-      this.options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-    const attempts: string[] = [];
-    const fallbackIds = this.options.fallbackProviderIds ?? [];
-    let fallbackIndex = 0;
+  /**
+   * F1：每次新调用开始即复位协议口径——降级只影响当次调用链，新调用预检
+   * （turn.ts 在 chat 前读 protocol）回到主 provider 协议；链结束（finally）
+   * 再次复位，保证下一回合预检读到的也是主协议。
+   */
+  chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    this.current = this.primary;
+    return this.chatChain(params);
+  }
 
-    let current: LLMProvider | undefined = this.primary;
-    while (current) {
-      for (let attempt = 0; ; attempt++) {
-        const iterator = current.chat(params)[Symbol.asyncIterator]();
-        let first: IteratorResult<LLMEvent>;
-        try {
-          first = await iterator.next();
-        } catch (err) {
-          // 首事件前的失败才可重试/降级
-          const retryable = isRetryableError(err);
-          attempts.push(`${current.name}#${attempt + 1}: ${String(err)}`);
-          if (retryable && attempt < maxRetries) {
-            const delay = backoffDelay(attempt);
-            logger.warn(
-              `[resilient] provider ${current.name} 第 ${attempt + 1} 次调用失败（可重试），${delay}ms 后重试：${String(err)}`,
-            );
-            await sleep(delay);
-            continue;
+  private async *chatChain(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    try {
+      const maxRetries = this.options.maxRetries ?? 2;
+      const sleep =
+        this.options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      const attempts: string[] = [];
+      const fallbackIds = this.options.fallbackProviderIds ?? [];
+      let fallbackIndex = 0;
+
+      let current: LLMProvider | undefined = this.primary;
+      while (current) {
+        for (let attempt = 0; ; attempt++) {
+          const iterator = current.chat(params)[Symbol.asyncIterator]();
+          let first: IteratorResult<LLMEvent>;
+          try {
+            first = await iterator.next();
+          } catch (err) {
+            // 首事件前的失败才可重试/降级
+            const retryable = isRetryableError(err);
+            attempts.push(`${current.name}#${attempt + 1}: ${String(err)}`);
+            if (retryable && attempt < maxRetries) {
+              const delay = backoffDelay(attempt);
+              logger.warn(
+                `[resilient] provider ${current.name} 第 ${attempt + 1} 次调用失败（可重试），${delay}ms 后重试：${String(err)}`,
+              );
+              await sleep(delay);
+              continue;
+            }
+            if (!retryable) {
+              logger.warn(`[resilient] provider ${current.name} 不可重试错误，直接降级/终态：${String(err)}`);
+            }
+            break;
           }
-          if (!retryable) {
-            logger.warn(`[resilient] provider ${current.name} 不可重试错误，直接降级/终态：${String(err)}`);
+          // 首事件成功：yield 并转发剩余；此后失败直接上抛，绝不重试
+          if (!first.done) yield first.value;
+          for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+            yield next.value;
           }
-          break;
+          return;
         }
-        // 首事件成功：yield 并转发剩余；此后失败直接上抛，绝不重试
-        if (!first.done) yield first.value;
-        for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-          yield next.value;
+
+        // 当前 provider 放弃 → 依次取备用
+        const from = current.name;
+        current = undefined;
+        while (fallbackIndex < fallbackIds.length && !current) {
+          const id = fallbackIds[fallbackIndex++];
+          try {
+            current = await this.options.fallbackFactory?.(id);
+          } catch (err) {
+            attempts.push(`fallback ${id}: 创建失败 ${String(err)}`);
+            logger.warn(`[resilient] 备用 provider ${id} 创建失败，跳过：${String(err)}`);
+          }
+          if (!current) attempts.push(`fallback ${id}: 不可用`);
         }
-        return;
+        if (current) {
+          this.current = current;
+          logger.warn(`[resilient] provider 降级：${from} → ${current.name}`);
+        }
       }
 
-      // 当前 provider 放弃 → 依次取备用
-      const from = current.name;
-      current = undefined;
-      while (fallbackIndex < fallbackIds.length && !current) {
-        const id = fallbackIds[fallbackIndex++];
-        try {
-          current = await this.options.fallbackFactory?.(id);
-        } catch (err) {
-          attempts.push(`fallback ${id}: 创建失败 ${String(err)}`);
-          logger.warn(`[resilient] 备用 provider ${id} 创建失败，跳过：${String(err)}`);
-        }
-        if (!current) attempts.push(`fallback ${id}: 不可用`);
-      }
-      if (current) {
-        this.current = current;
-        logger.warn(`[resilient] provider 降级：${from} → ${current.name}`);
-      }
+      // 全链失败：保持既有 UX（用户可读告知 + step.end 正常收尾），再抛出含尝试链的错误
+      yield { type: "text.delta", delta: "\n所有算力 Provider 均不可用，请稍后重试或检查算力配置。" };
+      yield { type: "step.end" };
+      throw new ProviderError("resilient", `全部 provider 失败，尝试链：${attempts.join(" | ")}`);
+    } finally {
+      this.current = this.primary;
     }
-
-    // 全链失败：保持既有 UX（用户可读告知 + step.end 正常收尾），再抛出含尝试链的错误
-    yield { type: "text.delta", delta: "\n所有算力 Provider 均不可用，请稍后重试或检查算力配置。" };
-    yield { type: "step.end" };
-    throw new ProviderError("resilient", `全部 provider 失败，尝试链：${attempts.join(" | ")}`);
   }
 }

@@ -31,6 +31,12 @@ export interface GlobalConfig {
   settings: AppSettings;
 }
 
+/** S7/F3：config.json 短缓存失效依据——同一 stat 取 mtime + size，防同 mtime 快速写漏判 */
+export interface ConfigFileStamp {
+  mtimeMs: number;
+  size: number;
+}
+
 const DEFAULT_CONFIG: GlobalConfig = {
   providers: [],
   settings: {
@@ -76,13 +82,13 @@ export class ConfigRepository {
   }
 
   /**
-   * S7：W 查找链短缓存的失效依据——返回 config.json 的 mtimeMs；
+   * S7/F3：W 查找链短缓存的失效依据——返回 config.json 的 mtimeMs + size；
    * 文件不存在/stat 失败返回 undefined（调用方此时不启用缓存）。
    */
-  async getConfigFileMtime(): Promise<number | undefined> {
+  async getConfigFileStamp(): Promise<ConfigFileStamp | undefined> {
     try {
       const stat = await fs.stat(this.filePath);
-      return stat.mtimeMs;
+      return { mtimeMs: stat.mtimeMs, size: stat.size };
     } catch {
       return undefined;
     }

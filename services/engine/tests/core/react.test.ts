@@ -8,7 +8,7 @@ import {
   CONTEXT_WATERMARK_FALLBACK_REPLY,
 } from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
-import { ContextPipeline } from "../../src/context/pipeline.js";
+import { ContextPipeline, WATERMARK_REMINDER_PREFIX } from "../../src/context/pipeline.js";
 import { getTokenCounter } from "../../src/context/token-counter.js";
 import { logger } from "../../src/logger.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
@@ -728,6 +728,8 @@ describe("上下文水位主裁（改动一）", () => {
       .filter((c): c is { type: "text"; text: string } => c.type === "text")
       .map((c) => c.text)
       .join("");
+    // F5：生成文案与组装层过滤共用同一前缀常量（消除双处硬编码）
+    expect(text.startsWith(WATERMARK_REMINDER_PREFIX)).toBe(true);
     expect(text).toContain(`${window} tokens`);
     expect(text).toContain("请收敛工具调用、优先收尾");
 

@@ -112,9 +112,9 @@ describe("config/repository", () => {
     expect(loaded.providers[0].apiKey).toBe("legacy-plain-key");
   });
 
-  it("S7：getConfigFileMtime 返回 config.json mtime；文件不存在返回 undefined", async () => {
+  it("S7/F3：getConfigFileStamp 返回 config.json mtime+size；文件不存在返回 undefined", async () => {
     const repo = new ConfigRepository();
-    expect(await repo.getConfigFileMtime()).toBeUndefined();
+    expect(await repo.getConfigFileStamp()).toBeUndefined();
 
     await repo.save({
       providers: [],
@@ -122,9 +122,10 @@ describe("config/repository", () => {
         memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
       },
     });
-    const mtime = await repo.getConfigFileMtime();
-    expect(typeof mtime).toBe("number");
-    expect(mtime!).toBeGreaterThan(0);
+    const stamp = await repo.getConfigFileStamp();
+    expect(stamp).toBeDefined();
+    expect(stamp!.mtimeMs).toBeGreaterThan(0);
+    expect(stamp!.size).toBeGreaterThan(0);
   });
 
   it("returns default config when file does not exist (ENOENT)", async () => {

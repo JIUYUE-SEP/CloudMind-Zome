@@ -1,14 +1,14 @@
 import { logger } from "../logger.js";
-import type { ConfigRepository } from "../config/repository.js";
+import type { ConfigFileStamp, ConfigRepository } from "../config/repository.js";
 
 export interface ContextWindowLookup {
   providerId?: string;
   modelId?: string;
 }
 
-/** S7：resolveContextWindow 需要的 config 仓库接口（mtime 可选；测试桩可只给 load） */
+/** S7/F3：resolveContextWindow 需要的 config 仓库接口（stamp 可选；测试桩可只给 load） */
 export type ContextWindowConfigRepository = Pick<ConfigRepository, "load"> & {
-  getConfigFileMtime?: () => Promise<number | undefined>;
+  getConfigFileStamp?: () => Promise<ConfigFileStamp | undefined>;
 };
 
 /** G4：同 (providerId, modelId, 原因) 只 warn 一次，防逐回合日志刷屏，且留痕可观测 */
@@ -31,9 +31,9 @@ function warnLookupFallback(lookup: ContextWindowLookup, reason: string, err?: u
   );
 }
 
-/** S7：W 查找链短缓存条目（按 config 文件 mtime 失效） */
+/** S7/F3：W 查找链短缓存条目（按 config 文件 mtime + size 失效） */
 interface WindowCacheEntry {
-  mtimeMs: number;
+  stamp: ConfigFileStamp;
   window: number | undefined;
 }
 
@@ -48,10 +48,11 @@ const windowCache = new Map<string, WindowCacheEntry>();
  * puppet 等路径直接落 80_000）。
  * core（turn.ts）不依赖 config repository——本 helper 只服务 runTurn 调用方。
  *
- * S7：configRepository.load 每次都是整文件读 + JSON.parse + 解密，而 W 只依赖
- * providers/models 的静态字段；每回合经 getConfigFileMtime 做廉价 stat，mtime
- * 未变直接复用缓存结果（免掉 load/解密），mtime 变化即失效重读——编辑立即生效。
+ * S7/F3：configRepository.load 每次都是整文件读 + JSON.parse + 解密，而 W 只依赖
+ * providers/models 的静态字段；每回合经 getConfigFileStamp 做廉价 stat（mtime+size），
+ * 未变直接复用缓存结果（免掉 load/解密），mtime 或 size 变化即失效重读——编辑立即生效。
  * 未提供 mtime（测试桩/stat 失败/文件不存在）不缓存，走原路径。
+ * load 失败不写缓存：同 stamp 下修复文件后下一次调用立即重试，不会被失败结果钉死。
  */
 export async function resolveContextWindow(
   configRepository: ContextWindowConfigRepository | undefined,
@@ -63,51 +64,53 @@ export async function resolveContextWindow(
     return undefined;
   }
   const key = `${lookup.providerId}\u0000${lookup.modelId}`;
-  const mtimeMs = await configRepository.getConfigFileMtime?.();
-  if (mtimeMs !== undefined) {
+  const stamp = await configRepository.getConfigFileStamp?.();
+  if (stamp !== undefined) {
     const cached = windowCache.get(key);
-    if (cached?.mtimeMs === mtimeMs) return cached.window;
+    if (cached?.stamp.mtimeMs === stamp.mtimeMs && cached?.stamp.size === stamp.size) {
+      return cached.window;
+    }
   }
   try {
     const config = await configRepository.load();
     const provider = config.providers.find((p) => p.id === lookup.providerId);
     if (!provider) {
-      setWindowCache(key, mtimeMs, undefined);
+      setWindowCache(key, stamp, undefined);
       warnLookupFallback(lookup, "provider 未找到");
       return undefined;
     }
     const model = provider?.models.find((m) => m.id === lookup.modelId);
     if (!model) {
-      setWindowCache(key, mtimeMs, undefined);
+      setWindowCache(key, stamp, undefined);
       warnLookupFallback(lookup, "型号未找到");
       return undefined;
     }
     if (model.contextWindow === undefined) {
-      setWindowCache(key, mtimeMs, undefined);
+      setWindowCache(key, stamp, undefined);
       warnLookupFallback(lookup, "型号未配置 contextWindow");
       return undefined;
     }
-    setWindowCache(key, mtimeMs, model.contextWindow);
+    setWindowCache(key, stamp, model.contextWindow);
     return model.contextWindow;
   } catch (err) {
     // 配置读失败不阻断对话：水位按缺省兜底（80_000），warn 并入 warnedKeys
-    // 去重（S8，首条带 err 留痕）——不再逐回合刷 warn
-    setWindowCache(key, mtimeMs, undefined);
+    // 去重（S8，首条带 err 留痕）——不再逐回合刷 warn；F3：失败不写缓存，
+    // 同 stamp 下文件修复后立即重读，不会永久命中失败结果。
     warnLookupFallback(lookup, "配置读取失败", err);
     return undefined;
   }
 }
 
-/** S7：写入 W 缓存（mtime 可用时）；超上限 FIFO 逐出最旧查询 */
+/** S7/F3：写入 W 缓存（stamp 可用时，仅 load 成功路径调用）；超上限 FIFO 逐出最旧查询 */
 function setWindowCache(
   key: string,
-  mtimeMs: number | undefined,
+  stamp: ConfigFileStamp | undefined,
   window: number | undefined,
 ): void {
-  if (mtimeMs === undefined) return;
+  if (stamp === undefined) return;
   if (windowCache.size >= WINDOW_CACHE_MAX && !windowCache.has(key)) {
     const oldest = windowCache.keys().next().value;
     if (oldest !== undefined) windowCache.delete(oldest);
   }
-  windowCache.set(key, { mtimeMs, window });
+  windowCache.set(key, { stamp, window });
 }
