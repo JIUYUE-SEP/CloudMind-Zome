@@ -181,6 +181,13 @@ class WatermarkToolLoopProvider implements LLMProvider {
   }
 }
 
+/** 快照版水位循环 provider：每次调用深拷贝 params，避免 runTurn 原地 push 污染历史 calls */
+class SnapshotWatermarkToolLoopProvider extends WatermarkToolLoopProvider {
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    yield* super.chat(structuredClone(params));
+  }
+}
+
 /** 水位测试共用：裸 runTurn（不传 contextPipeline = 傀儡路径形状） */
 function runWatermarkTurn(
   provider: WatermarkToolLoopProvider,
@@ -678,7 +685,12 @@ describe("上下文水位主裁（改动一）", () => {
     const provider = new WatermarkToolLoopProvider();
     const bigUser = userMessage("x".repeat(8000)); // 真实 tiktoken ≈ 2000 tokens
     const base = getTokenCounter().countMessages([bigUser]);
-    const window = Math.ceil(base / 0.8); // 首步 ≈ 80%+步开销，落在提醒带且不直达撞顶
+    const toolsTokens = getTokenCounter().countTools([
+      { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+    ]);
+    // 首步后估算 = base + tools + 提醒(≈67) + assistant(toolCalls ≈26) + tool 结果(≈18)；
+    // 窗口取该值 / 0.89：预检 ≈0.80 落提醒带、步 1 后未撞顶、步 2 后 ≥0.9（≥2 工具步）
+    const window = Math.floor((base + toolsTokens + 67 + 26 + 18) / 0.89);
     const persisted: ChatMessage[] = [];
 
     const result = await runWatermarkTurn(provider, {
@@ -752,7 +764,7 @@ describe("上下文水位主裁（改动一）", () => {
     expect(text).toContain("89%");
   });
 
-  it("水位计算·双口径取大（估算 > usage）：以本地计数为准撞顶", async () => {
+  it("水位计算·双口径取大（估算 > usage）：以本地计数为准撞顶（G1 首步预检直落兜底）", async () => {
     const provider = new WatermarkToolLoopProvider({ promptTokens: 200, completionTokens: 50 });
     const bigUser = userMessage("x".repeat(8000)); // 真实 tiktoken ≈ 2000 tokens
     const result = await runWatermarkTurn(provider, {
@@ -761,9 +773,132 @@ describe("上下文水位主裁（改动一）", () => {
       maxSteps: 20,
     });
 
-    // usage 250/1000 = 0.25 单独不会撞顶；估算 > 1.0 → 按估算撞顶
-    expect(provider.calls).toHaveLength(2);
-    expect(hasWatermarkHint(provider.calls[1]!)).toBe(true);
+    // usage 250/1000 = 0.25 单独不会撞顶；估算（含 tools）> 1.0 → 首步预检即撞顶，
+    // 不发任何工具步，直接走水位兜底（G1）
+    expect(provider.calls).toHaveLength(1);
+    expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
+    expect(reminderCount(provider.calls)).toBe(0);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+  });
+
+  it("G1 首步预检撞顶：初始历史即超 0.9W → 不发任何工具步，直接走水位兜底", async () => {
+    const provider = new WatermarkToolLoopProvider();
+    const bigUser = userMessage("x".repeat(8000)); // ≈ 1000+ tokens
+    // 与 runWatermarkTurn 同一份工具定义：估算口径必须含 tools（G3）
+    const tools = [
+      { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+    ];
+    const base =
+      getTokenCounter().countMessages([bigUser]) + getTokenCounter().countTools(tools);
+    const window = Math.floor(base / 0.9); // 首步预检 r ≥ 0.9
+
+    const result = await runWatermarkTurn(provider, {
+      messages: [bigUser],
+      contextWindow: window,
+      maxSteps: 20,
+    });
+
+    // 未发任何工具步：只调一次兜底总结；无 70% 提醒；回合绝不静默
+    expect(provider.calls).toHaveLength(1);
+    expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
+    expect(reminderCount(provider.calls)).toBe(0);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+    expect(
+      result.appended.at(-1)!.content.some((c) => c.type === "text" && c.text === "水位收尾"),
+    ).toBe(true);
+  });
+
+  it("G1 首步预检提醒：初始 0.7-0.9 注入提醒后正常进循环（每回合一次）", async () => {
+    const provider = new SnapshotWatermarkToolLoopProvider();
+    const bigUser = userMessage("x".repeat(8000));
+    const tools = [
+      { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+    ];
+    const base =
+      getTokenCounter().countMessages([bigUser]) + getTokenCounter().countTools(tools);
+    const window = Math.floor(base / 0.8); // 首步预检 r ≈ 0.8（提醒带）
+
+    const result = await runWatermarkTurn(provider, {
+      messages: [bigUser],
+      contextWindow: window,
+      maxSteps: 30,
+    });
+
+    // 提醒注入后正常进循环：至少一个工具步 + 撞顶兜底；全程只有一条提醒
+    expect(provider.calls.length).toBeGreaterThanOrEqual(2);
+    expect(provider.calls.filter((p) => !hasWatermarkHint(p)).length).toBeGreaterThanOrEqual(1);
+    expect(reminderCount(provider.calls)).toBe(1);
+    // 首条请求（第一个工具步）已携带预检提醒
+    expect(
+      provider.calls[0]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes("[系统提醒]")),
+      ),
+    ).toBe(true);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+    // 提醒入 appended（与循环内提醒同一持久化语义）
+    expect(result.appended.filter((m) => m.role === "system")).toHaveLength(1);
+  });
+
+  it("G3 估算含工具定义：messages 很小但 tools 很大时，步后水位按估算触发提醒", async () => {
+    const provider = new SnapshotWatermarkToolLoopProvider();
+    const bigTools = [
+      {
+        type: "function",
+        function: {
+          name: "dummy",
+          description: "x".repeat(20000), // 工具定义 ≈ 2600+ tokens
+          parameters: {},
+        },
+      },
+    ];
+    const bigOutputTool: Tool = {
+      name: "dummy",
+      description: "big output",
+      parameters: z.object({}),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute(): Promise<ToolResult> {
+        return { success: true, output: "x".repeat(15000) }; // 工具结果 ≈ 1950 tokens
+      },
+    };
+    const messages = [userMessage("hi")];
+    const pre =
+      getTokenCounter().countMessages(messages) + getTokenCounter().countTools(bigTools);
+    const window = Math.floor(pre / 0.5); // 首步预检 ≈ 0.5（不提醒）
+
+    const events: LLMEvent[] = [];
+    const result = await runTurn(
+      {
+        provider,
+        model: "watermark-tool-loop",
+        messages,
+        tools: bigTools,
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["dummy", bigOutputTool]]),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+        contextWindow: window,
+        maxSteps: 10,
+      },
+      (e) => events.push(e),
+    );
+
+    // 第一步后 messages 增加 ≈1950 tokens：含 tools 的估算跨 0.7 → 循环内提醒；
+    // 若估算不含 tools（旧口径），该步后水位仅 ≈0.37，不会触发提醒
+    expect(provider.calls.length).toBeGreaterThanOrEqual(2);
+    expect(reminderCount(provider.calls)).toBe(1);
+    const hasReminder = (params: LLMChatParams) =>
+      params.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes("[系统提醒]")),
+      );
+    expect(hasReminder(provider.calls[0]!)).toBe(false);
+    expect(hasReminder(provider.calls[1]!)).toBe(true);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
   });
 

@@ -15,6 +15,7 @@ const KNOWN_AGENT_FIELDS = new Set([
   "fallbackProviderIds",
   "subagentNotify",
   "imageProviderId", "imageModelId", "temperature", "topP", "maxContextTokens",
+  "reactMaxSteps",
   "trustAllTools",
   "compressionModel", "topicDetectionWindowMinutes", "topicMessageThreshold",
   "semanticSearchEnabled", "semanticTopK", "semanticMinScore",
@@ -29,6 +30,7 @@ const FIELD_HINTS: Record<string, string> = {
   image: "imageProviderId",
   top_p: "topP",
   max_context_tokens: "maxContextTokens",
+  react_max_steps: "reactMaxSteps",
   compression_model: "compressionModel",
 };
 

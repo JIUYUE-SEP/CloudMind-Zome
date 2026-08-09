@@ -150,12 +150,18 @@ async function runMaxStepsSummary(
 
 /**
  * 水位 U（双口径取大）：实测 = provider step.end usage（权威回报）；
- * 估算 = 本地 token 计数（当前 messages，含刚追加的工具结果）。缺哪路用哪路。
+ * 估算 = 本地 token 计数（当前 messages，含刚追加的工具结果）+ 工具定义
+ * （G3：与 pipeline budgetTokens 同口径，估算不再漏掉 tools）。缺哪路用哪路。
  */
-function contextUsedTokens(result: StepResult, messages: ChatMessage[]): number {
-  const estimated = getTokenCounter().countMessages(messages);
+function contextUsedTokens(
+  result: StepResult | undefined,
+  messages: ChatMessage[],
+  tools: unknown[],
+): number {
+  const estimated =
+    getTokenCounter().countMessages(messages) + getTokenCounter().countTools(tools);
   const measured =
-    result.usage === undefined
+    result?.usage === undefined
       ? undefined
       : result.usage.promptTokens + result.usage.completionTokens;
   if (measured === undefined) return estimated;
@@ -214,7 +220,26 @@ export async function runTurn(
   let step = 0;
   let watermarked = false; // 本回合已发过 70% 提醒（每回合最多一次）
   let watermarkStop = false; // 本回合已撞 90% 顶（跳出循环走兜底）
-  for (; step < maxSteps; step++) {
+
+  // G1 首步预检：循环开始前（首步发起前）先算一次水位——messages 已含 pipeline
+  // 组装结果/初始历史，tools 计入估算（G3）。撞顶则不进循环直接走水位兜底；
+  // 0.7-0.9 则先注入提醒再正常进循环（与循环内检查共享"每回合一次"语义）。
+  const preUsed = contextUsedTokens(undefined, messages, tools);
+  const preWindow = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const preRatio = preUsed / preWindow;
+  if (preRatio >= CONTEXT_STOP_RATIO) {
+    watermarkStop = true;
+  } else if (preRatio >= CONTEXT_WARN_RATIO && !watermarked) {
+    const reminder = makeWatermarkReminder(preUsed, preWindow);
+    messages.push(reminder);
+    appended.push(reminder);
+    if (input.onStepAppended) {
+      await input.onStepAppended([reminder]);
+    }
+    watermarked = true;
+  }
+
+  for (; step < maxSteps && !watermarkStop; step++) {
     if (input.signal?.aborted) {
       throw new Error("aborted");
     }
@@ -267,7 +292,7 @@ export async function runTurn(
     // 水位判据（改动一）：每步结束后（工具结果已追加、下一步发起前）算 r = U / W。
     // 只作用于还会继续的 tool_use 步：撞顶即收（走兜底绝不静默），提醒则继续。
     if (result.stopReason === "tool_use") {
-      const used = contextUsedTokens(result, messages);
+      const used = contextUsedTokens(result, messages, tools);
       const window = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
       const ratio = used / window;
       if (ratio >= CONTEXT_STOP_RATIO) {

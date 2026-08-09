@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { resolveContextWindow } from "../../src/compute/context-window.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../src/context/pipeline.js";
+import { logger } from "../../src/logger.js";
 import type { ConfigRepository, GlobalConfig } from "../../src/config/repository.js";
 import type { ProviderConfig } from "@mindcloud/shared";
 
@@ -68,5 +69,48 @@ describe("resolveContextWindow（改动三 W 查找链）", () => {
   it("配置读取失败：返回 undefined 不抛错（水位按缺省兜底）", async () => {
     const repo = { load: async () => { throw new Error("config corrupt"); } };
     expect(await resolveContextWindow(repo, { providerId: "p1", modelId: "m1" })).toBeUndefined();
+  });
+
+  it("G4：查不到 contextWindow 时 warn 留痕（含 providerId/modelId；同 key 只一次）", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      // 型号未配置 contextWindow
+      await resolveContextWindow(fakeRepo([provider("g4p1", [model("g4m1")])]), {
+        providerId: "g4p1",
+        modelId: "g4m1",
+      });
+      // provider 缺失
+      await resolveContextWindow(fakeRepo([provider("g4p1", [model("g4m1", 128_000)])]), {
+        providerId: "g4pX",
+        modelId: "g4m1",
+      });
+      // 型号缺失
+      await resolveContextWindow(fakeRepo([provider("g4p1", [model("g4m1", 128_000)])]), {
+        providerId: "g4p1",
+        modelId: "g4mX",
+      });
+      // 参数缺失（未接线/agent 未配置 provider）
+      await resolveContextWindow(fakeRepo([provider("g4p1", [model("g4m1", 128_000)])]), {
+        providerId: "g4p1",
+        modelId: undefined,
+      });
+
+      expect(warn).toHaveBeenCalledTimes(4);
+      // 首条：型号未配置 contextWindow，warn 带 providerId/modelId
+      expect(warn.mock.calls[0]![0]).toMatchObject({ providerId: "g4p1", modelId: "g4m1" });
+      for (const call of warn.mock.calls) {
+        expect(String(call[1])).toContain("provider=");
+        expect(String(call[1])).toContain("model=");
+      }
+
+      // 同 key 重复查只 warn 一次（防逐回合刷屏）
+      await resolveContextWindow(fakeRepo([provider("g4p1", [model("g4m1")])]), {
+        providerId: "g4p1",
+        modelId: "g4m1",
+      });
+      expect(warn).toHaveBeenCalledTimes(4);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

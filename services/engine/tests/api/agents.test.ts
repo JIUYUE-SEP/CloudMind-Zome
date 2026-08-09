@@ -19,6 +19,7 @@ import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
 import { getAgentDir } from "../../src/config/paths.js";
 import { DEFAULT_SOUL_TEMPLATE, DEFAULT_MIND_CONTENT } from "../../src/mind/mind-files.js";
+import { normalizeReactMaxSteps } from "../../src/core/agent-worker.js";
 
 async function buildTestContext(
   extra?: Partial<ApiContext>,
@@ -364,6 +365,32 @@ describe("Agent API", () => {
     expect(res.status).toBe(200);
     const getRes = await authedRequest(app.server).get("/agents/a1");
     expect(getRes.body.subagentNotify).toBe(false);
+    await app.close();
+  });
+
+  it("POST/PUT 接受 reactMaxSteps 字段；999 由引擎归一 clamp 500", async () => {
+    const app = await makeApp();
+    const agent = {
+      id: "a1",
+      name: "A1",
+      persona: "",
+      model: "mock",
+      skills: [],
+      tools: [],
+      reactMaxSteps: 200,
+    };
+    const postRes = await authedRequest(app.server).post("/agents").send(agent);
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.reactMaxSteps).toBe(200);
+
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.body.reactMaxSteps).toBe(200);
+
+    // PUT 合并语义：999 合法落库（REST 不拦越界值），引擎侧 normalize clamp 到 500
+    const putRes = await authedRequest(app.server).put("/agents/a1").send({ reactMaxSteps: 999 });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.reactMaxSteps).toBe(999);
+    expect(normalizeReactMaxSteps(putRes.body.reactMaxSteps)).toBe(500);
     await app.close();
   });
 

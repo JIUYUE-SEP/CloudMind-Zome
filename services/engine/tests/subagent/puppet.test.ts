@@ -558,11 +558,11 @@ describe("⑧ 水位 W 查找链（puppet）", () => {
 
     const output = await runner.run("a1", "do work");
 
-    // 窗口 10：基础设定 + 简报已远超 90%，第一步即水位撞顶（工具步 + 兜底各一次）
+    // 窗口 10：基础设定 + 简报已远超 90%，首步预检即水位撞顶（不发工具步，直接兜底）
     expect(output).toBe("傀儡水位收尾");
-    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls).toHaveLength(1);
     expect(
-      provider.calls[1]!.messages.some(
+      provider.calls[0]!.messages.some(
         (m) =>
           m.role === "system" &&
           m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),

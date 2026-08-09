@@ -16,6 +16,7 @@ import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedde
 import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-gen.js";
 import { AgentWorker } from "./core/agent-worker.js";
 import { createContextPipelineForAgent } from "./core/pipeline-factory.js";
+import { resolveContextWindow } from "./compute/context-window.js";
 import { getBuiltinTools } from "./tools/builtin/index.js";
 import { McpClientManager } from "./tools/mcp/index.js";
 import type { ApiContext } from "./api/context.js";
@@ -264,6 +265,14 @@ async function main() {
     ];
     const workspaceDir = getAgentDir(agentId);
 
+    // G2（双源统一）：pipeline 预算与水位 W 同一查找链——型号表 contextWindow 优先
+    // 驱动预算；查不到回退 agent 显式 maxContextTokens / 80_000（pipeline-factory 兜底）
+    const resolvedContextWindow = await resolveContextWindow(configRepo, {
+      providerId: agentConfig.providerId,
+      modelId: agentConfig.modelId || agentConfig.model || "gpt-4o",
+    });
+    const contextPipeline = createContextPipelineForAgent(agentConfig, resolvedContextWindow);
+
     // 只有配置了真实 embedder 时才启用向量索引；Mock embedder 的随机向量没有检索意义
     const memoryIndexer =
       embedder instanceof MockEmbedderProvider ? undefined : new MemoryIndexer(sidecarClient, embedder);
@@ -297,8 +306,9 @@ async function main() {
         intermindService,
         recallService,
       },
-      // M2：上下文预算接 agent 级配置（maxContextTokens），缺省 80000
-      contextPipeline: createContextPipelineForAgent(agentConfig),
+      // M2 + G2：上下文预算由 W 查找链驱动（型号表 contextWindow），查不到接
+      // agent 级配置（maxContextTokens），再缺省 80000
+      contextPipeline,
       // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）
       topicCompression: {
         ...(agentConfig.compressionModel !== undefined ? { compressionModel: agentConfig.compressionModel } : {}),

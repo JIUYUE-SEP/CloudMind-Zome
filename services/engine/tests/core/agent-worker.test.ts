@@ -237,10 +237,10 @@ describe("AgentWorker", () => {
     worker.enqueue({ id: "j-wm", messages: [userMessage("查资料")], onEvent: () => {}, onDone });
     await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
 
-    // 窗口 10：L1 注入 + 历史已远超 90%，第一步即水位撞顶 → 工具步 + 兜底总结各一次
-    expect(provider.calls).toHaveLength(2);
+    // 窗口 10：L1 注入 + 历史已远超 90%，首步预检即水位撞顶 → 不发工具步，直接兜底
+    expect(provider.calls).toHaveLength(1);
     expect(
-      provider.calls[1]!.messages.some(
+      provider.calls[0]!.messages.some(
         (m) =>
           m.role === "system" &&
           m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
