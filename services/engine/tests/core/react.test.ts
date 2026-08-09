@@ -742,9 +742,16 @@ describe("上下文水位主裁（改动一）", () => {
       result.appended.at(-1)!.content.some((c) => c.type === "text" && c.text === "水位收尾"),
     ).toBe(true);
 
-    // 提醒入 appended 且经落盘钩子（历史留痕）
+    // 提醒入 appended 且经落盘钩子（历史留痕）；appended 不含交接书
     expect(result.appended.filter((m) => m.role === "system")).toHaveLength(1);
-    expect(persisted.filter((m) => m.role === "system")).toHaveLength(1);
+    // 落盘钩子多一条交接书（水位撞顶=换班移交的消息载体）：提醒 1 条 + 交接书 1 条
+    const persistedSystems = persisted.filter((m) => m.role === "system");
+    expect(persistedSystems).toHaveLength(2);
+    expect(
+      persistedSystems.some((m) =>
+        m.content.some((c) => c.type === "text" && c.text.startsWith("[交接书]")),
+      ),
+    ).toBe(true);
   });
 
   it("水位计算·仅 usage：无估算压力时按 provider 实测 90% 撞顶，跳出循环走兜底", async () => {

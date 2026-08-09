@@ -10,6 +10,8 @@ export interface AssembleOptions {
   retrievalFailed?: boolean;
   /** 规程自动恢复（阶段 5 二期）：尾部 system 消息（检索失败告知之前） */
   skillRestore?: string;
+  /** 换班交接书置顶注入：固定 system 消息置于 L1 之前（永不降级、永不被裁剪） */
+  handoffPinned?: string;
 }
 
 export function systemMessage(text: string): ChatMessage {
@@ -40,6 +42,12 @@ function timestampOf(msg: ChatMessage): number {
 export function assembleMessages(layers: ContextLayers, opts: AssembleOptions = {}): ChatMessage[] {
   const now = opts.now ?? Date.now();
   const messages: ChatMessage[] = [];
+
+  // 置顶注入（换班续跑）：交接书置于最顶部——即使 L3 历史被降级裁剪，
+  // 下一棒模型也必然看到"任务未完成、进展与下一步计划"
+  if (opts.handoffPinned) {
+    messages.push(systemMessage(opts.handoffPinned));
+  }
 
   // 固定前缀：L1/L2 相邻且内容在会话内不变，前缀缓存命中率最大化
   if (layers.l1.trim()) {

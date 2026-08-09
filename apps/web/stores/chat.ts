@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import type { HandoffUpdateFrame } from "@mindcloud/shared";
 import { useEngineClient } from "@/composables/useEngineClient";
 import { useChatRecords, setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
 import {
@@ -17,6 +18,8 @@ export const useChatStore = defineStore("chat", () => {
   const messages = ref<DisplayMessage[]>([]);
   const isConnected = ref(false);
   const isStreaming = ref(false);
+  /** 换班移交状态（水位撞顶自动续跑：scheduled/running 时输入框保持可打断） */
+  const handoffStatus = ref<HandoffUpdateFrame | null>(null);
   // 断线重连状态（P0-3）：>0 表示正在第 N 次重试，UI 显示"重连中"而非静默
   const reconnectAttempts = ref(0);
   const engineTerminated = client.sidecarTerminated;
@@ -170,10 +173,15 @@ export const useChatStore = defineStore("chat", () => {
         isConnected.value = false;
         isStreaming.value = false;
         reconnectAttempts.value = 0;
+        handoffStatus.value = null;
         // engine 主动关闭会带原因（4001 agent 不存在、4002 session 不存在、4403 冲突等）
         if (reason) {
           pushErrorMessage(`连接已关闭：${reason}`);
         }
+      },
+      onHandoffUpdate: (update) => {
+        if (stale()) return;
+        handoffStatus.value = update;
       },
     });
     connection = conn;
@@ -187,6 +195,8 @@ export const useChatStore = defineStore("chat", () => {
       pushErrorMessage("发送失败：连接未就绪，请稍后重试");
       return;
     }
+    // 用户消息 = abort 打断：先清换班状态（engine 收到消息即取消续跑链）
+    handoffStatus.value = null;
     messages.value.push({
       id: nextMsgId("u"),
       role: "user",
@@ -248,6 +258,7 @@ export const useChatStore = defineStore("chat", () => {
     isConnected.value = false;
     isStreaming.value = false;
     reconnectAttempts.value = 0;
+    handoffStatus.value = null;
     // store 是单例：清空消息，避免切换 agent 时短暂残留上一个会话的内容
     messages.value = [];
   }
@@ -257,6 +268,7 @@ export const useChatStore = defineStore("chat", () => {
     messages,
     isConnected,
     isStreaming,
+    handoffStatus,
     reconnectAttempts,
     engineTerminated,
     loadMessages,

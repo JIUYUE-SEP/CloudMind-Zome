@@ -8,6 +8,11 @@ import type { Tool, ToolContext } from "../tools/types.js";
 import type { ConfigRepository } from "../config/repository.js";
 import { resolveContextWindow } from "../compute/context-window.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../context/pipeline.js";
+import {
+  HANDOFF_DEFAULT_MAX_SHIFTS,
+  HANDOFF_MAX_SHIFTS_MIN,
+  HANDOFF_MAX_SHIFTS_MAX,
+} from "../handoff/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
@@ -69,6 +74,25 @@ export function normalizeReactMaxSteps(value: number | undefined): number {
   return clamped;
 }
 
+/** 棒数保险丝归一：缺省 3；越界 clamp 1-10；非有限值回退缺省并 warn */
+export function normalizeHandoffMaxShifts(value: number | undefined): number {
+  if (value === undefined) return HANDOFF_DEFAULT_MAX_SHIFTS;
+  if (!Number.isFinite(value)) {
+    logger.warn(
+      `[agent-worker] handoffMaxShifts=${value} 非法，已按缺省 ${HANDOFF_DEFAULT_MAX_SHIFTS} 处理`,
+    );
+    return HANDOFF_DEFAULT_MAX_SHIFTS;
+  }
+  const clamped = Math.min(
+    Math.max(Math.round(value), HANDOFF_MAX_SHIFTS_MIN),
+    HANDOFF_MAX_SHIFTS_MAX,
+  );
+  if (clamped !== value) {
+    logger.warn(`[agent-worker] handoffMaxShifts=${value} 越界，已 clamp 到 ${clamped}`);
+  }
+  return clamped;
+}
+
 /**
  * Skills 段固定纪律话术（阶段 5 一期，Skill 工具化语义，迁移 kimi skill.md 的
  * 「命中即遵循」精神）：L1 只注目录（名字+一句话），正文经 Skill 工具按需取回。
@@ -93,6 +117,8 @@ export interface AgentWorkerConfig {
   topP?: number;
   /** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）；缺省 100，clamp 1-500 */
   reactMaxSteps?: number;
+  /** 棒数保险丝（水位撞顶换班续跑上限）；缺省 3，clamp 1-10 */
+  handoffMaxShifts?: number;
   /** W 链回退档（H1 补档）：型号表 contextWindow 查不到时，W 与 pipeline 预算共同回落 agent 显式 maxContextTokens，再回落 80_000 */
   maxContextTokens?: number;
   /** 主算力 providerId（水位 W 查找链：providerId + modelId → 型号表 contextWindow） */
@@ -141,6 +167,11 @@ export interface Job {
   onApprovalRequest?: (req: ApprovalRequest) => Promise<boolean>;
   /** 本回合由 Intermind 私信唤醒触发：回信搭车（只入队、不再次唤醒对方） */
   intermindRide?: boolean;
+  /**
+   * 换班续跑（ws 层调度）：交接书置顶注入 + 棒次戳。
+   * 缺省首棒 shift=1、maxShifts=worker 配置；续跑由 HandoffResumeLoop 显式传入。
+   */
+  handoffResume?: { shift: number; maxShifts: number; bookText: string };
 }
 
 export interface ApprovalRequest {
@@ -157,6 +188,7 @@ export class AgentWorker {
   private runningJob: Job | null = null;
   private pipeline: ContextPipeline;
   private reactMaxSteps: number;
+  private handoffMaxShifts: number;
   private topicConfig: TopicCompressionConfig;
   private topicTracker: TopicTracker;
   private compressionQueue: CompressionQueue;
@@ -178,6 +210,7 @@ export class AgentWorker {
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
     this.reactMaxSteps = normalizeReactMaxSteps(config.reactMaxSteps);
+    this.handoffMaxShifts = normalizeHandoffMaxShifts(config.handoffMaxShifts);
     this.topicConfig = normalizeTopicCompressionConfig(config.topicCompression);
     this.boundaryModel =
       this.topicConfig.boundaryModel || this.topicConfig.compressionModel || config.model;
@@ -664,6 +697,7 @@ export class AgentWorker {
         model: this.config.model,
         messages,
         tools: toolDescriptions,
+        handoff: job.handoffResume ?? { shift: 1, maxShifts: this.handoffMaxShifts },
         toolCtx: {
           agentId: this.config.agentId,
           workspaceDir: this.config.workspaceDir,
@@ -728,6 +762,9 @@ export class AgentWorker {
             mindChunks,
             retrievalFailed,
             skillRestore,
+            ...(job.handoffResume !== undefined
+              ? { handoffPinned: job.handoffResume.bookText }
+              : {}),
           },
         },
       };
@@ -735,6 +772,24 @@ export class AgentWorker {
       logger.debug(`[agent-worker] before runTurn, messages: ${messages.length} tools: ${toolDescriptions.length}`);
       const result = await runTurn(turnInput, job.onEvent);
       logger.debug(`[agent-worker] after runTurn, appended: ${result.appended.length}`);
+
+      // 水位撞顶 = 换班移交：交接书消息载体已随 onStepAppended 落历史；
+      // 这里补发 handoff.book 事件，ws 层续跑循环据此写控制面并调度下一棒
+      if (result.handoffBook) {
+        const bookText = result.handoffBook.content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("");
+        job.onEvent({
+          type: "handoff.book",
+          shift: result.handoffShift ?? 1,
+          maxShifts: result.handoffMaxShifts ?? this.handoffMaxShifts,
+          used: result.watermarkUsed ?? 0,
+          window: result.watermarkWindow ?? 0,
+          bookMessageId: result.handoffBook.id,
+          bookText,
+        });
+      }
 
       // 持久化已在 runTurn 内按 step 完成（onStepAppended），此处不再重复 append。
 

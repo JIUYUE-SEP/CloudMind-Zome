@@ -21,8 +21,9 @@
         />
       </template>
     </div>
+    <div v-if="handoffText" class="handoff-banner">{{ handoffText }}</div>
     <div class="status">{{ statusText }}</div>
-    <MessageInput :is-loading="chat.isStreaming" @send="onSend" />
+    <MessageInput :is-loading="chat.isStreaming && !handoffActive" @send="onSend" />
   </div>
 </template>
 
@@ -91,6 +92,24 @@ onUnmounted(() => {
   chat.disconnectFor(props.agentId);
 });
 
+// 换班移交（水位撞顶自动续跑）：scheduled/running 期间输入框保持可打断，
+// 用户发送消息即 abort 续跑链（engine 侧 cancel + signal abort）
+const handoffActive = computed(() => {
+  const s = chat.handoffStatus?.status;
+  return s === "pending" || s === "scheduled" || s === "running";
+});
+
+const handoffText = computed(() => {
+  const h = chat.handoffStatus;
+  if (!h) return "";
+  const base = `水位撞顶换班移交 · 第 ${h.shift}/${h.maxShifts} 棒`;
+  if (h.status === "pending" || h.status === "scheduled" || h.status === "running") {
+    return `${base} · 自动续跑中（发送消息可打断）`;
+  }
+  if (h.status === "fused") return `${base} · 已达棒数上限，自动续跑停止`;
+  return "";
+});
+
 function onSend(text: string) {
   chat.send(text);
 }
@@ -121,5 +140,14 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
   padding: 4px 12px;
   font-size: 12px;
   color: #8899aa;
+}
+.handoff-banner {
+  margin: 0 12px 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #e8b86a;
+  background: rgba(232, 184, 106, 0.12);
+  border: 1px solid rgba(232, 184, 106, 0.35);
 }
 </style>

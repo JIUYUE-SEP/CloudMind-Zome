@@ -1,5 +1,11 @@
 import type { AgentConfig, ChatMode } from "@mindcloud/shared";
-import type { ChatMessageRecord, ModelInfo, ProviderConfig, ScheduledTask } from "@mindcloud/shared";
+import type {
+  ChatMessageRecord,
+  HandoffUpdateFrame,
+  ModelInfo,
+  ProviderConfig,
+  ScheduledTask,
+} from "@mindcloud/shared";
 import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
 import type { ApprovalRequestPayload } from "@/utils/approval";
 import { ref } from "vue";
@@ -44,6 +50,24 @@ export interface Session {
   projectId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface HandoffRecord {
+  id: string;
+  agentId: string;
+  sessionId: string;
+  reason: "watermark";
+  status: HandoffUpdateFrame["status"];
+  shift: number;
+  maxShifts: number;
+  bookMessageId?: string;
+  bookText: string;
+  used: number;
+  window: number;
+  createdAt: number;
+  updatedAt: number;
+  resumeJobId?: string;
+  abortReason?: string;
 }
 
 export interface BlueprintNode {
@@ -102,6 +126,8 @@ export interface WebSocketHandlers {
   // 重连成功（仅断线后的再次 onOpen 触发，首次连接不触发）；调用方应在此拉取状态对齐
   onReconnected?: () => void;
   onModeChanged?: (mode: ChatMode, projectId?: string) => void;
+  /** 换班移交状态帧（水位撞顶自动续跑/保险丝/abort 的可见化） */
+  onHandoffUpdate?: (update: HandoffUpdateFrame) => void;
 }
 
 export interface Connection {
@@ -336,6 +362,28 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
+  // Handoff（换班移交控制面：水位撞顶自动续跑）
+  async function listHandoffs(
+    agentId?: string,
+    sessionId?: string,
+  ): Promise<HandoffRecord[]> {
+    const params = new URLSearchParams();
+    if (agentId) params.set("agentId", agentId);
+    if (sessionId) params.set("sessionId", sessionId);
+    const qs = params.toString();
+    const res = await engineFetch(`${baseUrl.value}/handoff${qs ? `?${qs}` : ""}`);
+    await ensureOk(res, "list handoffs");
+    return res.json();
+  }
+
+  async function abortHandoff(id: string): Promise<HandoffRecord> {
+    const res = await engineFetch(`${baseUrl.value}/handoff/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    await ensureOk(res, "abort handoff");
+    return res.json();
+  }
+
   // Compute
   async function listProviders(): Promise<Provider[]> {
     const res = await engineFetch(`${baseUrl.value}/compute/providers`);
@@ -552,6 +600,9 @@ export function useEngineClient(options?: EngineClientOptions) {
             case "session.mode_changed":
               handlers.onModeChanged?.(data.mode, data.projectId);
               break;
+            case "handoff.update":
+              handlers.onHandoffUpdate?.(data);
+              break;
             case "error":
               handlers.onError?.(data.error);
               break;
@@ -703,6 +754,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     updateSession,
     deleteSession,
     getSessionMessages,
+    listHandoffs,
+    abortHandoff,
     listProviders,
     createProvider,
     updateProvider,

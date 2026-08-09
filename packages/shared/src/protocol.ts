@@ -28,6 +28,36 @@ export interface SessionModeChangedFrame {
   projectId?: string;
 }
 
+/**
+ * 换班移交状态（水位撞顶自动续跑的控制面状态）。
+ * 权威定义在 engine（handoff/types.ts），跨 WS 帧与 REST DTO 共用此类型，
+ * 防止两端再次漂移。
+ */
+export type HandoffStatus =
+  | "pending"
+  | "scheduled"
+  | "running"
+  | "completed"
+  | "aborted"
+  | "fused"
+  | "lost";
+
+/** 换班移交状态帧（水位撞顶 → 交接书 → 自动续跑/保险丝/abort 的可见化） */
+export interface HandoffUpdateFrame {
+  type: "handoff.update";
+  /** 群聊帧外层可额外携带 agentId */
+  agentId?: string;
+  status: HandoffStatus;
+  /** 当前（最近一次撞顶的）棒次 */
+  shift: number;
+  /** 棒数保险丝上限 */
+  maxShifts: number;
+  /** 交接书消息 id（消息载体；落历史可查） */
+  bookMessageId?: string;
+  /** 状态成因（user_message / manual / disconnect / engine_restart 等） */
+  reason?: string;
+}
+
 /** 错误帧（群聊帧外层可额外携带 agentId） */
 export interface WsErrorFrame {
   type: "error";

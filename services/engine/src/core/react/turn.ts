@@ -25,12 +25,18 @@ export const MAX_STEPS_FALLBACK_REPLY = "我查了很多资料但没能整理好
 export const CONTEXT_WATERMARK_FALLBACK_REPLY =
   "本轮上下文已接近窗口上限，未能整理好答案，请再问我一次";
 
+/** 交接书消息载体前缀（水位撞顶=换班移交：换班不死） */
+export const HANDOFF_BOOK_PREFIX = "[交接书]";
+
 /**
  * 上下文水位主裁（改动一）：硬编码产品语义，不开放配置。
  * 0.7 = 提醒线：每回合至多追加一条 system 提醒后继续；0.9 = 撞顶线：跳出循环走兜底。
  */
 const CONTEXT_WARN_RATIO = 0.7;
 const CONTEXT_STOP_RATIO = 0.9;
+
+/** 棒数保险丝缺省（换班续跑最多 3 棒；worker 侧 clamp 1-10） */
+export const HANDOFF_DEFAULT_MAX_SHIFTS = 3;
 
 type SummaryReason = "max_steps" | "watermark";
 
@@ -49,6 +55,12 @@ export interface TurnInput {
    * 传入（改动三 helper）；缺省 80_000（与 pipeline 缺省同值）。
    */
   contextWindow?: number;
+  /**
+   * 换班移交（交接书）：撞顶时给交接书盖的棒次戳与保险丝上限。
+   * 首棒缺省 shift=1、maxShifts=HANDOFF_DEFAULT_MAX_SHIFTS；
+   * 续跑由调度方（ws 层）显式传入下一棒次与同一保险丝上限。
+   */
+  handoff?: { shift: number; maxShifts: number };
   /** 外部取消信号（如 subagent 前台超时）：在步骤边界检查并中止本轮 */
   signal?: AbortSignal;
   /**
@@ -78,6 +90,16 @@ export interface TurnResult {
    * 水位 70% 提醒（system）也计入，随话题关闭归档。
    */
   appended: ChatMessage[];
+  /** 本轮是否水位撞顶（换班移交语义：撞顶不静默死亡，产出交接书） */
+  watermarkStopped: boolean;
+  /** 交接书消息载体（撞顶时产出；作为 system 消息落历史并返回，供置顶注入） */
+  handoffBook?: ChatMessage;
+  /** 交接书棒次/保险丝（与 handoffBook 同源；首棒 1/3） */
+  handoffShift?: number;
+  handoffMaxShifts?: number;
+  /** 撞顶时水位 U/W（交接书元信息与日志） */
+  watermarkUsed?: number;
+  watermarkWindow?: number;
 }
 
 function assistantText(message: ChatMessage): string {
@@ -194,6 +216,31 @@ function makeWatermarkReminder(used: number, window: number): ChatMessage {
   };
 }
 
+/** 交接书消息载体：结构化文本（进展=撞顶兜底总结产出；元信息=水位/棒次） */
+function makeHandoffBook(
+  summary: string,
+  used: number,
+  window: number,
+  shift: number,
+  maxShifts: number,
+): ChatMessage {
+  const pct = Math.round((used / window) * 100);
+  return {
+    id: `msg_${Date.now()}`,
+    role: "system",
+    content: [
+      {
+        type: "text",
+        text:
+          `${HANDOFF_BOOK_PREFIX} 上下文水位撞顶，本轮任务未完成，换班移交（第 ${shift}/${maxShifts} 棒）。\n` +
+          `- 已用上下文：${used}/${window} tokens（${pct}%）。\n` +
+          `- 上棒进展与下一步计划：\n${summary}`,
+      },
+    ],
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export async function runTurn(
   input: TurnInput,
   emit: (event: LLMEvent) => void
@@ -224,10 +271,16 @@ export async function runTurn(
   let assistantMessage: ChatMessage | undefined;
   const toolMessages: ChatMessage[] = [];
   const appended: ChatMessage[] = [];
+  let resultHandoffBook: ChatMessage | undefined;
 
   let step = 0;
   let watermarked = false; // 本回合已发过 70% 提醒（每回合最多一次）
   let watermarkStop = false; // 本回合已撞 90% 顶（跳出循环走兜底）
+  // 最近一次水位检查的 U/W（撞顶兜底时用于交接书元信息；预检/步后都写）
+  let watermarkUsed: number | undefined;
+  let watermarkWindow: number | undefined;
+  const handoffShift = input.handoff?.shift ?? 1;
+  const handoffMaxShifts = input.handoff?.maxShifts ?? HANDOFF_DEFAULT_MAX_SHIFTS;
 
   // G1 首步预检：循环开始前（首步发起前）先算一次水位——messages 已含 pipeline
   // 组装结果/初始历史，tools 计入估算（G3）。撞顶则不进循环直接走水位兜底；
@@ -241,6 +294,8 @@ export async function runTurn(
     input.provider.protocol === "chat_completions",
   );
   const preWindow = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  watermarkUsed = preUsed;
+  watermarkWindow = preWindow;
   const preRatio = preUsed / preWindow;
   // H4（日志补全）：首步预检决策留痕，真机验证可看到 used/window/ratio 与走向
   logger.info(
@@ -324,6 +379,8 @@ export async function runTurn(
     if (result.stopReason === "tool_use") {
       const used = contextUsedTokens(result, messages, tools);
       const window = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      watermarkUsed = used;
+      watermarkWindow = window;
       const ratio = used / window;
       if (ratio >= CONTEXT_STOP_RATIO) {
         logger.info(
@@ -422,6 +479,25 @@ export async function runTurn(
     if (input.onStepAppended) {
       await input.onStepAppended([summary]);
     }
+    // 水位撞顶 = 换班移交：交接书作为消息载体落历史（onStepAppended 持久化），
+    // 供续跑置顶注入与用户回溯。不进 appended（system 载体，话题 tracker 与
+    // 向量索引都不需要；现有"appended 末尾=兜底产出"断言语义保持不破）。
+    if (watermarkStop) {
+      const used = watermarkUsed ?? contextUsedTokens(undefined, messages, tools);
+      const window = watermarkWindow ?? input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const book = makeHandoffBook(
+        assistantText(summary),
+        used,
+        window,
+        handoffShift,
+        handoffMaxShifts,
+      );
+      messages.push(book);
+      if (input.onStepAppended) {
+        await input.onStepAppended([book]);
+      }
+      resultHandoffBook = book;
+    }
   }
 
   // turn 级结束帧：与 step.end（每个 loop step 都发）区分，
@@ -433,5 +509,15 @@ export async function runTurn(
     assistantMessage: assistantMessage!,
     toolMessages,
     appended,
+    watermarkStopped: watermarkStop,
+    ...(resultHandoffBook !== undefined
+      ? {
+          handoffBook: resultHandoffBook,
+          handoffShift,
+          handoffMaxShifts,
+          watermarkUsed: watermarkUsed ?? 0,
+          watermarkWindow: watermarkWindow ?? 0,
+        }
+      : {}),
   };
 }

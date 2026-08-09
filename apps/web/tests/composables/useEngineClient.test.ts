@@ -111,6 +111,26 @@ describe("useEngineClient WS 帧路由", () => {
     lastSocket().onmessage?.({ data: JSON.stringify({ type: "think.delta", delta: "旧帧名" }) });
     expect(onThinkingDelta).not.toHaveBeenCalled();
   });
+
+  it("handoff.update 帧路由到 onHandoffUpdate", async () => {
+    const client = useEngineClient();
+    const onHandoffUpdate = vi.fn();
+    client.connect("agent-1", "default", { onHandoffUpdate });
+    await flushTokenReady();
+
+    lastSocket().onmessage?.({
+      data: JSON.stringify({
+        type: "handoff.update",
+        status: "running",
+        shift: 2,
+        maxShifts: 3,
+        bookMessageId: "msg_book",
+      }),
+    });
+    expect(onHandoffUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "handoff.update", status: "running", shift: 2, maxShifts: 3 }),
+    );
+  });
 });
 
 describe("useEngineClient REST 错误透出", () => {

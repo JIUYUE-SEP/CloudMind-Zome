@@ -183,4 +183,28 @@ describe("chat store 流式状态以 turn 为界", () => {
     expect(store.messages).toEqual([]);
     expect(store.isConnected).toBe(true);
   });
+
+  it("handoff.update 帧更新换班状态；用户发送消息即清状态（abort 打断）", async () => {
+    const store = useChatStore();
+    store.connect("a1");
+    await new Promise((r) => setTimeout(r, 0));
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    const frame = (data: unknown) => ws.onmessage?.({ data: JSON.stringify(data) });
+
+    frame({ type: "handoff.update", status: "scheduled", shift: 1, maxShifts: 3 });
+    expect(store.handoffStatus).toMatchObject({ status: "scheduled", shift: 1, maxShifts: 3 });
+
+    frame({ type: "handoff.update", status: "running", shift: 2, maxShifts: 3 });
+    expect(store.handoffStatus?.status).toBe("running");
+
+    // 用户消息 = abort 打断：本地立即清状态（engine 收到消息即取消续跑链）
+    store.send("打断");
+    expect(store.handoffStatus).toBeNull();
+
+    // 终态帧同样清状态
+    frame({ type: "handoff.update", status: "fused", shift: 3, maxShifts: 3 });
+    expect(store.handoffStatus?.status).toBe("fused");
+    frame({ type: "handoff.update", status: "completed", shift: 3, maxShifts: 3 });
+    expect(store.handoffStatus?.status).toBe("completed");
+  });
 });

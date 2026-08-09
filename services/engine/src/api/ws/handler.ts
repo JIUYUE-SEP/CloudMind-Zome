@@ -4,10 +4,13 @@ import type { WebSocket } from "ws";
 import type { ApiContext } from "../context.js";
 import type { ChatMessage, ApprovalRequestFrame } from "@mindcloud/shared";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
+import type { LLMEvent } from "../../provider/types.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
 import { isMcpToolName } from "../../tools/mcp/index.js";
+import { HandoffResumeLoop } from "../../handoff/resume-loop.js";
+import type { HandoffBookInfo } from "../../handoff/types.js";
 import {
   auditAutoApproved,
   auditDecision,
@@ -90,10 +93,85 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         socket.close(4001, "Agent not found");
         return;
       }
+      // 换班续跑循环（水位撞顶=换班不死）：控制面在 context.handoffManager；
+      // 调度/打断只在私聊连接上生效（群聊多 Agent 槽位语义留边界外）
+      const handoffLoop = context.handoffManager
+        ? new HandoffResumeLoop({
+            manager: context.handoffManager,
+            onUpdate: (record) => {
+              safeSend(socket, {
+                type: "handoff.update",
+                agentId,
+                status: record.status,
+                shift: record.shift,
+                maxShifts: record.maxShifts,
+                ...(record.bookMessageId !== undefined
+                  ? { bookMessageId: record.bookMessageId }
+                  : {}),
+                ...(record.abortReason !== undefined ? { reason: record.abortReason } : {}),
+              });
+            },
+            enqueueResume: (record, signal) => {
+              void (async () => {
+                if (signal.aborted) return;
+                try {
+                  const repo = context.getMessageRepository(agentId);
+                  const history = await repo.listBySession(sessionId, { limit: 20 }).catch(() => []);
+                  if (signal.aborted) return;
+                  // P3-5 同范式：入队前重新解析 worker（配置变更后旧引用会被退役）
+                  const targetWorker =
+                    (await context.getAgentWorker(agentId).catch(() => undefined)) ?? worker;
+                  targetWorker.enqueue({
+                    id: `handoff_resume_${randomUUID()}`,
+                    messages: history.length > 0 ? history : [],
+                    sessionId,
+                    signal,
+                    handoffResume: {
+                      shift: record.shift + 1,
+                      maxShifts: record.maxShifts,
+                      bookText: record.bookText,
+                    },
+                    onEvent: emitJobEvent,
+                    onDone: (err) => {
+                      void handoffLoop?.onJobDone(record, agentId, sessionId, err);
+                    },
+                  });
+                } catch (err) {
+                  logger.error({ err }, "[handoff] 续跑历史加载失败（不自动续跑）");
+                  void handoffLoop?.cancel(agentId, sessionId, "resume_history_failed");
+                }
+              })();
+            },
+          })
+        : undefined;
+
+      /** 单连接共享的 job 事件通道：拦截 handoff.book 交续跑循环，其余帧透传前端 */
+      const emitJobEvent = (event: LLMEvent): void => {
+        if (event.type === "handoff.book") {
+          const info: HandoffBookInfo = {
+            agentId,
+            sessionId,
+            reason: "watermark",
+            shift: event.shift,
+            maxShifts: event.maxShifts,
+            used: event.used,
+            window: event.window,
+            bookMessageId: event.bookMessageId,
+            bookText: event.bookText,
+          };
+          handoffLoop?.onWatermarkBook(info);
+          return;
+        }
+        const safeEvent = sanitizeDeltaEvent(event);
+        if (safeEvent) safeSend(socket, safeEvent);
+      };
+
       // WS 连接生命周期（排查断连/1006 的关键路径日志）
       logger.info({ agentId, sessionId }, "[ws] 私聊连接建立");
       socket.on("close", (code: number, reason: Buffer) => {
         logger.info({ agentId, sessionId, code, reason: reason.toString() }, "[ws] 私聊连接关闭");
+        // 断连即打断：清定时器、abort 在途续跑、控制面标 aborted（交接书仍在历史）
+        void handoffLoop?.cancel(agentId, sessionId, "disconnect");
       });
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
@@ -192,6 +270,10 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
+          // 用户消息 = abort 打断：续跑链（定时器/在途 job）立即取消，
+          // 本条消息成为新的一棒（正常对话路径不受影响）
+          await handoffLoop?.cancel(agentId, sessionId, "user_message");
+
           const userMessage: ChatMessage = {
             id: randomUUID(),
             role: "user",
@@ -226,11 +308,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             id: randomUUID(),
             messages: history.length > 0 ? history : [userMessage],
             sessionId,
-            onEvent: (event) => {
-              // delta 帧只放行 string，脏帧丢弃（sanitizeDeltaEvent 内部已打 warn）
-              const safeEvent = sanitizeDeltaEvent(event);
-              if (safeEvent) safeSend(socket, safeEvent);
-            },
+            onEvent: emitJobEvent,
             onApprovalRequest: requestApproval,
           });
         } catch {

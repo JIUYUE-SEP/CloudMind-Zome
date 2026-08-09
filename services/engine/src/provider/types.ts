@@ -41,13 +41,34 @@ export interface TurnEndEvent {
   type: "turn.end";
 }
 
+/**
+ * 水位撞顶换班移交（交接书消息载体）：runTurn 撞顶兜底后由 AgentWorker
+ * 在 job.onEvent 上补发。携带棒次/保险丝与交接书正文——WS 层的续跑循环
+ * 据此落 handoff-state.json 并调度下一棒；前端不直接消费本帧（由
+ * handoff.update 状态帧呈现），但转发也不破坏协议。
+ */
+export interface HandoffBookEvent {
+  type: "handoff.book";
+  /** 本次撞顶所属棒次（首棒 1，续跑递增） */
+  shift: number;
+  /** 棒数保险丝上限 */
+  maxShifts: number;
+  used: number;
+  window: number;
+  /** 交接书消息 id（消息载体；落历史可查，控制面记录用） */
+  bookMessageId: string;
+  /** 交接书正文（消息载体文本，落历史且供置顶注入） */
+  bookText: string;
+}
+
 export type LLMEvent =
   | TextDeltaEvent
   | ThinkingDeltaEvent
   | ToolCallEvent
   | ToolResultEvent
   | StepEndEvent
-  | TurnEndEvent;
+  | TurnEndEvent
+  | HandoffBookEvent;
 
 export interface LLMChatParams {
   model: string;

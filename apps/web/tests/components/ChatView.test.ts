@@ -5,6 +5,7 @@ import ChatView from "../../components/ChatView.vue";
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
+  static OPEN = 1;
   readyState = 1;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
@@ -16,7 +17,9 @@ class MockWebSocket {
     setTimeout(() => this.onopen?.(), 0);
   }
 
-  send() {}
+  send() {
+    return true;
+  }
   close() {
     this.readyState = 3;
     this.onclose?.();
@@ -116,5 +119,43 @@ describe("ChatView", () => {
 
     expect(wrapper.find(".thinking-block").exists()).toBe(false);
     expect(wrapper.find(".message-text").text()).toBe("你好");
+  });
+
+  it("换班续跑横幅：running 期间输入框可打断（发送消息清横幅）", async () => {
+    const wrapper = mount(ChatView, {
+      props: { agentId: "a1" },
+    });
+    await flushPromises();
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    const push = (frame: unknown) => ws.onmessage?.({ data: JSON.stringify(frame) });
+
+    // 续跑中流式输出 + 换班状态帧
+    push({ type: "text.delta", delta: "续跑进展" });
+    push({ type: "handoff.update", status: "running", shift: 2, maxShifts: 3 });
+    await flushPromises();
+
+    const banner = wrapper.find(".handoff-banner");
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain("第 2/3 棒");
+    expect(banner.text()).toContain("发送消息可打断");
+    await wrapper.find(".message-input input").setValue("打断");
+    // 换班续跑中不锁输入框：有文本且发送按钮可用（用户消息 = abort 打断）
+    expect(wrapper.find(".message-input button").attributes("disabled")).toBeUndefined();
+    await wrapper.find(".message-input input").trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(wrapper.find(".handoff-banner").exists()).toBe(false);
+  });
+
+  it("棒数保险丝撞顶：横幅展示停止续跑", async () => {
+    const wrapper = mount(ChatView, {
+      props: { agentId: "a1" },
+    });
+    await flushPromises();
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    ws.onmessage?.({
+      data: JSON.stringify({ type: "handoff.update", status: "fused", shift: 3, maxShifts: 3 }),
+    });
+    await flushPromises();
+    expect(wrapper.find(".handoff-banner").text()).toContain("已达棒数上限，自动续跑停止");
   });
 });

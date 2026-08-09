@@ -26,6 +26,8 @@ export interface AgentConfig {
   maxContextTokens?: number;
   /** ReAct 循环单轮最大步数（防空转保险丝）；缺省 100，越界 clamp 1-500 */
   reactMaxSteps?: number;
+  /** 棒数保险丝（水位撞顶换班续跑上限）；缺省 3，越界 clamp 1-10 */
+  handoffMaxShifts?: number;
   /** 话题压缩模型；缺省用主模型，压缩失败不 fallback（ContextPipeline Phase 2） */
   compressionModel?: string;
   /** 话题边界 LLM 裁判/压缩前复核模型；缺省用 compressionModel，再缺省用主模型 */

@@ -71,6 +71,8 @@ export interface AssembleInput {
    * 附带注入——不进 L1 固定前缀（保缓存前缀），语义属"规程数据通告"而非人格/记忆
    */
   skillRestore?: string;
+  /** 换班交接书置顶注入（续跑）：固定 system 消息置于 L1 之前，永不参与降级 */
+  handoffPinned?: string;
 }
 
 export interface AssembleResult {
@@ -189,6 +191,8 @@ export class ContextPipeline {
     // 固定部分（L1/L2 前缀、MIND、规程恢复、检索失败告知）不参与降级，只计一次；
     // 构造条件与 assembleMessages 逐条对应，口径一致
     const fixedMessages: ChatMessage[] = [];
+    // 置顶注入（交接书）与 L1/L2 等固定层同口径计入预算：永不降级
+    if (input.handoffPinned) fixedMessages.push(systemMessage(input.handoffPinned));
     if (layers.l1.trim()) fixedMessages.push(systemMessage(layers.l1));
     if (layers.l2?.trim()) fixedMessages.push(systemMessage(layers.l2));
     if (layers.mind.length > 0) fixedMessages.push(mindToMessage(layers.mind, now));
@@ -204,7 +208,12 @@ export class ContextPipeline {
       if (total <= this.budgetTokens) {
         this.markInjected(input.sourceId, layers);
         return {
-          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed, skillRestore: input.skillRestore }),
+          messages: assembleMessages(layers, {
+            now,
+            retrievalFailed: input.retrievalFailed,
+            skillRestore: input.skillRestore,
+            handoffPinned: input.handoffPinned,
+          }),
           tools,
         };
       }
@@ -218,7 +227,12 @@ export class ContextPipeline {
         );
         this.markInjected(input.sourceId, layers);
         return {
-          messages: assembleMessages(layers, { now, retrievalFailed: input.retrievalFailed, skillRestore: input.skillRestore }),
+          messages: assembleMessages(layers, {
+            now,
+            retrievalFailed: input.retrievalFailed,
+            skillRestore: input.skillRestore,
+            handoffPinned: input.handoffPinned,
+          }),
           tools,
         };
       }

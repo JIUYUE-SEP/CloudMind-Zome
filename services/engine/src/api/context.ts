@@ -12,6 +12,7 @@ import type { BlueprintRepository } from "../blueprint/repository.js";
 import type { PlanManager } from "../plan/manager.js";
 import type { SubagentDispatcher } from "../subagent/dispatcher.js";
 import type { BackgroundManager } from "../subagent/background.js";
+import type { HandoffManager } from "../handoff/manager.js";
 import type { SidecarClient } from "../sidecar/client.js";
 import type { McpClientManager } from "../tools/mcp/index.js";
 import type { SkillService } from "../skills/service.js";
@@ -36,6 +37,8 @@ export interface ApiContext {
   runAgentCollect?(agentId: string, messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<string>;
   subagentDispatcher?: SubagentDispatcher;
   backgroundManager?: BackgroundManager;
+  /** 换班移交控制面（handoff-state.json）；WS 私聊续跑循环与 REST 共用 */
+  handoffManager?: HandoffManager;
   /** sidecar gRPC 客户端（P1-3：删除 agent 时级联清理向量索引；dev/测试可缺省） */
   sidecarClient?: SidecarClient;
   /** MCP 工具 remember 判定查询（toolOverrides.allowRemember 放行；缺省/无 override 一律禁） */

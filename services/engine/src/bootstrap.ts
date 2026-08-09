@@ -42,6 +42,8 @@ import { createPuppetModelService } from "./subagent/puppet-models.js";
 import { IntermindService } from "./intermind/service.js";
 import { SubagentSwarm } from "./subagent/batch.js";
 import { createSubagentTerminalNotifier } from "./subagent/notify.js";
+import { HandoffManager } from "./handoff/manager.js";
+import { HandoffStateStore } from "./handoff/state.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
@@ -211,6 +213,8 @@ async function main() {
     },
     new SubagentTaskRepository(),
   );
+  // 换班移交控制面（水位撞顶=换班不死）：handoff-state.json 持久化 + 状态机
+  const handoffManager = new HandoffManager({ store: new HandoffStateStore() });
   const subagentDispatcher = new SubagentDispatcher({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
     runAgent: runAgentCollect,
@@ -302,6 +306,7 @@ async function main() {
       temperature: agentConfig.temperature,
       topP: agentConfig.topP,
       reactMaxSteps: agentConfig.reactMaxSteps,
+      handoffMaxShifts: agentConfig.handoffMaxShifts,
       maxContextTokens: agentConfig.maxContextTokens,
       providerId: agentConfig.providerId,
       configRepository: configRepo,
@@ -460,6 +465,7 @@ async function main() {
     runAgentCollect,
     subagentDispatcher,
     backgroundManager,
+    handoffManager,
     mcpManager,
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,
@@ -482,6 +488,8 @@ async function main() {
   // subagent 后台任务启动对账：持久化记录回填内存索引，running 一律标 lost
   // （重启语义：现场已毁、不知死活≠已知失败，交人工决策而非自动续跑）
   await backgroundManager.load();
+  // 换班控制面启动对账：活跃续跑条目标 lost（重启后不自动续跑，交接书仍在历史）
+  await handoffManager.load();
 
   // 启动对账（Phase 2 M3）：补归档"已有压缩档但仍留在热存储"的孤儿消息。
   // 在 scheduler/worker 产生新流量前完成；单 agent 失败只记 warn，不阻断启动。
