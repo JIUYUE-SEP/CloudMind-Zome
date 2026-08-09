@@ -1,8 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
-import Compute from "../../pages/compute.vue";
+import { mockNuxtImport } from "@nuxt/test-utils/runtime";
+import ComputeDetail from "../../../pages/compute/[id].vue";
 import type { ModelInfo, Provider } from "@/composables/useEngineClient";
+
+const { navigateToMock, routerPushMock, routeParams } = vi.hoisted(() => ({
+  navigateToMock: vi.fn(),
+  routerPushMock: vi.fn(),
+  routeParams: { id: "" as string },
+}));
+
+mockNuxtImport("navigateTo", () => navigateToMock);
+mockNuxtImport("useRoute", () => () => ({ params: routeParams }));
+mockNuxtImport("useRouter", () => () => ({ push: routerPushMock }));
 
 const provider: Provider = {
   id: "p1",
@@ -11,6 +22,10 @@ const provider: Provider = {
   baseUrl: "https://api.openai.com/v1",
   models: [],
 };
+
+function mountOptions() {
+  return { global: { stubs: { NuxtLink: true } } };
+}
 
 interface FetchCall {
   url: string;
@@ -45,188 +60,19 @@ function testButton(wrapper: ReturnType<typeof mount>) {
   return btn!;
 }
 
-async function openAddModal(wrapper: ReturnType<typeof mount>) {
-  const addBtn = wrapper.findAll("button").find((b) => b.text().includes("添加 Provider"));
-  expect(addBtn).toBeTruthy();
-  await addBtn!.trigger("click");
-  await flushPromises();
-}
-
-describe("compute 页：测试连接反馈", () => {
+describe("compute 管理页：型号管理", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    navigateToMock.mockClear();
+    routerPushMock.mockClear();
+    routeParams.id = "p1";
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("测试进行中显示 loading 且按钮禁用，成功后显示连接成功", async () => {
-    let resolveTest: ((r: unknown) => void) | undefined;
-    const { fetchMock } = mockFetch(
-      () =>
-        new Promise((resolve) => {
-          resolveTest = resolve as unknown as (r: unknown) => void;
-        }) as Promise<Response>,
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const wrapper = mount(Compute);
-    await flushPromises();
-
-    const btn = testButton(wrapper);
-    expect(btn.text()).toBe("测试连接");
-    await btn.trigger("click");
-
-    // 进行中：按钮文案变化且禁用
-    expect(testButton(wrapper).text()).toBe("测试中...");
-    expect(testButton(wrapper).attributes("disabled")).toBeDefined();
-
-    resolveTest!({ ok: true, json: () => Promise.resolve({ ok: true, discovered: [] }) });
-    await flushPromises();
-
-    expect(wrapper.find(".test-result").text()).toBe("连接成功");
-    expect(testButton(wrapper).text()).toBe("测试连接");
-    expect(testButton(wrapper).attributes("disabled")).toBeUndefined();
-  });
-
-  it("测试失败显示错误信息并绑定到对应 Provider", async () => {
-    const { fetchMock } = mockFetch(() =>
-      Promise.resolve({
-        ok: false,
-        status: 502,
-        json: () => Promise.resolve({ error: "Test connection failed" }),
-      } as unknown as Response),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const wrapper = mount(Compute);
-    await flushPromises();
-
-    await testButton(wrapper).trigger("click");
-    await flushPromises();
-
-    const result = wrapper.find(".test-result");
-    expect(result.classes()).toContain("fail");
-    expect(result.text()).toContain("连接失败");
-    expect(result.text()).toContain("Test connection failed");
-    // 结果渲染在该 Provider 卡片内
-    expect(result.element.closest(".provider-card")?.textContent).toContain("OpenAI");
-  });
-
-  it("测试进行中再次点击不重复发起", async () => {
-    let testCalls = 0;
-    let resolveTest: ((r: unknown) => void) | undefined;
-    const { fetchMock } = mockFetch(() => {
-      testCalls++;
-      return new Promise((resolve) => {
-        resolveTest = resolve as unknown as (r: unknown) => void;
-      }) as Promise<Response>;
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const wrapper = mount(Compute);
-    await flushPromises();
-
-    await testButton(wrapper).trigger("click");
-    await testButton(wrapper).trigger("click");
-    expect(testCalls).toBe(1);
-
-    resolveTest!({ ok: true, json: () => Promise.resolve({ ok: true }) });
-    await flushPromises();
-  });
-});
-
-describe("compute 页：Provider 弹窗与协议选择器", () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("添加弹窗渲染 apiMode 选择器且缺省 chat_completions", async () => {
-    const { fetchMock } = mockFetch();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const wrapper = mount(Compute);
-    await flushPromises();
-    await openAddModal(wrapper);
-
-    const select = wrapper.find(".modal-content select");
-    expect(select.exists()).toBe(true);
-    expect(wrapper.findAll(".modal-content option").map((o) => o.text())).toEqual([
-      "OpenAI 兼容 · 缺省",
-      "OpenAI Responses",
-      "Anthropic Messages",
-    ]);
-    expect((select.element as HTMLSelectElement).value).toBe("chat_completions");
-
-    // 添加场景：API Key 占位符是必填提示
-    const apiKeyInput = wrapper
-      .findAll(".modal-content input")
-      .find((i) => (i.element as HTMLInputElement).type === "password")!;
-    expect((apiKeyInput.element as HTMLInputElement).placeholder).toBe("请输入 API Key");
-  });
-
-  it("编辑弹窗回显 apiMode（缺省 chat_completions）且占位符为留空保持", async () => {
-    const { fetchMock } = mockFetch();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const wrapper = mount(Compute);
-    await flushPromises();
-    await wrapper.find(".provider-card").trigger("click");
-    await flushPromises();
-
-    const select = wrapper.find(".modal-content select");
-    expect((select.element as HTMLSelectElement).value).toBe("chat_completions");
-    const apiKeyInput = wrapper
-      .findAll(".modal-content input")
-      .find((i) => (i.element as HTMLInputElement).type === "password")!;
-    expect((apiKeyInput.element as HTMLInputElement).placeholder).toBe("留空则保持不变");
-  });
-
-  it("保存添加 Provider 提交 apiMode 且空 API Key 不落字段", async () => {
-    const { fetchMock, calls } = mockFetch();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const wrapper = mount(Compute);
-    await flushPromises();
-    await openAddModal(wrapper);
-
-    const inputs = wrapper.findAll(".modal-content input");
-    await inputs[0].setValue("DeepSeek");
-    await inputs[1].setValue("https://api.deepseek.com");
-    await wrapper.find(".modal-content select").setValue("anthropic");
-    const saveBtn = wrapper.findAll("button").find((b) => b.text().includes("保存"));
-    expect(saveBtn).toBeTruthy();
-    await saveBtn!.trigger("click");
-    await flushPromises();
-
-    const createCall = calls.find((c) => c.method === "POST" && c.url.endsWith("/compute/providers"));
-    expect(createCall).toBeTruthy();
-    expect(createCall!.body).toMatchObject({
-      displayName: "DeepSeek",
-      baseUrl: "https://api.deepseek.com",
-      providerType: "openai",
-      apiMode: "anthropic",
-      models: [],
-    });
-    expect(createCall!.body).not.toHaveProperty("apiKey");
-  });
-});
-
-describe("compute 页：模型能力字段与一键导入", () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("添加模型提交能力字段，型号行展示能力标记", async () => {
+  it("添加型号提交能力字段，型号行展示能力标记", async () => {
     const providerWithCapabilities: Provider = {
       ...provider,
       models: [
@@ -242,12 +88,10 @@ describe("compute 页：模型能力字段与一键导入", () => {
     const { fetchMock, calls } = mockFetch(undefined, [providerWithCapabilities]);
     vi.stubGlobal("fetch", fetchMock);
 
-    const wrapper = mount(Compute);
-    await flushPromises();
-    await wrapper.find(".provider-card").trigger("click");
+    const wrapper = mount(ComputeDetail, mountOptions());
     await flushPromises();
 
-    // 已填能力字段的既有模型行展示小字标记
+    // 已填能力字段的既有型号行展示小字标记
     expect(wrapper.find(".model-capabilities").text()).toContain("ctx:1M");
     expect(wrapper.find(".model-capabilities").text()).toContain("推理");
 
@@ -257,7 +101,7 @@ describe("compute 页：模型能力字段与一键导入", () => {
     await modelInputs[3].setValue("8192");
     await modelInputs[4].setValue(true); // supportsReasoning
     await modelInputs[5].setValue(true); // supportsToolCalling
-    const addBtn = wrapper.findAll("button").find((b) => b.text().includes("添加模型"));
+    const addBtn = wrapper.findAll("button").find((b) => b.text().includes("添加型号"));
     expect(addBtn).toBeTruthy();
     await addBtn!.trigger("click");
     await flushPromises();
@@ -282,14 +126,12 @@ describe("compute 页：模型能力字段与一键导入", () => {
     const { fetchMock, calls } = mockFetch();
     vi.stubGlobal("fetch", fetchMock);
 
-    const wrapper = mount(Compute);
-    await flushPromises();
-    await wrapper.find(".provider-card").trigger("click");
+    const wrapper = mount(ComputeDetail, mountOptions());
     await flushPromises();
 
     const modelInputs = wrapper.findAll(".add-model input");
     await modelInputs[0].setValue("plain-model");
-    const addBtn = wrapper.findAll("button").find((b) => b.text().includes("添加模型"));
+    const addBtn = wrapper.findAll("button").find((b) => b.text().includes("添加型号"));
     expect(addBtn).toBeTruthy();
     await addBtn!.trigger("click");
     await flushPromises();
@@ -304,7 +146,45 @@ describe("compute 页：模型能力字段与一键导入", () => {
     expect(addModelCall!.body).not.toHaveProperty("supportsMultimodal");
   });
 
-  it("测试成功后全部导入去重并反馈导入/跳过数量", async () => {
+  it("顶部展示 provider 名称、协议徽标与 Base URL 摘要", async () => {
+    const anthropicProvider: Provider = {
+      ...provider,
+      apiMode: "anthropic",
+    };
+    const { fetchMock } = mockFetch(undefined, [anthropicProvider]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeDetail, mountOptions());
+    await flushPromises();
+
+    expect(wrapper.find(".head-title h1").text()).toBe("OpenAI");
+    expect(wrapper.find(".api-pill").text()).toBe("Anthropic");
+    expect(wrapper.find(".base-url-summary").text()).toBe("https://api.openai.com/v1");
+  });
+
+  it("返回按钮逐级回列表页", async () => {
+    const { fetchMock } = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeDetail, mountOptions());
+    await flushPromises();
+
+    await wrapper.find(".back-btn").trigger("click");
+    expect(routerPushMock).toHaveBeenCalledWith("/compute");
+  });
+});
+
+describe("compute 管理页：测试连接与一键导入", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    routeParams.id = "p1";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("测试成功后 discovered 型号以 chip 展示并全部导入去重", async () => {
     const providerWithModels: Provider = {
       ...provider,
       models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
@@ -324,12 +204,16 @@ describe("compute 页：模型能力字段与一键导入", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const wrapper = mount(Compute);
+    const wrapper = mount(ComputeDetail, mountOptions());
     await flushPromises();
     await testButton(wrapper).trigger("click");
     await flushPromises();
 
-    expect(wrapper.find(".discovered-models").text()).toBe("gpt-4o、gpt-5、gpt-5");
+    expect(wrapper.findAll(".discovered-chip").map((c) => c.text())).toEqual([
+      "gpt-4o",
+      "gpt-5",
+      "gpt-5",
+    ]);
     const importBtn = wrapper.findAll("button").find((b) => b.text().includes("全部导入"));
     expect(importBtn).toBeTruthy();
     await importBtn!.trigger("click");
@@ -371,7 +255,7 @@ describe("compute 页：模型能力字段与一键导入", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const wrapper = mount(Compute);
+    const wrapper = mount(ComputeDetail, mountOptions());
     await flushPromises();
     await testButton(wrapper).trigger("click");
     await flushPromises();
@@ -387,5 +271,28 @@ describe("compute 页：模型能力字段与一键导入", () => {
     // 失败项也照常发起，整批不中断
     expect(modelPosts).toHaveLength(3);
     expect(wrapper.find(".import-feedback").text()).toBe("导入 2 个，跳过 1 个（含失败 1 个）");
+  });
+});
+
+describe("compute 管理页：兜底", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    routeParams.id = "ghost";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("ID 不存在时显示兜底与回列表链接，不渲染管理区", async () => {
+    const { fetchMock } = mockFetch(undefined, []);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeDetail, mountOptions());
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Provider 不存在或已删除");
+    expect(wrapper.find(".back-link").exists()).toBe(true);
+    expect(wrapper.find(".add-model").exists()).toBe(false);
   });
 });
