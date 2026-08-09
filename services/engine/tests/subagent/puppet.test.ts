@@ -12,6 +12,8 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { PuppetRunner, buildPuppetSystemPrompt, type PuppetRuntime } from "../../src/subagent/puppet.js";
+import { CONTEXT_WATERMARK_SUMMARY_HINT } from "../../src/core/react/turn.js";
+import type { ConfigRepository } from "../../src/config/repository.js";
 import type { PuppetModelDefinition } from "../../src/subagent/puppet-models.js";
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
@@ -491,5 +493,80 @@ describe("⑦ puppet 型号：persona 注入 + 工具窄化", () => {
     expect(background.get(taskId)).toMatchObject({ status: "failed", puppetModel: "规划师" });
     expect(String(background.get(taskId)?.error)).toContain("not found");
     expect(provider.captured).toHaveLength(1); // 未静默按无型号重跑
+  });
+});
+
+describe("⑧ 水位 W 查找链（puppet）", () => {
+  it("configRepository 型号表 contextWindow 贯通 runTurn，水位撞顶收尾", async () => {
+    class LoopProvider implements LLMProvider {
+      name = "loop";
+      calls: LLMChatParams[] = [];
+      supportsModel() {
+        return true;
+      }
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        this.calls.push(structuredClone(params));
+        const hit = params.messages.some(
+          (m) =>
+            m.role === "system" &&
+            m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+        );
+        if (hit) {
+          yield { type: "text.delta", delta: "傀儡水位收尾" };
+        } else {
+          yield { type: "tool.call", toolCallId: "tc_1", name: "read_probe", arguments: {} };
+        }
+        yield { type: "step.end" };
+      }
+    }
+    const readTool: Tool = {
+      name: "read_probe",
+      description: "probe",
+      parameters: z.object({}),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute() {
+        return { success: true, output: "ok" };
+      },
+    };
+    const provider = new LoopProvider();
+    const configRepository = {
+      load: async () => ({
+        providers: [
+          {
+            id: "p1",
+            displayName: "P1",
+            providerType: "openai",
+            baseUrl: "http://localhost",
+            models: [{ id: "mock", displayName: "Mock", modelType: "llm", contextWindow: 10 }],
+          },
+        ],
+        settings: {
+          memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+        },
+      }),
+    } as unknown as ConfigRepository;
+    const runner = new PuppetRunner({
+      getRuntime: async () => ({
+        provider,
+        model: "mock",
+        providerId: "p1",
+        configRepository,
+        tools: [readTool],
+        workspaceDir: os.tmpdir(),
+      }),
+    });
+
+    const output = await runner.run("a1", "do work");
+
+    // 窗口 10：基础设定 + 简报已远超 90%，第一步即水位撞顶（工具步 + 兜底各一次）
+    expect(output).toBe("傀儡水位收尾");
+    expect(provider.calls).toHaveLength(2);
+    expect(
+      provider.calls[1]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
   });
 });

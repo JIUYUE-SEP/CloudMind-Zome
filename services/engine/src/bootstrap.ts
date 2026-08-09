@@ -166,6 +166,8 @@ async function main() {
       return {
         provider,
         model: agentConfig.modelId || agentConfig.model || "gpt-4o",
+        providerId: agentConfig.providerId,
+        configRepository: configRepo,
         tools: [
           ...getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name)),
           // MCP 工具动态命名（mcp__ 前缀），与 worker 同一份快照
@@ -277,6 +279,8 @@ async function main() {
       temperature: agentConfig.temperature,
       topP: agentConfig.topP,
       reactMaxSteps: agentConfig.reactMaxSteps,
+      providerId: agentConfig.providerId,
+      configRepository: configRepo,
       trustAllTools: agentConfig.trustAllTools,
       // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
       skillCatalog: (await skillService.list(agentId)).map((s) => `- ${s.name}：${s.description}`),

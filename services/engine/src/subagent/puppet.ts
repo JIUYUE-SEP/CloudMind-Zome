@@ -5,6 +5,9 @@ import type { LLMProvider } from "../provider/types.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import { runTurn } from "../core/react/turn.js";
 import { auditFailClosed } from "../api/ws/approval-audit.js";
+import type { ConfigRepository } from "../config/repository.js";
+import { resolveContextWindow } from "../compute/context-window.js";
+import { DEFAULT_CONTEXT_WINDOW } from "../context/pipeline.js";
 import type { PuppetModelDefinition } from "./puppet-models.js";
 
 /**
@@ -20,6 +23,10 @@ import type { PuppetModelDefinition } from "./puppet-models.js";
 export interface PuppetRuntime {
   provider: LLMProvider;
   model: string;
+  /** 主算力 providerId（水位 W 查找链：providerId + modelId → 型号表 contextWindow） */
+  providerId?: string;
+  /** 配置仓库（水位 W 查找链；缺省时水位窗口按 80_000 兜底） */
+  configRepository?: ConfigRepository;
   tools: Tool[];
   workspaceDir: string;
   services?: ToolContext["services"];
@@ -121,6 +128,12 @@ export class PuppetRunner {
     ];
 
     const toolsMap = new Map(tools.map((t) => [t.name, t]));
+    // 改动三：W 查找链统一入口（傀儡与 worker 同链）；查不到落 80_000 缺省
+    const contextWindow =
+      (await resolveContextWindow(runtime.configRepository, {
+        providerId: runtime.providerId,
+        modelId: runtime.model,
+      })) ?? DEFAULT_CONTEXT_WINDOW;
     const result = await runTurn(
       {
         provider: runtime.provider,
@@ -146,6 +159,7 @@ export class PuppetRunner {
           services: runtime.services,
         },
         maxSteps: 5,
+        contextWindow,
         signal: opts.signal,
       },
       () => {},

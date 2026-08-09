@@ -7,6 +7,8 @@ import path from "node:path";
 import { AgentWorker, normalizeReactMaxSteps } from "../../src/core/agent-worker.js";
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
 import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
+import { CONTEXT_WATERMARK_SUMMARY_HINT } from "../../src/core/react/turn.js";
+import type { ConfigRepository } from "../../src/config/repository.js";
 import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
 import { mcpToolToEngine } from "../../src/tools/mcp/wrapper.js";
 import type { McpToolCaller } from "../../src/tools/mcp/wrapper.js";
@@ -176,6 +178,74 @@ describe("AgentWorker", () => {
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
     expect(jobEvents.get("j1")?.some((e) => e.type === "text.delta")).toBe(true);
     expect(jobEvents.get("j2")?.some((e) => e.type === "text.delta")).toBe(true);
+  });
+
+  it("W 查找链：configRepository 型号表 contextWindow 传入 runTurn，水位撞顶生效", async () => {
+    class ToolLoopWatermarkProvider implements LLMProvider {
+      name = "tool-loop-watermark";
+      calls: LLMChatParams[] = [];
+      supportsModel() {
+        return true;
+      }
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        this.calls.push(params);
+        const hit = params.messages.some(
+          (m) =>
+            m.role === "system" &&
+            m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+        );
+        if (hit) {
+          yield { type: "text.delta", delta: "水位收尾" };
+        } else {
+          yield {
+            type: "tool.call",
+            toolCallId: `tc_${this.calls.length}`,
+            name: "dummy",
+            arguments: { value: "x" },
+          };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    const provider = new ToolLoopWatermarkProvider();
+    const configRepository = {
+      load: async () => ({
+        providers: [
+          {
+            id: "p1",
+            displayName: "P1",
+            providerType: "openai",
+            baseUrl: "http://localhost",
+            models: [
+              { id: "mock", displayName: "Mock", modelType: "llm", contextWindow: 10 },
+            ],
+          },
+        ],
+        settings: {
+          memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+        },
+      }),
+    } as unknown as ConfigRepository;
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      providerId: "p1",
+      configRepository,
+    });
+    const onDone = vi.fn();
+
+    worker.enqueue({ id: "j-wm", messages: [userMessage("查资料")], onEvent: () => {}, onDone });
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+
+    // 窗口 10：L1 注入 + 历史已远超 90%，第一步即水位撞顶 → 工具步 + 兜底总结各一次
+    expect(provider.calls).toHaveLength(2);
+    expect(
+      provider.calls[1]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
   });
 
   it("pauses and resumes the queue", async () => {
@@ -2093,12 +2163,13 @@ describe("normalizeReactMaxSteps", () => {
     vi.restoreAllMocks();
   });
 
-  it("缺省 10；越界 clamp 1-50；非有限值回退缺省", () => {
-    expect(normalizeReactMaxSteps(undefined)).toBe(10);
+  it("缺省 100；越界 clamp 1-500；非有限值回退缺省", () => {
+    expect(normalizeReactMaxSteps(undefined)).toBe(100);
     expect(normalizeReactMaxSteps(0)).toBe(1);
     expect(normalizeReactMaxSteps(-3)).toBe(1);
-    expect(normalizeReactMaxSteps(99)).toBe(50);
+    expect(normalizeReactMaxSteps(99)).toBe(99);
+    expect(normalizeReactMaxSteps(600)).toBe(500);
     expect(normalizeReactMaxSteps(7)).toBe(7);
-    expect(normalizeReactMaxSteps(NaN)).toBe(10);
+    expect(normalizeReactMaxSteps(NaN)).toBe(100);
   });
 });

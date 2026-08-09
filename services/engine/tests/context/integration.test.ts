@@ -83,7 +83,7 @@ describe("ContextPipeline 集成到 runTurn", () => {
     expect(received.at(-2)!.id).toBe("h29"); // 最新一条历史永远在（末尾是本轮 assistant）
   });
 
-  it("TurnResult.appended 只含本轮新增（不含 system 与历史）", async () => {
+  it("TurnResult.appended 只含本轮新增（不含 pipeline 注入的 system 与历史）", async () => {
     const provider = new CapturingProvider();
     const result = await runTurn(
       {

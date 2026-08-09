@@ -38,6 +38,30 @@ class StopProvider implements LLMProvider {
   }
 }
 
+class UsageProvider implements LLMProvider {
+  name = "usage";
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    void params;
+    yield { type: "text.delta", delta: "done" };
+    yield { type: "step.end", finishReason: "stop", usage: { promptTokens: 123, completionTokens: 45 } };
+  }
+}
+
+class ToolUsageProvider implements LLMProvider {
+  name = "tool-usage";
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    void params;
+    yield { type: "tool.call", toolCallId: "tc_1", name: "dummy", arguments: { value: "a" } };
+    yield { type: "step.end", usage: { promptTokens: 10, completionTokens: 20 } };
+  }
+}
+
 class MultiToolProvider implements LLMProvider {
   name = "multi-tool";
   supportsModel() {
@@ -119,6 +143,37 @@ describe("executeLoopStep", () => {
     );
 
     expect(result.stopReason).toBe("stop");
+  });
+
+  it("透传 provider step.end 的 usage 到 StepResult（改动三数据流）", async () => {
+    const result = await executeLoopStep(
+      {
+        provider: new UsageProvider(),
+        model: "usage",
+        messages: [userMessage("hi")],
+        tools: [],
+        toolCtx: makeToolCtx(),
+      },
+      () => {}
+    );
+
+    expect(result.usage).toEqual({ promptTokens: 123, completionTokens: 45 });
+  });
+
+  it("工具调用路径同样透传 usage（tool_use 步）", async () => {
+    const result = await executeLoopStep(
+      {
+        provider: new ToolUsageProvider(),
+        model: "tool-usage",
+        messages: [userMessage("call tools")],
+        tools: [],
+        toolCtx: makeToolCtx(),
+      },
+      () => {}
+    );
+
+    expect(result.stopReason).toBe("tool_use");
+    expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 20 });
   });
 
   it("records toolCalls on assistant message when tools are called", async () => {

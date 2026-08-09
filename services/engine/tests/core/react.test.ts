@@ -4,6 +4,8 @@ import {
   runTurn,
   MAX_STEPS_SUMMARY_HINT,
   MAX_STEPS_FALLBACK_REPLY,
+  CONTEXT_WATERMARK_SUMMARY_HINT,
+  CONTEXT_WATERMARK_FALLBACK_REPLY,
 } from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { ContextPipeline } from "../../src/context/pipeline.js";
@@ -135,6 +137,106 @@ class ToolThenStopCaptureProvider implements LLMProvider {
     }
     yield { type: "step.end" };
   }
+}
+
+/** 水位测试用：普通调用发工具、撞顶兜底提示时按行为产出文本/抛错/空文本；可带 usage */
+class WatermarkToolLoopProvider implements LLMProvider {
+  name = "watermark-tool-loop";
+  calls: LLMChatParams[] = [];
+  constructor(
+    private usage: { promptTokens: number; completionTokens: number } | undefined = undefined,
+    private summaryBehavior: "text" | "throw" | "empty" = "text",
+  ) {}
+  supportsModel() {
+    return true;
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    this.calls.push(params);
+    const hitSummaryHint = params.messages.some(
+      (m) =>
+        m.role === "system" &&
+        m.content.some(
+          (c) =>
+            c.type === "text" &&
+            (c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT) ||
+              c.text.includes(MAX_STEPS_SUMMARY_HINT)),
+        ),
+    );
+    if (hitSummaryHint) {
+      if (this.summaryBehavior === "throw") throw new Error("watermark summary down");
+      if (this.summaryBehavior === "empty") {
+        yield { type: "step.end" };
+        return;
+      }
+      yield { type: "text.delta", delta: "水位收尾" };
+    } else {
+      yield {
+        type: "tool.call",
+        toolCallId: `tc_${this.calls.length}`,
+        name: "dummy",
+        arguments: { value: "x" },
+      };
+    }
+    yield { type: "step.end", ...(this.usage ? { usage: this.usage } : {}) };
+  }
+}
+
+/** 水位测试共用：裸 runTurn（不传 contextPipeline = 傀儡路径形状） */
+function runWatermarkTurn(
+  provider: WatermarkToolLoopProvider,
+  opts: {
+    messages?: ChatMessage[];
+    contextWindow?: number;
+    maxSteps?: number;
+    onStepAppended?: (messages: ChatMessage[]) => Promise<void>;
+  } = {},
+) {
+  const events: LLMEvent[] = [];
+  return runTurn(
+    {
+      provider,
+      model: "watermark-tool-loop",
+      messages: opts.messages ?? [userMessage("查资料")],
+      tools: [
+        { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+      ],
+      toolCtx: {
+        agentId: "a",
+        workspaceDir: "/tmp",
+        tools: new Map([["dummy", dummyTool]]),
+        approve: async () => true,
+        emit: (e) => events.push(e),
+      },
+      contextWindow: opts.contextWindow,
+      maxSteps: opts.maxSteps,
+      onStepAppended: opts.onStepAppended,
+    },
+    (e) => events.push(e),
+  );
+}
+
+function reminderCount(paramsList: LLMChatParams[]): number {
+  // 同一提醒会随 messages 出现在后续多次调用里，按消息 id 去重计数
+  const ids = new Set<string>();
+  for (const p of paramsList) {
+    for (const m of p.messages) {
+      if (
+        m.role === "system" &&
+        m.content.some((c) => c.type === "text" && c.text.includes("[系统提醒]"))
+      ) {
+        ids.add(m.id);
+      }
+    }
+  }
+  return ids.size;
+}
+
+function hasWatermarkHint(params: LLMChatParams): boolean {
+  return params.messages.some(
+    (m) =>
+      m.role === "system" &&
+      m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+  );
 }
 
 describe("runTurn", () => {
@@ -568,5 +670,144 @@ describe("runTurn", () => {
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls.some((p) => p.messages.some((m) => m.role === "system"))).toBe(false);
     expect(assistantText(result.assistantMessage)).toBe("done");
+  });
+});
+
+describe("上下文水位主裁（改动一）", () => {
+  it("水位计算·仅估算：无 usage 时按本地计数超 70%，多步连续只追加一条 system 提醒", async () => {
+    const provider = new WatermarkToolLoopProvider();
+    const bigUser = userMessage("x".repeat(8000)); // 真实 tiktoken ≈ 2000 tokens
+    const base = getTokenCounter().countMessages([bigUser]);
+    const window = Math.ceil(base / 0.8); // 首步 ≈ 80%+步开销，落在提醒带且不直达撞顶
+    const persisted: ChatMessage[] = [];
+
+    const result = await runWatermarkTurn(provider, {
+      messages: [bigUser],
+      contextWindow: window,
+      maxSteps: 20,
+      onStepAppended: async (msgs) => {
+        persisted.push(...msgs);
+      },
+    });
+
+    // 全程（含后续步 provider 收到的 messages）只有一条 [系统提醒]
+    expect(reminderCount(provider.calls)).toBe(1);
+    const reminderText = provider.calls
+      .flatMap((p) => p.messages)
+      .find(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes("[系统提醒]")),
+      )!;
+    const text = reminderText.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+    expect(text).toContain(`${window} tokens`);
+    expect(text).toContain("请收敛工具调用、优先收尾");
+
+    // 提醒后继续循环：至少两步工具步才撞顶
+    expect(provider.calls.filter((p) => !hasWatermarkHint(p)).length).toBeGreaterThanOrEqual(2);
+
+    // 撞顶走兜底，产出落 messages，绝不静默
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+    expect(
+      result.appended.at(-1)!.content.some((c) => c.type === "text" && c.text === "水位收尾"),
+    ).toBe(true);
+
+    // 提醒入 appended 且经落盘钩子（历史留痕）
+    expect(result.appended.filter((m) => m.role === "system")).toHaveLength(1);
+    expect(persisted.filter((m) => m.role === "system")).toHaveLength(1);
+  });
+
+  it("水位计算·仅 usage：无估算压力时按 provider 实测 90% 撞顶，跳出循环走兜底", async () => {
+    const provider = new WatermarkToolLoopProvider({ promptTokens: 800, completionTokens: 100 });
+    const result = await runWatermarkTurn(provider, { contextWindow: 1000, maxSteps: 20 });
+
+    // 1 工具步 + 1 次无工具兜底总结，未走满 maxSteps
+    expect(provider.calls).toHaveLength(2);
+    const summaryParams = provider.calls[1]!;
+    expect(summaryParams.tools).toBeUndefined();
+    expect(hasWatermarkHint(summaryParams)).toBe(true);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+    expect(
+      result.appended.at(-1)!.content.some((c) => c.type === "text" && c.text === "水位收尾"),
+    ).toBe(true);
+    // 一步直达撞顶：无 70% 提醒
+    expect(reminderCount(provider.calls)).toBe(0);
+  });
+
+  it("水位计算·双口径取大（usage > 估算）：以实测为准触发 89% 提醒", async () => {
+    const provider = new WatermarkToolLoopProvider({ promptTokens: 860, completionTokens: 30 });
+    await runWatermarkTurn(provider, { contextWindow: 1000, maxSteps: 3 });
+
+    // 估算（≤ 100 tokens）单独远低于 0.7；usage 890/1000 = 0.89 必须触发提醒
+    expect(reminderCount(provider.calls)).toBe(1);
+    const text = provider.calls
+      .flatMap((p) => p.messages)
+      .find((m) => m.role === "system")!
+      .content.filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+    expect(text).toContain("89%");
+  });
+
+  it("水位计算·双口径取大（估算 > usage）：以本地计数为准撞顶", async () => {
+    const provider = new WatermarkToolLoopProvider({ promptTokens: 200, completionTokens: 50 });
+    const bigUser = userMessage("x".repeat(8000)); // 真实 tiktoken ≈ 2000 tokens
+    const result = await runWatermarkTurn(provider, {
+      messages: [bigUser],
+      contextWindow: 1000,
+      maxSteps: 20,
+    });
+
+    // usage 250/1000 = 0.25 单独不会撞顶；估算 > 1.0 → 按估算撞顶
+    expect(provider.calls).toHaveLength(2);
+    expect(hasWatermarkHint(provider.calls[1]!)).toBe(true);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+  });
+
+  it("水位撞顶兜底调用失败/空文本：产出可区分的水位兜底回复（不静默）", async () => {
+    for (const behavior of ["throw", "empty"] as const) {
+      const provider = new WatermarkToolLoopProvider(
+        { promptTokens: 800, completionTokens: 100 },
+        behavior,
+      );
+      const result = await runWatermarkTurn(provider, { contextWindow: 1000 });
+      expect(assistantText(result.assistantMessage)).toBe(CONTEXT_WATERMARK_FALLBACK_REPLY);
+      expect(
+        result.appended
+          .at(-1)!
+          .content.some((c) => c.type === "text" && c.text === CONTEXT_WATERMARK_FALLBACK_REPLY),
+      ).toBe(true);
+    }
+  });
+
+  it("保险丝：缺省 100 步撞顶，文案与水位撞顶可区分", async () => {
+    const provider = new WatermarkToolLoopProvider();
+    const result = await runWatermarkTurn(provider); // 不传 maxSteps = 缺省 100
+
+    // 100 工具步 + 1 次兜底总结；小消息无水位压力，纯保险丝撞顶
+    expect(provider.calls).toHaveLength(101);
+    const summaryParams = provider.calls[100]!;
+    expect(
+      summaryParams.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(MAX_STEPS_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
+    expect(hasWatermarkHint(summaryParams)).toBe(false);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+    expect(reminderCount(provider.calls)).toBe(0);
+  });
+
+  it("傀儡路径（无 contextPipeline 的裸 runTurn）：水位判据自动生效", async () => {
+    const provider = new WatermarkToolLoopProvider({ promptTokens: 800, completionTokens: 100 });
+    const result = await runWatermarkTurn(provider, { contextWindow: 1000 });
+
+    expect(provider.calls).toHaveLength(2);
+    expect(hasWatermarkHint(provider.calls[1]!)).toBe(true);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
   });
 });

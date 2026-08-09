@@ -31,7 +31,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | 字段 | 类型 | 缺省 | 说明 |
 |---|---|---|---|
 | `maxContextTokens` | number | 80000 | 上下文窗口总预算（32k/128k 窗口模型应显式配置） |
-| `reactMaxSteps` | number | 10 | ReAct 循环单轮最大步数（越界 clamp 1-50）；撞顶后强制一次无工具总结兜底，绝不静默 |
+| `reactMaxSteps` | number | 100 | ReAct 循环单轮最大步数（防空转保险丝，越界 clamp 1-500）；上下文水位为主判据，撞顶后强制一次无工具总结兜底，绝不静默 |
 | `compressionModel` | string | 主模型 | 话题压缩模型；压缩失败不 fallback 主模型 |
 | `topicBoundaryModel` | string | compressionModel → 主模型 | 话题边界 LLM 裁判/压缩前复核模型（方案 C）：每攒 6 轮异步语义判切，压缩前复核拆分 |
 | `topicDetectionWindowMinutes` | number | 30 | 话题检测时间窗（分钟），超过视为新话题 |

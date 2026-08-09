@@ -26,6 +26,9 @@ export const DEFAULT_PIPELINE_CONFIG: ContextPipelineConfig = {
   reserveRatio: 0.1,
 };
 
+/** 上下文窗口缺省（水位主裁 W 与 pipeline 预算同值：80000，改动三缺省落点） */
+export const DEFAULT_CONTEXT_WINDOW = DEFAULT_PIPELINE_CONFIG.maxContextTokens;
+
 export interface AssembleInput {
   agentId: string;
   /** 当前会话完整历史（L3） */

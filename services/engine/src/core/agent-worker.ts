@@ -5,6 +5,9 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { LLMProvider, LLMEvent } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool, ToolContext } from "../tools/types.js";
+import type { ConfigRepository } from "../config/repository.js";
+import { resolveContextWindow } from "../compute/context-window.js";
+import { DEFAULT_CONTEXT_WINDOW } from "../context/pipeline.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import type { ChatMode } from "@mindcloud/shared";
@@ -38,13 +41,14 @@ import { auditFailClosed, auditTrustedAutoApprove } from "../api/ws/approval-aud
 
 logger.info("[agent-worker] module loaded");
 
-/** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）缺省与边界 */
-const REACT_MAX_STEPS_DEFAULT = 10;
+/** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）缺省与边界（保险丝退化：100/1-500） */
+const REACT_MAX_STEPS_DEFAULT = 100;
 const REACT_MAX_STEPS_MIN = 1;
-const REACT_MAX_STEPS_MAX = 50;
+const REACT_MAX_STEPS_MAX = 500;
 
 /**
- * reactMaxSteps 归一：缺省 10；越界 clamp 1-50；非有限值回退缺省并 warn。
+ * reactMaxSteps 归一：缺省 100；越界 clamp 1-500；非有限值回退缺省并 warn。
+ * 次数已退化为防空转保险丝（主判据是上下文水位，见 turn.ts 改动一）。
  * （真机：recall 的 topics→read→offset 翻找链天然多步，5 步太紧且撞顶曾静默死亡）
  */
 export function normalizeReactMaxSteps(value: number | undefined): number {
@@ -87,8 +91,12 @@ export interface AgentWorkerConfig {
   approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   temperature?: number;
   topP?: number;
-  /** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）；缺省 10，clamp 1-50 */
+  /** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）；缺省 100，clamp 1-500 */
   reactMaxSteps?: number;
+  /** 主算力 providerId（水位 W 查找链：providerId + modelId → 型号表 contextWindow） */
+  providerId?: string;
+  /** 配置仓库（水位 W 查找链；缺省时水位窗口按 80_000 兜底） */
+  configRepository?: ConfigRepository;
   /** L1 技能目录（名字+一句话，发现入口）；正文不预注，经 Skill 工具按需取回（阶段 5 一期） */
   skillCatalog?: string[];
   /** 向量记忆索引（sidecar 可用时生效），用于跨会话语义检索 */
@@ -427,6 +435,9 @@ export class AgentWorker {
     const indexer = this.config.memoryIndexer;
     const agentId = this.config.agentId;
     for (const msg of messages) {
+      // 水位提醒等 system 消息只留痕（热存储/话题），不进向量记忆——
+      // 否则检索会把它自然化成"用户之前提到过：[系统提醒]…"的噪声
+      if (msg.role === "system") continue;
       const text = msg.content
         .filter((c) => c.type === "text")
         .map((c) => c.text)
@@ -611,6 +622,14 @@ export class AgentWorker {
 
       const messages = [...job.messages];
 
+      // 改动三：W 查找链统一入口——providerId + modelId 查型号表 contextWindow；
+      // 查不到/未配置落 80_000 缺省（与 pipeline 同值），core 不直接依赖 config
+      const contextWindow =
+        (await resolveContextWindow(this.config.configRepository, {
+          providerId: this.config.providerId,
+          modelId: this.config.model,
+        })) ?? DEFAULT_CONTEXT_WINDOW;
+
       const turnInput: TurnInput = {
         provider: this.config.provider,
         model: this.config.model,
@@ -652,6 +671,7 @@ export class AgentWorker {
           services: this.config.services,
         },
         maxSteps: this.reactMaxSteps,
+        contextWindow,
         temperature: this.config.temperature,
         topP: this.config.topP,
         signal: job.signal,

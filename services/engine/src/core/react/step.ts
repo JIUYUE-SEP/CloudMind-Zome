@@ -24,6 +24,8 @@ export interface StepResult {
   stopReason: "stop" | "tool_use" | "max_tokens";
   assistantMessage: ChatMessage;
   toolMessages?: ChatMessage[];
+  /** provider step.end 透传的 token 用量（改动三：水位判据的实测口径） */
+  usage?: { promptTokens: number; completionTokens: number };
 }
 
 /**
@@ -57,12 +59,14 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
   let thinkBuffer = "";
   const toolCalls = new Map<string, ToolCallRequest>();
   let finishReason: string | undefined;
+  let usage: { promptTokens: number; completionTokens: number } | undefined;
 
   try {
     for await (const event of input.provider.chat(params)) {
       emit(event);
       if (event.type === "step.end") {
         finishReason = event.finishReason;
+        if (event.usage) usage = event.usage;
         continue;
       }
       switch (event.type) {
@@ -137,9 +141,14 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
       toolCallId: r.toolCallId,
       createdAt: new Date().toISOString(),
     }));
-    return { stopReason: "tool_use", assistantMessage, toolMessages };
+    return {
+      stopReason: "tool_use",
+      assistantMessage,
+      toolMessages,
+      ...(usage ? { usage } : {}),
+    };
   }
 
   const stopReason = finishReason === "length" ? "max_tokens" : "stop";
-  return { stopReason, assistantMessage };
+  return { stopReason, assistantMessage, ...(usage ? { usage } : {}) };
 }
