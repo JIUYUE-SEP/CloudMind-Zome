@@ -282,10 +282,21 @@ async function importDiscovered() {
         modelType: model.modelType ?? "llm",
       });
     }
+    // R4（review）：单项失败（含并发 409）逐项容错，不整批中止；失败计入跳过数
+    let imported = 0;
+    let failed = 0;
     for (const model of toImport) {
-      await compute.addModel(provider.id, model);
+      try {
+        await compute.addModel(provider.id, model);
+        imported++;
+      } catch {
+        failed++;
+      }
     }
-    importFeedback.value = `导入 ${toImport.length} 个，跳过 ${result.discovered.length - toImport.length} 个`;
+    const skipped = result.discovered.length - imported;
+    importFeedback.value =
+      `导入 ${imported} 个，跳过 ${skipped} 个` +
+      (failed > 0 ? `（含失败 ${failed} 个）` : "");
   } catch (err) {
     importFeedback.value = `导入失败: ${err instanceof Error ? err.message : "未知错误"}`;
   } finally {
@@ -331,9 +342,11 @@ async function addModel() {
       modelType: newModel.modelType,
       ...(newModel.contextWindow !== "" ? { contextWindow: newModel.contextWindow } : {}),
       ...(newModel.maxOutputTokens !== "" ? { maxOutputTokens: newModel.maxOutputTokens } : {}),
-      supportsReasoning: newModel.supportsReasoning,
-      supportsToolCalling: newModel.supportsToolCalling,
-      supportsMultimodal: newModel.supportsMultimodal,
+      // R5（review）：未勾选不落字段（与导入路径的「未知」语义对齐），
+      // 避免把「未表态」记录成「明确不支持」
+      ...(newModel.supportsReasoning ? { supportsReasoning: true } : {}),
+      ...(newModel.supportsToolCalling ? { supportsToolCalling: true } : {}),
+      ...(newModel.supportsMultimodal ? { supportsMultimodal: true } : {}),
     };
     await compute.addModel(editingProvider.value.id, payload);
     newModel.id = "";

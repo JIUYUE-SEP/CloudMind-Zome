@@ -19,7 +19,7 @@ interface FetchCall {
 }
 
 function mockFetch(
-  handler?: (call: { url: string; method: string }) => Promise<Response> | Response,
+  handler?: (call: { url: string; method: string; body?: Record<string, unknown> }) => Promise<Response> | Response,
   providers: Provider[] = [provider],
 ) {
   const calls: FetchCall[] = [];
@@ -28,7 +28,9 @@ function mockFetch(
     const method = init?.method || "GET";
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ url, method, body });
-    if (handler && url.includes("/test")) return handler({ url, method });
+    if (handler && (url.includes("/test") || (url.endsWith("/models") && method === "POST"))) {
+      return handler({ url, method, body });
+    }
     if (url.endsWith("/compute/providers") && method === "GET") {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(providers) } as unknown as Response);
     }
@@ -271,8 +273,35 @@ describe("compute 页：模型能力字段与一键导入", () => {
       maxOutputTokens: 8192,
       supportsReasoning: true,
       supportsToolCalling: true,
-      supportsMultimodal: false,
     });
+    // R5（review）：未勾选的能力字段不落 body（区别于明确 false）
+    expect(addModelCall!.body).not.toHaveProperty("supportsMultimodal");
+  });
+
+  it("未勾选能力时提交 body 不含三个能力字段", async () => {
+    const { fetchMock, calls } = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(Compute);
+    await flushPromises();
+    await wrapper.find(".provider-card").trigger("click");
+    await flushPromises();
+
+    const modelInputs = wrapper.findAll(".add-model input");
+    await modelInputs[0].setValue("plain-model");
+    const addBtn = wrapper.findAll("button").find((b) => b.text().includes("添加模型"));
+    expect(addBtn).toBeTruthy();
+    await addBtn!.trigger("click");
+    await flushPromises();
+
+    const addModelCall = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/compute/providers/p1/models"),
+    );
+    expect(addModelCall).toBeTruthy();
+    expect(addModelCall!.body).toMatchObject({ id: "plain-model", modelType: "llm" });
+    expect(addModelCall!.body).not.toHaveProperty("supportsReasoning");
+    expect(addModelCall!.body).not.toHaveProperty("supportsToolCalling");
+    expect(addModelCall!.body).not.toHaveProperty("supportsMultimodal");
   });
 
   it("测试成功后全部导入去重并反馈导入/跳过数量", async () => {
@@ -316,5 +345,47 @@ describe("compute 页：模型能力字段与一键导入", () => {
       modelType: "llm",
     });
     expect(wrapper.find(".import-feedback").text()).toBe("导入 1 个，跳过 2 个");
+  });
+
+  it("导入单项失败不中断并计入失败数", async () => {
+    const discovered: ModelInfo[] = [
+      { id: "ok-model", displayName: "ok-model", modelType: "llm" },
+      { id: "fail-model", displayName: "fail-model", modelType: "llm" },
+      { id: "ok-model-2", displayName: "ok-model-2", modelType: "llm" },
+    ];
+    const { fetchMock, calls } = mockFetch((call) => {
+      if (call.url.endsWith("/test")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ok: true, discovered }),
+        } as unknown as Response);
+      }
+      if (call.method === "POST" && call.url.endsWith("/models") && call.body?.id === "fail-model") {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ error: "Model id already exists: fail-model" }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(Compute);
+    await flushPromises();
+    await testButton(wrapper).trigger("click");
+    await flushPromises();
+
+    const importBtn = wrapper.findAll("button").find((b) => b.text().includes("全部导入"));
+    expect(importBtn).toBeTruthy();
+    await importBtn!.trigger("click");
+    await flushPromises();
+
+    const modelPosts = calls.filter(
+      (c) => c.method === "POST" && c.url.endsWith("/compute/providers/p1/models"),
+    );
+    // 失败项也照常发起，整批不中断
+    expect(modelPosts).toHaveLength(3);
+    expect(wrapper.find(".import-feedback").text()).toBe("导入 2 个，跳过 1 个（含失败 1 个）");
   });
 });

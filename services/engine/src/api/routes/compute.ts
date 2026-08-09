@@ -42,20 +42,73 @@ function validateOptionalBoolean(value: unknown, field: string): string | undefi
 async function testAnthropicConnection(provider: {
   apiKey?: string;
   baseUrl: string;
+  requestTimeout?: number;
 }): Promise<ModelInfo[]> {
   const headers: Record<string, string> = { "anthropic-version": ANTHROPIC_VERSION };
   if (provider.apiKey) headers["x-api-key"] = provider.apiKey;
-  const response = await fetch(anthropicModelsUrl(provider.baseUrl), { method: "GET", headers });
+  const response = await fetch(anthropicModelsUrl(provider.baseUrl), {
+    method: "GET",
+    headers,
+    // R3（review）：超时受控，避免 Web 端断开后 engine 侧 fetch 无限悬挂
+    signal: AbortSignal.timeout(provider.requestTimeout ?? 30_000),
+  });
   if (!response.ok) {
-    throw new Error(`Anthropic models endpoint returned HTTP ${response.status}`);
+    const err = new Error(
+      `Anthropic models endpoint returned HTTP ${response.status}`,
+    ) as Error & { status?: number };
+    err.status = response.status;
+    throw err;
   }
-  const body = (await response.json()) as { data?: Array<{ id?: unknown }> };
+  let body: { data?: Array<{ id?: unknown }> };
+  try {
+    body = (await response.json()) as { data?: Array<{ id?: unknown }> };
+  } catch {
+    const err = new Error(
+      "Anthropic models endpoint returned non-JSON body",
+    ) as Error & { kind?: "protocol" };
+    err.kind = "protocol";
+    throw err;
+  }
   if (!Array.isArray(body.data)) {
-    throw new Error("Anthropic models endpoint returned no data list");
+    const err = new Error(
+      "Anthropic models endpoint returned no data list",
+    ) as Error & { kind?: "protocol" };
+    err.kind = "protocol";
+    throw err;
   }
   return body.data
     .filter((m) => typeof m?.id === "string" && m.id.length > 0)
     .map((m) => ({ id: m.id as string, displayName: m.id as string, modelType: "llm" as const }));
+}
+
+/**
+ * 测试连接失败归类（R2）：上游 HTTP 错误带 status 并给出固定概括文案，
+ * 不截取上游 body 原文、不泄漏 apiKey；网络错误/超时/协议错误与 HTTP 可区分。
+ */
+function describeUpstreamError(err: unknown): string {
+  if (typeof err === "object" && err !== null) {
+    const candidate = err as { status?: unknown; name?: unknown; kind?: unknown };
+    if (typeof candidate.status === "number") {
+      if (candidate.status === 401 || candidate.status === 403) {
+        return `上游返回 ${candidate.status}（密钥无效或权限不足）`;
+      }
+      if (candidate.status === 404) {
+        return `上游返回 ${candidate.status}（无 models 端点）`;
+      }
+      return `上游返回 ${candidate.status}`;
+    }
+    if (candidate.kind === "protocol") {
+      return "上游响应格式错误（非 JSON 或缺少 data 列表）";
+    }
+    if (
+      candidate.name === "TimeoutError" ||
+      candidate.name === "AbortError" ||
+      (typeof candidate.name === "string" && candidate.name.includes("Timeout"))
+    ) {
+      return "上游请求超时";
+    }
+  }
+  return "网络错误（无法连接上游）";
 }
 
 function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
@@ -250,7 +303,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       return { ok: true, discovered };
     } catch (err) {
       logger.error({ err: err, providerId: id, apiMode: provider.apiMode }, "test connection failed");
-      return reply.status(502).send({ error: "Test connection failed" });
+      return reply.status(502).send({ error: `Test connection failed: ${describeUpstreamError(err)}` });
     }
   });
 
@@ -314,7 +367,50 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
     const idx = provider.models.findIndex((m) => m.id === modelId);
     if (idx < 0) return reply.status(404).send({ error: "Model not found" });
-    provider.models[idx] = { ...provider.models[idx], ...body };
+    // R1（review）：PUT 校验与 POST 同口径——id 只能由路径决定，其余字段白名单构造，
+    // 杜绝裸 spread 写非法 modelType / 字符串 contextWindow / 撞重复 id
+    if (body.id !== undefined && body.id !== modelId) {
+      return reply.status(400).send({ error: "id cannot be changed" });
+    }
+    if (
+      body.displayName !== undefined &&
+      (typeof body.displayName !== "string" || body.displayName.trim() === "")
+    ) {
+      return reply.status(400).send({ error: "displayName must be a non-empty string" });
+    }
+    if (
+      body.modelType !== undefined &&
+      (typeof body.modelType !== "string" || !(MODEL_TYPES as readonly string[]).includes(body.modelType))
+    ) {
+      return reply.status(400).send({
+        error: "Invalid modelType（只允许 llm / embedding / image / stt）",
+      });
+    }
+    for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+      const validationError = validateOptionalPositiveIntNoMax(body[field], field);
+      if (validationError) return reply.status(400).send({ error: validationError });
+    }
+    for (const field of ["supportsReasoning", "supportsToolCalling", "supportsMultimodal"] as const) {
+      const validationError = validateOptionalBoolean(body[field], field);
+      if (validationError) return reply.status(400).send({ error: validationError });
+    }
+    const existing = provider.models[idx];
+    provider.models[idx] = {
+      ...existing,
+      ...(body.displayName !== undefined ? { displayName: body.displayName as string } : {}),
+      ...(body.modelType !== undefined ? { modelType: body.modelType as ModelInfo["modelType"] } : {}),
+      ...(body.contextWindow !== undefined ? { contextWindow: body.contextWindow as number } : {}),
+      ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens as number } : {}),
+      ...(body.supportsReasoning !== undefined
+        ? { supportsReasoning: body.supportsReasoning as boolean }
+        : {}),
+      ...(body.supportsToolCalling !== undefined
+        ? { supportsToolCalling: body.supportsToolCalling as boolean }
+        : {}),
+      ...(body.supportsMultimodal !== undefined
+        ? { supportsMultimodal: body.supportsMultimodal as boolean }
+        : {}),
+    };
     await context.configRepository.save(config);
     return provider.models[idx];
   });

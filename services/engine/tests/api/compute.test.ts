@@ -16,6 +16,27 @@ import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
 
+// R2（review）：OpenAI SDK 在 Node 下走 node-fetch，global fetch stub 影响不到它，
+// 文件级 mock 仅在本测试文件生效；未显式设置 listImpl 时直接报错，防止静默走真实网络
+vi.mock("openai", () => {
+  let listImpl: (() => Promise<unknown>) | null = null;
+  class MockOpenAI {
+    static __setListImpl(fn: (() => Promise<unknown>) | null): void {
+      listImpl = fn;
+    }
+    constructor(readonly options: Record<string, unknown>) {}
+    get models(): { list: () => Promise<unknown> } {
+      return {
+        list: async () => {
+          if (listImpl) return listImpl();
+          throw new Error("openai mock: models.list 未设置 __setListImpl");
+        },
+      };
+    }
+  }
+  return { default: MockOpenAI };
+});
+
 async function buildContext(): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "compute-api-test-"));
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
@@ -372,6 +393,8 @@ describe("Compute API", () => {
     const headers = new Headers(calls[0].init?.headers);
     expect(headers.get("x-api-key")).toBe("sk-anthropic");
     expect(headers.get("anthropic-version")).toBe("2023-06-01");
+    // R3（review）：anthropic 路径 fetch 必须带超时信号，不能无限悬挂
+    expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
     await app.close();
   });
 
@@ -406,7 +429,7 @@ describe("Compute API", () => {
     await app.close();
   });
 
-  it("returns 502 when anthropic provider has no models endpoint", async () => {
+  it("returns 502 with upstream 404 detail when anthropic provider has no models endpoint", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/compute/providers").send({
       id: "claude-no-models",
@@ -430,8 +453,116 @@ describe("Compute API", () => {
 
     const res = await authedRequest(app.server).post("/compute/providers/claude-no-models/test");
     expect(res.status).toBe(502);
-    expect(res.body.error).toBe("Test connection failed");
+    expect(res.body.error).toBe("Test connection failed: 上游返回 404（无 models 端点）");
     await app.close();
+  });
+
+  it.each([401, 403])("returns 502 with auth wording for anthropic HTTP %s", async (status) => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: `claude-auth-${status}`,
+      displayName: "Claude Auth",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: "sk-bad",
+      apiMode: "anthropic",
+      models: [],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status,
+          json: () => Promise.resolve({ error: { message: "authentication error" } }),
+          text: () => Promise.resolve(""),
+        } as unknown as Response),
+      ),
+    );
+
+    const res = await authedRequest(app.server).post(`/compute/providers/claude-auth-${status}/test`);
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe(`Test connection failed: 上游返回 ${status}（密钥无效或权限不足）`);
+    await app.close();
+  });
+
+  it("returns 502 with network wording when anthropic fetch rejects", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "claude-net",
+      displayName: "Claude Net",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: "sk-anthropic",
+      apiMode: "anthropic",
+      models: [],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new TypeError("fetch failed"))),
+    );
+
+    const res = await authedRequest(app.server).post("/compute/providers/claude-net/test");
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe("Test connection failed: 网络错误（无法连接上游）");
+    await app.close();
+  });
+
+  it("returns 502 with protocol wording when anthropic 2xx body is not JSON", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "claude-html",
+      displayName: "Claude Html",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: "sk-anthropic",
+      apiMode: "anthropic",
+      models: [],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new SyntaxError("Unexpected token '<'")),
+        } as unknown as Response),
+      ),
+    );
+
+    const res = await authedRequest(app.server).post("/compute/providers/claude-html/test");
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe("Test connection failed: 上游响应格式错误（非 JSON 或缺少 data 列表）");
+    await app.close();
+  });
+
+  it("returns 502 with auth wording when OpenAI SDK path gets 401", async () => {
+    const OpenAI = (await import("openai")).default as unknown as {
+      __setListImpl(fn: (() => Promise<unknown>) | null): void;
+    };
+    OpenAI.__setListImpl(() => {
+      const err = new Error("401 Unauthorized") as Error & { status: number };
+      err.status = 401;
+      throw err;
+    });
+    try {
+      const app = await makeApp();
+      await authedRequest(app.server).post("/compute/providers").send({
+        id: "openai-401",
+        displayName: "OpenAI 401",
+        providerType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-bad",
+        apiMode: "chat_completions",
+        models: [],
+      });
+      const res = await authedRequest(app.server).post("/compute/providers/openai-401/test");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Test connection failed: 上游返回 401（密钥无效或权限不足）");
+      await app.close();
+    } finally {
+      OpenAI.__setListImpl(null);
+    }
   });
 
   it("persists requestTimeout/maxRetries on create and update", async () => {
@@ -643,6 +774,127 @@ describe("Compute API", () => {
       supportsToolCalling: true,
       supportsMultimodal: false,
     });
+    await app.close();
+  });
+
+  it("updates model via whitelist with all editable fields", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "put-models",
+      displayName: "Put Models",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+
+    const res = await authedRequest(app.server).put("/compute/providers/put-models/models/gpt-4o").send({
+      displayName: "GPT-4o Updated",
+      modelType: "embedding",
+      contextWindow: 200_000,
+      maxOutputTokens: 8_192,
+      supportsReasoning: true,
+      supportsToolCalling: false,
+      supportsMultimodal: true,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "gpt-4o",
+      displayName: "GPT-4o Updated",
+      modelType: "embedding",
+      contextWindow: 200_000,
+      maxOutputTokens: 8_192,
+      supportsReasoning: true,
+      supportsToolCalling: false,
+      supportsMultimodal: true,
+    });
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models[0]).toMatchObject({
+      id: "gpt-4o",
+      displayName: "GPT-4o Updated",
+      modelType: "embedding",
+      contextWindow: 200_000,
+      maxOutputTokens: 8_192,
+      supportsReasoning: true,
+      supportsToolCalling: false,
+      supportsMultimodal: true,
+    });
+    await app.close();
+  });
+
+  it.each([
+    ["modelType", "tts"],
+    ["contextWindow", 0],
+    ["contextWindow", -10],
+    ["contextWindow", 1.5],
+    ["contextWindow", "big"],
+    ["maxOutputTokens", 0],
+    ["supportsReasoning", "yes"],
+    ["supportsToolCalling", 1],
+    ["supportsMultimodal", null],
+    ["displayName", ""],
+    ["displayName", "   "],
+    ["displayName", 123],
+  ])("rejects invalid PUT model field %s: %j", async (field, value) => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "put-invalid",
+      displayName: "Put Invalid",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+
+    const res = await authedRequest(app.server)
+      .put("/compute/providers/put-invalid/models/gpt-4o")
+      .send({ [field]: value });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(field);
+    await app.close();
+  });
+
+  it("rejects id change via PUT", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "put-id",
+      displayName: "Put Id",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+
+    const res = await authedRequest(app.server)
+      .put("/compute/providers/put-id/models/gpt-4o")
+      .send({ id: "gpt-5" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("id");
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models[0].id).toBe("gpt-4o");
+    await app.close();
+  });
+
+  it("allows id equal to path modelId and ignores unknown fields", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "put-unknown",
+      displayName: "Put Unknown",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+
+    const res = await authedRequest(app.server)
+      .put("/compute/providers/put-unknown/models/gpt-4o")
+      .send({ id: "gpt-4o", displayName: "Renamed", junk: "x" });
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("gpt-4o");
+    expect(res.body.displayName).toBe("Renamed");
+    expect(res.body).not.toHaveProperty("junk");
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models[0].id).toBe("gpt-4o");
+    expect(config.providers[0].models[0]).not.toHaveProperty("junk");
     await app.close();
   });
 });
