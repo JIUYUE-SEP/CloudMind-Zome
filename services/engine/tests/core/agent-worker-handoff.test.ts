@@ -3,7 +3,7 @@
  * ① 撞顶后 job.onEvent 补发 handoff.book（棒次/保险丝/水位/交接书正文+id），
  *    交接书经 onStepAppended 持久化（消息载体落历史）；
  * ② 续跑 job（handoffResume）→ 交接书置顶注入（pipeline 组装首条 system 消息）；
- * ③ normalizeHandoffMaxShifts 保险丝归一（缺省 3 / clamp 1-10 / 非法回退）。
+ * ③ normalizeHandoffMaxShifts 保险丝归一（缺省 5 / clamp 1-10 / 非法回退）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { z } from "zod";
@@ -166,7 +166,7 @@ describe("AgentWorker 换班移交接线", () => {
     if (bookEvent?.type !== "handoff.book") return;
     expect(bookEvent).toMatchObject({
       shift: 1,
-      maxShifts: 3,
+      maxShifts: 5,
       window: 1000,
       bookText: expect.stringContaining(HANDOFF_BOOK_PREFIX),
     });
@@ -196,12 +196,12 @@ describe("AgentWorker 换班移交接线", () => {
     expect(provider.captured!.messages[1]!.content.some((c) => c.type === "text" && c.text.includes("# SOUL"))).toBe(true);
   });
 
-  it("normalizeHandoffMaxShifts：缺省 3、clamp 1-10、非法回退", () => {
-    expect(normalizeHandoffMaxShifts(undefined)).toBe(3);
+  it("normalizeHandoffMaxShifts：缺省 5、clamp 1-10、非法回退", () => {
+    expect(normalizeHandoffMaxShifts(undefined)).toBe(5);
     expect(normalizeHandoffMaxShifts(0)).toBe(1);
     expect(normalizeHandoffMaxShifts(99)).toBe(10);
     expect(normalizeHandoffMaxShifts(2.4)).toBe(2);
-    expect(normalizeHandoffMaxShifts(Number.NaN)).toBe(3);
+    expect(normalizeHandoffMaxShifts(Number.NaN)).toBe(5);
   });
 });
 

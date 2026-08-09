@@ -73,4 +73,57 @@ describe("AgentEditModel", () => {
     const select = wrapper.find("select");
     expect(select.element.value).toBe("p1:gpt-4o-legacy");
   });
+
+  it("续跑棒数上限：handoffMaxShifts 数字框 emit、越界 clamp、清空为 undefined（R6）", async () => {
+    const wrapper = mount(AgentEditModel, {
+      props: { agent: { id: "a1", name: "A1", persona: "", skills: [], tools: [] } },
+    });
+    const input = wrapper.find("input[placeholder='默认（5）']");
+    expect(wrapper.text()).toContain("续跑棒数上限");
+    expect(wrapper.text()).toContain("自动续跑的最大棒数");
+
+    await input.setValue("5");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ handoffMaxShifts: 5 });
+
+    await input.setValue("12");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ handoffMaxShifts: 10 });
+
+    await input.setValue("0");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ handoffMaxShifts: 1 });
+
+    await input.setValue("");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ handoffMaxShifts: undefined });
+  });
+
+  it("ReAct 最大步数：reactMaxSteps 数字框 emit 并 clamp（R6）", async () => {
+    const wrapper = mount(AgentEditModel, {
+      props: { agent: { id: "a1", name: "A1", persona: "", skills: [], tools: [] } },
+    });
+    const input = wrapper.find("input[placeholder='默认（100）']");
+    await input.setValue("120");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ reactMaxSteps: 120 });
+
+    await input.setValue("501");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ reactMaxSteps: 500 });
+  });
+
+  it("上下文窗口：maxContextTokens 数字框 emit（R6）", async () => {
+    const wrapper = mount(AgentEditModel, {
+      props: { agent: { id: "a1", name: "A1", persona: "", skills: [], tools: [] } },
+    });
+    const input = wrapper.find("input[placeholder='默认（80000）']");
+    await input.setValue("64000");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ maxContextTokens: 64000 });
+
+    await input.setValue("");
+    await input.trigger("change");
+    expect(wrapper.emitted("update")!.at(-1)![0]).toEqual({ maxContextTokens: undefined });
+  });
 });

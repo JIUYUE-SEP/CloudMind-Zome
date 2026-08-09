@@ -4,6 +4,7 @@ import { SchedulerRepository } from "./repository.js";
 import { computeNextRun, isDue } from "./engine.js";
 import { ErrorThrottle } from "./error-throttle.js";
 import type { ScheduledTask } from "./types.js";
+import { randomUUID } from "node:crypto";
 
 export interface SchedulerOptions {
   pollIntervalMs?: number;
@@ -107,7 +108,7 @@ export class Scheduler {
         id: task.id,
         messages: [
           {
-            id: `sched_${Date.now()}`,
+            id: `sched_${Date.now()}_${randomUUID().slice(0, 8)}`,
             role: "user",
             content: [{ type: "text", text: task.prompt }],
             createdAt: new Date().toISOString(),

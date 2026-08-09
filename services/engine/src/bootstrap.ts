@@ -44,6 +44,7 @@ import { SubagentSwarm } from "./subagent/batch.js";
 import { createSubagentTerminalNotifier } from "./subagent/notify.js";
 import { HandoffManager } from "./handoff/manager.js";
 import { HandoffStateStore } from "./handoff/state.js";
+import { HandoffLoopRegistry } from "./handoff/registry.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./provider/record-calls.js";
 import { randomUUID } from "node:crypto";
@@ -215,6 +216,8 @@ async function main() {
   );
   // 换班移交控制面（水位撞顶=换班不死）：handoff-state.json 持久化 + 状态机
   const handoffManager = new HandoffManager({ store: new HandoffStateStore() });
+  // 活跃续跑循环注册表（P1-1）：REST DELETE /handoff/:id 打断 running 期 job 的桥梁
+  const handoffLoopRegistry = new HandoffLoopRegistry();
   const subagentDispatcher = new SubagentDispatcher({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
     runAgent: runAgentCollect,
@@ -466,6 +469,7 @@ async function main() {
     subagentDispatcher,
     backgroundManager,
     handoffManager,
+    handoffLoops: handoffLoopRegistry,
     mcpManager,
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,

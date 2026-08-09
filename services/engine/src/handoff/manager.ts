@@ -8,6 +8,21 @@ import {
 } from "./types.js";
 import type { HandoffStateStore } from "./state.js";
 
+/**
+ * 合法状态转移表（P3 顺手包）：
+ * 终态（completed/fused/aborted/lost）不可再转移——P1-1 的 aborted→completed
+ * 覆盖就是靠这条防线兜底；record() 重建 pending 是"新链"语义，不走 markStatus。
+ */
+const HANDOFF_TRANSITIONS: Record<HandoffStatus, readonly HandoffStatus[]> = {
+  pending: ["scheduled", "running", "fused", "aborted", "lost"],
+  scheduled: ["running", "fused", "aborted", "lost"],
+  running: ["completed", "fused", "aborted", "lost"],
+  completed: [],
+  fused: [],
+  aborted: [],
+  lost: [],
+};
+
 export interface HandoffManagerDeps {
   store: HandoffStateStore;
   /** 状态变化事件（ws 层转成 handoff.update 帧；失败只记 warn 不阻断落盘） */
@@ -60,7 +75,6 @@ export class HandoffManager {
       window: info.window,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-      ...(existing?.resumeJobId !== undefined ? { resumeJobId: existing.resumeJobId } : {}),
     };
     delete record.abortReason;
     this.records.set(id, record);
@@ -76,6 +90,10 @@ export class HandoffManager {
   ): Promise<HandoffRecord | undefined> {
     const record = this.records.get(id);
     if (!record) return undefined;
+    const allowed = HANDOFF_TRANSITIONS[record.status];
+    if (!allowed.includes(status)) {
+      throw new Error(`invalid handoff transition: ${record.status} -> ${status}`);
+    }
     record.status = status;
     record.updatedAt = Date.now();
     if (extra?.resumeJobId !== undefined) record.resumeJobId = extra.resumeJobId;

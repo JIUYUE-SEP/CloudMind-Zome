@@ -1,5 +1,6 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMEvent } from "../../provider/types.js";
+import { randomUUID } from "node:crypto";
 import { executeLoopStep, StepStreamError, type StepInput, type StepResult } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";
 import {
@@ -12,6 +13,7 @@ import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
 import { getTokenCounter } from "../../context/token-counter.js";
 import { stripUnansweredToolCalls } from "../../context/history-sanitize.js";
 import { logger } from "../../logger.js";
+import { HANDOFF_DEFAULT_MAX_SHIFTS } from "../../handoff/types.js";
 
 /** 撞顶兜底（真机实锤：连续工具调用后回合静默结束）：追加一次无工具总结的 system 提示 */
 export const MAX_STEPS_SUMMARY_HINT =
@@ -34,9 +36,6 @@ export const HANDOFF_BOOK_PREFIX = "[交接书]";
  */
 const CONTEXT_WARN_RATIO = 0.7;
 const CONTEXT_STOP_RATIO = 0.9;
-
-/** 棒数保险丝缺省（换班续跑最多 3 棒；worker 侧 clamp 1-10） */
-export const HANDOFF_DEFAULT_MAX_SHIFTS = 3;
 
 type SummaryReason = "max_steps" | "watermark";
 
@@ -115,7 +114,7 @@ function makeFallbackReply(
 ): ChatMessage {
   const text = reason === "watermark" ? CONTEXT_WATERMARK_FALLBACK_REPLY : MAX_STEPS_FALLBACK_REPLY;
   const message: ChatMessage = {
-    id: `msg_${Date.now()}`,
+    id: `msg_${randomUUID()}`,
     role: "assistant",
     content: [{ type: "text", text }],
     createdAt: new Date().toISOString(),
@@ -140,7 +139,7 @@ async function runMaxStepsSummary(
   const hintText =
     reason === "watermark" ? CONTEXT_WATERMARK_SUMMARY_HINT : MAX_STEPS_SUMMARY_HINT;
   const hint: ChatMessage = {
-    id: `msg_${Date.now()}`,
+    id: `msg_${randomUUID()}`,
     role: "system",
     content: [{ type: "text", text: hintText }],
     createdAt: new Date().toISOString(),
@@ -202,7 +201,7 @@ function contextUsedTokens(
 function makeWatermarkReminder(used: number, window: number): ChatMessage {
   const pct = Math.round((used / window) * 100);
   return {
-    id: `msg_${Date.now()}`,
+    id: `msg_${randomUUID()}`,
     role: "system",
     content: [
       {
@@ -226,7 +225,7 @@ function makeHandoffBook(
 ): ChatMessage {
   const pct = Math.round((used / window) * 100);
   return {
-    id: `msg_${Date.now()}`,
+    id: `msg_${randomUUID()}`,
     role: "system",
     content: [
       {

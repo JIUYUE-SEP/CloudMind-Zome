@@ -207,4 +207,59 @@ describe("chat store 流式状态以 turn 为界", () => {
     frame({ type: "handoff.update", status: "completed", shift: 3, maxShifts: 3 });
     expect(store.handoffStatus?.status).toBe("completed");
   });
+
+  it("重连成功后补拉 handoff 状态对齐（onReconnected，R5）", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("/handoff")
+        ? [
+            {
+              id: "ho_a1_default",
+              agentId: "a1",
+              sessionId: "default",
+              reason: "watermark",
+              status: "aborted",
+              shift: 2,
+              maxShifts: 5,
+              bookText: "[交接书] 换班移交",
+              used: 950,
+              window: 1000,
+              createdAt: 1,
+              updatedAt: 2,
+              abortReason: "disconnect",
+            },
+          ]
+        : [];
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as unknown as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = useChatStore();
+    store.connect("a1");
+    await vi.advanceTimersByTimeAsync(0);
+    const ws1 = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    ws1.onopen?.();
+    ws1.onclose?.();
+
+    // 1s 退避后重连成功：onReconnected 应拉取 /handoff 回填横幅状态
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    expect(ws2).not.toBe(ws1);
+    ws2.onopen?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.handoffStatus).toMatchObject({
+      status: "aborted",
+      shift: 2,
+      maxShifts: 5,
+      reason: "disconnect",
+    });
+
+    store.disconnect();
+    vi.useRealTimers();
+  });
 });

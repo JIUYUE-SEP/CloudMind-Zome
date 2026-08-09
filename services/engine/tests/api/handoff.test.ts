@@ -4,7 +4,7 @@
  * ② DELETE /handoff/:id 手动打断（active → aborted/manual）；
  * ③ 404 / 鉴权路径不泄露。
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,8 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { HandoffManager } from "../../src/handoff/manager.js";
 import { HandoffStateStore } from "../../src/handoff/state.js";
+import { HandoffLoopRegistry } from "../../src/handoff/registry.js";
+import type { HandoffResumeLoop } from "../../src/handoff/resume-loop.js";
 import type { HandoffBookInfo } from "../../src/handoff/types.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
@@ -45,13 +47,15 @@ describe("Handoff API", () => {
   let tmpDir: string;
   let originalDataDir: string | undefined;
   let manager: HandoffManager;
+  let context: ApiContext;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "handoff-api-test-"));
     originalDataDir = process.env.CLOUDMIND_DATA_DIR;
     process.env.CLOUDMIND_DATA_DIR = tmpDir;
     manager = new HandoffManager({ store: new HandoffStateStore(path.join(tmpDir, "handoff-state.json")) });
-    const context: ApiContext = {
+    const handoffLoops = new HandoffLoopRegistry();
+    context = {
       agentRepository: new AgentRepository(),
       getMessageRepository: (id: string) => new MessageRepository(id),
       getMemoryRepository: (id: string) => new MemoryRepository(id),
@@ -62,6 +66,7 @@ describe("Handoff API", () => {
       blueprintRepository: new BlueprintRepository(),
       getAgentWorker: async () => undefined,
       handoffManager: manager,
+      handoffLoops,
     };
     app = await createServer(context);
     await app.ready();
@@ -103,5 +108,20 @@ describe("Handoff API", () => {
 
     const missing = await authedRequest(app.server).delete("/handoff/ho_ghost");
     expect(missing.status).toBe(404);
+  });
+
+  it("DELETE /handoff/:id：running 期经 loop 注册表 cancel 在途 job（P1-1）", async () => {
+    const record = await manager.record(bookInfo());
+    await manager.markStatus(record.id, "scheduled");
+    await manager.markStatus(record.id, "running");
+
+    const cancel = vi.fn(async () => {});
+    const registry = context.handoffLoops!;
+    registry.register("a1", "s1", { cancel } as unknown as HandoffResumeLoop);
+
+    const res = await authedRequest(app.server).delete(`/handoff/${record.id}`);
+    expect(res.status).toBe(200);
+    expect(cancel).toHaveBeenCalledWith("a1", "s1", "manual");
+    expect(res.body).toMatchObject({ status: "aborted", abortReason: "manual" });
   });
 });

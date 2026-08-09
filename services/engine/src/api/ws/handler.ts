@@ -111,7 +111,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                 ...(record.abortReason !== undefined ? { reason: record.abortReason } : {}),
               });
             },
-            enqueueResume: (record, signal) => {
+            enqueueResume: (record, signal, jobId) => {
               void (async () => {
                 if (signal.aborted) return;
                 try {
@@ -122,7 +122,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                   const targetWorker =
                     (await context.getAgentWorker(agentId).catch(() => undefined)) ?? worker;
                   targetWorker.enqueue({
-                    id: `handoff_resume_${randomUUID()}`,
+                    id: jobId,
                     messages: history.length > 0 ? history : [],
                     sessionId,
                     signal,
@@ -144,6 +144,9 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             },
           })
         : undefined;
+      // P1-1：注册到全局 loop 注册表，REST DELETE /handoff/:id 才能在 running 期
+      // abort 在途 job；连接关闭时注销（断连 cancel 已由下方 close 处理器完成）
+      if (handoffLoop) context.handoffLoops?.register(agentId, sessionId, handoffLoop);
 
       /** 单连接共享的 job 事件通道：拦截 handoff.book 交续跑循环，其余帧透传前端 */
       const emitJobEvent = (event: LLMEvent): void => {
@@ -170,6 +173,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
       logger.info({ agentId, sessionId }, "[ws] 私聊连接建立");
       socket.on("close", (code: number, reason: Buffer) => {
         logger.info({ agentId, sessionId, code, reason: reason.toString() }, "[ws] 私聊连接关闭");
+        if (handoffLoop) context.handoffLoops?.unregister(agentId, sessionId, handoffLoop);
         // 断连即打断：清定时器、abort 在途续跑、控制面标 aborted（交接书仍在历史）
         void handoffLoop?.cancel(agentId, sessionId, "disconnect");
       });

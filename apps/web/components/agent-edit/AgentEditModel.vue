@@ -30,6 +30,42 @@
 
     <section class="model-group params">
       <label>
+        续跑棒数上限
+        <input
+          :value="agent.handoffMaxShifts ?? ''"
+          type="number"
+          step="1"
+          min="1"
+          max="10"
+          placeholder="默认（5）"
+          @change="updateNumber('handoffMaxShifts', $event)"
+        />
+        <span class="hint">水位撞顶后自动续跑的最大棒数（含首棒，1-10，缺省 5）</span>
+      </label>
+      <label>
+        ReAct 最大步数
+        <input
+          :value="agent.reactMaxSteps ?? ''"
+          type="number"
+          step="1"
+          min="1"
+          max="500"
+          placeholder="默认（100）"
+          @change="updateNumber('reactMaxSteps', $event)"
+        />
+      </label>
+      <label>
+        上下文窗口（tokens）
+        <input
+          :value="agent.maxContextTokens ?? ''"
+          type="number"
+          step="100"
+          min="1"
+          placeholder="默认（80000）"
+          @change="updateNumber('maxContextTokens', $event)"
+        />
+      </label>
+      <label>
         Temperature
         <input
           :value="agent.temperature ?? ''"
@@ -77,20 +113,39 @@ onMounted(() => {
   compute.load();
 });
 
-function clampNumber(value: unknown, min: number, max: number): number | undefined {
+type NumberKey =
+  | "temperature"
+  | "topP"
+  | "handoffMaxShifts"
+  | "reactMaxSteps"
+  | "maxContextTokens";
+
+const NUMBER_RANGES: Record<NumberKey, { min: number; max: number; integer?: boolean }> = {
+  temperature: { min: 0, max: 2 },
+  topP: { min: 0, max: 1 },
+  handoffMaxShifts: { min: 1, max: 10, integer: true },
+  reactMaxSteps: { min: 1, max: 500, integer: true },
+  maxContextTokens: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+};
+
+function clampNumber(
+  value: unknown,
+  range: { min: number; max: number; integer?: boolean },
+): number | undefined {
   const num = Number(value);
   if (!Number.isFinite(num)) return undefined;
-  return Math.max(min, Math.min(max, num));
+  const rounded = range.integer ? Math.round(num) : num;
+  return Math.max(range.min, Math.min(range.max, rounded));
 }
 
-function updateNumber(key: "temperature" | "topP", event: Event) {
+function updateNumber(key: NumberKey, event: Event) {
   const target = event.target as HTMLInputElement;
   const raw = target.value;
   if (raw === "") {
     emit("update", { [key]: undefined } as Partial<AgentConfig>);
     return;
   }
-  const clamped = clampNumber(raw, 0, key === "temperature" ? 2 : 1);
+  const clamped = clampNumber(raw, NUMBER_RANGES[key]);
   emit("update", { [key]: clamped } as Partial<AgentConfig>);
 }
 
@@ -187,5 +242,10 @@ const proxyImageModelId = computed({
 
 .params label {
   margin: 0;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--mc-text-tertiary);
 }
 </style>

@@ -1,4 +1,5 @@
 import { logger } from "../logger.js";
+import { randomUUID } from "node:crypto";
 import {
   HANDOFF_RESUME_DELAY_MS,
   type HandoffBookInfo,
@@ -11,10 +12,11 @@ export interface HandoffResumeLoopDeps {
   /** 续跑入队延迟（测试注入 0；缺省 600ms 给前端"换班中"可感知窗口） */
   delayMs?: number;
   /**
-   * 入队续跑 job（ws 层接线：加载历史 → worker.enqueue）。
+   * 入队续跑 job（ws 层接线：加载历史 → worker.enqueue；jobId 由本 loop 生成，
+   * 保证 markStatus(running, { resumeJobId }) 与 worker job id 同源）。
    * signal 由 loop 持有，用户消息/disconnect 时 abort（含排队未启动的 job）。
    */
-  enqueueResume(record: HandoffRecord, signal: AbortSignal): void;
+  enqueueResume(record: HandoffRecord, signal: AbortSignal, jobId: string): void;
   /** 状态变化事件（ws 层转成 handoff.update 帧；失败只记 warn 不阻断状态机） */
   onUpdate?: (record: HandoffRecord) => void;
 }
@@ -53,6 +55,12 @@ export class HandoffResumeLoop {
       if (this.current) this.current.booked = true;
       const record = await this.deps.manager.record(info);
       this.deps.onUpdate?.(record);
+      // P1-2 竞态修复：record 落盘窗口内，cancel（用户消息/断连/REST）可能已把
+      // 本条目标 aborted，或更新的交接书已替换条目——调度前复核，绝不复活。
+      const latest = this.deps.manager.get(record.id);
+      if (!latest || latest !== record || latest.status !== "pending") {
+        return;
+      }
       // 保险丝：棒数撞顶（shift >= maxShifts）→ fused，不再调度下一棒
       if (record.shift >= record.maxShifts) {
         this.current = undefined;
@@ -91,9 +99,10 @@ export class HandoffResumeLoop {
     }
     cur.timer = undefined;
     try {
-      const running = await this.deps.manager.markStatus(record.id, "running");
+      const resumeJobId = `handoff_resume_${randomUUID()}`;
+      const running = await this.deps.manager.markStatus(record.id, "running", { resumeJobId });
       if (running) this.deps.onUpdate?.(running);
-      this.deps.enqueueResume(record, cur.controller.signal);
+      this.deps.enqueueResume(record, cur.controller.signal, resumeJobId);
     } catch (err) {
       logger.error({ err }, "[handoff] 续跑入队失败（标 aborted）");
       this.current = undefined;

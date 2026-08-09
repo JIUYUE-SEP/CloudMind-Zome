@@ -1,5 +1,6 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../provider/types.js";
+import { randomUUID } from "node:crypto";
 import { runToolCallBatch, type ToolExecutionContext, type ToolCallRequest } from "./tool-call.js";
 import { getTokenCounter } from "../../context/token-counter.js";
 import {
@@ -94,7 +95,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
     const partialMessage: ChatMessage | undefined =
       partialContent.length > 0
         ? {
-            id: `msg_${Date.now()}`,
+            id: `msg_${randomUUID()}`,
             role: "assistant",
             content: partialContent,
             incomplete: true,
@@ -109,7 +110,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
   if (thinkBuffer) content.push({ type: "think", think: thinkBuffer });
 
   const assistantMessage: ChatMessage = {
-    id: `msg_${Date.now()}`,
+    id: `msg_${randomUUID()}`,
     role: "assistant",
     content,
     createdAt: new Date().toISOString(),

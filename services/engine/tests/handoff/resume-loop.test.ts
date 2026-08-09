@@ -3,7 +3,9 @@
  * ① 交接书 → scheduled → 延迟后 enqueueResume（带 abort signal）；
  * ② 棒数保险丝：shift >= maxShifts → fused，不再入队；
  * ③ 续跑正常完成 → completed；续跑再撞顶 → 链继续（下一棒接管，旧 job 收尾不误标）；
- * ④ 用户消息 cancel：清定时器 + abort 在途 job + 控制面 aborted（排队未启动的 job 被 signal 拦下）。
+ * ④ 用户消息 cancel：清定时器 + abort 在途 job + 控制面 aborted（排队未启动的 job 被 signal 拦下）；
+ * ⑤ running 期 REST 打断（loop 注册表 cancelAll）：abort 在途 job，收尾不覆盖回 completed；
+ * ⑥ 落盘窗口内 abort（handleBook 复核 pending）：不复活为 scheduled。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
@@ -11,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { HandoffManager } from "../../src/handoff/manager.js";
 import { HandoffResumeLoop } from "../../src/handoff/resume-loop.js";
+import { HandoffLoopRegistry } from "../../src/handoff/registry.js";
 import type { HandoffBookInfo, HandoffRecord } from "../../src/handoff/types.js";
 import { restoreDataDir } from "../helpers/env.js";
 
@@ -32,7 +35,7 @@ function bookInfo(overrides: Partial<HandoffBookInfo> = {}): HandoffBookInfo {
 let tmpDir: string;
 let originalDataDir: string | undefined;
 let manager: HandoffManager;
-const enqueued: Array<{ record: HandoffRecord; signal: AbortSignal }> = [];
+const enqueued: Array<{ record: HandoffRecord; signal: AbortSignal; jobId: string }> = [];
 const updates: string[] = [];
 
 beforeEach(async () => {
@@ -62,8 +65,8 @@ function makeLoop(delayMs = 50): HandoffResumeLoop {
   return new HandoffResumeLoop({
     manager,
     delayMs,
-    enqueueResume: (record, signal) => {
-      enqueued.push({ record, signal });
+    enqueueResume: (record, signal, jobId) => {
+      enqueued.push({ record, signal, jobId });
     },
     onUpdate: (record) => {
       updates.push(`${record.status}:${record.shift}`);
@@ -82,6 +85,8 @@ describe("HandoffResumeLoop 续跑循环", () => {
     expect(manager.activeFor("a1", "s1")).toMatchObject({ status: "running", shift: 1 });
     expect(enqueued[0]!.record.id).toBe("ho_a1_s1");
     expect(enqueued[0]!.signal.aborted).toBe(false);
+    // resumeJobId 接线：控制面 running 记录与 worker job id 同源（P3 顺手包）
+    expect(manager.get("ho_a1_s1")?.resumeJobId).toBe(enqueued[0]!.jobId);
     // 状态帧序列：pending → scheduled → running（前端横幅随帧可见）
     expect(updates).toEqual(["pending:1", "scheduled:1", "running:1"]);
   });
@@ -151,6 +156,65 @@ describe("HandoffResumeLoop 续跑循环", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(enqueued).toHaveLength(0);
     expect(manager.get("ho_a1_s1")).toMatchObject({ status: "aborted", abortReason: "manual" });
+  });
+
+  it("running 期 REST 打断：registry.cancelAll abort 在途 job，收尾不覆盖回 completed（P1-1）", async () => {
+    const loop = makeLoop();
+    const registry = new HandoffLoopRegistry();
+    registry.register("a1", "s1", loop);
+    await loop.onWatermarkBook(bookInfo());
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(enqueued).toHaveLength(1));
+    const record = enqueued[0]!.record;
+
+    // REST DELETE /handoff/:id 走的就是这个入口（route → cancelAll → loop.cancel）
+    await registry.cancelAll("a1", "s1", "manual");
+    expect(enqueued[0]!.signal.aborted).toBe(true);
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "aborted", abortReason: "manual" });
+
+    // 在途 job 收尾：不得把 aborted 覆盖回 completed（转移表 + current 已清双防线）
+    await loop.onJobDone(record, "a1", "s1");
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "aborted", abortReason: "manual" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it("落盘窗口内 abort：handleBook 复核 pending 不复活为 scheduled（P1-2）", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const save = vi.fn(() => gate);
+    const gatedManager = new HandoffManager({
+      store: {
+        loadAll: async () => [],
+        save,
+        markActiveAsLost: async () => 0,
+      } as never,
+    });
+    const loop = new HandoffResumeLoop({
+      manager: gatedManager,
+      delayMs: 50,
+      enqueueResume: (record, signal, jobId) => {
+        enqueued.push({ record, signal, jobId });
+      },
+      onUpdate: (record) => updates.push(`${record.status}:${record.shift}`),
+    });
+
+    // book 事件已触发、manager.record 卡在落盘（save 门闩）时用户消息到达
+    const bookPromise = loop.onWatermarkBook(bookInfo());
+    await vi.waitFor(() => expect(save).toHaveBeenCalled());
+    const cancelPromise = loop.cancel("a1", "s1", "user_message");
+    release();
+    await Promise.all([bookPromise, cancelPromise]);
+
+    // 控制面保持 aborted，600ms 后没有续跑 job
+    expect(gatedManager.get("ho_a1_s1")).toMatchObject({
+      status: "aborted",
+      abortReason: "user_message",
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(enqueued).toHaveLength(0);
   });
 
   it("续跑异常（非 abort）→ 控制面 aborted，链结束", async () => {

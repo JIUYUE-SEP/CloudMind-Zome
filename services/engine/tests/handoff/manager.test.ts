@@ -80,6 +80,25 @@ describe("HandoffManager 控制面", () => {
     expect(manager.get(r.id)!.resumeJobId).toBeUndefined();
   });
 
+  it("markStatus 非法转移抛错且状态不变（终态不可再转移）", async () => {
+    const r = await manager.record(bookInfo());
+    await manager.cancel("a1", "s1", "user_message");
+    // aborted → completed 是 P1-1 曾发生的覆盖路径，现在被转移表拦下
+    await expect(manager.markStatus(r.id, "completed")).rejects.toThrow(
+      /invalid handoff transition: aborted -> completed/,
+    );
+    expect(manager.get(r.id)).toMatchObject({ status: "aborted", abortReason: "user_message" });
+
+    const done = await manager.record(bookInfo({ agentId: "a2", sessionId: "s2", shift: 2 }));
+    await manager.markStatus(done.id, "scheduled");
+    await manager.markStatus(done.id, "running");
+    await manager.markStatus(done.id, "completed");
+    await expect(manager.markStatus(done.id, "scheduled")).rejects.toThrow(
+      /invalid handoff transition: completed -> scheduled/,
+    );
+    expect(manager.get(done.id)).toMatchObject({ status: "completed" });
+  });
+
   it("cancel：用户消息打断 → 活跃条目标 aborted + 原因；非活跃不变", async () => {
     const r = await manager.record(bookInfo());
     await manager.markStatus(r.id, "scheduled");
@@ -101,6 +120,8 @@ describe("HandoffManager 控制面", () => {
   it("load 启动对账：活跃条目标 lost（重启后不自动续跑），终态条目保留", async () => {
     const active = await manager.record(bookInfo());
     const done = await manager.record(bookInfo({ agentId: "a2", sessionId: "s2", shift: 2 }));
+    await manager.markStatus(done.id, "scheduled");
+    await manager.markStatus(done.id, "running");
     await manager.markStatus(done.id, "completed");
 
     // 模拟重启：新 manager 从同一 store 加载

@@ -63,6 +63,33 @@ export const useChatStore = defineStore("chat", () => {
     // 代际比对，过期连接的帧一律丢弃，防止写脏新会话状态
     const stale = () => conn !== connection;
 
+    // 重连成功后的换班控制面对账（R5）：断连/重启期间的状态变化以 engine
+    // handoff-state.json 为准回填横幅（aborted/lost 也会被拉到，横幅按状态决定显隐）
+    const refreshHandoff = (agentId: string) => {
+      client
+        .listHandoffs(agentId, sessionId.value)
+        .then((records) => {
+          if (stale()) return;
+          const latest = records[records.length - 1];
+          if (!latest) {
+            handoffStatus.value = null;
+            return;
+          }
+          handoffStatus.value = {
+            type: "handoff.update",
+            agentId,
+            status: latest.status,
+            shift: latest.shift,
+            maxShifts: latest.maxShifts,
+            ...(latest.bookMessageId !== undefined ? { bookMessageId: latest.bookMessageId } : {}),
+            ...(latest.abortReason !== undefined ? { reason: latest.abortReason } : {}),
+          };
+        })
+        .catch(() => {
+          // 对账失败不阻塞连接态；横幅保持断连时清空后的状态
+        });
+    };
+
     const conn = client.connect(agentId, sessionId.value, {
       onOpen: () => {
         if (stale()) return;
@@ -84,6 +111,7 @@ export const useChatStore = defineStore("chat", () => {
         loadMessages(agentId).catch(() => {
           // 对齐失败不阻塞连接态；历史会在下次手动刷新时补齐
         });
+        refreshHandoff(agentId);
       },
       onTextDelta: (delta) => {
         if (stale()) return;

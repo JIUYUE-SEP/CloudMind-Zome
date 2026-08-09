@@ -1,5 +1,6 @@
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider } from "../../provider/types.js";
+import { randomUUID } from "node:crypto";
 import { messageText, type CompressedTopic, type ExtractedExperience, type TopicSegment } from "./types.js";
 
 /** 压缩调用超时（对齐 grok 的 wall_clock_budget_secs=60） */
@@ -41,7 +42,7 @@ export async function collectChatText(
   timeoutMs: number,
 ): Promise<string> {
   const message: ChatMessage = {
-    id: `compress_${Date.now()}`,
+    id: `compress_${Date.now()}_${randomUUID().slice(0, 8)}`,
     role: "user",
     content: [{ type: "text", text: prompt }],
     createdAt: new Date().toISOString(),

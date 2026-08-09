@@ -394,6 +394,62 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  it("POST/PUT 接受 handoffMaxShifts 字段（1-10 整数，R3）", async () => {
+    const app = await makeApp();
+    const postRes = await authedRequest(app.server)
+      .post("/agents")
+      .send({
+        id: "a1",
+        name: "A1",
+        persona: "",
+        model: "mock",
+        skills: [],
+        tools: [],
+        handoffMaxShifts: 5,
+      });
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.handoffMaxShifts).toBe(5);
+
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.body.handoffMaxShifts).toBe(5);
+
+    // PUT 合并语义：改值落库
+    const putRes = await authedRequest(app.server).put("/agents/a1").send({ handoffMaxShifts: 8 });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.handoffMaxShifts).toBe(8);
+    await app.close();
+  });
+
+  it("handoffMaxShifts 越界/非整数 POST/PUT 显式 400（R3 校验）", async () => {
+    const app = await makeApp();
+    for (const bad of [0, 11, 2.5, "3", -1]) {
+      const postRes = await authedRequest(app.server)
+        .post("/agents")
+        .send({
+          id: "a1",
+          name: "A1",
+          persona: "",
+          model: "mock",
+          skills: [],
+          tools: [],
+          handoffMaxShifts: bad,
+        });
+      expect(postRes.status).toBe(400);
+      expect(postRes.body.error).toContain("handoffMaxShifts");
+      expect(postRes.body.error).toContain("1-10");
+    }
+
+    await authedRequest(app.server)
+      .post("/agents")
+      .send({ id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] });
+    for (const bad of [0, 11, 2.5]) {
+      const putRes = await authedRequest(app.server).put("/agents/a1").send({ handoffMaxShifts: bad });
+      expect(putRes.status).toBe(400);
+      expect(putRes.body.error).toContain("handoffMaxShifts");
+    }
+    await app.close();
+  });
+
   it("PUT 显式清空数组字段（skills: []）生效", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/agents").send({ id: "a1", name: "A1", persona: "", model: "mock", skills: ["s1"], tools: ["read_file"] });

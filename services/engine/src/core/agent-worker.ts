@@ -74,7 +74,7 @@ export function normalizeReactMaxSteps(value: number | undefined): number {
   return clamped;
 }
 
-/** 棒数保险丝归一：缺省 3；越界 clamp 1-10；非有限值回退缺省并 warn */
+/** 棒数保险丝归一：缺省 5；越界 clamp 1-10；非有限值回退缺省并 warn */
 export function normalizeHandoffMaxShifts(value: number | undefined): number {
   if (value === undefined) return HANDOFF_DEFAULT_MAX_SHIFTS;
   if (!Number.isFinite(value)) {
@@ -117,7 +117,7 @@ export interface AgentWorkerConfig {
   topP?: number;
   /** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）；缺省 100，clamp 1-500 */
   reactMaxSteps?: number;
-  /** 棒数保险丝（水位撞顶换班续跑上限）；缺省 3，clamp 1-10 */
+  /** 棒数保险丝（水位撞顶换班续跑上限）；缺省 5，clamp 1-10 */
   handoffMaxShifts?: number;
   /** W 链回退档（H1 补档）：型号表 contextWindow 查不到时，W 与 pipeline 预算共同回落 agent 显式 maxContextTokens，再回落 80_000 */
   maxContextTokens?: number;

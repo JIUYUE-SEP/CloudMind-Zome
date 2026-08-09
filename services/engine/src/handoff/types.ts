@@ -2,8 +2,8 @@ import type { HandoffStatus } from "@mindcloud/shared";
 
 export type { HandoffStatus };
 
-/** 棒数保险丝：缺省最多 3 棒（换班续跑上限），clamp 1-10（worker 侧归一） */
-export const HANDOFF_DEFAULT_MAX_SHIFTS = 3;
+/** 棒数保险丝：缺省最多 5 棒（换班续跑上限），clamp 1-10（worker 侧归一） */
+export const HANDOFF_DEFAULT_MAX_SHIFTS = 5;
 export const HANDOFF_MAX_SHIFTS_MIN = 1;
 export const HANDOFF_MAX_SHIFTS_MAX = 10;
 

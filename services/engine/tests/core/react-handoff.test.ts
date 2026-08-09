@@ -116,7 +116,7 @@ describe("水位撞顶换班移交（交接书消息载体）", () => {
     expect(result.handoffBook).toBeDefined();
     const bookText = textOf(result.handoffBook!);
     expect(bookText.startsWith(HANDOFF_BOOK_PREFIX)).toBe(true);
-    expect(bookText).toContain("第 1/3 棒");
+    expect(bookText).toContain("第 1/5 棒");
     expect(bookText).toContain("950/1000");
     expect(bookText).toContain("进展X；下一步Y");
 
