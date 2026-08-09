@@ -353,8 +353,14 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  // engine 只应用 displayName/baseUrl/apiKey（models/providerType 静默丢弃），类型与之一致
-  async function updateProvider(id: string, body: Partial<Pick<Provider, "displayName" | "baseUrl" | "apiKey">>): Promise<Provider> {
+  // engine 应用 displayName/baseUrl/apiKey/apiMode/requestTimeout/maxRetries
+  // （models/providerType 静默丢弃），类型与之一致
+  async function updateProvider(
+    id: string,
+    body: Partial<
+      Pick<Provider, "displayName" | "baseUrl" | "apiKey" | "apiMode" | "requestTimeout" | "maxRetries">
+    >,
+  ): Promise<Provider> {
     const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

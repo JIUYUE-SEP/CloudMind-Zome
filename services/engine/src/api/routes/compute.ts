@@ -1,9 +1,62 @@
 import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
+import type { ModelInfo } from "@mindcloud/shared";
 import OpenAI from "openai";
 import { aggregateUsage } from "../../compute/usage.js";
 import { isApiMode } from "../../provider/protocols/index.js";
+import { ANTHROPIC_VERSION, anthropicModelsUrl } from "../../provider/protocols/shared.js";
+
+const MODEL_TYPES = ["llm", "embedding", "image", "stt"] as const;
+
+/** 可选正整数校验：缺省放行；非法返回带字段名的错误文案 */
+function validateOptionalPositiveInt(value: unknown, field: string, max: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > max) {
+    return `${field} must be a positive integer no greater than ${max}`;
+  }
+  return undefined;
+}
+
+/** 可选正整数校验（无上限）：型号能力字段用 */
+function validateOptionalPositiveIntNoMax(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return `${field} must be a positive integer`;
+  }
+  return undefined;
+}
+
+/** 可选布尔校验：缺省放行；非法返回带字段名的错误文案 */
+function validateOptionalBoolean(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") return `${field} must be a boolean`;
+  return undefined;
+}
+
+/**
+ * Anthropic 语义连接测试：GET {baseUrl}/anthropic/v1/models（路径归一与
+ * anthropicMessagesUrl 同源），x-api-key + anthropic-version 认证，与
+ * AnthropicMessagesProvider 的请求约定保持一致。返回型号 id 列表。
+ */
+async function testAnthropicConnection(provider: {
+  apiKey?: string;
+  baseUrl: string;
+}): Promise<ModelInfo[]> {
+  const headers: Record<string, string> = { "anthropic-version": ANTHROPIC_VERSION };
+  if (provider.apiKey) headers["x-api-key"] = provider.apiKey;
+  const response = await fetch(anthropicModelsUrl(provider.baseUrl), { method: "GET", headers });
+  if (!response.ok) {
+    throw new Error(`Anthropic models endpoint returned HTTP ${response.status}`);
+  }
+  const body = (await response.json()) as { data?: Array<{ id?: unknown }> };
+  if (!Array.isArray(body.data)) {
+    throw new Error("Anthropic models endpoint returned no data list");
+  }
+  return body.data
+    .filter((m) => typeof m?.id === "string" && m.id.length > 0)
+    .map((m) => ({ id: m.id as string, displayName: m.id as string, modelType: "llm" as const }));
+}
 
 function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
   return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
@@ -84,6 +137,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       baseUrl: string;
       apiKey?: string;
       apiMode?: string;
+      requestTimeout?: number;
+      maxRetries?: number;
       models?: unknown[];
     };
     if (!isAllowedBaseUrl(body.baseUrl)) {
@@ -94,6 +149,14 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
         error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
       });
     }
+    const requestTimeoutError = validateOptionalPositiveInt(body.requestTimeout, "requestTimeout", 600_000);
+    if (requestTimeoutError) {
+      return reply.status(400).send({ error: requestTimeoutError });
+    }
+    const maxRetriesError = validateOptionalPositiveInt(body.maxRetries, "maxRetries", 10);
+    if (maxRetriesError) {
+      return reply.status(400).send({ error: maxRetriesError });
+    }
     const config = await context.configRepository.load();
     const provider = {
       id: body.id || crypto.randomUUID(),
@@ -102,6 +165,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       baseUrl: body.baseUrl,
       apiKey: body.apiKey,
       ...(body.apiMode !== undefined ? { apiMode: body.apiMode } : {}),
+      ...(body.requestTimeout !== undefined ? { requestTimeout: body.requestTimeout } : {}),
+      ...(body.maxRetries !== undefined ? { maxRetries: body.maxRetries } : {}),
       models: (body.models || []) as { id: string; displayName: string; modelType: "llm" | "embedding" | "image" | "stt" }[],
     };
     config.providers.push(provider);
@@ -118,6 +183,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       baseUrl: string;
       apiKey: string;
       apiMode: string;
+      requestTimeout: number;
+      maxRetries: number;
     }>;
     if (body.baseUrl !== undefined && !isAllowedBaseUrl(body.baseUrl)) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
@@ -126,6 +193,14 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       return reply.status(400).send({
         error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
       });
+    }
+    const requestTimeoutError = validateOptionalPositiveInt(body.requestTimeout, "requestTimeout", 600_000);
+    if (requestTimeoutError) {
+      return reply.status(400).send({ error: requestTimeoutError });
+    }
+    const maxRetriesError = validateOptionalPositiveInt(body.maxRetries, "maxRetries", 10);
+    if (maxRetriesError) {
+      return reply.status(400).send({ error: maxRetriesError });
     }
     const config = await context.configRepository.load();
     const idx = config.providers.findIndex((p) => p.id === id);
@@ -136,6 +211,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       displayName: body.displayName ?? existing.displayName,
       baseUrl: body.baseUrl ?? existing.baseUrl,
       apiMode: body.apiMode ?? existing.apiMode,
+      requestTimeout: body.requestTimeout ?? existing.requestTimeout,
+      maxRetries: body.maxRetries ?? existing.maxRetries,
       // 空字符串视为"不修改"，避免编辑表单清空已保存的密钥
       apiKey: body.apiKey || existing.apiKey,
     };
@@ -161,16 +238,18 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     const provider = config.providers.find((p) => p.id === id);
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
     try {
-      const client = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl });
-      const models = await client.models.list();
-      const discovered = models.data.map((m) => ({
-        id: m.id,
-        displayName: m.id,
-        modelType: "llm" as const,
-      }));
+      const discovered =
+        provider.apiMode === "anthropic"
+          ? await testAnthropicConnection(provider)
+          : (await new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl }).models.list())
+              .data.map((m) => ({
+                id: m.id,
+                displayName: m.id,
+                modelType: "llm" as const,
+              }));
       return { ok: true, discovered };
     } catch (err) {
-      logger.error({ err: err }, "test connection failed");
+      logger.error({ err: err, providerId: id, apiMode: provider.apiMode }, "test connection failed");
       return reply.status(502).send({ error: "Test connection failed" });
     }
   });
@@ -189,9 +268,40 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     const config = await context.configRepository.load();
     const provider = config.providers.find((p) => p.id === id);
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
-    provider.models.push(body as { id: string; displayName: string; modelType: "llm" | "embedding" | "image" | "stt" });
+    const modelId = typeof body.id === "string" ? body.id.trim() : "";
+    if (!modelId) {
+      return reply.status(400).send({ error: "id is required" });
+    }
+    if (provider.models.some((m) => m.id === modelId)) {
+      return reply.status(409).send({ error: `Model id already exists: ${modelId}` });
+    }
+    if (typeof body.modelType !== "string" || !(MODEL_TYPES as readonly string[]).includes(body.modelType)) {
+      return reply.status(400).send({
+        error: "Invalid modelType（只允许 llm / embedding / image / stt）",
+      });
+    }
+    for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+      const validationError = validateOptionalPositiveIntNoMax(body[field], field);
+      if (validationError) return reply.status(400).send({ error: validationError });
+    }
+    for (const field of ["supportsReasoning", "supportsToolCalling", "supportsMultimodal"] as const) {
+      const validationError = validateOptionalBoolean(body[field], field);
+      if (validationError) return reply.status(400).send({ error: validationError });
+    }
+    const model: ModelInfo = {
+      id: modelId,
+      displayName:
+        typeof body.displayName === "string" && body.displayName ? body.displayName : modelId,
+      modelType: body.modelType as ModelInfo["modelType"],
+      ...(body.contextWindow !== undefined ? { contextWindow: body.contextWindow as number } : {}),
+      ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens as number } : {}),
+      ...(body.supportsReasoning !== undefined ? { supportsReasoning: body.supportsReasoning as boolean } : {}),
+      ...(body.supportsToolCalling !== undefined ? { supportsToolCalling: body.supportsToolCalling as boolean } : {}),
+      ...(body.supportsMultimodal !== undefined ? { supportsMultimodal: body.supportsMultimodal as boolean } : {}),
+    };
+    provider.models.push(model);
     await context.configRepository.save(config);
-    return body;
+    return model;
   });
 
   app.put("/compute/providers/:id/models/:modelId", {

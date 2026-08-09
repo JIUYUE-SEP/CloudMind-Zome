@@ -27,12 +27,22 @@
         >
           {{
             testResult.ok
-              ? testResult.discovered
-                ? `连接成功（发现 ${testResult.discovered} 个模型）`
+              ? testResult.discovered?.length
+                ? `连接成功（发现 ${testResult.discovered.length} 个模型）`
                 : "连接成功"
               : `连接失败: ${testResult.error}`
           }}
         </p>
+        <div
+          v-if="testResult && testResult.ok && testResult.providerId === provider.id && testResult.discovered?.length"
+          class="discovered-import"
+        >
+          <span class="discovered-models">{{ testResult.discovered.map((m) => m.id).join("、") }}</span>
+          <button :disabled="importing" @click.stop="importDiscovered">
+            {{ importing ? "导入中..." : "全部导入" }}
+          </button>
+          <p v-if="importFeedback" class="import-feedback">{{ importFeedback }}</p>
+        </div>
       </div>
     </div>
 
@@ -48,8 +58,20 @@
           <input v-model="providerForm.baseUrl" />
         </label>
         <label>
+          协议
+          <select v-model="providerForm.apiMode">
+            <option value="chat_completions">OpenAI 兼容 · 缺省</option>
+            <option value="responses">OpenAI Responses</option>
+            <option value="anthropic">Anthropic Messages</option>
+          </select>
+        </label>
+        <label>
           API Key
-          <input v-model="providerForm.apiKey" type="password" placeholder="留空则保持不变" />
+          <input
+            v-model="providerForm.apiKey"
+            type="password"
+            :placeholder="editingProvider ? '留空则保持不变' : '请输入 API Key'"
+          />
         </label>
         <div class="modal-actions">
           <button :disabled="saving" @click="saveProvider">{{ saving ? "保存中..." : "保存" }}</button>
@@ -63,7 +85,12 @@
       <h2>模型管理 - {{ editingProvider.displayName }}</h2>
       <ul>
         <li v-for="model in editingProvider.models" :key="model.id">
-          {{ model.displayName || model.id }} ({{ model.modelType }})
+          <span class="model-info">
+            {{ model.displayName || model.id }} ({{ model.modelType }})
+            <small v-if="capabilityLabel(model)" class="model-capabilities">
+              {{ capabilityLabel(model) }}
+            </small>
+          </span>
           <button @click="deleteModel(model.id)">删除</button>
         </li>
       </ul>
@@ -76,6 +103,30 @@
           <option value="image">Image</option>
           <option value="stt">STT</option>
         </select>
+        <input
+          v-model.number="newModel.contextWindow"
+          type="number"
+          min="1"
+          placeholder="上下文窗口（留空未知）"
+        />
+        <input
+          v-model.number="newModel.maxOutputTokens"
+          type="number"
+          min="1"
+          placeholder="最大输出 tokens（留空未知）"
+        />
+        <label class="capability-check">
+          <input v-model="newModel.supportsReasoning" type="checkbox" />
+          推理
+        </label>
+        <label class="capability-check">
+          <input v-model="newModel.supportsToolCalling" type="checkbox" />
+          工具
+        </label>
+        <label class="capability-check">
+          <input v-model="newModel.supportsMultimodal" type="checkbox" />
+          多模态
+        </label>
         <button @click="addModel">添加模型</button>
       </div>
       <div v-if="modelError" class="op-error">{{ modelError }}</div>
@@ -93,21 +144,31 @@ const showProviderModal = ref(false);
 const editingProvider = ref<Provider | null>(null);
 // 测试连接最长 30s：进行中禁用所有测试按钮防连点，结果与 providerId 绑定防串台
 const testingId = ref<string | null>(null);
-const testResult = ref<{ providerId: string; ok: boolean; error?: string; discovered?: number } | null>(null);
+const testResult = ref<{ providerId: string; ok: boolean; error?: string; discovered?: ModelInfo[] } | null>(null);
+const importing = ref(false);
+const importFeedback = ref("");
 const saving = ref(false);
 const modalError = ref("");
 const modelError = ref("");
+
+type ApiMode = NonNullable<Provider["apiMode"]>;
 
 const providerForm = reactive({
   displayName: "",
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
+  apiMode: "chat_completions" as ApiMode,
 });
 
-const newModel = reactive<ModelInfo>({
+const newModel = reactive({
   id: "",
   displayName: "",
-  modelType: "llm",
+  modelType: "llm" as ModelInfo["modelType"],
+  contextWindow: "" as number | "",
+  maxOutputTokens: "" as number | "",
+  supportsReasoning: false,
+  supportsToolCalling: false,
+  supportsMultimodal: false,
 });
 
 onMounted(() => {
@@ -130,6 +191,7 @@ function openProviderModal() {
   providerForm.displayName = "";
   providerForm.baseUrl = "https://api.openai.com/v1";
   providerForm.apiKey = "";
+  providerForm.apiMode = "chat_completions";
   modalError.value = "";
   showProviderModal.value = true;
 }
@@ -139,6 +201,7 @@ function editProvider(provider: Provider) {
   providerForm.displayName = provider.displayName;
   providerForm.baseUrl = provider.baseUrl;
   providerForm.apiKey = "";
+  providerForm.apiMode = provider.apiMode ?? "chat_completions";
   modalError.value = "";
   showProviderModal.value = true;
 }
@@ -148,13 +211,20 @@ async function saveProvider() {
   modalError.value = "";
   try {
     if (editingProvider.value) {
-      await compute.updateProvider(editingProvider.value.id, { ...providerForm });
+      await compute.updateProvider(editingProvider.value.id, {
+        displayName: providerForm.displayName,
+        baseUrl: providerForm.baseUrl,
+        apiMode: providerForm.apiMode,
+        apiKey: providerForm.apiKey,
+      });
     } else {
       await compute.addProvider({
         displayName: providerForm.displayName,
         providerType: "openai",
         baseUrl: providerForm.baseUrl,
-        apiKey: providerForm.apiKey,
+        apiMode: providerForm.apiMode,
+        // 添加时未填 API Key 则不落字段（区别于编辑时"留空保持"语义）
+        ...(providerForm.apiKey ? { apiKey: providerForm.apiKey } : {}),
         models: [],
       });
     }
@@ -181,7 +251,7 @@ async function testProvider(id: string) {
   testResult.value = null;
   try {
     const res = await compute.testConnection(id);
-    testResult.value = { providerId: id, ok: true, discovered: res.discovered?.length };
+    testResult.value = { providerId: id, ok: true, discovered: res.discovered };
   } catch (err) {
     testResult.value = {
       providerId: id,
@@ -193,19 +263,87 @@ async function testProvider(id: string) {
   }
 }
 
+async function importDiscovered() {
+  const result = testResult.value;
+  if (!result?.ok || !result.discovered?.length) return;
+  const provider = compute.providers.find((p) => p.id === result.providerId);
+  if (!provider) return;
+  importing.value = true;
+  importFeedback.value = "";
+  try {
+    const existing = new Set(provider.models.map((m) => m.id));
+    const toImport: ModelInfo[] = [];
+    for (const model of result.discovered) {
+      // 跳过 provider 已有 id 与 discovered 列表内重复 id
+      if (existing.has(model.id) || toImport.some((m) => m.id === model.id)) continue;
+      toImport.push({
+        id: model.id,
+        displayName: model.displayName || model.id,
+        modelType: model.modelType ?? "llm",
+      });
+    }
+    for (const model of toImport) {
+      await compute.addModel(provider.id, model);
+    }
+    importFeedback.value = `导入 ${toImport.length} 个，跳过 ${result.discovered.length - toImport.length} 个`;
+  } catch (err) {
+    importFeedback.value = `导入失败: ${err instanceof Error ? err.message : "未知错误"}`;
+  } finally {
+    importing.value = false;
+  }
+}
+
+function formatCount(value: number): string {
+  if (value >= 1_000_000) {
+    const m = value / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  if (value >= 1_000) {
+    const k = value / 1_000;
+    return `${Number.isInteger(k) ? k : k.toFixed(1)}K`;
+  }
+  return String(value);
+}
+
+function capabilityLabel(model: ModelInfo): string {
+  const parts: string[] = [];
+  if (model.contextWindow) parts.push(`ctx:${formatCount(model.contextWindow)}`);
+  if (model.maxOutputTokens) parts.push(`max:${formatCount(model.maxOutputTokens)}`);
+  if (model.supportsReasoning) parts.push("推理");
+  if (model.supportsToolCalling) parts.push("工具");
+  if (model.supportsMultimodal) parts.push("多模态");
+  return parts.join(" · ");
+}
+
 async function addModel() {
   if (!editingProvider.value || !newModel.id) return;
   modelError.value = "";
+  const modelId = newModel.id.trim();
   // engine 侧不查重，重复 id 会让 :key 撞车且语义含糊
-  if (editingProvider.value.models.some((m) => m.id === newModel.id)) {
-    modelError.value = `模型 ID 已存在：${newModel.id}`;
+  if (editingProvider.value.models.some((m) => m.id === modelId)) {
+    modelError.value = `模型 ID 已存在：${modelId}`;
     return;
   }
   try {
-    await compute.addModel(editingProvider.value.id, { ...newModel });
+    const payload: ModelInfo = {
+      id: modelId,
+      displayName: newModel.displayName.trim(),
+      modelType: newModel.modelType,
+      ...(newModel.contextWindow !== "" ? { contextWindow: newModel.contextWindow } : {}),
+      ...(newModel.maxOutputTokens !== "" ? { maxOutputTokens: newModel.maxOutputTokens } : {}),
+      supportsReasoning: newModel.supportsReasoning,
+      supportsToolCalling: newModel.supportsToolCalling,
+      supportsMultimodal: newModel.supportsMultimodal,
+    };
+    await compute.addModel(editingProvider.value.id, payload);
     newModel.id = "";
     newModel.displayName = "";
     newModel.modelType = "llm";
+    newModel.contextWindow = "";
+    newModel.maxOutputTokens = "";
+    newModel.supportsReasoning = false;
+    newModel.supportsToolCalling = false;
+    newModel.supportsMultimodal = false;
   } catch (err) {
     modelError.value = err instanceof Error ? err.message : "添加模型失败";
   }
@@ -337,9 +475,22 @@ header h1 {
   border-bottom: 1px solid var(--mc-border);
 }
 
+.model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-capabilities {
+  font-size: 12px;
+  color: var(--mc-text-tertiary);
+}
+
 .add-model {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
   margin-top: 16px;
 }
 
@@ -350,6 +501,14 @@ header h1 {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.05);
   color: var(--mc-text);
+}
+
+.capability-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--mc-text);
+  font-size: 13px;
 }
 
 .test-result {
@@ -363,6 +522,26 @@ header h1 {
 
 .test-result.fail {
   color: var(--mc-danger);
+}
+
+.discovered-import {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.discovered-models {
+  color: var(--mc-text-secondary);
+  word-break: break-all;
+}
+
+.import-feedback {
+  margin: 0;
+  color: var(--mc-success);
+  font-size: 13px;
 }
 
 button {

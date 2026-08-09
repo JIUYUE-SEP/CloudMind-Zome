@@ -16,6 +16,9 @@ export function trimBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+/** Anthropic Messages 协议版本头（原生 Anthropic 与 DeepSeek 兼容端点同一取值） */
+export const ANTHROPIC_VERSION = "2023-06-01";
+
 /**
  * Anthropic Messages 端点路径归一：
  * - https://api.deepseek.com             → /anthropic/v1/messages
@@ -29,6 +32,19 @@ export function anthropicMessagesUrl(baseUrl: string): string {
   if (trimmed.endsWith("/anthropic/v1")) return `${trimmed}/messages`;
   if (trimmed.endsWith("/anthropic")) return `${trimmed}/v1/messages`;
   return `${trimmed}/anthropic/v1/messages`;
+}
+
+/**
+ * Anthropic models 列表端点路径归一（与 anthropicMessagesUrl 同口径）：
+ * - https://api.deepseek.com             → /anthropic/v1/models
+ * - https://api.deepseek.com/anthropic   → /v1/models
+ * - https://api.deepseek.com/anthropic/v1 → /models
+ */
+export function anthropicModelsUrl(baseUrl: string): string {
+  const trimmed = trimBaseUrl(baseUrl);
+  if (trimmed.endsWith("/anthropic/v1")) return `${trimmed}/models`;
+  if (trimmed.endsWith("/anthropic")) return `${trimmed}/v1/models`;
+  return `${trimmed}/anthropic/v1/models`;
 }
 
 /** 非 2xx 状态是否可重试（与 resilient/classify 同口径：429/5xx 可重试） */

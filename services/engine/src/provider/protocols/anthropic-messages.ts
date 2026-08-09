@@ -2,6 +2,7 @@ import type { LLMProvider, LLMChatParams, LLMEvent } from "../types.js";
 import { ProviderError } from "../errors.js";
 import {
   anthropicMessagesUrl,
+  ANTHROPIC_VERSION,
   postJsonStream,
   parseToolArgs,
   isRecord,
@@ -204,7 +205,7 @@ export class AnthropicMessagesProvider implements LLMProvider {
       const { data } = await postJsonStream(this.name, anthropicMessagesUrl(this.baseUrl), body, {
         apiKey: this.apiKey,
         apiKeyHeader: "x-api-key",
-        headers: { "anthropic-version": "2023-06-01" },
+        headers: { "anthropic-version": ANTHROPIC_VERSION },
         requestTimeout: this.options.requestTimeout,
       });
 

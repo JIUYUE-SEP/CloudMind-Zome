@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -54,6 +54,7 @@ describe("Compute API", () => {
 
   afterEach(async () => {
     await cleanup();
+    vi.unstubAllGlobals();
   });
 
   async function makeApp(): Promise<FastifyInstance> {
@@ -327,6 +328,321 @@ describe("Compute API", () => {
       .send({ apiMode: "websocket" });
     expect(updateRes.status).toBe(400);
     expect(updateRes.body.error).toContain("apiMode");
+    await app.close();
+  });
+
+  it("tests anthropic provider through x-api-key models endpoint", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "claude",
+      displayName: "Claude",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: "sk-anthropic",
+      apiMode: "anthropic",
+      models: [],
+    });
+
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), init });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              data: [{ id: "claude-3-5-sonnet-20241022", display_name: "Claude 3.5 Sonnet" }],
+            }),
+        } as unknown as Response);
+      }),
+    );
+
+    const res = await authedRequest(app.server).post("/compute/providers/claude/test");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.discovered).toEqual([
+      { id: "claude-3-5-sonnet-20241022", displayName: "claude-3-5-sonnet-20241022", modelType: "llm" },
+    ]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://api.deepseek.com/anthropic/v1/models");
+    expect(calls[0].init?.method ?? "GET").toBe("GET");
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("sk-anthropic");
+    expect(headers.get("anthropic-version")).toBe("2023-06-01");
+    await app.close();
+  });
+
+  it("normalizes anthropic models url from root baseUrl", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "claude-root",
+      displayName: "Claude Root",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "sk-anthropic",
+      apiMode: "anthropic",
+      models: [],
+    });
+
+    const calls: Array<{ url: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        calls.push({ url: String(input) });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ data: [] }),
+        } as unknown as Response);
+      }),
+    );
+
+    const res = await authedRequest(app.server).post("/compute/providers/claude-root/test");
+    expect(res.status).toBe(200);
+    expect(calls[0].url).toBe("https://api.deepseek.com/anthropic/v1/models");
+    await app.close();
+  });
+
+  it("returns 502 when anthropic provider has no models endpoint", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "claude-no-models",
+      displayName: "Claude No Models",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: "sk-anthropic",
+      apiMode: "anthropic",
+      models: [],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 404,
+          json: () => Promise.resolve({ error: { message: "not found" } }),
+        } as unknown as Response),
+      ),
+    );
+
+    const res = await authedRequest(app.server).post("/compute/providers/claude-no-models/test");
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe("Test connection failed");
+    await app.close();
+  });
+
+  it("persists requestTimeout/maxRetries on create and update", async () => {
+    const app = await makeApp();
+    const createRes = await authedRequest(app.server).post("/compute/providers").send({
+      id: "timeout",
+      displayName: "Timeout Provider",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      requestTimeout: 120_000,
+      maxRetries: 3,
+      models: [],
+    });
+    expect(createRes.status).toBe(200);
+    expect(createRes.body.requestTimeout).toBe(120_000);
+    expect(createRes.body.maxRetries).toBe(3);
+
+    const updateRes = await authedRequest(app.server)
+      .put("/compute/providers/timeout")
+      .send({ maxRetries: 5 });
+    expect(updateRes.status).toBe(200);
+    // PUT 缺省字段不改现状
+    expect(updateRes.body.requestTimeout).toBe(120_000);
+    expect(updateRes.body.maxRetries).toBe(5);
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].requestTimeout).toBe(120_000);
+    expect(config.providers[0].maxRetries).toBe(5);
+    await app.close();
+  });
+
+  it.each([
+    ["requestTimeout", 0],
+    ["requestTimeout", -1],
+    ["requestTimeout", 600_001],
+    ["requestTimeout", "abc"],
+    ["maxRetries", 0],
+    ["maxRetries", 11],
+    ["maxRetries", -3],
+  ])("rejects invalid %s on create: %j", async (field, value) => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "bad-option",
+      displayName: "Bad Option",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+      [field]: value,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(field);
+    await app.close();
+  });
+
+  it("rejects invalid requestTimeout/maxRetries on update", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "update-bad",
+      displayName: "Update Bad",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+
+    const timeoutRes = await authedRequest(app.server)
+      .put("/compute/providers/update-bad")
+      .send({ requestTimeout: -1 });
+    expect(timeoutRes.status).toBe(400);
+    expect(timeoutRes.body.error).toContain("requestTimeout");
+
+    const retriesRes = await authedRequest(app.server)
+      .put("/compute/providers/update-bad")
+      .send({ maxRetries: 12 });
+    expect(retriesRes.status).toBe(400);
+    expect(retriesRes.body.error).toContain("maxRetries");
+    await app.close();
+  });
+
+  it("rejects model without id", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "models",
+      displayName: "Models",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/models/models")
+      .send({ displayName: "No Id", modelType: "llm" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("id");
+    await app.close();
+  });
+
+  it("rejects empty-string model id", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "models-empty",
+      displayName: "Models Empty",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/models-empty/models")
+      .send({ id: "   ", displayName: "Blank", modelType: "llm" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("id");
+    await app.close();
+  });
+
+  it("returns 409 for duplicate model id", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "models-dup",
+      displayName: "Models Dup",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/models-dup/models")
+      .send({ id: "gpt-4o", displayName: "Duplicate", modelType: "llm" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("already exists");
+    await app.close();
+  });
+
+  it("rejects invalid modelType", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "models-type",
+      displayName: "Models Type",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/models-type/models")
+      .send({ id: "weird", displayName: "Weird", modelType: "tts" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("modelType");
+    await app.close();
+  });
+
+  it.each([
+    ["contextWindow", 0],
+    ["contextWindow", -10],
+    ["contextWindow", 1.5],
+    ["contextWindow", "big"],
+    ["maxOutputTokens", 0],
+    ["supportsReasoning", "yes"],
+    ["supportsToolCalling", 1],
+    ["supportsMultimodal", null],
+  ])("rejects invalid model capability %s: %j", async (field, value) => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "models-capability",
+      displayName: "Models Capability",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/models-capability/models")
+      .send({ id: "cap-model", modelType: "llm", [field]: value });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(field);
+    await app.close();
+  });
+
+  it("adds model with displayName default and capability fields", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "models-full",
+      displayName: "Models Full",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/models-full/models")
+      .send({
+        id: "claude-3-5-sonnet",
+        modelType: "llm",
+        contextWindow: 200_000,
+        maxOutputTokens: 8_192,
+        supportsReasoning: true,
+        supportsToolCalling: true,
+        supportsMultimodal: false,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.displayName).toBe("claude-3-5-sonnet");
+    expect(res.body.contextWindow).toBe(200_000);
+    expect(res.body.maxOutputTokens).toBe(8_192);
+    expect(res.body.supportsReasoning).toBe(true);
+    expect(res.body.supportsToolCalling).toBe(true);
+    expect(res.body.supportsMultimodal).toBe(false);
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models[0]).toMatchObject({
+      id: "claude-3-5-sonnet",
+      displayName: "claude-3-5-sonnet",
+      modelType: "llm",
+      contextWindow: 200_000,
+      maxOutputTokens: 8_192,
+      supportsReasoning: true,
+      supportsToolCalling: true,
+      supportsMultimodal: false,
+    });
     await app.close();
   });
 });
