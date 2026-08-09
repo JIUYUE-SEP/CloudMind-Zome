@@ -13,6 +13,22 @@ const { navigateToMock, routerPushMock } = vi.hoisted(() => ({
 mockNuxtImport("navigateTo", () => navigateToMock);
 mockNuxtImport("useRouter", () => () => ({ push: routerPushMock }));
 
+const nuxtLinkStub = {
+  name: "NuxtLink",
+  props: ["to"],
+  template: `<a class="nuxt-link-stub" :href="to"><slot /></a>`,
+};
+
+function mountIndex(options: Parameters<typeof mount>[1] = {}) {
+  return mount(ComputeIndex, {
+    ...options,
+    global: {
+      ...options.global,
+      stubs: { NuxtLink: nuxtLinkStub, ...options.global?.stubs },
+    },
+  });
+}
+
 const provider: Provider = {
   id: "p1",
   displayName: "OpenAI",
@@ -88,7 +104,7 @@ describe("compute 列表页：测试连接反馈", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const wrapper = mount(ComputeIndex);
+    const wrapper = mountIndex();
     await flushPromises();
 
     const btn = testButton(wrapper);
@@ -106,11 +122,45 @@ describe("compute 列表页：测试连接反馈", () => {
     });
     await flushPromises();
 
-    expect(wrapper.find(".test-result").text()).toBe("连接成功");
+    const result = wrapper.find(".test-result");
+    expect(result.text()).toContain("连接成功");
+    expect(result.text()).toContain("发现 1 个型号");
+    expect(result.text()).toContain("进入管理页导入");
     // 列表页仅做快速健康检查，导入区已迁到管理页
     expect(wrapper.find(".discovered-import").exists()).toBe(false);
+    expect(wrapper.find(".import-link").attributes("href")).toBe("/compute/p1");
     expect(testButton(wrapper).text()).toBe("测试连接");
     expect(testButton(wrapper).attributes("disabled")).toBeUndefined();
+  });
+
+  it("测试成功结果带发现数量与进入管理页导入链接", async () => {
+    const { fetchMock } = mockFetch(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            discovered: [
+              { id: "gpt-4o", displayName: "gpt-4o", modelType: "llm" },
+              { id: "gpt-5", displayName: "gpt-5", modelType: "llm" },
+              { id: "claude-3-5-sonnet", displayName: "claude-3-5-sonnet", modelType: "llm" },
+            ],
+          }),
+      } as unknown as Response),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mountIndex();
+    await flushPromises();
+
+    await testButton(wrapper).trigger("click");
+    await flushPromises();
+
+    const result = wrapper.find(".test-result");
+    expect(result.text()).toContain("连接成功");
+    expect(result.text()).toContain("发现 3 个型号");
+    expect(result.text()).toContain("进入管理页导入");
+    expect(wrapper.find(".import-link").attributes("href")).toBe("/compute/p1");
   });
 
   it("测试失败显示错误信息并绑定到对应 Provider", async () => {
@@ -249,6 +299,18 @@ describe("compute 列表页：Provider 弹窗、路由与协议", () => {
     await wrapper.find(".provider-card").trigger("click");
     expect(navigateToMock).toHaveBeenCalledWith("/compute/p1");
     expect(wrapper.find(".modal-content").exists()).toBe(false);
+  });
+
+  it("特殊字符 Provider id 点击卡片跳到 encodeURIComponent 编码路径", async () => {
+    const weirdProvider: Provider = { ...provider, id: "my/provider #1" };
+    const { fetchMock } = mockFetch(undefined, [weirdProvider]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeIndex);
+    await flushPromises();
+
+    await wrapper.find(".provider-card").trigger("click");
+    expect(navigateToMock).toHaveBeenCalledWith("/compute/my%2Fprovider%20%231");
   });
 
   it("编辑按钮不触发卡片跳转（冒泡被阻止）", async () => {

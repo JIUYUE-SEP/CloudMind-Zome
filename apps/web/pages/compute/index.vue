@@ -40,7 +40,19 @@
           class="test-result"
           :class="{ fail: !testResult.ok }"
         >
-          {{ testResult.ok ? "连接成功" : `连接失败: ${testResult.error}` }}
+          <template v-if="testResult.ok">
+            <span>连接成功</span
+            ><span v-if="testResult.discoveredCount"
+              >（发现 {{ testResult.discoveredCount }} 个型号）</span
+            ><NuxtLink
+              v-if="testResult.discoveredCount"
+              class="import-link"
+              :to="`/compute/${encodeURIComponent(provider.id)}`"
+              @click.stop
+              >进入管理页导入 →</NuxtLink
+            >
+          </template>
+          <template v-else>连接失败: {{ testResult.error }}</template>
         </p>
       </div>
     </div>
@@ -95,7 +107,12 @@ const showProviderModal = ref(false);
 const editingProvider = ref<Provider | null>(null);
 // 测试连接最长 30s：进行中禁用所有测试按钮防连点，结果与 providerId 绑定防串台
 const testingId = ref<string | null>(null);
-const testResult = ref<{ providerId: string; ok: boolean; error?: string } | null>(null);
+const testResult = ref<{
+  providerId: string;
+  ok: boolean;
+  error?: string;
+  discoveredCount?: number;
+} | null>(null);
 const saving = ref(false);
 const modalError = ref("");
 
@@ -202,8 +219,9 @@ async function testProvider(id: string) {
   testingId.value = id;
   testResult.value = null;
   try {
-    await compute.testConnection(id);
-    testResult.value = { providerId: id, ok: true };
+    const res = await compute.testConnection(id);
+    // 数量带回用于列表页「发现 N 个型号」引导；完整列表在管理页测试后展示
+    testResult.value = { providerId: id, ok: true, discoveredCount: res.discovered?.length ?? 0 };
   } catch (err) {
     testResult.value = {
       providerId: id,
@@ -357,6 +375,17 @@ header h1 {
 
 .test-result.fail {
   color: var(--mc-danger);
+}
+
+.import-link {
+  margin-left: 8px;
+  color: var(--mc-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.import-link:hover {
+  color: var(--mc-text);
 }
 
 .modal {

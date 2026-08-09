@@ -7,6 +7,8 @@ export const useComputeStore = defineStore("compute", () => {
   const client = useEngineClient();
   const providers = ref<Provider[]>([]);
   const isLoading = ref(false);
+  // 是否已完成至少一次 load（成功或失败）：区分「加载中」与「确认不存在」
+  const hasLoaded = ref(false);
   const error = ref("");
 
   async function load() {
@@ -18,6 +20,7 @@ export const useComputeStore = defineStore("compute", () => {
       error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
       isLoading.value = false;
+      hasLoaded.value = true;
     }
   }
 
@@ -86,6 +89,7 @@ export const useComputeStore = defineStore("compute", () => {
   return {
     providers,
     isLoading,
+    hasLoaded,
     error,
     load,
     addProvider,

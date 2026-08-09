@@ -10,7 +10,12 @@
     </header>
 
     <div v-if="compute.error" class="load-error">加载失败：{{ compute.error }}</div>
-    <div v-else-if="compute.isLoading && !compute.providers.length" class="load-empty">加载中...</div>
+    <div
+      v-else-if="(compute.isLoading || !compute.hasLoaded) && !provider"
+      class="load-empty"
+    >
+      加载中...
+    </div>
     <template v-else-if="provider">
       <section class="section">
         <h2>型号列表</h2>
@@ -517,10 +522,18 @@ header {
 .discovered-models {
   display: flex;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 6px;
+  /* 50+ 型号时高度受控，区域内滚动，不无限撑高页面 */
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .discovered-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--mc-border);

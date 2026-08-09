@@ -295,4 +295,54 @@ describe("compute 管理页：兜底", () => {
     expect(wrapper.find(".back-link").exists()).toBe(true);
     expect(wrapper.find(".add-model").exists()).toBe(false);
   });
+
+  it("加载中不渲染兜底页（首次加载未完成显示加载中）", async () => {
+    const { fetchMock } = mockFetch(undefined, []);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeDetail, mountOptions());
+    // onMounted 已同步置 isLoading=true，fetch 尚未返回：不得渲染「不存在」
+    expect(wrapper.find(".load-empty").text()).toBe("加载中...");
+    expect(wrapper.find(".not-found").exists()).toBe(false);
+
+    await flushPromises();
+    expect(wrapper.find(".not-found").exists()).toBe(true);
+  });
+
+  it("加载完成且 id 不存在时才渲染兜底页", async () => {
+    const { fetchMock } = mockFetch(undefined, []);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeDetail, mountOptions());
+    await flushPromises();
+
+    expect(wrapper.find(".load-empty").exists()).toBe(false);
+    expect(wrapper.find(".not-found").exists()).toBe(true);
+    expect(wrapper.text()).toContain("Provider 不存在或已删除");
+  });
+});
+
+describe("compute 管理页：特殊字符 id", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    navigateToMock.mockClear();
+    routerPushMock.mockClear();
+    routeParams.id = "my/provider #1";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("route params 解码后的原值能按 id 找到 Provider", async () => {
+    const weirdProvider: Provider = { ...provider, id: "my/provider #1" };
+    const { fetchMock } = mockFetch(undefined, [weirdProvider]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = mount(ComputeDetail, mountOptions());
+    await flushPromises();
+
+    expect(wrapper.find(".not-found").exists()).toBe(false);
+    expect(wrapper.find(".head-title h1").text()).toBe("OpenAI");
+  });
 });
