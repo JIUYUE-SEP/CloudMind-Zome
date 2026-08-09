@@ -8,6 +8,7 @@ import { AgentWorker, normalizeReactMaxSteps } from "../../src/core/agent-worker
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
 import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
 import { CONTEXT_WATERMARK_SUMMARY_HINT } from "../../src/core/react/turn.js";
+import { ContextPipeline } from "../../src/context/pipeline.js";
 import type { ConfigRepository } from "../../src/config/repository.js";
 import { dispatchSubagentTool } from "../../src/tools/builtin/dispatch_subagent.js";
 import { mcpToolToEngine } from "../../src/tools/mcp/wrapper.js";
@@ -246,6 +247,62 @@ describe("AgentWorker", () => {
           m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
       ),
     ).toBe(true);
+  });
+
+  it("H1+H2：W 缺档回落 agent maxContextTokens，且 pipeline 预算随型号表热更同步", async () => {
+    const provider = new CapturingProvider();
+    // 动态模型表：undefined（W 缺档）→ 128K → 32K，模拟 compute 模型 PUT 热更
+    let modelWindow: number | undefined;
+    const configRepository = {
+      load: async () => ({
+        providers: [
+          {
+            id: "p1",
+            displayName: "P1",
+            providerType: "openai",
+            baseUrl: "http://localhost",
+            models: [
+              {
+                id: "mock",
+                displayName: "Mock",
+                modelType: "llm",
+                ...(modelWindow !== undefined ? { contextWindow: modelWindow } : {}),
+              },
+            ],
+          },
+        ],
+        settings: {
+          memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+        },
+      }),
+    } as unknown as ConfigRepository;
+    const pipeline = new ContextPipeline(); // 初始 80_000 → budget 72_000
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      providerId: "p1",
+      configRepository,
+      maxContextTokens: 32_000,
+      contextPipeline: pipeline,
+      contextPipelineHotSync: true,
+    });
+
+    // 第一轮：型号表没有 contextWindow → H1 W 链回落 agent 显式 32000（预算 28800，
+    // 不再是"pipeline 2700 但水位 80K"的双源分裂）
+    worker.enqueue({ id: "j-wm-h1", messages: [userMessage("hi")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(pipeline.budgetTokens).toBe(28_800);
+
+    // 第二轮：模型表热更 contextWindow=128000 → H2 同一实例预算跟随到 115200
+    modelWindow = 128_000;
+    worker.enqueue({ id: "j-wm-h2", messages: [userMessage("hi")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(pipeline.budgetTokens).toBe(115_200);
+
+    // 第三轮：再热更回 32000 → 预算收敛回 28800
+    modelWindow = 32_000;
+    worker.enqueue({ id: "j-wm-h3", messages: [userMessage("hi")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(pipeline.budgetTokens).toBe(28_800);
   });
 
   it("pauses and resumes the queue", async () => {

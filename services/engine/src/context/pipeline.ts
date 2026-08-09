@@ -91,6 +91,30 @@ export class ContextPipeline {
     return Math.floor(this.config.maxContextTokens * (1 - this.config.reserveRatio));
   }
 
+  /** 当前窗口配置（H2 热更同步的读值入口） */
+  get maxContextTokens(): number {
+    return this.config.maxContextTokens;
+  }
+
+  /**
+   * H2（pipeline 热更一致化）：compute 型号表 / agent 配置热更后，由调用方
+   * （agent-worker）逐回合同步窗口。只改 config 不重建实例——重建会丢
+   * injectedBySource 多轮去重状态。值未变返回 false（幂等，避免无效日志）。
+   * F3：只接受正有限数；非正数/NaN/Infinity 拒绝并 warn 留痕，预算保持不动。
+   */
+  syncMaxContextTokens(value: number): boolean {
+    if (this.config.maxContextTokens === value) return false;
+    if (!Number.isFinite(value) || value <= 0) {
+      logger.warn(
+        { value },
+        "[ContextPipeline] syncMaxContextTokens 拒绝非法窗口值（需为正有限数），保持现有预算",
+      );
+      return false;
+    }
+    this.config.maxContextTokens = value;
+    return true;
+  }
+
   private seenSet(sourceId: string): Set<string> {
     let seen = this.injectedBySource.get(sourceId);
     if (!seen) {

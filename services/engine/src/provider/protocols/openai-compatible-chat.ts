@@ -25,6 +25,8 @@ export interface OpenAICompatibleChatProviderOptions {
  */
 export class OpenAICompatibleChatProvider implements LLMProvider {
   name = "openai";
+  /** F1：协议族标识——chat_completions 请求回传时过滤 think 块 */
+  readonly protocol = "chat_completions";
   private client: OpenAI;
 
   constructor(apiKey?: string, baseURL?: string, options?: OpenAICompatibleChatProviderOptions) {

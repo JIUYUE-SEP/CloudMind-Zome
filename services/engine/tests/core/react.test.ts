@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
 import {
   runTurn,
@@ -10,9 +10,15 @@ import {
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { ContextPipeline } from "../../src/context/pipeline.js";
 import { getTokenCounter } from "../../src/context/token-counter.js";
+import { logger } from "../../src/logger.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
-import type { LLMProvider, LLMChatParams, LLMEvent } from "../../src/provider/types.js";
+import type {
+  LLMProvider,
+  LLMProviderProtocol,
+  LLMChatParams,
+  LLMEvent,
+} from "../../src/provider/types.js";
 
 function userMessage(text: string): ChatMessage {
   return {
@@ -142,6 +148,8 @@ class ToolThenStopCaptureProvider implements LLMProvider {
 /** 水位测试用：普通调用发工具、撞顶兜底提示时按行为产出文本/抛错/空文本；可带 usage */
 class WatermarkToolLoopProvider implements LLMProvider {
   name = "watermark-tool-loop";
+  /** F1：水位夹具默认按 openai chat_completions（回传不含 think） */
+  readonly protocol: LLMProviderProtocol = "chat_completions";
   calls: LLMChatParams[] = [];
   constructor(
     private usage: { promptTokens: number; completionTokens: number } | undefined = undefined,
@@ -186,6 +194,11 @@ class SnapshotWatermarkToolLoopProvider extends WatermarkToolLoopProvider {
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
     yield* super.chat(structuredClone(params));
   }
+}
+
+/** F1：anthropic 协议夹具（think 真回传占窗口，预检必须含 think 计数） */
+class AnthropicWatermarkToolLoopProvider extends SnapshotWatermarkToolLoopProvider {
+  readonly protocol = "anthropic";
 }
 
 /** 水位测试共用：裸 runTurn（不传 contextPipeline = 傀儡路径形状） */
@@ -944,5 +957,106 @@ describe("上下文水位主裁（改动一）", () => {
     expect(provider.calls).toHaveLength(2);
     expect(hasWatermarkHint(provider.calls[1]!)).toBe(true);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+  });
+
+  it("F1/H3 openai 协议预检剥 think：think 块不计入估算（openai-compatible 回传丢弃）", async () => {
+    const provider = new SnapshotWatermarkToolLoopProvider();
+    const thinkBlock: ChatMessage = {
+      id: "t1",
+      role: "assistant",
+      content: [
+        { type: "think", think: "x".repeat(20000) }, // ≈ 2600+ tokens
+        { type: "text", text: "前面我思考了很多" },
+      ],
+      createdAt: "2026-01-01",
+    };
+    const tools = [
+      { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+    ];
+    // 剥 thinking 后预检 ≈ 0.6（不提醒不撞顶）；若计入 think（旧口径）预检 > 1.0 直接兜底
+    const base =
+      getTokenCounter().countMessages([userMessage("hi"), thinkBlock], { stripThinking: true }) +
+      getTokenCounter().countTools(tools);
+    const window = Math.floor(base / 0.6);
+
+    const result = await runWatermarkTurn(provider, {
+      messages: [userMessage("hi"), thinkBlock],
+      contextWindow: window,
+      maxSteps: 20,
+    });
+
+    // 正常进入工具循环（首个请求无水位提示），而非首步预检直落兜底
+    expect(provider.calls.length).toBeGreaterThanOrEqual(2);
+    expect(hasWatermarkHint(provider.calls[0]!)).toBe(false);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+  });
+
+  it("F1 协议感知：anthropic 预检含 think 不低估（同一窗口下首步直落兜底）", async () => {
+    const provider = new AnthropicWatermarkToolLoopProvider();
+    const thinkBlock: ChatMessage = {
+      id: "t1",
+      role: "assistant",
+      content: [
+        { type: "think", think: "x".repeat(20000) }, // ≈ 2600+ tokens
+        { type: "text", text: "前面我思考了很多" },
+      ],
+      createdAt: "2026-01-01",
+    };
+    const tools = [
+      { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+    ];
+    // 同一窗口下：含 think 的完整口径 ≥ 0.95 直接撞顶；若错误剥 think 则远低于提醒带
+    const strippedBase =
+      getTokenCounter().countMessages([userMessage("hi"), thinkBlock], {
+        stripThinking: true,
+      }) + getTokenCounter().countTools(tools);
+    const fullBase =
+      getTokenCounter().countMessages([userMessage("hi"), thinkBlock]) +
+      getTokenCounter().countTools(tools);
+    const window = Math.floor(fullBase / 0.95);
+    expect(fullBase / window).toBeGreaterThanOrEqual(0.9);
+    expect(strippedBase / window).toBeLessThan(0.7);
+
+    const result = await runWatermarkTurn(provider, {
+      messages: [userMessage("hi"), thinkBlock],
+      contextWindow: window,
+      maxSteps: 20,
+    });
+
+    // 未进工具循环：只发生一次兜底总结调用，且携带水位兜底提示
+    expect(provider.calls).toHaveLength(1);
+    expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+  });
+
+  it("H4 日志补全：首步预检与兜底决策留痕（含 used/window/ratio）", async () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    try {
+      const provider = new WatermarkToolLoopProvider();
+      const bigUser = userMessage("x".repeat(8000));
+      const tools = [
+        { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+      ];
+      const base =
+        getTokenCounter().countMessages([bigUser], { stripThinking: true }) +
+        getTokenCounter().countTools(tools);
+
+      await runWatermarkTurn(provider, {
+        messages: [bigUser],
+        contextWindow: Math.floor(base / 0.9), // 首步预检即撞顶
+        maxSteps: 20,
+      });
+
+      const watermarkLogs = info.mock.calls.filter((c) => String(c[1]).includes("[watermark]"));
+      expect(watermarkLogs.length).toBeGreaterThanOrEqual(2);
+      expect(String(watermarkLogs[0]![1])).toContain("首步预检撞顶");
+      expect(watermarkLogs[0]![0]).toMatchObject({ phase: "pre-check", agentId: "a" });
+      expect(watermarkLogs[0]![0]).toHaveProperty("used");
+      expect(watermarkLogs[0]![0]).toHaveProperty("window");
+      expect(watermarkLogs[0]![0]).toHaveProperty("ratio");
+      expect(watermarkLogs.some((c) => String(c[1]).includes("水位撞顶兜底"))).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
   });
 });

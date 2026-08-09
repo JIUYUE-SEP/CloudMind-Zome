@@ -10,6 +10,7 @@ import {
 import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
 import { getTokenCounter } from "../../context/token-counter.js";
 import { stripUnansweredToolCalls } from "../../context/history-sanitize.js";
+import { logger } from "../../logger.js";
 
 /** 撞顶兜底（真机实锤：连续工具调用后回合静默结束）：追加一次无工具总结的 system 提示 */
 export const MAX_STEPS_SUMMARY_HINT =
@@ -150,16 +151,22 @@ async function runMaxStepsSummary(
 
 /**
  * 水位 U（双口径取大）：实测 = provider step.end usage（权威回报）；
- * 估算 = 本地 token 计数（当前 messages，含刚追加的工具结果）+ 工具定义
- * （G3：与 pipeline budgetTokens 同口径，估算不再漏掉 tools）。缺哪路用哪路。
+ * 估算 = 本地 token 计数（当前 messages，含刚追加的工具结果；F1 协议感知
+ * stripThinking）+ 工具定义（G3：与 pipeline budgetTokens 同口径，估算不再
+ * 漏掉 tools）。缺哪路用哪路。
  */
 function contextUsedTokens(
   result: StepResult | undefined,
   messages: ChatMessage[],
   tools: unknown[],
+  stripThinking = true,
 ): number {
+  // H3/F1：步后估算默认剥 thinking——openai-compatible 请求回传不含 think 块；
+  // Anthropic/Responses 会回传 thinking，由 usage 实测口径兜底计入（取大不低估）。
+  // 首步预检无实测可用，调用方按协议显式传入 stripThinking（见 runTurn）。
   const estimated =
-    getTokenCounter().countMessages(messages) + getTokenCounter().countTools(tools);
+    getTokenCounter().countMessages(messages, { stripThinking }) +
+    getTokenCounter().countTools(tools);
   const measured =
     result?.usage === undefined
       ? undefined
@@ -224,9 +231,31 @@ export async function runTurn(
   // G1 首步预检：循环开始前（首步发起前）先算一次水位——messages 已含 pipeline
   // 组装结果/初始历史，tools 计入估算（G3）。撞顶则不进循环直接走水位兜底；
   // 0.7-0.9 则先注入提醒再正常进循环（与循环内检查共享"每回合一次"语义）。
-  const preUsed = contextUsedTokens(undefined, messages, tools);
+  // F1（协议感知预检）：chat_completions 回传不含 think → 剥；anthropic/responses
+  // 真回传 think（占窗口）→ 保留计入，避免无实测兜底的首步低估。
+  const preUsed = contextUsedTokens(
+    undefined,
+    messages,
+    tools,
+    input.provider.protocol === "chat_completions",
+  );
   const preWindow = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const preRatio = preUsed / preWindow;
+  // H4（日志补全）：首步预检决策留痕，真机验证可看到 used/window/ratio 与走向
+  logger.info(
+    {
+      agentId: input.toolCtx.agentId,
+      phase: "pre-check",
+      used: preUsed,
+      window: preWindow,
+      ratio: Number(preRatio.toFixed(4)),
+    },
+    preRatio >= CONTEXT_STOP_RATIO
+      ? "[watermark] 首步预检撞顶：不进循环，直接走水位兜底"
+      : preRatio >= CONTEXT_WARN_RATIO
+        ? "[watermark] 首步预检提醒：注入 70% 提醒后进循环"
+        : "[watermark] 首步预检通过：正常进循环",
+  );
   if (preRatio >= CONTEXT_STOP_RATIO) {
     watermarkStop = true;
   } else if (preRatio >= CONTEXT_WARN_RATIO && !watermarked) {
@@ -296,17 +325,65 @@ export async function runTurn(
       const window = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
       const ratio = used / window;
       if (ratio >= CONTEXT_STOP_RATIO) {
+        logger.info(
+          {
+            agentId: input.toolCtx.agentId,
+            phase: "step",
+            step,
+            used,
+            window,
+            ratio: Number(ratio.toFixed(4)),
+          },
+          "[watermark] 步后撞顶：跳出循环走水位兜底",
+        );
         watermarkStop = true;
         break;
       }
-      if (ratio >= CONTEXT_WARN_RATIO && !watermarked) {
-        const reminder = makeWatermarkReminder(used, window);
-        messages.push(reminder);
-        appended.push(reminder);
-        if (input.onStepAppended) {
-          await input.onStepAppended([reminder]);
+      if (ratio >= CONTEXT_WARN_RATIO) {
+        if (!watermarked) {
+          logger.info(
+            {
+              agentId: input.toolCtx.agentId,
+              phase: "step",
+              step,
+              used,
+              window,
+              ratio: Number(ratio.toFixed(4)),
+            },
+            "[watermark] 步后提醒：注入 70% 提醒后继续",
+          );
+          const reminder = makeWatermarkReminder(used, window);
+          messages.push(reminder);
+          appended.push(reminder);
+          if (input.onStepAppended) {
+            await input.onStepAppended([reminder]);
+          }
+          watermarked = true;
+        } else {
+          logger.debug(
+            {
+              agentId: input.toolCtx.agentId,
+              phase: "step",
+              step,
+              used,
+              window,
+              ratio: Number(ratio.toFixed(4)),
+            },
+            "[watermark] 步后已达提醒带但本回合已提醒过（每回合一次）",
+          );
         }
-        watermarked = true;
+      } else {
+        logger.debug(
+          {
+            agentId: input.toolCtx.agentId,
+            phase: "step",
+            step,
+            used,
+            window,
+            ratio: Number(ratio.toFixed(4)),
+          },
+          "[watermark] 步后未达提醒带，继续循环",
+        );
       }
     }
 
@@ -318,6 +395,19 @@ export async function runTurn(
   // 撞顶兜底（真机实锤）：保险丝（循环耗尽）或水位撞顶且最后一次仍是工具调用——
   // 直接退出会让回合静默结束（无 assistant 回复）。追加一次无工具总结调用，绝不静默。
   if (step >= maxSteps || watermarkStop) {
+    // H4（日志补全）：兜底决策留痕，区分水位撞顶与保险丝耗尽
+    logger.info(
+      {
+        agentId: input.toolCtx.agentId,
+        phase: "fallback",
+        reason: watermarkStop ? "watermark" : "max_steps",
+        step,
+        maxSteps,
+      },
+      watermarkStop
+        ? "[watermark] 水位撞顶兜底：追加无工具总结"
+        : "[watermark] 保险丝耗尽兜底：追加无工具总结",
+    );
     const summary = await runMaxStepsSummary(
       input,
       messages,

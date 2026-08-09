@@ -23,6 +23,7 @@ export function withLLMCallRecording(
 ): LLMProvider {
   return {
     name: provider.name,
+    protocol: provider.protocol,
     supportsModel: (model: string) => provider.supportsModel(model),
     chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
       const inner = provider.chat(params);

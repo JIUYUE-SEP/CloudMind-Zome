@@ -71,6 +71,35 @@ describe("ContextPipeline", () => {
     expect(pipeline.budgetTokens).toBe(72000);
   });
 
+  it("H2：syncMaxContextTokens 热更窗口（同值幂等，不重建实例）", () => {
+    const pipeline = makePipeline(80_000);
+    expect(pipeline.budgetTokens).toBe(80_000);
+    expect(pipeline.maxContextTokens).toBe(80_000);
+
+    expect(pipeline.syncMaxContextTokens(32_000)).toBe(true);
+    expect(pipeline.maxContextTokens).toBe(32_000);
+    expect(pipeline.budgetTokens).toBe(32_000);
+
+    // 同值幂等：返回 false，预算不再变化
+    expect(pipeline.syncMaxContextTokens(32_000)).toBe(false);
+    expect(pipeline.budgetTokens).toBe(32_000);
+  });
+
+  it("F3：syncMaxContextTokens 拒绝非正数/NaN/Infinity（预算不变，warn 留痕）", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const pipeline = makePipeline(80_000);
+      for (const bad of [0, -1, NaN, Infinity, -Infinity]) {
+        expect(pipeline.syncMaxContextTokens(bad)).toBe(false);
+        expect(pipeline.maxContextTokens).toBe(80_000);
+        expect(pipeline.budgetTokens).toBe(80_000);
+      }
+      expect(warn).toHaveBeenCalledTimes(5);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("未超预算时原样组装：L1 system + 全部 history，tools 不变", async () => {
     const pipeline = makePipeline(10000);
     const tools = [{ type: "function", function: { name: "read_file" } }];

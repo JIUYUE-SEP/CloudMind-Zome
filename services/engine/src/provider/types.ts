@@ -58,8 +58,17 @@ export interface LLMChatParams {
   maxTokens?: number;
 }
 
+/**
+ * F1：LLM 协议族标识（只读）。水位预检按协议决定 think 块是否占窗口：
+ * chat_completions 请求回传时过滤 think；anthropic/responses 会真回传。
+ * 未声明（旧实现/测试桩）时按保守口径处理（think 计入）。
+ */
+export type LLMProviderProtocol = "chat_completions" | "anthropic" | "responses";
+
 export interface LLMProvider {
   name: string;
+  /** F1：协议族标识（只读）；未声明时水位预检按保守口径（含 think）处理 */
+  readonly protocol?: LLMProviderProtocol;
   chat(params: LLMChatParams): AsyncIterable<LLMEvent>;
   supportsModel(model: string): boolean;
 }

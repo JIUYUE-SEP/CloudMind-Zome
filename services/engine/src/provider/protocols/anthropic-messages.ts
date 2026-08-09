@@ -175,6 +175,8 @@ function mapFinishReason(reason: string | null | undefined): string | undefined 
  */
 export class AnthropicMessagesProvider implements LLMProvider {
   name = "anthropic-messages";
+  /** F1：协议族标识——anthropic 会把 think 作为 thinking 块真回传（占窗口） */
+  readonly protocol = "anthropic";
 
   constructor(
     private apiKey: string | undefined,

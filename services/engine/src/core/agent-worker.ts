@@ -93,6 +93,8 @@ export interface AgentWorkerConfig {
   topP?: number;
   /** ReAct 单轮最大步数（AgentConfig.reactMaxSteps）；缺省 100，clamp 1-500 */
   reactMaxSteps?: number;
+  /** W 链回退档（H1 补档）：型号表 contextWindow 查不到时，W 与 pipeline 预算共同回落 agent 显式 maxContextTokens，再回落 80_000 */
+  maxContextTokens?: number;
   /** 主算力 providerId（水位 W 查找链：providerId + modelId → 型号表 contextWindow） */
   providerId?: string;
   /** 配置仓库（水位 W 查找链；缺省时水位窗口按 80_000 兜底） */
@@ -105,8 +107,17 @@ export interface AgentWorkerConfig {
   imageProvider?: import("../provider/types.js").ImageGenProvider;
   /** 注入工具执行上下文的服务（如 subagent dispatcher），供 dispatch_subagent 等工具使用 */
   services?: ToolContext["services"];
-  /** 上下文管线（可选注入，测试用）；默认按 DEFAULT_PIPELINE_CONFIG 构造 */
+  /**
+   * 上下文管线（可选注入，测试/自定义预算用）；默认按 DEFAULT_PIPELINE_CONFIG 构造。
+   * 显式注入时默认不自动覆盖其预算（保留调用方意图）。
+   */
   contextPipeline?: ContextPipeline;
+  /**
+   * H2（pipeline 热更一致化）：true 时每回合按 W 链（型号表 contextWindow →
+   * maxContextTokens → 80_000）同步 pipeline 预算。生产 bootstrap 路径开启；
+   * 测试/自定义注入的 contextPipeline 保持 false，不被覆盖。
+   */
+  contextPipelineHotSync?: boolean;
   /** 话题压缩配置（Phase 2）；缺省按 DEFAULT_TOPIC_COMPRESSION_CONFIG（开启） */
   topicCompression?: Partial<TopicCompressionConfig>;
   /** 语义检索配置（Phase 3）；缺省按 DEFAULT_SEMANTIC_SEARCH_CONFIG（开启） */
@@ -622,13 +633,31 @@ export class AgentWorker {
 
       const messages = [...job.messages];
 
-      // 改动三：W 查找链统一入口——providerId + modelId 查型号表 contextWindow；
-      // 查不到/未配置落 80_000 缺省（与 pipeline 同值），core 不直接依赖 config
+      // H1（W 链补档）：W 查找链与 pipeline 预算同三档——型号表 contextWindow →
+      // agent 显式 maxContextTokens → 80_000。真机验证发现 W 缺档只回落 80K，
+      // 而 pipeline 回落 agent 值（如 3000 → budget 2700），水位与预算双源分裂。
+      const resolvedContextWindow = await resolveContextWindow(this.config.configRepository, {
+        providerId: this.config.providerId,
+        modelId: this.config.model,
+      });
       const contextWindow =
-        (await resolveContextWindow(this.config.configRepository, {
-          providerId: this.config.providerId,
-          modelId: this.config.model,
-        })) ?? DEFAULT_CONTEXT_WINDOW;
+        resolvedContextWindow ?? this.config.maxContextTokens ?? DEFAULT_CONTEXT_WINDOW;
+      // H2（pipeline 热更一致化）：compute 模型表热更不会退役 worker（仅 agents PUT
+      // 走 retire），逐回合同步预算；sync 不重建实例，保留 injectedBySource 去重状态。
+      // 仅生产路径（bootstrap 显式开启）执行，显式注入的测试/自定义 pipeline 不被覆盖。
+      if (
+        this.config.contextPipelineHotSync === true &&
+        this.pipeline.syncMaxContextTokens(contextWindow)
+      ) {
+        logger.info(
+          {
+            agentId: this.config.agentId,
+            contextWindow,
+            budgetTokens: this.pipeline.budgetTokens,
+          },
+          "[watermark] pipeline 预算热更同步（W 链变化）",
+        );
+      }
 
       const turnInput: TurnInput = {
         provider: this.config.provider,

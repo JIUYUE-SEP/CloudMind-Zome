@@ -3,7 +3,7 @@ import type { ChatMessage } from "@mindcloud/shared";
 
 export interface TokenCounter {
   countText(text: string): number;
-  countMessages(messages: ChatMessage[]): number;
+  countMessages(messages: ChatMessage[], opts?: { stripThinking?: boolean }): number;
   countTools(tools: unknown[]): number;
 }
 
@@ -27,12 +27,16 @@ export class TiktokenCounter implements TokenCounter {
     return this.encoding.encode(text).length;
   }
 
-  countMessages(messages: ChatMessage[]): number {
+  countMessages(messages: ChatMessage[], opts?: { stripThinking?: boolean }): number {
     let total = 0;
     for (const m of messages) {
       total += TiktokenCounter.MESSAGE_OVERHEAD;
       total += this.countText(m.role);
       for (const part of m.content) {
+        // H3（估算剥 thinking）：openai-compatible 协议回传消息时过滤 think 块，
+        // 估算口径不再计入 thinking，避免系统性高估误撞水位；Anthropic/Responses
+        // 协议会回传 thinking，由水位判据的 usage 实测口径兜底计入（取大不低估）。
+        if (opts?.stripThinking && part.type === "think") continue;
         total += this.countText(part.type === "text" ? part.text : part.think);
       }
       if (m.toolCalls && m.toolCalls.length > 0) {

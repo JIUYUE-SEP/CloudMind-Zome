@@ -1,5 +1,5 @@
 import { logger } from "../logger.js";
-import type { LLMProvider, LLMChatParams, LLMEvent } from "./types.js";
+import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "./types.js";
 import { ProviderError } from "./errors.js";
 import { isRetryableError } from "./classify.js";
 
@@ -36,12 +36,15 @@ function backoffDelay(attempt: number): number {
  */
 export class ResilientLLMProvider implements LLMProvider {
   name: string;
+  /** F1：透传主 provider 的协议族标识（备用降级后仍按主协议做预检估算） */
+  readonly protocol: LLMProviderProtocol | undefined;
 
   constructor(
     private primary: LLMProvider,
     private options: ResilientProviderOptions = {},
   ) {
     this.name = primary.name;
+    this.protocol = primary.protocol;
   }
 
   supportsModel(model: string): boolean {

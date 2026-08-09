@@ -18,14 +18,16 @@ function warnLookupFallback(lookup: ContextWindowLookup, reason: string): void {
   logger.warn(
     { providerId: lookup.providerId, modelId: lookup.modelId },
     `[context-window] ${reason}（provider=${providerId}, model=${modelId}），` +
-      "水位 W 与 pipeline 预算按缺省 80_000 兜底",
+      "水位 W 与 pipeline 预算按 W 链兜底（agent maxContextTokens → 80_000）",
   );
 }
 
 /**
  * 水位主裁 W 查找链（改动三）：agent 配置的 providerId + modelId →
  * configRepository.providers → models.find(id) → contextWindow。
- * 查不到/未配置返回 undefined，由调用方落 80_000 缺省（与 pipeline 同值）。
+ * 查不到/未配置返回 undefined，由调用方按 W 链回退：agent 显式
+ * maxContextTokens → 80_000（worker 与 pipeline 同三档；无 agent 值的
+ * puppet 等路径直接落 80_000）。
  * core（turn.ts）不依赖 config repository——本 helper 只服务 runTurn 调用方。
  */
 export async function resolveContextWindow(

@@ -51,6 +51,37 @@ describe("TiktokenCounter", () => {
     expect(total).toBe(manual);
   });
 
+  it("H3：countMessages stripThinking 剥掉 think 块（text/role/开销仍计入）", () => {
+    const messages: ChatMessage[] = [
+      msg("hello"),
+      {
+        id: "m2",
+        role: "assistant",
+        content: [
+          { type: "think", think: "x".repeat(2000) },
+          { type: "text", text: "answer" },
+        ],
+        createdAt: "2026-07-17T00:00:00Z",
+      },
+    ];
+    const full = counter.countMessages(messages);
+    const stripped = counter.countMessages(messages, { stripThinking: true });
+    // think 块被剥离：stripped 只含 hello/answer/role/开销
+    expect(stripped).toBe(
+      counter.countMessages([
+        msg("hello"),
+        {
+          id: "m2",
+          role: "assistant",
+          content: [{ type: "text", text: "answer" }],
+          createdAt: "2026-07-17T00:00:00Z",
+        },
+      ]),
+    );
+    // 旧口径（含 think）更大：2000 字符的 think 块在 cl100k 下也有 100+ tokens
+    expect(full).toBeGreaterThan(stripped + 100);
+  });
+
   it("countMessages 空数组为 0", () => {
     expect(counter.countMessages([])).toBe(0);
   });

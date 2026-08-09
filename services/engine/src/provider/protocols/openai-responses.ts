@@ -180,6 +180,8 @@ function lowerTools(tools: unknown[]): Record<string, unknown>[] {
  */
 export class OpenAIResponsesProvider implements LLMProvider {
   name = "openai-responses";
+  /** F1：协议族标识——responses 会把 think 作为 reasoning item 真回传（占窗口） */
+  readonly protocol = "responses";
 
   constructor(
     private apiKey: string | undefined,
