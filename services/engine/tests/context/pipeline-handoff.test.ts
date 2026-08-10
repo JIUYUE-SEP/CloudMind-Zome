@@ -78,4 +78,20 @@ describe("交接书置顶注入（pipeline）", () => {
     expect(withPinned.messages.length).toBeLessThanOrEqual(without.messages.length + 1);
     expect(withPinned.messages[0]!.content.some((c) => c.type === "text" && c.text === PINNED)).toBe(true);
   });
+
+  it("handoffPinned 为空字符串（K4）：不注入置顶消息，首条仍是 L1 人格", async () => {
+    const pipeline = new ContextPipeline({ maxContextTokens: 80_000 });
+    const assembled = await pipeline.assemble({
+      agentId: "a1",
+      history: [userMessage("hi", "m1")],
+      mindContext: "# SOUL\n我是人格",
+      sourceId: "s1",
+      tools: [],
+      handoffPinned: "",
+    });
+    expect(assembled.messages).toHaveLength(2);
+    expect(
+      assembled.messages[0]!.content.some((c) => c.type === "text" && c.text.includes("# SOUL")),
+    ).toBe(true);
+  });
 });

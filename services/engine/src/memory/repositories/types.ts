@@ -50,6 +50,12 @@ export interface IMessageRepository {
   append(message: ChatMessageRecord): Promise<void>;
   listBySession(sessionId: string, options?: { limit?: number; before?: string }): Promise<ChatMessageRecord[]>;
   /**
+   * session 首条用户消息（换班交接书任务锚定 K1）：跨热存储+归档按 createdAt
+   * 时间序合并扫描，命中即停，不受最近 N 条窗口限制。可选实现——未实现时
+   * 调用方退回窗口内首条用户消息。
+   */
+  firstUserMessageBySession?(sessionId: string): Promise<ChatMessageRecord | undefined>;
+  /**
    * 跨存储读（用户可见完整历史）：热存储 + 归档合并、按 createdAt 时间序，
    * limit/before 跨存储分页正确。归档可能巨大，实现必须流式/分段，
    * 内存与归档大小无关（"她的意识"路径——上下文组装/L4/reconcile/压缩——

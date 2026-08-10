@@ -60,6 +60,7 @@ class WorkerWatermarkProvider implements LLMProvider {
   name = "worker-watermark";
   readonly protocol: LLMProviderProtocol = "chat_completions";
   calls = 0;
+  writeParams: LLMChatParams[] = [];
   supportsModel() {
     return true;
   }
@@ -73,6 +74,7 @@ class WorkerWatermarkProvider implements LLMProvider {
           m.content.some((c) => c.type === "text" && c.text.includes(needle)),
       );
     if (has(HANDOFF_WRITING_GUIDANCE)) {
+      this.writeParams.push(params);
       yield {
         type: "text.delta",
         delta: "【任务目的】查资料\n【已完成】已取得 18 个话题目录\n【未来方向】读取 tp_001",
@@ -125,6 +127,7 @@ function runWorkerJob(
     maxContextTokens?: number;
     handoffMaxShifts?: number;
     handoffResume?: { shift: number; maxShifts: number; bookText: string };
+    messages?: ChatMessage[];
     messageRepository?: Partial<IMessageRepository>;
   } = {},
 ): {
@@ -160,7 +163,7 @@ function runWorkerJob(
   });
   const job: Job = {
     id: "job-1",
-    messages: [userMessage("查资料")],
+    messages: opts.messages ?? [userMessage("查资料")],
     sessionId: "s1",
     onEvent: (e) => events.push(e),
     onDone: (err) => resolveDone(err),
@@ -209,12 +212,61 @@ describe("AgentWorker 换班移交接线", () => {
 
     const first = provider.captured!.messages[0]!;
     expect(first.role).toBe("system");
-    // 件4：固定开工指引 + 分隔线 + 交接书原文不丢
-    expect(textOf(first)).toContain(HANDOFF_RESUME_GUIDE);
-    expect(textOf(first)).toContain(HANDOFF_RESUME_SEPARATOR.trim());
-    expect(textOf(first)).toContain(bookText);
+    // 件4（K4）：固定开工指引 + 分隔线 + 交接书原文按序拼接，原文不丢
+    const pinnedText = textOf(first);
+    const iGuide = pinnedText.indexOf(HANDOFF_RESUME_GUIDE);
+    const iSeparator = pinnedText.indexOf(HANDOFF_RESUME_SEPARATOR);
+    const iBook = pinnedText.indexOf(bookText);
+    expect(iGuide).toBeGreaterThanOrEqual(0);
+    expect(iSeparator).toBeGreaterThan(iGuide);
+    expect(iBook).toBeGreaterThan(iSeparator);
     // 置顶：交接书在 SOUL（L1）之前
     expect(provider.captured!.messages[1]!.content.some((c) => c.type === "text" && c.text.includes("# SOUL"))).toBe(true);
+  });
+
+  it("第 3 棒续跑（K1）：任务原消息取 session 首条用户消息，不受窗口限制", async () => {
+    const provider = new WorkerWatermarkProvider();
+    const { done } = runWorkerJob(provider, {
+      maxContextTokens: 1000,
+      handoffResume: {
+        shift: 3,
+        maxShifts: 5,
+        bookText: "[交接书] 第 2/5 棒：已读取 tp_001",
+      },
+      // 续跑窗口（最近 20 条）不含原始任务
+      messages: [userMessage("窗口用户-甲"), userMessage("窗口用户-乙")],
+      messageRepository: {
+        firstUserMessageBySession: async () => ({
+          ...userMessage("原始任务：整理话题目录"),
+          sessionId: "s1",
+        }),
+      },
+    });
+    await done;
+    await workerWaitForIdle([]);
+
+    expect(provider.writeParams).toHaveLength(1);
+    const material = textOf(provider.writeParams[0]!.messages[1]!);
+    expect(material).toContain("【任务原消息】");
+    expect(material).toContain("原始任务：整理话题目录");
+    expect(material).not.toContain("窗口用户-甲");
+  });
+
+  it("历史为空（K1）：上一棒交接书取 handoffResume.bookText（控制面权威）", async () => {
+    const provider = new WorkerWatermarkProvider();
+    const bookText = "[交接书] 第 2/5 棒：已读取 tp_001";
+    const { done } = runWorkerJob(provider, {
+      maxContextTokens: 1000,
+      handoffResume: { shift: 3, maxShifts: 5, bookText },
+      messages: [],
+    });
+    await done;
+    await workerWaitForIdle([]);
+
+    expect(provider.writeParams).toHaveLength(1);
+    const material = textOf(provider.writeParams[0]!.messages[1]!);
+    expect(material).toContain("【上一棒交接书】");
+    expect(material).toContain(bookText);
   });
 
   it("normalizeHandoffMaxShifts：缺省 5、clamp 1-10、非法回退", () => {

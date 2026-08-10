@@ -32,6 +32,37 @@ export class MessageRepository implements IMessageRepository {
   }
 
   /**
+   * session 首条用户消息（K1）：跨热存储+归档按 createdAt 时间序合并扫描，
+   * 命中即停；内存与归档大小无关，不受 listBySession 最近 N 条窗口限制。
+   */
+  async firstUserMessageBySession(sessionId: string): Promise<ChatMessageRecord | undefined> {
+    const aIt = this.archiveStore().readLinesLazy()[Symbol.asyncIterator]();
+    const hIt = this.store().readLinesLazy()[Symbol.asyncIterator]();
+    try {
+      let a = await aIt.next();
+      let h = await hIt.next();
+      while (!a.done || !h.done) {
+        const aRecord = a.done ? null : a.value;
+        const hRecord = h.done ? null : h.value;
+        let record: ChatMessageRecord;
+        if (aRecord !== null && (hRecord === null || aRecord.createdAt <= hRecord.createdAt)) {
+          record = aRecord;
+          a = await aIt.next();
+        } else {
+          record = hRecord!;
+          h = await hIt.next();
+        }
+        if (record.sessionId !== sessionId) continue;
+        if (record.role === "user") return record;
+      }
+    } finally {
+      await aIt.return?.();
+      await hIt.return?.();
+    }
+    return undefined;
+  }
+
+  /**
    * 跨存储读（用户可见完整历史）：热存储 + 归档两条流按 createdAt 归并，
    * 只保留最近 limit 条的滚动窗口——内存与归档大小无关（归档可能远超
    * readLines 的 100MB 上限，这里逐行流式读、可提前 break）。

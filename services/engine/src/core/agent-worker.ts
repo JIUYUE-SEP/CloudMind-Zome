@@ -704,6 +704,16 @@ export class AgentWorker {
         provider: this.config.provider,
         model: this.config.model,
         messages,
+        // K1：任务原消息优先 session 首条用户消息（repository 查询，不受续跑
+        // 最近 20 条窗口限制）；查不到时 runTurn 退回窗口内首条用户消息
+        resolveSessionTaskText: async () => {
+          const first = await this.config.messageRepository.firstUserMessageBySession?.(sessionId);
+          if (!first) return undefined;
+          return first.content
+            .filter((c): c is { type: "text"; text: string } => c.type === "text")
+            .map((c) => c.text)
+            .join("");
+        },
         tools: toolDescriptions,
         handoff: job.handoffResume ?? { shift: 1, maxShifts: this.handoffMaxShifts },
         toolCtx: {

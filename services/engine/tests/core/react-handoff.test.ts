@@ -64,11 +64,16 @@ class HandoffWatermarkProvider implements LLMProvider {
   calls = 0;
   writeParams: LLMChatParams[] = [];
   summaryParams: LLMChatParams[] = [];
+  /** K2 abort 夹具：abort 后还成功产出的帧数（验证在途写作被中止） */
+  postAbortYields = 0;
   private toolStepsDone = 0;
   constructor(
     private opts: {
       summaryBehavior?: "text" | "throw" | "empty";
-      writeBehavior?: "text" | "throw" | "empty";
+      writeBehavior?: "text" | "throw" | "empty" | "abort";
+      summaryText?: string;
+      writeText?: string;
+      abortController?: AbortController;
       toolSteps?: number;
       toolArgs?: Array<Record<string, unknown>>;
       hitUsage?: { promptTokens: number; completionTokens: number };
@@ -93,7 +98,14 @@ class HandoffWatermarkProvider implements LLMProvider {
         yield { type: "step.end" };
         return;
       }
-      yield { type: "text.delta", delta: WRITTEN_BOOK };
+      if (this.opts.writeBehavior === "abort") {
+        yield { type: "text.delta", delta: "写作半截文本" };
+        this.opts.abortController?.abort();
+        this.postAbortYields++;
+        yield { type: "step.end" };
+        return;
+      }
+      yield { type: "text.delta", delta: this.opts.writeText ?? WRITTEN_BOOK };
       yield { type: "step.end" };
       return;
     }
@@ -104,7 +116,7 @@ class HandoffWatermarkProvider implements LLMProvider {
         yield { type: "step.end" };
         return;
       }
-      yield { type: "text.delta", delta: "进展X；下一步Y" };
+      yield { type: "text.delta", delta: this.opts.summaryText ?? "进展X；下一步Y" };
       yield { type: "step.end" };
       return;
     }
@@ -133,11 +145,13 @@ class HandoffWatermarkProvider implements LLMProvider {
 function runWatermarkHandoff(
   provider: HandoffWatermarkProvider,
   opts: {
-    handoff?: { shift: number; maxShifts: number };
+    handoff?: { shift: number; maxShifts: number; bookText?: string };
     onStepAppended?: (msgs: ChatMessage[]) => Promise<void>;
     messages?: ChatMessage[];
     contextWindow?: number;
     maxSteps?: number;
+    signal?: AbortSignal;
+    resolveSessionTaskText?: () => Promise<string | undefined>;
   } = {},
 ) {
   return runTurn(
@@ -156,6 +170,8 @@ function runWatermarkHandoff(
       contextWindow: opts.contextWindow ?? 1000,
       maxSteps: opts.maxSteps ?? 20,
       handoff: opts.handoff,
+      signal: opts.signal,
+      resolveSessionTaskText: opts.resolveSessionTaskText,
       onStepAppended: opts.onStepAppended,
     },
     () => {},
@@ -275,6 +291,86 @@ describe("水位撞顶换班移交（交接书消息载体）", () => {
     expect(taskSection.length).toBe(2000);
   });
 
+  it("任务原消息（K1）：session 首条用户消息优先，查不到退回窗口内首条", async () => {
+    const provider = new HandoffWatermarkProvider();
+    await runWatermarkHandoff(provider, {
+      messages: [userMessage("窗口用户-甲"), userMessage("窗口用户-乙")],
+      contextWindow: 1,
+      resolveSessionTaskText: async () => "原始任务：整理话题目录",
+    });
+    const material = textOf(provider.writeParams[0]!.messages[1]!);
+    expect(material).toContain("原始任务：整理话题目录");
+    expect(material).not.toContain("窗口用户-甲");
+
+    // resolver 查不到 → 退回窗口内首条用户消息
+    const fallback = new HandoffWatermarkProvider();
+    await runWatermarkHandoff(fallback, {
+      messages: [userMessage("窗口用户-甲"), userMessage("窗口用户-乙")],
+      contextWindow: 1,
+      resolveSessionTaskText: async () => undefined,
+    });
+    const fallbackMaterial = textOf(fallback.writeParams[0]!.messages[1]!);
+    expect(fallbackMaterial).toContain("窗口用户-甲");
+  });
+
+  it("上一棒交接书（K1+K3）：handoff.bookText 优先于窗口扫描，并截 3000 字符", async () => {
+    const windowBook: ChatMessage = {
+      id: "window-book",
+      role: "system",
+      content: [{ type: "text", text: "[交接书] 窗口里的旧交接书" }],
+      createdAt: "2024-01-01",
+    };
+    const bookText = `[交接书] 第 2/5 棒：已读取 tp_001${"x".repeat(3500)}`;
+    const provider = new HandoffWatermarkProvider();
+    await runWatermarkHandoff(provider, {
+      messages: [userMessage("任务"), windowBook],
+      contextWindow: 1,
+      handoff: { shift: 3, maxShifts: 5, bookText },
+    });
+    const material = textOf(provider.writeParams[0]!.messages[1]!);
+    const prevSection = material.split("【上一棒交接书】")[1]!.split("【本棒回顾】")[0]!.trim();
+    expect(prevSection).toContain("第 2/5 棒");
+    expect(prevSection).not.toContain("窗口里的旧交接书");
+    expect(prevSection.length).toBe(3000);
+    expect(prevSection.endsWith("…")).toBe(true);
+  });
+
+  it("写作调用 abort（K2）：快速失败降级为兜底总结，交接书仍随 turn 产出", async () => {
+    const controller = new AbortController();
+    const provider = new HandoffWatermarkProvider({
+      writeBehavior: "abort",
+      abortController: controller,
+    });
+    const result = await runWatermarkHandoff(provider, { signal: controller.signal });
+
+    expect(controller.signal.aborted).toBe(true);
+    // abort 后写作流只多产出一帧即被中止（在途写作快速失败）
+    expect(provider.postAbortYields).toBe(1);
+    expect(result.handoffBook).toBeDefined();
+    const bookText = textOf(result.handoffBook!);
+    expect(bookText).toContain("进展X；下一步Y");
+    expect(bookText).not.toContain("写作半截文本");
+  });
+
+  it("机械上限（K3）：本棒回顾素材截 2000、写作产出内容截 3000", async () => {
+    const provider = new HandoffWatermarkProvider({
+      summaryText: "x".repeat(2500),
+      writeText: WRITTEN_BOOK + "y".repeat(3500),
+    });
+    const result = await runWatermarkHandoff(provider);
+
+    const material = textOf(provider.writeParams[0]!.messages[1]!);
+    const summarySection = material.split("【本棒回顾】")[1]!.trim();
+    expect(summarySection.length).toBe(2000);
+    expect(summarySection.endsWith("…")).toBe(true);
+
+    const bookText = textOf(result.handoffBook!);
+    const content = bookText.slice(bookText.indexOf("- 内容：") + "- 内容：".length).trim();
+    expect(content.length).toBe(3000);
+    expect(content.endsWith("…")).toBe(true);
+    expect(content).toContain("【任务目的】");
+  });
+
   it("写作调用失败/空文本降级：交接书内容=兜底总结文本（现状行为保底）", async () => {
     for (const writeBehavior of ["throw", "empty"] as const) {
       const provider = new HandoffWatermarkProvider({ writeBehavior });
@@ -342,6 +438,55 @@ describe("水位撞顶换班移交（交接书消息载体）", () => {
     const manyLine = bookFootprintLine(textOf(many.handoffBook!))!;
     expect(manyLine.length).toBeLessThanOrEqual(500);
     expect(manyLine.endsWith("…")).toBe(true);
+  });
+
+  it("足迹截断边界（K4）：单条恰好 80 不截断；总长恰好 500 不截断、501 截断", async () => {
+    // item = dummy({"value":"x*61"})：json 73 字符 → 单条恰好 80
+    const exactItemArgs = { value: "x".repeat(61) };
+    const exact = await runWatermarkHandoff(
+      new HandoffWatermarkProvider({ toolArgs: [exactItemArgs] }),
+    );
+    const exactLine = bookFootprintLine(textOf(exact.handoffBook!))!;
+    expect(exactLine.length).toBe(80);
+    expect(exactLine.endsWith("…")).toBe(false);
+
+    // 6 条 80 + 1 条 14 + 6 个分隔符 = 500：恰好上限不截断
+    const total500 = await runWatermarkHandoff(
+      new HandoffWatermarkProvider({
+        toolSteps: 7,
+        toolArgs: [
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          { a: 1 }, // item = dummy({"a":1}) = 14
+        ],
+      }),
+    );
+    const line500 = bookFootprintLine(textOf(total500.handoffBook!))!;
+    expect(line500.length).toBe(500);
+    expect(line500.endsWith("…")).toBe(false);
+
+    // 6 条 80 + 1 条 15 + 6 个分隔符 = 501：超限截到 500 + 省略号
+    const total501 = await runWatermarkHandoff(
+      new HandoffWatermarkProvider({
+        toolSteps: 7,
+        toolArgs: [
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          exactItemArgs,
+          { a: 12 }, // item = dummy({"a":12}) = 15
+        ],
+      }),
+    );
+    const line501 = bookFootprintLine(textOf(total501.handoffBook!))!;
+    expect(line501.length).toBe(500);
+    expect(line501.endsWith("…")).toBe(true);
   });
 
   it("未撞顶不产出交接书", async () => {

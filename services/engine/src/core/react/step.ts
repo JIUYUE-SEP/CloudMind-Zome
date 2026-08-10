@@ -17,6 +17,8 @@ export interface StepInput {
   maxTokens?: number;
   temperature?: number;
   topP?: number;
+  /** 外部取消信号：启动前与每个流式事件边界检查，中止即抛错（K2） */
+  signal?: AbortSignal;
   /** 单条工具结果的 token 上限（review M1）；缺省 DEFAULT_MAX_TOOL_RESULT_TOKENS */
   maxToolResultTokens?: number;
 }
@@ -47,6 +49,7 @@ export class StepStreamError extends Error {
 }
 
 export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) => void): Promise<StepResult> {
+  if (input.signal?.aborted) throw new Error("aborted");
   const params: LLMChatParams = {
     model: input.model,
     messages: input.messages,
@@ -64,6 +67,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
 
   try {
     for await (const event of input.provider.chat(params)) {
+      if (input.signal?.aborted) throw new Error("aborted");
       emit(event);
       if (event.type === "step.end") {
         finishReason = event.finishReason;

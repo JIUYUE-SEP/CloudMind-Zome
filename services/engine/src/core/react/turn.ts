@@ -45,6 +45,11 @@ export const HANDOFF_WRITING_GUIDANCE =
 export const HANDOFF_FOOTPRINT_ITEM_MAX = 80;
 export const HANDOFF_FOOTPRINT_TOTAL_MAX = 500;
 
+/** 交接书机械上限（K3）：上一棒交接书 / 兜底总结素材 / 写作产出内容 */
+export const HANDOFF_PREV_BOOK_MAX = 3000;
+export const HANDOFF_SUMMARY_MAX = 2000;
+export const HANDOFF_WRITTEN_MAX = 3000;
+
 /**
  * 上下文水位主裁（改动一）：硬编码产品语义，不开放配置。
  * 0.7 = 提醒线：每回合至多追加一条 system 提醒后继续；0.9 = 撞顶线：跳出循环走兜底。
@@ -72,9 +77,15 @@ export interface TurnInput {
   /**
    * 换班移交（交接书）：撞顶时给交接书盖的棒次戳与保险丝上限。
    * 首棒缺省 shift=1、maxShifts=HANDOFF_DEFAULT_MAX_SHIFTS；
-   * 续跑由调度方（ws 层）显式传入下一棒次与同一保险丝上限。
+   * 续跑由调度方（ws 层）显式传入下一棒次与同一保险丝上限；
+   * bookText=上一棒交接书（控制面权威，K1 优先于历史窗口扫描）。
    */
-  handoff?: { shift: number; maxShifts: number };
+  handoff?: { shift: number; maxShifts: number; bookText?: string };
+  /**
+   * 任务原消息解析（K1）：优先取 session 首条用户消息（repository 查询，
+   * 不受续跑最近 20 条窗口限制）；查不到时退回窗口内首条用户消息。
+   */
+  resolveSessionTaskText?: () => Promise<string | undefined>;
   /** 外部取消信号（如 subagent 前台超时）：在步骤边界检查并中止本轮 */
   signal?: AbortSignal;
   /**
@@ -155,6 +166,12 @@ export function formatHandoffFootprint(
     line = line.slice(0, HANDOFF_FOOTPRINT_TOTAL_MAX - 1) + "…";
   }
   return line;
+}
+
+/** 交接书文本机械截断（超限截断 + 省略号标注） */
+function truncateHandoffText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - 1) + "…";
 }
 
 function makeFallbackReply(
@@ -251,8 +268,11 @@ function lastHandoffBookText(messages: ChatMessage[]): string | undefined {
 /**
  * 瘦身写作间（件3）：独立小调用写交接书三分法内容，与全量兜底回复调用分离。
  * system = 写作指引；user = 材料包四样（任务原消息/上一棒交接书/本棒足迹/本棒回顾）。
+ * K1：任务原消息优先 repository 解析（session 首条用户消息），查不到退回窗口内首条；
+ * 上一棒交接书优先 handoff.bookText（控制面权威），窗口扫描仅作兜底。
+ * K3：上一棒交接书截 3000、本棒回顾素材截 2000、写作产出截 3000（省略号标注）。
  * 单步（maxSteps=1 语义）、无工具；内部调用不向用户流式转发（no-op emit）。
- * 失败/空文本/违规工具调用 → undefined（调用方降级为兜底总结文本直接装入）。
+ * 失败/空文本/违规工具调用/abort → undefined（调用方降级为兜底总结文本直接装入）。
  */
 async function writeHandoffBookContent(
   input: TurnInput,
@@ -260,12 +280,23 @@ async function writeHandoffBookContent(
   footprint: string | undefined,
 ): Promise<string | undefined> {
   const sections: string[] = [];
-  const taskText = firstUserTaskText(input.messages);
+  let taskText: string | undefined;
+  if (input.resolveSessionTaskText) {
+    try {
+      const resolved = await input.resolveSessionTaskText();
+      if (resolved !== undefined) taskText = resolved.slice(0, HANDOFF_TASK_TEXT_MAX);
+    } catch {
+      taskText = undefined;
+    }
+  }
+  if (taskText === undefined) taskText = firstUserTaskText(input.messages);
   if (taskText !== undefined) sections.push(`【任务原消息】\n${taskText}`);
-  const prevBook = lastHandoffBookText(input.messages);
-  if (prevBook !== undefined) sections.push(`【上一棒交接书】\n${prevBook}`);
+  const prevBook = input.handoff?.bookText ?? lastHandoffBookText(input.messages);
+  if (prevBook !== undefined) {
+    sections.push(`【上一棒交接书】\n${truncateHandoffText(prevBook, HANDOFF_PREV_BOOK_MAX)}`);
+  }
   if (footprint !== undefined) sections.push(`【本棒足迹】\n${footprint}`);
-  sections.push(`【本棒回顾】\n${summaryText}`);
+  sections.push(`【本棒回顾】\n${truncateHandoffText(summaryText, HANDOFF_SUMMARY_MAX)}`);
   const guidance: ChatMessage = {
     id: `msg_${randomUUID()}`,
     role: "system",
@@ -289,12 +320,13 @@ async function writeHandoffBookContent(
         maxTokens: input.maxTokens,
         temperature: input.temperature,
         topP: input.topP,
+        signal: input.signal,
       },
       () => {},
     );
     const text = assistantText(result.assistantMessage);
     if (result.stopReason === "tool_use" || text.length === 0) return undefined;
-    return text;
+    return truncateHandoffText(text, HANDOFF_WRITTEN_MAX);
   } catch {
     return undefined;
   }
@@ -634,7 +666,7 @@ export async function runTurn(
       // 瘦身写作间（件3）：独立小调用写三分法内容；失败/空文本降级为兜底总结
       const written = await writeHandoffBookContent(input, summaryText, footprint);
       const book = makeHandoffBook(
-        written ?? summaryText,
+        written ?? truncateHandoffText(summaryText, HANDOFF_WRITTEN_MAX),
         used,
         window,
         handoffShift,
