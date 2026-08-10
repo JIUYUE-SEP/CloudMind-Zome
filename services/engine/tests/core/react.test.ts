@@ -202,6 +202,11 @@ class AnthropicWatermarkToolLoopProvider extends SnapshotWatermarkToolLoopProvid
   readonly protocol = "anthropic";
 }
 
+/** F1：responses 协议夹具（与 anthropic 同族：think 真回传占窗口，预检必须含 think 计数） */
+class ResponsesWatermarkToolLoopProvider extends SnapshotWatermarkToolLoopProvider {
+  readonly protocol = "responses";
+}
+
 /** 水位测试共用：裸 runTurn（不传 contextPipeline = 傀儡路径形状） */
 function runWatermarkTurn(
   provider: WatermarkToolLoopProvider,
@@ -1010,6 +1015,44 @@ describe("上下文水位主裁（改动一）", () => {
 
   it("F1 协议感知：anthropic 预检含 think 不低估（同一窗口下首步直落兜底）", async () => {
     const provider = new AnthropicWatermarkToolLoopProvider();
+    const thinkBlock: ChatMessage = {
+      id: "t1",
+      role: "assistant",
+      content: [
+        { type: "think", think: "x".repeat(20000) }, // ≈ 2600+ tokens
+        { type: "text", text: "前面我思考了很多" },
+      ],
+      createdAt: "2026-01-01",
+    };
+    const tools = [
+      { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+    ];
+    // 同一窗口下：含 think 的完整口径 ≥ 0.95 直接撞顶；若错误剥 think 则远低于提醒带
+    const strippedBase =
+      getTokenCounter().countMessages([userMessage("hi"), thinkBlock], {
+        stripThinking: true,
+      }) + getTokenCounter().countTools(tools);
+    const fullBase =
+      getTokenCounter().countMessages([userMessage("hi"), thinkBlock]) +
+      getTokenCounter().countTools(tools);
+    const window = Math.floor(fullBase / 0.95);
+    expect(fullBase / window).toBeGreaterThanOrEqual(0.9);
+    expect(strippedBase / window).toBeLessThan(0.7);
+
+    const result = await runWatermarkTurn(provider, {
+      messages: [userMessage("hi"), thinkBlock],
+      contextWindow: window,
+      maxSteps: 20,
+    });
+
+    // 未进工具循环：一次兜底总结 + 一次瘦身写作调用；兜底总结携带水位兜底提示
+    expect(provider.calls).toHaveLength(2);
+    expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
+    expect(assistantText(result.assistantMessage)).toBe("水位收尾");
+  });
+
+  it("F1 协议感知：responses 预检含 think 不低估（per-model 覆盖 responses 后走同族口径）", async () => {
+    const provider = new ResponsesWatermarkToolLoopProvider();
     const thinkBlock: ChatMessage = {
       id: "t1",
       role: "assistant",

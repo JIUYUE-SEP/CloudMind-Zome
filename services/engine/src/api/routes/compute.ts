@@ -345,6 +345,11 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       const validationError = validateOptionalBoolean(body[field], field);
       if (validationError) return reply.status(400).send({ error: validationError });
     }
+    if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
+      return reply.status(400).send({
+        error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
+      });
+    }
     const model: ModelInfo = {
       id: modelId,
       displayName:
@@ -355,6 +360,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...(body.supportsReasoning !== undefined ? { supportsReasoning: body.supportsReasoning as boolean } : {}),
       ...(body.supportsToolCalling !== undefined ? { supportsToolCalling: body.supportsToolCalling as boolean } : {}),
       ...(body.supportsMultimodal !== undefined ? { supportsMultimodal: body.supportsMultimodal as boolean } : {}),
+      ...(body.apiMode !== undefined ? { apiMode: body.apiMode as ModelInfo["apiMode"] } : {}),
     };
     provider.models.push(model);
     await context.configRepository.save(config);
@@ -398,6 +404,11 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       const validationError = validateOptionalBoolean(body[field], field);
       if (validationError) return reply.status(400).send({ error: validationError });
     }
+    if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
+      return reply.status(400).send({
+        error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
+      });
+    }
     const existing = provider.models[idx];
     provider.models[idx] = {
       ...existing,
@@ -414,6 +425,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...(body.supportsMultimodal !== undefined
         ? { supportsMultimodal: body.supportsMultimodal as boolean }
         : {}),
+      ...(body.apiMode !== undefined ? { apiMode: body.apiMode as ModelInfo["apiMode"] } : {}),
     };
     await context.configRepository.save(config);
     return provider.models[idx];

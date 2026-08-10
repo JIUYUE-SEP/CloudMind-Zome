@@ -796,6 +796,64 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("accepts and persists model apiMode on POST/PUT", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "model-apimode",
+      displayName: "Model ApiMode",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com",
+      models: [],
+    });
+
+    const addRes = await authedRequest(app.server)
+      .post("/compute/providers/model-apimode/models")
+      .send({
+        id: "deepseek-v4-flash",
+        modelType: "llm",
+        apiMode: "responses",
+      });
+    expect(addRes.status).toBe(200);
+    expect(addRes.body.apiMode).toBe("responses");
+
+    const updateRes = await authedRequest(app.server)
+      .put("/compute/providers/model-apimode/models/deepseek-v4-flash")
+      .send({ apiMode: "anthropic" });
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.apiMode).toBe("anthropic");
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models[0].apiMode).toBe("anthropic");
+    await app.close();
+  });
+
+  it("rejects invalid model apiMode on POST/PUT", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "model-apimode-bad",
+      displayName: "Model ApiMode Bad",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com",
+      models: [{ id: "deepseek-v4-flash", displayName: "Flash", modelType: "llm" }],
+    });
+
+    const addRes = await authedRequest(app.server)
+      .post("/compute/providers/model-apimode-bad/models")
+      .send({ id: "deepseek-v3", modelType: "llm", apiMode: "grpc" });
+    expect(addRes.status).toBe(400);
+    expect(addRes.body.error).toContain("apiMode");
+
+    const updateRes = await authedRequest(app.server)
+      .put("/compute/providers/model-apimode-bad/models/deepseek-v4-flash")
+      .send({ apiMode: "websocket" });
+    expect(updateRes.status).toBe(400);
+    expect(updateRes.body.error).toContain("apiMode");
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models[0]).not.toHaveProperty("apiMode");
+    await app.close();
+  });
+
   it("updates model via whitelist with all editable fields", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/compute/providers").send({

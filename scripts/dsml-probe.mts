@@ -1,6 +1,6 @@
 // DSML 间歇性探针：用 CMZ engine 自己的 provider 配置+适配器，带 tools 打 N 次，统计 DSML 出现率
-import { ConfigRepository } from "./src/config/repository.js";
-import { OpenAIProvider } from "./src/provider/llm.js";
+import { ConfigRepository } from "../services/engine/src/config/repository.js";
+import { OpenAIResponsesProvider } from "../services/engine/src/provider/protocols/openai-responses.js";
 
 const N = 10;
 const repo = new ConfigRepository();
@@ -9,7 +9,7 @@ const providerConfig = config.providers?.[0];
 if (!providerConfig) { console.log("NO PROVIDER"); process.exit(1); }
 console.log(`provider=${providerConfig.displayName ?? providerConfig.id} apiMode=${providerConfig.apiMode} model=deepseek-v4-flash`);
 
-const llm = new OpenAIProvider(providerConfig.apiKey, providerConfig.baseUrl);
+const llm = new OpenAIResponsesProvider(providerConfig.apiKey, providerConfig.baseUrl);
 const tools = [{ type: "function", function: {
   name: "recall",
   description: "读取记忆阁楼",

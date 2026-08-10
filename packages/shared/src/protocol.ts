@@ -105,6 +105,9 @@ export interface ChatMessageRecord {
   createdAt: string;
 }
 
+/** LLM 协议族（2026-08-08 起 provider 级；2026-08-10 B 方案起型号级可覆盖） */
+export type ProtocolApiMode = "responses" | "anthropic" | "chat_completions";
+
 export interface ModelInfo {
   id: string;
   displayName: string;
@@ -114,6 +117,11 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsToolCalling?: boolean;
   supportsMultimodal?: boolean;
+  /**
+   * 型号级协议覆盖（2026-08-10 B 方案）：缺省=沿用 ProviderConfig.apiMode，
+   * 不传即现状行为。flash 型号切 responses 由此字段驱动（指挥官手动配置）。
+   */
+  apiMode?: ProtocolApiMode;
 }
 
 /**
@@ -135,7 +143,7 @@ export interface ProviderConfig {
    * anthropic（POST {baseURL}/anthropic/v1/messages，主路）/
    * chat_completions（兼容层，缺省；现有配置零破坏）。
    */
-  apiMode?: "responses" | "anthropic" | "chat_completions";
+  apiMode?: ProtocolApiMode;
 }
 
 /**

@@ -10,7 +10,11 @@ import { resolveConfiguredTools } from "./config/agent-tools.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { MockLLMProvider, ErrorLLMProvider } from "./provider/llm.js";
 import { ResilientLLMProvider } from "./provider/resilient.js";
-import { createProtocolProvider } from "./provider/protocols/index.js";
+import {
+  createProtocolProvider,
+  hasModelApiModeOverride,
+  ModelApiModeRouter,
+} from "./provider/protocols/index.js";
 import type { LLMProvider } from "./provider/types.js";
 import { OpenAIEmbedderProvider, MockEmbedderProvider } from "./provider/embedder.js";
 import { OpenAIImageGenProvider, MockImageGenProvider } from "./provider/image-gen.js";
@@ -398,13 +402,24 @@ async function main() {
         `配置的 Provider「${agentConfig.providerId}」不存在（可能已被删除），请在本心智的设置中重新选择。`
       );
     }
-    // 2026-08-08 协议族迁移：按 ProviderConfig.apiMode 实例化
-    // responses / anthropic / chat_completions 适配器（缺省 chat_completions）
-    return createProtocolProvider(providerConfig.apiMode, {
+    const protocolOptions = {
       apiKey: providerConfig.apiKey,
       baseUrl: providerConfig.baseUrl,
       requestTimeout: providerConfig.requestTimeout,
-    });
+    };
+    // 2026-08-08 协议族迁移：按 ProviderConfig.apiMode 实例化
+    // responses / anthropic / chat_completions 适配器（缺省 chat_completions）。
+    // 2026-08-10 B 方案：型号表存在 per-model apiMode 覆盖时按
+    // (providerId, effectiveApiMode) 建/缓存适配器、chat 时按当前型号路由；
+    // 型号无覆盖走既有 per-provider 单实例路径，行为完全不变。
+    if (hasModelApiModeOverride(providerConfig)) {
+      return new ModelApiModeRouter({
+        providerId: providerConfig.id,
+        provider: providerConfig,
+        defaultModel: agentConfig.modelId || agentConfig.model || "gpt-4o",
+      });
+    }
+    return createProtocolProvider(providerConfig.apiMode, protocolOptions);
   }
 
   /** 降级链备用实例：按 providerId 创建；不存在则跳过（返回 undefined），不降级为 ErrorLLMProvider */
@@ -420,12 +435,23 @@ async function main() {
       logger.warn(`agent '${agentConfig.id}' 的备用 provider '${providerId}' 不存在，跳过`);
       return undefined;
     }
+    const protocolOptions = {
+      apiKey: providerConfig.apiKey,
+      baseUrl: providerConfig.baseUrl,
+      requestTimeout: providerConfig.requestTimeout,
+    };
+    if (hasModelApiModeOverride(providerConfig)) {
+      return {
+        provider: new ModelApiModeRouter({
+          providerId: providerConfig.id,
+          provider: providerConfig,
+          defaultModel: agentConfig.modelId || agentConfig.model || "gpt-4o",
+        }),
+        config: providerConfig,
+      };
+    }
     return {
-      provider: createProtocolProvider(providerConfig.apiMode, {
-        apiKey: providerConfig.apiKey,
-        baseUrl: providerConfig.baseUrl,
-        requestTimeout: providerConfig.requestTimeout,
-      }),
+      provider: createProtocolProvider(providerConfig.apiMode, protocolOptions),
       config: providerConfig,
     };
   }
