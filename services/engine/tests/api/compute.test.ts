@@ -15,6 +15,7 @@ import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
+import { logger } from "../../src/logger.js";
 
 // R2（review）：OpenAI SDK 在 Node 下走 node-fetch，global fetch stub 影响不到它，
 // 文件级 mock 仅在本测试文件生效；未显式设置 listImpl 时直接报错，防止静默走真实网络
@@ -527,6 +528,46 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("A2：test-connection 失败日志收敛为 err.message + statusCode，不落 err 对象本体", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "claude-leak",
+      displayName: "Claude Leak",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: "sk-leak",
+      apiMode: "anthropic",
+      models: [],
+    });
+    // 上游错误体可能回显 Authorization/密钥：err 对象本体不得进日志
+    const upstream = Object.assign(
+      new Error("上游错误体含 Authorization: Bearer sk-super-secret-123456"),
+      { status: 502 },
+    );
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(upstream)));
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const res = await authedRequest(app.server).post("/compute/providers/claude-leak/test");
+      expect(res.status).toBe(502);
+      expect(res.body.error).not.toContain("sk-super-secret");
+      const calls = errorSpy.mock.calls.filter((c) =>
+        String(c[1]).includes("test connection failed"),
+      );
+      expect(calls).toHaveLength(1);
+      const fields = calls[0]![0] as Record<string, unknown>;
+      expect(fields).toMatchObject({
+        errMessage: "上游错误体含 Authorization: Bearer sk-super-secret-123456",
+        statusCode: 502,
+        providerId: "claude-leak",
+        apiMode: "anthropic",
+      });
+      expect(fields).not.toHaveProperty("err");
+    } finally {
+      errorSpy.mockRestore();
+    }
+    await app.close();
+  });
+
   it("returns 502 with protocol wording when anthropic 2xx body is not JSON", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/compute/providers").send({
@@ -657,6 +698,74 @@ describe("Compute API", () => {
       .send({ maxRetries: 12 });
     expect(retriesRes.status).toBe(400);
     expect(retriesRes.body.error).toContain("maxRetries");
+    await app.close();
+  });
+
+  it("A4：POST providers 的 models 逐型号同口径校验——非法字段 400 不落库", async () => {
+    const app = await makeApp();
+    const base = {
+      id: "bad-models",
+      displayName: "Bad Models",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+    };
+    const cases: Array<{ models: unknown; field: string }> = [
+      { models: [{ id: "m1", displayName: "M1", modelType: "llm", contextWindow: "abc" }], field: "contextWindow" },
+      { models: [{ id: "m2", displayName: "M2", modelType: "llm", apiMode: "grpc" }], field: "apiMode" },
+      { models: [{ id: "m3", displayName: "M3", modelType: "tts" }], field: "modelType" },
+      { models: [{ id: "   ", displayName: "M4", modelType: "llm" }], field: "id" },
+      { models: [{ id: "m5", displayName: "   ", modelType: "llm" }], field: "displayName" },
+      { models: [{ id: "m6", displayName: "M6", modelType: "llm", contextWindow: 0 }], field: "contextWindow" },
+      { models: "not-an-array", field: "models" },
+      { models: [null], field: "models" },
+    ];
+    for (const { models, field } of cases) {
+      const res = await authedRequest(app.server).post("/compute/providers").send({
+        ...base,
+        models,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain(field);
+    }
+    const listRes = await authedRequest(app.server).get("/compute/providers");
+    expect(listRes.body).toHaveLength(0);
+    await app.close();
+  });
+
+  it("A4：POST providers 合法 models 数组按白名单构造落库（displayName 缺省回退 id）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "ok-models",
+      displayName: "Ok Models",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [
+        {
+          id: "gpt-4o",
+          displayName: "GPT-4o",
+          modelType: "llm",
+          contextWindow: 128_000,
+          maxOutputTokens: 8_192,
+          supportsToolCalling: true,
+        },
+        { id: "text-embed", modelType: "embedding" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models).toEqual([
+      expect.objectContaining({
+        id: "gpt-4o",
+        displayName: "GPT-4o",
+        modelType: "llm",
+        contextWindow: 128_000,
+        maxOutputTokens: 8_192,
+        supportsToolCalling: true,
+      }),
+      expect.objectContaining({ id: "text-embed", displayName: "text-embed", modelType: "embedding" }),
+    ]);
     await app.close();
   });
 

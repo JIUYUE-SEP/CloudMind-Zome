@@ -7,6 +7,7 @@ import {
   parseToolArgs,
   isRecord,
   toProviderError,
+  truncateLogText,
 } from "./shared.js";
 
 /**
@@ -222,9 +223,11 @@ export class AnthropicMessagesProvider implements LLMProvider {
         try {
           event = JSON.parse(raw) as AnthropicEvent;
         } catch {
-          throw new ProviderError(this.name, `无效的 SSE JSON 帧: ${raw}`, {
-            retryable: false,
-          });
+          throw new ProviderError(
+            this.name,
+            `无效的 SSE JSON 帧: ${truncateLogText(raw)}`,
+            { retryable: false },
+          );
         }
 
         switch (event.type) {

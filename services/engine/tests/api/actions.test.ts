@@ -87,4 +87,30 @@ describe("Action API", () => {
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
   });
+
+  it("A5：limit=0/'abc'/-5 回缺省 100（不返回全量），offset 非法回落 0", async () => {
+    const repo = context.getActionRepository("a1");
+    for (let i = 0; i < 120; i++) {
+      await repo.append({
+        id: `a${i}`,
+        status: "completed",
+        description: `a${i}`,
+        createdAt: new Date(1000 + i).toISOString(),
+        updatedAt: new Date(1000 + i).toISOString(),
+      });
+    }
+    const app = await makeApp();
+    for (const bad of ["0", "abc", "-5"]) {
+      const res = await authedRequest(app.server).get(`/actions/a1?limit=${bad}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(100);
+      expect(res.body).not.toHaveLength(120);
+    }
+    // 合法 offset 生效；非法 offset 回落起点
+    const offsetOk = await authedRequest(app.server).get("/actions/a1?limit=10&offset=5");
+    expect(offsetOk.body[0].id).toBe("a5");
+    const offsetBad = await authedRequest(app.server).get("/actions/a1?limit=10&offset=abc");
+    expect(offsetBad.body[0].id).toBe("a0");
+    await app.close();
+  });
 });

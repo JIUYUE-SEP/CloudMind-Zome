@@ -94,4 +94,28 @@ describe("Memory API", () => {
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
   });
+
+  it("A5：limit=0/'abc'/-5 回缺省 100（不返回全量），offset 非法回落 0", async () => {
+    const repo = context.getMemoryRepository("a1");
+    for (let i = 0; i < 120; i++) {
+      await repo.append({
+        id: `mem${i}`,
+        content: `mem${i}`,
+        embeddingId: "emb",
+        createdAt: new Date(1000 + i).toISOString(),
+      });
+    }
+    const app = await makeApp();
+    for (const bad of ["0", "abc", "-5"]) {
+      const res = await authedRequest(app.server).get(`/memory/a1?limit=${bad}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(100);
+      expect(res.body).not.toHaveLength(120);
+    }
+    const offsetOk = await authedRequest(app.server).get("/memory/a1?limit=10&offset=5");
+    expect(offsetOk.body[0].id).toBe("mem5");
+    const offsetBad = await authedRequest(app.server).get("/memory/a1?limit=10&offset=-5");
+    expect(offsetBad.body[0].id).toBe("mem0");
+    await app.close();
+  });
 });

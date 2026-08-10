@@ -272,7 +272,14 @@ export function useEngineClient(options?: EngineClientOptions) {
     await ensureEngineTokenReady();
     const headers = new Headers(init?.headers);
     if (sharedToken.value) headers.set("Authorization", `Bearer ${sharedToken.value}`);
-    return fetchWithTimeout(url, { ...init, headers }, timeoutMs);
+    const res = await fetchWithTimeout(url, { ...init, headers }, timeoutMs);
+    // A6：401（token 过期 / engine 重启后轮换）→ 作废就绪缓存并清空当前 token，
+    // 下次调用重取——engine 后启动/轮换不再被旧 token 永锁
+    if (res.status === 401) {
+      engineTokenReadyPromise = null;
+      sharedToken.value = "";
+    }
+    return res;
   }
 
   async function listAgents(): Promise<AgentConfig[]> {
@@ -545,6 +552,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     let hasConnectedOnce = false;
     let reconnectAttempts = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    // A6：SyntaxError 重取 token 已试过一次——重取后仍非法（如显式配置档）不再无限重试
+    let wsTokenRetried = false;
 
     const clearReconnectTimer = () => {
       if (reconnectTimer !== undefined) {
@@ -556,11 +565,47 @@ export function useEngineClient(options?: EngineClientOptions) {
     const open = () => {
       clearReconnectTimer();
       // 浏览器 WS 不能设请求头：token 经 Sec-WebSocket-Protocol 子协议传递（不出现在 URL/日志）
-      socket = sharedToken.value ? new WebSocket(url, sharedToken.value) : new WebSocket(url);
+      if (sharedToken.value) {
+        try {
+          socket = new WebSocket(url, sharedToken.value);
+        } catch (err) {
+          // A6：构造抛 SyntaxError（token 含非法子协议字符）——残留 localStorage token
+          // 不可用：清掉并作废就绪缓存，重取后重试建连，不静默死
+          const name = (err as { name?: unknown } | null)?.name;
+          if (
+            name === "SyntaxError" ||
+            (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "SyntaxError")
+          ) {
+            if (wsTokenRetried) {
+              // 重取后的 token 仍非法：不再无限重试，透传错误由界面提示
+              handlers.onError?.("WebSocket error");
+              return;
+            }
+            wsTokenRetried = true;
+            if (typeof localStorage !== "undefined") {
+              try {
+                localStorage.removeItem("cloudmind.engineToken");
+              } catch {
+                // 隐私模式等场景 localStorage 不可用：token 已在下方清空，重取走 server 档
+              }
+            }
+            sharedToken.value = "";
+            engineTokenReadyPromise = null;
+            void ensureEngineTokenReady().then(() => {
+              if (!closedByCaller) open();
+            });
+            return;
+          }
+          throw err;
+        }
+      } else {
+        socket = new WebSocket(url);
+      }
 
       socket.onopen = () => {
         const isReconnect = hasConnectedOnce;
         hasConnectedOnce = true;
+        wsTokenRetried = false;
         reconnectAttempts = 0;
         handlers.onOpen?.();
         // 断线后的重连成功：调用方拉取会话状态对齐（最新消息列表）
@@ -627,6 +672,11 @@ export function useEngineClient(options?: EngineClientOptions) {
         const code = event?.code;
         // 调用方主动关闭 / 终态业务码：透传，不重连
         if (closedByCaller || (code !== undefined && TERMINAL_WS_CLOSE_CODES.has(code))) {
+          // A6：4401（token 失效/轮换）→ 作废就绪缓存，下次建连重取
+          if (code === 4401) {
+            engineTokenReadyPromise = null;
+            sharedToken.value = "";
+          }
           handlers.onClose?.(code, event?.reason);
           return;
         }

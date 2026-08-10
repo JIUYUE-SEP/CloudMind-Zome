@@ -6,6 +6,7 @@ import {
   parseToolArgs,
   isRecord,
   toProviderError,
+  truncateLogText,
 } from "./shared.js";
 
 /**
@@ -220,9 +221,11 @@ export class OpenAIResponsesProvider implements LLMProvider {
         try {
           event = JSON.parse(raw) as ResponsesEvent;
         } catch {
-          throw new ProviderError(this.name, `无效的 SSE JSON 帧: ${raw}`, {
-            retryable: false,
-          });
+          throw new ProviderError(
+            this.name,
+            `无效的 SSE JSON 帧: ${truncateLogText(raw)}`,
+            { retryable: false },
+          );
         }
 
         switch (event.type) {

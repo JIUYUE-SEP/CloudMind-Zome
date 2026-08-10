@@ -217,6 +217,25 @@ describe("HandoffResumeLoop 续跑循环", () => {
     expect(enqueued).toHaveLength(0);
   });
 
+  it("A1 ghost 闩锁：handleBook 入口复核 aborted 条目，迟到交接书不复活不调度", async () => {
+    const loop = makeLoop(50);
+    await loop.onWatermarkBook(bookInfo());
+    expect(manager.get("ho_a1_s1")?.status).toBe("scheduled");
+    // 用户消息/断连打断：控制面标 aborted
+    await manager.abort("ho_a1_s1", "user_message");
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "aborted" });
+
+    // 在途 job 的迟到交接书（同棒次）到达：入口直接返回，record 不得覆盖成 pending
+    await loop.onWatermarkBook(bookInfo());
+    expect(manager.get("ho_a1_s1")).toMatchObject({
+      status: "aborted",
+      abortReason: "user_message",
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(enqueued).toHaveLength(0);
+    expect(updates.filter((u) => u.startsWith("pending:"))).toHaveLength(1);
+  });
+
   it("续跑异常（非 abort）→ 控制面 aborted，链结束", async () => {
     const loop = makeLoop();
     await loop.onWatermarkBook(bookInfo());

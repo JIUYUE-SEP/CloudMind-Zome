@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import OpenAI from "openai";
 import { ResilientLLMProvider } from "../../src/provider/resilient.js";
-import { isRetryableError } from "../../src/provider/classify.js";
+import { isRetryableError } from "../../src/provider/protocols/shared.js";
 import { ProviderError } from "../../src/provider/errors.js";
 import { OpenAIProvider } from "../../src/provider/llm.js";
 import { withLLMCallRecording } from "../../src/provider/record-calls.js";

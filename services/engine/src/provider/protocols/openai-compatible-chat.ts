@@ -2,7 +2,7 @@ import { logger } from "../../logger.js";
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../types.js";
 import { ProviderError } from "../errors.js";
-import { isRetryableError } from "../classify.js";
+import { isRetryableError } from "./shared.js";
 
 interface ToolCallDelta {
   index?: number;

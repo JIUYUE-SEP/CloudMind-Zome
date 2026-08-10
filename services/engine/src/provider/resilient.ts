@@ -1,7 +1,7 @@
 import { logger } from "../logger.js";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "./types.js";
 import { ProviderError } from "./errors.js";
-import { isRetryableError } from "./classify.js";
+import { isRetryableError } from "./protocols/shared.js";
 
 export interface ResilientProviderOptions {
   /** 同一 provider 的失败重试次数（ProviderConfig.maxRetries，默认 2）；备用 provider 同样享受 */

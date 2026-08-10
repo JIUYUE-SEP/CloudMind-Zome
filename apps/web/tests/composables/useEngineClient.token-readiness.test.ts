@@ -160,4 +160,57 @@ describe("useEngineClient token 就绪（真机 #12）", () => {
     const init = fetchSpy.mock.calls[0]![1]!;
     expect(new Headers(init.headers).get("Authorization")).toBe("Bearer local-secret");
   });
+
+  it("A6：401 后作废 token 就绪缓存，二次调用重取新 token", async () => {
+    fetchEngineTokenFromServerMock
+      .mockResolvedValueOnce("stale")
+      .mockResolvedValueOnce("fresh");
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: "Unauthorized" }),
+      } as unknown as Response)
+      .mockResolvedValueOnce(okResponse({}));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(client.listAgents()).rejects.toThrow("Failed to list agents: Unauthorized");
+    await expect(client.listSessions()).resolves.toEqual({});
+
+    // 第一次取 token 失败（401）后第二次调用重新拉取 server 档，而不是复用旧缓存
+    expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(2);
+    const secondInit = fetchSpy.mock.calls[1]![1]!;
+    expect(new Headers(secondInit.headers).get("Authorization")).toBe("Bearer fresh");
+  });
+
+  it("A6：WS 构造 SyntaxError 清 localStorage 残留 token 并重取重连", async () => {
+    localStorage.setItem("cloudmind.engineToken", "bad token!");
+    fetchEngineTokenFromServerMock.mockResolvedValue("fresh");
+
+    // 浏览器对含非法字符（如空格）的子协议抛 SyntaxError
+    class ThrowingWebSocket extends MockWebSocket {
+      constructor(url: string, protocols?: string | string[]) {
+        super(url, protocols);
+        if (protocols === "bad token!") {
+          throw new DOMException("invalid subprotocol", "SyntaxError");
+        }
+      }
+    }
+    vi.stubGlobal("WebSocket", ThrowingWebSocket);
+
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    client.connect("a1", "s1", {});
+    await flushMicrotasks();
+    // 第一次构造抛 SyntaxError：清 localStorage + 作废就绪缓存，重取后第二次建连成功
+    await flushMicrotasks();
+
+    expect(localStorage.getItem("cloudmind.engineToken")).toBeNull();
+    expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(MockWebSocket.instances.at(-1)!.protocols).toBe("fresh");
+  });
 });

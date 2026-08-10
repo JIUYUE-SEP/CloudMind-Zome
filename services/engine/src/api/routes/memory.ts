@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import { isValidAgentId } from "@mindcloud/shared";
+import { clampPageLimit, clampPageOffset } from "./pagination.js";
 
 export async function registerMemoryRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/memory/:agentId", {
@@ -16,8 +17,9 @@ export async function registerMemoryRoutes(app: FastifyInstance, context: ApiCon
     }
     const { limit, offset } = request.query as { limit?: string; offset?: string };
     return context.getMemoryRepository(agentId).list({
-      limit: limit ? Number(limit) : undefined,
-      offset: offset ? Number(offset) : undefined,
+      // A5：非法/0/负数回落缺省 100（不返回全量），上限 500 封顶；offset 非法回落 undefined
+      limit: clampPageLimit(limit),
+      offset: clampPageOffset(offset),
     });
   });
 

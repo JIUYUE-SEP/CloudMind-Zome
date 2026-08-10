@@ -228,6 +228,7 @@ async function runMaxStepsSummary(
         temperature: input.temperature,
         topP: input.topP,
         maxToolResultTokens,
+        signal: input.signal,
       },
       emit,
     );

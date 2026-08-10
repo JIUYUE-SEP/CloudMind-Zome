@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import { isValidAgentId } from "@mindcloud/shared";
+import { clampPageLimit } from "./pagination.js";
 
 export async function registerSessionRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/sessions", {
@@ -71,7 +72,8 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     const session = await context.sessionRepository.get(id);
     if (!session) return reply.status(404).send({ error: "Session not found" });
 
-    const limitNum = limit ? Number(limit) : 100;
+    // A5：limit=0/"abc"/-5 回落缺省 100，超上限封顶——slice(-0)=全量 路径消除
+    const limitNum = clampPageLimit(limit);
     const messages: unknown[] = [];
     // 用户消息会写入每个成员的仓库（见 session-handler），合并时按 id 去重
     const seen = new Set<string>();

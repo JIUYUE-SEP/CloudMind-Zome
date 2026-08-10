@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { LLMEvent, LLMChatParams } from "../../src/provider/types.js";
 import { ProviderError } from "../../src/provider/errors.js";
+import { logger } from "../../src/logger.js";
 import { ResilientLLMProvider } from "../../src/provider/resilient.js";
 import {
   OpenAICompatibleChatProvider,
@@ -10,7 +11,11 @@ import {
   AnthropicMessagesProvider,
   createProtocolProvider,
 } from "../../src/provider/protocols/index.js";
-import { toProviderError } from "../../src/provider/protocols/shared.js";
+import {
+  isRetryableError,
+  parseToolArgs,
+  toProviderError,
+} from "../../src/provider/protocols/shared.js";
 
 interface MockServer {
   url: string;
@@ -584,6 +589,128 @@ describe("shared 错误分类（cause 链，review P1）", () => {
     expect(toProviderError("t", top).retryable).toBe(true);
     expect(toProviderError("t", new Error("boom")).retryable).toBe(false);
     expect(toProviderError("t", "string error").retryable).toBe(false);
+  });
+});
+
+describe("A2 隐私截断", () => {
+  it("responses：无效 SSE JSON 帧错误消息截 500 字符，不落超长 raw", async () => {
+    const garbage = "x".repeat(700);
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`data: ${garbage}\n\n`);
+    });
+    servers.push(server);
+
+    const { error } = await collect(new OpenAIResponsesProvider("k", server.url), {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+    expect(error).toBeInstanceOf(ProviderError);
+    const message = String(error);
+    expect(message).toContain("无效的 SSE JSON 帧");
+    expect(message).toContain("截断");
+    expect(message.length).toBeLessThan(600);
+    expect(message).not.toContain(garbage);
+  });
+
+  it("anthropic：无效 SSE JSON 帧错误消息截 500 字符，不落超长 raw", async () => {
+    const garbage = "y".repeat(700);
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`data: ${garbage}\n\n`);
+    });
+    servers.push(server);
+
+    const { error } = await collect(new AnthropicMessagesProvider("k", server.url), {
+      model: "m",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+    expect(error).toBeInstanceOf(ProviderError);
+    const message = String(error);
+    expect(message).toContain("无效的 SSE JSON 帧");
+    expect(message).toContain("截断");
+    expect(message.length).toBeLessThan(600);
+    expect(message).not.toContain(garbage);
+  });
+
+  it("parseToolArgs 解析失败 warn 的 raw 截 500 字符", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(parseToolArgs("t", "x".repeat(700))).toEqual({});
+      expect(warn).toHaveBeenCalledOnce();
+      const fields = warn.mock.calls[0]![0] as { raw?: string };
+      expect(fields.raw!.length).toBeLessThan(600);
+      expect(fields.raw).toContain("截断");
+      expect(fields.raw).not.toContain("x".repeat(600));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("A7 重试分类合一", () => {
+  it("统一入口 isRetryableError 保留强分类：cause 链/UND_ERR_/AggregateError", () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), {
+      code: "ECONNREFUSED",
+    });
+    expect(isRetryableError(new TypeError("fetch failed", { cause }))).toBe(true);
+    expect(isRetryableError(Object.assign(new Error("socket"), { code: "UND_ERR_SOCKET" }))).toBe(true);
+    expect(
+      isRetryableError(
+        new AggregateError([Object.assign(new Error("x"), { code: "EPIPE" })]),
+      ),
+    ).toBe(true);
+    expect(isRetryableError(new Error("boom"))).toBe(false);
+  });
+
+  it("openai-compatible 429（首事件前）→ 可重试并退避重试成功（与协议族同源分类）", async () => {
+    let calls = 0;
+    const server = await startMockServer((_req, res) => {
+      calls++;
+      if (calls === 1) {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "rate limited" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`) +
+          sse(`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new OpenAICompatibleChatProvider("k", `${server.url}/v1`);
+    const resilient = new ResilientLLMProvider(provider, { maxRetries: 2, sleep: async () => {} });
+    const { events, error } = await collect(resilient, {
+      model: "deepseek-chat",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+    expect(error).toBeUndefined();
+    expect(calls).toBe(2);
+    expect(events.at(-1)).toMatchObject({ type: "step.end" });
+  });
+
+  it("三族对同一网络错误给出一致 retryable 结论", async () => {
+    const server = await startMockServer((_req, res) => {
+      // 握手后立即断连（未写任何响应头）：三族走同一条网络错误分类
+      res.socket?.destroy();
+    });
+    servers.push(server);
+    const params: LLMChatParams = {
+      model: "m",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    };
+    const providers = [
+      new OpenAICompatibleChatProvider("k", `${server.url}/v1`),
+      new OpenAIResponsesProvider("k", server.url),
+      new AnthropicMessagesProvider("k", server.url),
+    ];
+    for (const provider of providers) {
+      const { error } = await collect(provider, params);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect((error as ProviderError).retryable).toBe(true);
+    }
   });
 });
 

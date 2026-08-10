@@ -2,6 +2,7 @@ import { logger } from "../logger.js";
 import { randomUUID } from "node:crypto";
 import {
   HANDOFF_RESUME_DELAY_MS,
+  makeHandoffId,
   type HandoffBookInfo,
   type HandoffRecord,
 } from "./types.js";
@@ -50,6 +51,11 @@ export class HandoffResumeLoop {
 
   private async handleBook(info: HandoffBookInfo): Promise<void> {
     try {
+      // A1 ghost 闩锁（入口复核）：该 agent+session 已 cancelled/aborted——
+      // 在途 job 的迟到交接书不得经 record 覆盖成 pending 复活旧链，直接返回不调度。
+      // 落盘窗口内的复核（下方 latest.status !== "pending"）是第二道防线。
+      const existing = this.deps.manager.get(makeHandoffId(info.agentId, info.sessionId));
+      if (existing?.status === "aborted") return;
       // 先同步标记：交接书事件可能早于旧 job 的 onDone 完成落盘，
       // onJobDone 看到 booked 就跳过 completed（链继续，由本函数接管）
       if (this.current) this.current.booked = true;

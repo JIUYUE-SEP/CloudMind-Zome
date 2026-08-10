@@ -5,7 +5,11 @@ import type { ModelInfo } from "@mindcloud/shared";
 import OpenAI from "openai";
 import { aggregateUsage } from "../../compute/usage.js";
 import { isApiMode } from "../../provider/protocols/index.js";
-import { ANTHROPIC_VERSION, anthropicModelsUrl } from "../../provider/protocols/shared.js";
+import {
+  ANTHROPIC_VERSION,
+  anthropicModelsUrl,
+  isRecord,
+} from "../../provider/protocols/shared.js";
 
 const MODEL_TYPES = ["llm", "embedding", "image", "stt"] as const;
 
@@ -32,6 +36,68 @@ function validateOptionalBoolean(value: unknown, field: string): string | undefi
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") return `${field} must be a boolean`;
   return undefined;
+}
+
+/**
+ * 型号条目白名单构造（A4：POST /providers 的 models 数组与 POST/PUT
+ * /models 端点同口径）：
+ * - id 非空（trim 后）；
+ * - displayName 提供了就必须非空（缺省回退 modelId，与型号端点一致）；
+ * - modelType 白名单（llm/embedding/image/stt）；
+ * - contextWindow/maxOutputTokens 可选正整数；
+ * - supports* 可选布尔；
+ * - apiMode 三族白名单（responses/anthropic/chat_completions）。
+ * 非法返回带字段名的错误文案；合法返回白名单构造的 ModelInfo。
+ */
+function buildModelFromBody(
+  body: Record<string, unknown>,
+): { ok: true; model: ModelInfo } | { ok: false; error: string } {
+  const modelId = typeof body.id === "string" ? body.id.trim() : "";
+  if (!modelId) return { ok: false, error: "id is required" };
+  if (
+    body.displayName !== undefined &&
+    (typeof body.displayName !== "string" || body.displayName.trim() === "")
+  ) {
+    return { ok: false, error: "displayName must be a non-empty string" };
+  }
+  if (
+    typeof body.modelType !== "string" ||
+    !(MODEL_TYPES as readonly string[]).includes(body.modelType)
+  ) {
+    return { ok: false, error: "Invalid modelType（只允许 llm / embedding / image / stt）" };
+  }
+  for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+    const validationError = validateOptionalPositiveIntNoMax(body[field], field);
+    if (validationError) return { ok: false, error: validationError };
+  }
+  for (const field of ["supportsReasoning", "supportsToolCalling", "supportsMultimodal"] as const) {
+    const validationError = validateOptionalBoolean(body[field], field);
+    if (validationError) return { ok: false, error: validationError };
+  }
+  if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
+    return { ok: false, error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）" };
+  }
+  return {
+    ok: true,
+    model: {
+      id: modelId,
+      displayName:
+        typeof body.displayName === "string" && body.displayName ? body.displayName : modelId,
+      modelType: body.modelType as ModelInfo["modelType"],
+      ...(body.contextWindow !== undefined ? { contextWindow: body.contextWindow as number } : {}),
+      ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens as number } : {}),
+      ...(body.supportsReasoning !== undefined
+        ? { supportsReasoning: body.supportsReasoning as boolean }
+        : {}),
+      ...(body.supportsToolCalling !== undefined
+        ? { supportsToolCalling: body.supportsToolCalling as boolean }
+        : {}),
+      ...(body.supportsMultimodal !== undefined
+        ? { supportsMultimodal: body.supportsMultimodal as boolean }
+        : {}),
+      ...(body.apiMode !== undefined ? { apiMode: body.apiMode as ModelInfo["apiMode"] } : {}),
+    },
+  };
 }
 
 /**
@@ -214,6 +280,22 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     if (maxRetriesError) {
       return reply.status(400).send({ error: maxRetriesError });
     }
+    // A4：models 数组逐型号走与型号端点同口径校验——非法 400，杜绝
+    // contextWindow:"abc"→NaN 静默禁用撞顶、非法 apiMode 静默落库等路径
+    const models: ModelInfo[] = [];
+    if (body.models !== undefined) {
+      if (!Array.isArray(body.models)) {
+        return reply.status(400).send({ error: "models must be an array" });
+      }
+      for (const rawModel of body.models) {
+        if (!isRecord(rawModel)) {
+          return reply.status(400).send({ error: "models entries must be objects" });
+        }
+        const built = buildModelFromBody(rawModel);
+        if (!built.ok) return reply.status(400).send({ error: built.error });
+        models.push(built.model);
+      }
+    }
     const config = await context.configRepository.load();
     const provider = {
       id: body.id || crypto.randomUUID(),
@@ -224,7 +306,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...(body.apiMode !== undefined ? { apiMode: body.apiMode } : {}),
       ...(body.requestTimeout !== undefined ? { requestTimeout: body.requestTimeout } : {}),
       ...(body.maxRetries !== undefined ? { maxRetries: body.maxRetries } : {}),
-      models: (body.models || []) as { id: string; displayName: string; modelType: "llm" | "embedding" | "image" | "stt" }[],
+      models,
     };
     config.providers.push(provider);
     await context.configRepository.save(config);
@@ -306,7 +388,21 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
               }));
       return { ok: true, discovered };
     } catch (err) {
-      logger.error({ err: err, providerId: id, apiMode: provider.apiMode }, "test connection failed");
+      // A2 隐私收敛：只落 err.message + statusCode，不落 err 对象本体——
+      // 防上游错误体把 Authorization/密钥回显进日志
+      const statusCode =
+        typeof err === "object" && err !== null
+          ? (err as { status?: unknown }).status
+          : undefined;
+      logger.error(
+        {
+          errMessage: err instanceof Error ? err.message : String(err),
+          ...(typeof statusCode === "number" ? { statusCode } : {}),
+          providerId: id,
+          apiMode: provider.apiMode,
+        },
+        "test connection failed",
+      );
       return reply.status(502).send({ error: `Test connection failed: ${describeUpstreamError(err)}` });
     }
   });
@@ -325,43 +421,12 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     const config = await context.configRepository.load();
     const provider = config.providers.find((p) => p.id === id);
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
-    const modelId = typeof body.id === "string" ? body.id.trim() : "";
-    if (!modelId) {
-      return reply.status(400).send({ error: "id is required" });
+    const built = buildModelFromBody(body);
+    if (!built.ok) return reply.status(400).send({ error: built.error });
+    const model = built.model;
+    if (provider.models.some((m) => m.id === model.id)) {
+      return reply.status(409).send({ error: `Model id already exists: ${model.id}` });
     }
-    if (provider.models.some((m) => m.id === modelId)) {
-      return reply.status(409).send({ error: `Model id already exists: ${modelId}` });
-    }
-    if (typeof body.modelType !== "string" || !(MODEL_TYPES as readonly string[]).includes(body.modelType)) {
-      return reply.status(400).send({
-        error: "Invalid modelType（只允许 llm / embedding / image / stt）",
-      });
-    }
-    for (const field of ["contextWindow", "maxOutputTokens"] as const) {
-      const validationError = validateOptionalPositiveIntNoMax(body[field], field);
-      if (validationError) return reply.status(400).send({ error: validationError });
-    }
-    for (const field of ["supportsReasoning", "supportsToolCalling", "supportsMultimodal"] as const) {
-      const validationError = validateOptionalBoolean(body[field], field);
-      if (validationError) return reply.status(400).send({ error: validationError });
-    }
-    if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
-      return reply.status(400).send({
-        error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
-      });
-    }
-    const model: ModelInfo = {
-      id: modelId,
-      displayName:
-        typeof body.displayName === "string" && body.displayName ? body.displayName : modelId,
-      modelType: body.modelType as ModelInfo["modelType"],
-      ...(body.contextWindow !== undefined ? { contextWindow: body.contextWindow as number } : {}),
-      ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens as number } : {}),
-      ...(body.supportsReasoning !== undefined ? { supportsReasoning: body.supportsReasoning as boolean } : {}),
-      ...(body.supportsToolCalling !== undefined ? { supportsToolCalling: body.supportsToolCalling as boolean } : {}),
-      ...(body.supportsMultimodal !== undefined ? { supportsMultimodal: body.supportsMultimodal as boolean } : {}),
-      ...(body.apiMode !== undefined ? { apiMode: body.apiMode as ModelInfo["apiMode"] } : {}),
-    };
     provider.models.push(model);
     await context.configRepository.save(config);
     return model;

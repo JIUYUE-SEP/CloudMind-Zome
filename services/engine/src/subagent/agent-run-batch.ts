@@ -5,7 +5,7 @@
  * 不持有任何 agent/会话状态。
  *
  * 相对 kimi 的适配：
- * - `isProviderRateLimitError` 换本地 429 判定（与 provider/classify.ts 的
+ * - `isProviderRateLimitError` 换本地 429 判定（与 provider/protocols/shared.ts 的
  *   isRetryableError 同源——那里把 429 归入"可重试"，这里需要 429 专属判定
  *   驱动容量衰减）；
  * - `retry` npm 包换 ~5 行等价退避（minTimeout × factor^n，不随机抖动——

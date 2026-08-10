@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DocumentStore } from "../memory/document-store.js";
+import { DocumentStore, renameWithRetry } from "../memory/document-store.js";
 import { getDataDir } from "../config/paths.js";
 import { logger } from "../logger.js";
 import { isActiveHandoff, type HandoffRecord, type HandoffStateFile } from "./types.js";
@@ -16,7 +16,22 @@ export class HandoffStateStore {
   }
 
   async loadAll(): Promise<HandoffRecord[]> {
-    const file = await this.store.readJson();
+    let file: HandoffStateFile | undefined;
+    try {
+      file = await this.store.readJson();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      // A3 损坏隔离（照抄 config/repository.ts 的隔离路径语义）：重命名 .corrupt-
+      // {timestamp} 备份后以空态启动 + warn——绝不静默覆盖损坏数据（后续 save 会
+      // 重建干净文件），也不会因坏文件让整个启动崩溃。
+      const quarantinePath = `${this.store.filePath}.corrupt-${Date.now()}`;
+      await renameWithRetry(this.store.filePath, quarantinePath).catch(() => {});
+      logger.warn(
+        { err: err, quarantinePath },
+        "[handoff] handoff-state.json 损坏，已隔离并以空态启动（不覆盖损坏数据）",
+      );
+      return [];
+    }
     if (!file) return [];
     if (!Array.isArray(file.handoffs)) {
       logger.warn(

@@ -131,6 +131,27 @@ describe("HandoffManager 控制面", () => {
     expect(restarted.get(done.id)).toMatchObject({ status: "completed" });
   });
 
+  it("A3：损坏的 handoff-state.json 被隔离为 .corrupt-*，以空态启动不崩", async () => {
+    const filePath = path.join(tmpDir, "handoff-state.json");
+    await fs.writeFile(filePath, "{ this is not json", "utf-8");
+
+    const brokenStore = new HandoffStateStore(filePath);
+    expect(await brokenStore.loadAll()).toEqual([]);
+
+    // 隔离文件生成：原文件被重命名（不覆盖损坏数据），后续 save 重建干净文件
+    const files = await fs.readdir(tmpDir);
+    const corrupt = files.find((f) => f.startsWith("handoff-state.json.corrupt-"));
+    expect(corrupt).toBeDefined();
+    await expect(fs.access(filePath)).rejects.toThrow();
+
+    // 新 manager 从空态加载不崩、可继续 record/save（空态 loadAll 返回空）
+    const restarted = new HandoffManager({ store: brokenStore });
+    await expect(restarted.load()).resolves.toBeUndefined();
+    expect(restarted.list()).toEqual([]);
+    const r = await restarted.record(bookInfo());
+    expect(restarted.get(r.id)).toMatchObject({ status: "pending", shift: 1 });
+  });
+
   it("list/activeFor 查询", async () => {
     await manager.record(bookInfo());
     await manager.record(bookInfo({ agentId: "a2", sessionId: "s2", shift: 2 }));

@@ -72,7 +72,11 @@ export function sanitizeDeltaEvent<T>(event: T): T | null {
   if (event && typeof event === "object" && "delta" in event) {
     const delta = (event as { delta: unknown }).delta;
     if (typeof delta !== "string") {
-      logger.warn({ err: event }, "dropping ws event with non-string delta");
+      // A2 隐私收敛：只打 event.type，不落整事件（脏 delta 可能携带超长/敏感负载）
+      logger.warn(
+        { eventType: (event as { type?: unknown }).type ?? "unknown" },
+        "dropping ws event with non-string delta",
+      );
       return null;
     }
   }

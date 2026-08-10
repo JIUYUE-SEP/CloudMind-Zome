@@ -210,4 +210,37 @@ describe("Sessions API", () => {
     expect(res.body.map((m: { id: string }) => m.id)).toEqual(["mid", "new"]);
     await app.close();
   });
+
+  it("A5：limit=0/'abc'/-5 回缺省 100，超上限封顶 500（slice(-0) 全量路径消除）", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Big",
+      agentIds: ["a1"],
+      type: "group",
+    });
+    const repo = context.getMessageRepository("a1");
+    for (let i = 0; i < 520; i++) {
+      await repo.append({
+        id: `m${i}`,
+        sessionId: session.id,
+        role: "user",
+        content: [{ type: "text", text: `m${i}` }],
+        createdAt: new Date(1000 + i).toISOString(),
+      });
+    }
+    for (const bad of ["0", "abc", "-5"]) {
+      const res = await authedRequest(app.server).get(
+        `/sessions/${session.id}/messages?limit=${bad}`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(100);
+      expect(res.body).not.toHaveLength(520);
+    }
+    const capped = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?limit=99999`,
+    );
+    expect(capped.status).toBe(200);
+    expect(capped.body).toHaveLength(500);
+    await app.close();
+  });
 });

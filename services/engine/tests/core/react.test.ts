@@ -128,6 +128,37 @@ class ToolLoopThenSummaryProvider implements LLMProvider {
   }
 }
 
+/** A1：兜底总结调用时立即 abort 并继续产出（验证 signal 已透传，总结流被快速中止） */
+class AbortDuringSummaryProvider extends ToolLoopThenSummaryProvider {
+  /** abort 后还成功产出的帧数：executeLoopStep 应在事件边界中止，该计数保持 0 */
+  postAbortYields = 0;
+  constructor(private abortController: AbortController) {
+    super("text");
+  }
+  async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    this.calls.push(params);
+    const hasHint = params.messages.some(
+      (m) =>
+        m.role === "system" &&
+        m.content.some((c) => c.type === "text" && c.text.includes(MAX_STEPS_SUMMARY_HINT)),
+    );
+    if (hasHint) {
+      this.abortController.abort();
+      yield { type: "text.delta", delta: "总结半截" };
+      this.postAbortYields++;
+      yield { type: "step.end" };
+      return;
+    }
+    yield {
+      type: "tool.call",
+      toolCallId: `tc_${this.calls.length}`,
+      name: "dummy",
+      arguments: { value: "x" },
+    };
+    yield { type: "step.end" };
+  }
+}
+
 /** 工具一步后正常停止，并记录每次调用参数（未撞顶对照组） */
 class ToolThenStopCaptureProvider implements LLMProvider {
   name = "tool-then-stop-capture";
@@ -728,6 +759,45 @@ describe("runTurn", () => {
         events.some((e) => e.type === "text.delta" && e.delta === MAX_STEPS_FALLBACK_REPLY),
       ).toBe(true);
     }
+  });
+
+  it("A1：兜底总结透传 signal——abort 后快速降级为兜底回复，总结流早终止", async () => {
+    const controller = new AbortController();
+    const provider = new AbortDuringSummaryProvider(controller);
+    const events: LLMEvent[] = [];
+    const result = await runTurn(
+      {
+        provider,
+        model: "tool-loop-summary",
+        messages: [userMessage("查资料")],
+        tools: [
+          { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+        ],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["dummy", dummyTool]]),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+        maxSteps: 2,
+        signal: controller.signal,
+      },
+      (e) => events.push(e),
+    );
+
+    // 2 次工具步 + 1 次兜底总结调用
+    expect(provider.calls).toHaveLength(3);
+    expect(controller.signal.aborted).toBe(true);
+    // abort 后总结流只产出一帧即被事件边界中止（不会拖完整个总结调用）
+    expect(provider.postAbortYields).toBe(0);
+    // 快速降级：产出兜底回复，半截总结文本不上屏，回合正常收尾
+    expect(assistantText(result.assistantMessage)).toBe(MAX_STEPS_FALLBACK_REPLY);
+    expect(
+      events.some((e) => e.type === "text.delta" && e.delta === MAX_STEPS_FALLBACK_REPLY),
+    ).toBe(true);
+    expect(events.some((e) => e.type === "text.delta" && e.delta === "总结半截")).toBe(false);
+    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
   });
 
   it("未撞顶时行为不变：正常工具循环不触发兜底总结", async () => {

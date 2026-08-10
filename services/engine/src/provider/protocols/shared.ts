@@ -10,6 +10,7 @@
  */
 import { logger } from "../../logger.js";
 import { ProviderError } from "../errors.js";
+import OpenAI from "openai";
 
 /** baseUrl 尾部斜杠归一（现有 compute 路由同口径） */
 export function trimBaseUrl(value: string): string {
@@ -47,12 +48,12 @@ export function anthropicModelsUrl(baseUrl: string): string {
   return `${trimmed}/anthropic/v1/models`;
 }
 
-/** 非 2xx 状态是否可重试（与 resilient/classify 同口径：429/5xx 可重试） */
+/** 非 2xx 状态是否可重试（与 resilient 同口径：429/5xx 可重试） */
 export function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-/** 可重试的 Node 网络错误码（与 classify.ts RETRYABLE_ERRNO_CODES 同口径） */
+/** 可重试的 Node 网络错误码（A7 合一后本文件即权威实现） */
 const RETRYABLE_ERRNO_CODES = new Set([
   "ECONNRESET",
   "ETIMEDOUT",
@@ -93,6 +94,32 @@ function isNetworkError(cause: unknown, depth = 0): boolean {
       ? (cause as { cause?: unknown }).cause
       : undefined;
   return nested === cause ? false : isNetworkError(nested, depth + 1);
+}
+
+/**
+ * LLM 调用错误分类（A7 重试分类合一：原 provider/classify.ts 并入本文件，
+ * 保留能力更强的那份——cause 链递归 / UND_ERR_ 前缀 / AggregateError，并兼容
+ * OpenAI SDK 错误类）：
+ * - 可重试：429（限流）、5xx（服务端故障）、网络错误、超时
+ * - 不可重试：401/403/400 及其他 4xx（请求或配置本身有问题，重试无意义）
+ * - 无法归类的错误一律不可重试
+ */
+export function isRetryableError(err: unknown): boolean {
+  // ProviderError 携带抛出方的分类结论
+  if (err instanceof ProviderError) return err.retryable;
+
+  // 网络错误 / 超时（OpenAI SDK 专用类，无 status）
+  if (err instanceof OpenAI.APIConnectionError) return true;
+
+  if (err instanceof OpenAI.APIError) {
+    const status = err.status;
+    if (status === 429) return true;
+    if (typeof status === "number" && status >= 500) return true;
+    return false;
+  }
+
+  // 其余（Node fetch 网络错误/超时/undici 错误等）沿 cause 链分类
+  return isNetworkError(err);
 }
 
 /** 网络层错误（fetch 抛错 / 超时 / 非 2xx）统一包装为 ProviderError */
@@ -249,6 +276,12 @@ export interface PendingTool {
   args: string;
 }
 
+/** 日志/错误里的原始文本截断（A2 隐私收敛）：超 500 字符截断并标注，防超长 raw 泄入日志 */
+export function truncateLogText(value: string, max = 500): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}…（已截断 ${value.length - max} 字符）`;
+}
+
 /** 解析流式工具参数；空串按 "{}" 处理（零参数工具），解析失败 warn + 回退 {} */
 export function parseToolArgs(name: string, raw: string): unknown {
   const text = raw || "{}";
@@ -256,7 +289,7 @@ export function parseToolArgs(name: string, raw: string): unknown {
     return JSON.parse(text);
   } catch (err) {
     logger.warn(
-      { err: err, toolName: name, raw: text },
+      { err: err, toolName: name, raw: truncateLogText(text) },
       `[provider] 工具参数 JSON 解析失败，按空对象降级`,
     );
     return {};

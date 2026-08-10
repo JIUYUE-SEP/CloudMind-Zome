@@ -27,12 +27,20 @@ describe("sanitizeDeltaEvent", () => {
   });
 
   it.each([undefined, null, 42, { text: "x" }, ["x"]])(
-    "非 string 的 delta 丢弃并打 warn: %j",
+    "非 string 的 delta 丢弃并只打 event.type（A2：不落整事件）: %j",
     (badDelta) => {
       const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-      const event = { type: "text.delta", delta: badDelta };
+      const event = {
+        type: "text.delta",
+        delta: badDelta,
+        payload: { secret: "x".repeat(700) },
+      };
       expect(sanitizeDeltaEvent(event)).toBeNull();
       expect(warn).toHaveBeenCalledOnce();
+      const fields = warn.mock.calls[0]![0] as Record<string, unknown>;
+      expect(fields).toEqual({ eventType: "text.delta" });
+      expect(fields).not.toHaveProperty("err");
+      expect(fields).not.toHaveProperty("payload");
       warn.mockRestore();
     },
   );
