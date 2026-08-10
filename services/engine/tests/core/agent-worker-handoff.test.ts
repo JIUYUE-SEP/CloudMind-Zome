@@ -12,10 +12,16 @@ import os from "node:os";
 import path from "node:path";
 import {
   AgentWorker,
+  HANDOFF_RESUME_GUIDE,
+  HANDOFF_RESUME_SEPARATOR,
   normalizeHandoffMaxShifts,
   type Job,
 } from "../../src/core/agent-worker.js";
-import { HANDOFF_BOOK_PREFIX } from "../../src/core/react/turn.js";
+import {
+  HANDOFF_BOOK_PREFIX,
+  HANDOFF_WRITING_GUIDANCE,
+  CONTEXT_WATERMARK_SUMMARY_HINT,
+} from "../../src/core/react/turn.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "../../src/provider/types.js";
@@ -49,7 +55,7 @@ function textOf(message: ChatMessage): string {
     .join("");
 }
 
-/** 工具一步后 usage 撞顶；兜底总结产文本 */
+/** 工具一步后 usage 撞顶；兜底总结产文本；瘦身写作调用产三分法文本 */
 class WorkerWatermarkProvider implements LLMProvider {
   name = "worker-watermark";
   readonly protocol: LLMProviderProtocol = "chat_completions";
@@ -60,15 +66,26 @@ class WorkerWatermarkProvider implements LLMProvider {
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
     void params;
     this.calls++;
-    if (this.calls === 1) {
+    const has = (needle: string) =>
+      params.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(needle)),
+      );
+    if (has(HANDOFF_WRITING_GUIDANCE)) {
+      yield {
+        type: "text.delta",
+        delta: "【任务目的】查资料\n【已完成】已取得 18 个话题目录\n【未来方向】读取 tp_001",
+      };
+    } else if (has(CONTEXT_WATERMARK_SUMMARY_HINT)) {
+      yield { type: "text.delta", delta: "进展X；下一步Y" };
+    } else {
       yield {
         type: "tool.call",
         toolCallId: "tc_1",
         name: "dummy",
         arguments: { value: "x" },
       };
-    } else {
-      yield { type: "text.delta", delta: "进展X；下一步Y" };
     }
     yield { type: "step.end", usage: { promptTokens: 850, completionTokens: 100 } };
   }
@@ -180,9 +197,10 @@ describe("AgentWorker 换班移交接线", () => {
     expect(book!.id).toBe(bookEvent.bookMessageId);
   });
 
-  it("续跑 job：交接书置顶注入（pipeline 组装首条 system 消息），手传棒次生效", async () => {
+  it("续跑 job：开工指引 + 分隔线 + 交接书原文置顶注入（pipeline 首条 system 消息），手传棒次生效", async () => {
     const provider = new CapturingProvider();
-    const bookText = "[交接书] 换班移交（第 2/3 棒）\n- 进展X；下一步Y";
+    const bookText =
+      "[交接书] 换班移交（第 2/3 棒）\n- 已用上下文：950/1000 tokens（95%）。\n- 内容：\n【任务目的】查资料\n【已完成】已取得 18 个话题目录\n【未来方向】读取 tp_001";
     const { done } = runWorkerJob(provider, {
       handoffResume: { shift: 2, maxShifts: 3, bookText },
     });
@@ -191,7 +209,10 @@ describe("AgentWorker 换班移交接线", () => {
 
     const first = provider.captured!.messages[0]!;
     expect(first.role).toBe("system");
-    expect(textOf(first)).toBe(bookText);
+    // 件4：固定开工指引 + 分隔线 + 交接书原文不丢
+    expect(textOf(first)).toContain(HANDOFF_RESUME_GUIDE);
+    expect(textOf(first)).toContain(HANDOFF_RESUME_SEPARATOR.trim());
+    expect(textOf(first)).toContain(bookText);
     // 置顶：交接书在 SOUL（L1）之前
     expect(provider.captured!.messages[1]!.content.some((c) => c.type === "text" && c.text.includes("# SOUL"))).toBe(true);
   });

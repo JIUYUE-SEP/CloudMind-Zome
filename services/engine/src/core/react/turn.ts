@@ -31,6 +31,21 @@ export const CONTEXT_WATERMARK_FALLBACK_REPLY =
 export const HANDOFF_BOOK_PREFIX = "[交接书]";
 
 /**
+ * 交接书写作指引（件1 三分法）：瘦身写作调用的 system 提示。
+ * 强制三节——任务目的/已完成/未来方向，体积约束写进指引。
+ */
+export const HANDOFF_WRITING_GUIDANCE =
+  "你是换班交接书的写作助手。请严格按以下三节写交接书内容，供下一棒直接继续执行：\n" +
+  "【任务目的】用户最初要干什么（原话锚定，防目标漂移）；\n" +
+  "【已完成】做了什么+实质发现（每项一句话+指针id；含「已确认无关」清单；若上一棒有交接书，把上一棒的已完成滚动并入，防重复劳动）；\n" +
+  "【未来方向】下一步做什么、从哪个具体动作/id 动手（防重新规划）。\n" +
+  "体积约束：每项一句话；发现清单超长时自行合并精简；不要重复汇报已有进展。";
+
+/** 本棒足迹机械附（件2）：单条 name+参数上限 / 足迹清单总长上限 */
+export const HANDOFF_FOOTPRINT_ITEM_MAX = 80;
+export const HANDOFF_FOOTPRINT_TOTAL_MAX = 500;
+
+/**
  * 上下文水位主裁（改动一）：硬编码产品语义，不开放配置。
  * 0.7 = 提醒线：每回合至多追加一条 system 提醒后继续；0.9 = 撞顶线：跳出循环走兜底。
  */
@@ -108,6 +123,40 @@ function assistantText(message: ChatMessage): string {
     .join("");
 }
 
+interface HandoffFootprintCall {
+  name: string;
+  arguments?: unknown;
+}
+
+/** 足迹单条：name(参数 JSON)；超 80 字符截断（件2） */
+function formatFootprintItem(call: HandoffFootprintCall): string {
+  let argText = "";
+  if (call.arguments !== undefined && call.arguments !== null) {
+    try {
+      argText = JSON.stringify(call.arguments);
+    } catch {
+      argText = "";
+    }
+  }
+  let item = argText ? `${call.name}(${argText})` : `${call.name}()`;
+  if (item.length > HANDOFF_FOOTPRINT_ITEM_MAX) {
+    item = item.slice(0, HANDOFF_FOOTPRINT_ITEM_MAX - 1) + "…";
+  }
+  return item;
+}
+
+/** 本棒足迹清单（无工具调用返回 undefined）：机械流水账，总长截 500 字符（件2） */
+export function formatHandoffFootprint(
+  calls: readonly HandoffFootprintCall[],
+): string | undefined {
+  if (calls.length === 0) return undefined;
+  let line = calls.map(formatFootprintItem).join("；");
+  if (line.length > HANDOFF_FOOTPRINT_TOTAL_MAX) {
+    line = line.slice(0, HANDOFF_FOOTPRINT_TOTAL_MAX - 1) + "…";
+  }
+  return line;
+}
+
 function makeFallbackReply(
   emit: (event: LLMEvent) => void,
   reason: SummaryReason = "max_steps",
@@ -171,6 +220,86 @@ async function runMaxStepsSummary(
   return result.assistantMessage;
 }
 
+/** 任务原消息截断上限（件3 材料①） */
+const HANDOFF_TASK_TEXT_MAX = 2000;
+
+/** 本 session 首条用户消息文本（截 2000 字符；无用户消息返回 undefined） */
+function firstUserTaskText(messages: ChatMessage[]): string | undefined {
+  const first = messages.find((m) => m.role === "user");
+  if (!first) return undefined;
+  const text = first.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+  return text.slice(0, HANDOFF_TASK_TEXT_MAX);
+}
+
+/** 最近的上一棒交接书全文（供滚动并入；无则返回 undefined） */
+function lastHandoffBookText(messages: ChatMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== "system") continue;
+    const text = message.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+    if (text.startsWith(HANDOFF_BOOK_PREFIX)) return text;
+  }
+  return undefined;
+}
+
+/**
+ * 瘦身写作间（件3）：独立小调用写交接书三分法内容，与全量兜底回复调用分离。
+ * system = 写作指引；user = 材料包四样（任务原消息/上一棒交接书/本棒足迹/本棒回顾）。
+ * 单步（maxSteps=1 语义）、无工具；内部调用不向用户流式转发（no-op emit）。
+ * 失败/空文本/违规工具调用 → undefined（调用方降级为兜底总结文本直接装入）。
+ */
+async function writeHandoffBookContent(
+  input: TurnInput,
+  summaryText: string,
+  footprint: string | undefined,
+): Promise<string | undefined> {
+  const sections: string[] = [];
+  const taskText = firstUserTaskText(input.messages);
+  if (taskText !== undefined) sections.push(`【任务原消息】\n${taskText}`);
+  const prevBook = lastHandoffBookText(input.messages);
+  if (prevBook !== undefined) sections.push(`【上一棒交接书】\n${prevBook}`);
+  if (footprint !== undefined) sections.push(`【本棒足迹】\n${footprint}`);
+  sections.push(`【本棒回顾】\n${summaryText}`);
+  const guidance: ChatMessage = {
+    id: `msg_${randomUUID()}`,
+    role: "system",
+    content: [{ type: "text", text: HANDOFF_WRITING_GUIDANCE }],
+    createdAt: new Date().toISOString(),
+  };
+  const material: ChatMessage = {
+    id: `msg_${randomUUID()}`,
+    role: "user",
+    content: [{ type: "text", text: sections.join("\n\n") }],
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    const result = await executeLoopStep(
+      {
+        provider: input.provider,
+        model: input.model,
+        messages: [guidance, material],
+        tools: [],
+        toolCtx: { ...input.toolCtx, tools: new Map() },
+        maxTokens: input.maxTokens,
+        temperature: input.temperature,
+        topP: input.topP,
+      },
+      () => {},
+    );
+    const text = assistantText(result.assistantMessage);
+    if (result.stopReason === "tool_use" || text.length === 0) return undefined;
+    return text;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 水位 U（双口径取大）：实测 = provider step.end usage（权威回报）；
  * 估算 = 本地 token 计数（当前 messages，含刚追加的工具结果；F1 协议感知
@@ -215,15 +344,20 @@ function makeWatermarkReminder(used: number, window: number): ChatMessage {
   };
 }
 
-/** 交接书消息载体：结构化文本（进展=撞顶兜底总结产出；元信息=水位/棒次） */
+/**
+ * 交接书消息载体：结构化文本（内容=瘦身写作调用产出的三分法文本，失败降级为
+ * 兜底总结；元信息=水位/棒次；足迹行=件2 机械附，无工具调用时省略）
+ */
 function makeHandoffBook(
-  summary: string,
+  content: string,
   used: number,
   window: number,
   shift: number,
   maxShifts: number,
+  footprint?: string,
 ): ChatMessage {
   const pct = Math.round((used / window) * 100);
+  const footprintLine = footprint === undefined ? "" : `- 本棒足迹：${footprint}\n`;
   return {
     id: `msg_${randomUUID()}`,
     role: "system",
@@ -233,7 +367,8 @@ function makeHandoffBook(
         text:
           `${HANDOFF_BOOK_PREFIX} 上下文水位撞顶，本轮任务未完成，换班移交（第 ${shift}/${maxShifts} 棒）。\n` +
           `- 已用上下文：${used}/${window} tokens（${pct}%）。\n` +
-          `- 上棒进展与下一步计划：\n${summary}`,
+          footprintLine +
+          `- 内容：\n${content}`,
       },
     ],
     createdAt: new Date().toISOString(),
@@ -280,6 +415,8 @@ export async function runTurn(
   let watermarkWindow: number | undefined;
   const handoffShift = input.handoff?.shift ?? 1;
   const handoffMaxShifts = input.handoff?.maxShifts ?? HANDOFF_DEFAULT_MAX_SHIFTS;
+  // 本回合工具调用足迹（件2）：只记本回合 assistant 消息的 toolCalls，不含历史
+  const turnToolCalls: Array<{ name: string; arguments?: unknown }> = [];
 
   // G1 首步预检：循环开始前（首步发起前）先算一次水位——messages 已含 pipeline
   // 组装结果/初始历史，tools 计入估算（G3）。撞顶则不进循环直接走水位兜底；
@@ -356,6 +493,14 @@ export async function runTurn(
       throw err;
     }
     assistantMessage = result.assistantMessage;
+    if (result.assistantMessage.toolCalls) {
+      turnToolCalls.push(
+        ...result.assistantMessage.toolCalls.map((tc) => ({
+          name: tc.name,
+          arguments: tc.arguments,
+        })),
+      );
+    }
     messages.push(result.assistantMessage);
     appended.push(result.assistantMessage);
 
@@ -484,12 +629,17 @@ export async function runTurn(
     if (watermarkStop) {
       const used = watermarkUsed ?? contextUsedTokens(undefined, messages, tools);
       const window = watermarkWindow ?? input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const footprint = formatHandoffFootprint(turnToolCalls);
+      const summaryText = assistantText(summary);
+      // 瘦身写作间（件3）：独立小调用写三分法内容；失败/空文本降级为兜底总结
+      const written = await writeHandoffBookContent(input, summaryText, footprint);
       const book = makeHandoffBook(
-        assistantText(summary),
+        written ?? summaryText,
         used,
         window,
         handoffShift,
         handoffMaxShifts,
+        footprint,
       );
       messages.push(book);
       if (input.onStepAppended) {

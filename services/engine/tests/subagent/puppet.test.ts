@@ -12,7 +12,10 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { PuppetRunner, buildPuppetSystemPrompt, type PuppetRuntime } from "../../src/subagent/puppet.js";
-import { CONTEXT_WATERMARK_SUMMARY_HINT } from "../../src/core/react/turn.js";
+import {
+  CONTEXT_WATERMARK_SUMMARY_HINT,
+  HANDOFF_WRITING_GUIDANCE,
+} from "../../src/core/react/turn.js";
 import type { ConfigRepository } from "../../src/config/repository.js";
 import type { PuppetModelDefinition } from "../../src/subagent/puppet-models.js";
 import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
@@ -558,14 +561,22 @@ describe("⑧ 水位 W 查找链（puppet）", () => {
 
     const output = await runner.run("a1", "do work");
 
-    // 窗口 10：基础设定 + 简报已远超 90%，首步预检即水位撞顶（不发工具步，直接兜底）
+    // 窗口 10：基础设定 + 简报已远超 90%，首步预检即水位撞顶（不发工具步，
+    // 直接兜底总结 + 瘦身写作调用，共 2 次 LLM 调用）
     expect(output).toBe("傀儡水位收尾");
-    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls).toHaveLength(2);
     expect(
       provider.calls[0]!.messages.some(
         (m) =>
           m.role === "system" &&
           m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
+    expect(
+      provider.calls[1]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(HANDOFF_WRITING_GUIDANCE)),
       ),
     ).toBe(true);
   });
@@ -637,12 +648,19 @@ describe("⑧ 水位 W 查找链（puppet）", () => {
 
     // 若缺 maxContextTokens 档会落 80_000，走工具循环；回退档 10 使首步预检即撞顶
     expect(output).toBe("傀儡水位收尾");
-    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls).toHaveLength(2);
     expect(
       provider.calls[0]!.messages.some(
         (m) =>
           m.role === "system" &&
           m.content.some((c) => c.type === "text" && c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
+    expect(
+      provider.calls[1]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(HANDOFF_WRITING_GUIDANCE)),
       ),
     ).toBe(true);
   });

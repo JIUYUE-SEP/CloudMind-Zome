@@ -6,6 +6,7 @@ import {
   MAX_STEPS_FALLBACK_REPLY,
   CONTEXT_WATERMARK_SUMMARY_HINT,
   CONTEXT_WATERMARK_FALLBACK_REPLY,
+  HANDOFF_WRITING_GUIDANCE,
 } from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { ContextPipeline, WATERMARK_REMINDER_PREFIX } from "../../src/context/pipeline.js";
@@ -758,11 +759,18 @@ describe("上下文水位主裁（改动一）", () => {
     const provider = new WatermarkToolLoopProvider({ promptTokens: 800, completionTokens: 100 });
     const result = await runWatermarkTurn(provider, { contextWindow: 1000, maxSteps: 20 });
 
-    // 1 工具步 + 1 次无工具兜底总结，未走满 maxSteps
-    expect(provider.calls).toHaveLength(2);
+    // 1 工具步 + 1 次无工具兜底总结 + 1 次瘦身写作调用，未走满 maxSteps
+    expect(provider.calls).toHaveLength(3);
     const summaryParams = provider.calls[1]!;
     expect(summaryParams.tools).toBeUndefined();
     expect(hasWatermarkHint(summaryParams)).toBe(true);
+    expect(
+      provider.calls[2]!.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(HANDOFF_WRITING_GUIDANCE)),
+      ),
+    ).toBe(true);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
     expect(
       result.appended.at(-1)!.content.some((c) => c.type === "text" && c.text === "水位收尾"),
@@ -797,7 +805,7 @@ describe("上下文水位主裁（改动一）", () => {
 
     // usage 250/1000 = 0.25 单独不会撞顶；估算（含 tools）> 1.0 → 首步预检即撞顶，
     // 不发任何工具步，直接走水位兜底（G1）
-    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls).toHaveLength(2);
     expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
     expect(reminderCount(provider.calls)).toBe(0);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
@@ -820,8 +828,8 @@ describe("上下文水位主裁（改动一）", () => {
       maxSteps: 20,
     });
 
-    // 未发任何工具步：只调一次兜底总结；无 70% 提醒；回合绝不静默
-    expect(provider.calls).toHaveLength(1);
+    // 未发任何工具步：一次兜底总结 + 一次瘦身写作调用；无 70% 提醒；回合绝不静默
+    expect(provider.calls).toHaveLength(2);
     expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
     expect(reminderCount(provider.calls)).toBe(0);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
@@ -963,7 +971,7 @@ describe("上下文水位主裁（改动一）", () => {
     const provider = new WatermarkToolLoopProvider({ promptTokens: 800, completionTokens: 100 });
     const result = await runWatermarkTurn(provider, { contextWindow: 1000 });
 
-    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls).toHaveLength(3);
     expect(hasWatermarkHint(provider.calls[1]!)).toBe(true);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
   });
@@ -1032,8 +1040,8 @@ describe("上下文水位主裁（改动一）", () => {
       maxSteps: 20,
     });
 
-    // 未进工具循环：只发生一次兜底总结调用，且携带水位兜底提示
-    expect(provider.calls).toHaveLength(1);
+    // 未进工具循环：一次兜底总结 + 一次瘦身写作调用；兜底总结携带水位兜底提示
+    expect(provider.calls).toHaveLength(2);
     expect(hasWatermarkHint(provider.calls[0]!)).toBe(true);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
   });
