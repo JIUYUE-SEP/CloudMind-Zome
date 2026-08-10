@@ -49,7 +49,7 @@ export function anthropicModelsUrl(baseUrl: string): string {
 }
 
 /** 非 2xx 状态是否可重试（与 resilient 同口径：429/5xx 可重试） */
-export function isRetryableStatus(status: number): boolean {
+function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
@@ -207,7 +207,7 @@ export async function postJsonStream(
  * - `[DONE]`（chat completions 终结帧）不产出；
  * - 流结束仍有未 dispatch 的 data 行（无尾空行）也产出，容错各家网关。
  */
-export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";

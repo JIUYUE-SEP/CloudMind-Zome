@@ -7,7 +7,7 @@
 
 **Architecture:** 适配移植为主——只搬低耦合机制层（纯函数/普通类），不引入 kimi 的 DI/wire/eventBus 底座；服务层按 CMZ 的 bootstrap 函数式组装重写。
 
-**Tech Stack:** TypeScript / Fastify / vitest / zod；复用 CMZ 现有 DocumentStore、provider/classify.ts 错误分类、SubagentDispatcher。
+**Tech Stack:** TypeScript / Fastify / vitest / zod；复用 CMZ 现有 DocumentStore、provider/protocols/shared.ts 错误分类、SubagentDispatcher。
 
 ---
 
@@ -47,7 +47,7 @@
 - Docs: README MCP 行、路线图「### MCP」节与第二节加固项行
 
 **关键实现要点（证据见评估报告一章）：**
-1. **调用侧自愈（wrapper.execute）**：失败分类——服务器已应答的错误直接抛；歧义错误先 5s ping 探活（任何应答含 MethodNotFound 都算活），活着原地重试一次；传输已死则 single-flight 重连后重试一次。**每次调用重连封顶一次**；429 判定复用 `provider/classify.ts`
+1. **调用侧自愈（wrapper.execute）**：失败分类——服务器已应答的错误直接抛；歧义错误先 5s ping 探活（任何应答含 MethodNotFound 都算活），活着原地重试一次；传输已死则 single-flight 重连后重试一次。**每次调用重连封顶一次**；429 判定复用 `provider/protocols/shared.ts`
 2. **single-flight 重连（client-manager）**：同名重连合并（inFlight map），attemptId 代际戳——旧尝试迟到完成不覆盖新状态；engine close() 后置 disposed 不再重连
 3. **断线保注册**：bootstrap 快照注入天然符合，文档明确「server 掉了工具不消失，调用降级为失败而非 tool not found」
 4. **审批覆盖（toolOverrides）**：按原计划做（评估确认 CMZ 的 fail-closed 比 kimi 严，保留）；`allowRemember` 查询通道接 WS handler
@@ -90,7 +90,7 @@
 **Objective:** 批量并发派发落地，用 kimi 的 653 行纯调度器换掉 42 行骨架内核。
 
 **Files:**
-- Create: `services/engine/src/subagent/agent-run-batch.ts`（直搬 kimi `session/swarm/agentRunBatch.ts`：`isProviderRateLimitError` 换 `provider/classify.ts` 429 判定；retry npm 包换 ~20 行自实现退避）
+- Create: `services/engine/src/subagent/agent-run-batch.ts`（直搬 kimi `session/swarm/agentRunBatch.ts`：`isProviderRateLimitError` 换 `provider/protocols/shared.ts` 429 判定；retry npm 包换 ~20 行自实现退避）
 - Modify: `services/engine/src/subagent/batch.ts`（保留对外形状，内部委托 AgentRunBatch；Launcher 四回调接 dispatcher）
 - Create: `services/engine/src/tools/builtin/dispatch_subagent_batch.ts`（模板 + items 校验 ≥2/去重/上限 16（桌面场景调小，kimi 128）；结果 `<agent_swarm_result>` XML 渲染直搬；批次纪律文案进描述）
 - Test: `services/engine/tests/subagent/agent-run-batch.test.ts`（fake provider 限流场景）

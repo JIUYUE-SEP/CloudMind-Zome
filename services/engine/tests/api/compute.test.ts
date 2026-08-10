@@ -736,6 +736,26 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("P3：POST providers 的 models 数组内重复 id → 400 不落库", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "dup-models",
+      displayName: "Dup Models",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [
+        { id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" },
+        { id: "gpt-4o", displayName: "GPT-4o 2", modelType: "llm" },
+      ],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Duplicate model id");
+    const listRes = await authedRequest(app.server).get("/compute/providers");
+    expect(listRes.body).toHaveLength(0);
+    await app.close();
+  });
+
   it("A4：POST providers 合法 models 数组按白名单构造落库（displayName 缺省回退 id）", async () => {
     const app = await makeApp();
     const res = await authedRequest(app.server).post("/compute/providers").send({

@@ -201,7 +201,7 @@ LLM 调 `Agent` 工具 → `IAgentLifecycleService.create()` 在同进程创建*
 **形式：适配移植——用 `AgentRunBatch` 替换 `batch.ts` 的 worker 池内核，接入为 `dispatch_subagent_batch` 工具。**
 
 - 落点：
-  - `services/engine/src/subagent/agent-run-batch.ts`：直搬 kimi `agentRunBatch.ts`（改 `isProviderRateLimitError` 用 `provider/classify.ts` 的 429 判定；retry npm 包可换 20 行自实现退避）
+  - `services/engine/src/subagent/agent-run-batch.ts`：直搬 kimi `agentRunBatch.ts`（改 `isProviderRateLimitError` 用 `provider/protocols/shared.ts` 的 429 判定；retry npm 包可换 20 行自实现退避）
   - 重写 `batch.ts`：保留 `SubagentBatch` 对外形状，内部委托 AgentRunBatch，Launcher 四回调接 dispatcher（spawn=新 dispatch，retry=同 input 重试，suspended=logger.warn）
   - 新增工具 `dispatch_subagent_batch`（或 `dispatch_subagent` 加 `items` 模式）：模板 + items 校验（≥2、去重、上限沿用 128 或调小到 16 匹配桌面场景）、结果 XML 渲染直搬
   - 批次排他：CMZ ReActLoop 目前顺序执行工具，天然满足"一响应一批"，无需 veto 机制，但 agent-swarm.md 的纪律文案要进工具描述

@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
 import type { ModelInfo, Provider } from "@/composables/useEngineClient";
 
@@ -49,10 +49,6 @@ export const useComputeStore = defineStore("compute", () => {
     return providers.value.find((p) => p.id === id);
   }
 
-  function getModel(providerId: string, modelId: string) {
-    return getProvider(providerId)?.models.find((m) => m.id === modelId);
-  }
-
   async function addModel(providerId: string, body: ModelInfo) {
     const created = await client.addModel(providerId, body);
     await load();
@@ -70,22 +66,6 @@ export const useComputeStore = defineStore("compute", () => {
     await load();
   }
 
-  const llmModels = computed(() =>
-    providers.value.flatMap((p) =>
-      p.models.filter((m) => m.modelType === "llm").map((m) => ({ ...m, providerId: p.id })),
-    ),
-  );
-  const embeddingModels = computed(() =>
-    providers.value.flatMap((p) =>
-      p.models.filter((m) => m.modelType === "embedding").map((m) => ({ ...m, providerId: p.id })),
-    ),
-  );
-  const imageModels = computed(() =>
-    providers.value.flatMap((p) =>
-      p.models.filter((m) => m.modelType === "image").map((m) => ({ ...m, providerId: p.id })),
-    ),
-  );
-
   return {
     providers,
     isLoading,
@@ -97,12 +77,8 @@ export const useComputeStore = defineStore("compute", () => {
     deleteProvider,
     testConnection,
     getProvider,
-    getModel,
     addModel,
     updateModel,
     deleteModel,
-    llmModels,
-    embeddingModels,
-    imageModels,
   };
 });

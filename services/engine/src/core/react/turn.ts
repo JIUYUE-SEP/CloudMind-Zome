@@ -42,13 +42,13 @@ export const HANDOFF_WRITING_GUIDANCE =
   "体积约束：每项一句话；发现清单超长时自行合并精简；不要重复汇报已有进展。";
 
 /** 本棒足迹机械附（件2）：单条 name+参数上限 / 足迹清单总长上限 */
-export const HANDOFF_FOOTPRINT_ITEM_MAX = 80;
-export const HANDOFF_FOOTPRINT_TOTAL_MAX = 500;
+const HANDOFF_FOOTPRINT_ITEM_MAX = 80;
+const HANDOFF_FOOTPRINT_TOTAL_MAX = 500;
 
 /** 交接书机械上限（K3）：上一棒交接书 / 兜底总结素材 / 写作产出内容 */
-export const HANDOFF_PREV_BOOK_MAX = 3000;
-export const HANDOFF_SUMMARY_MAX = 2000;
-export const HANDOFF_WRITTEN_MAX = 3000;
+const HANDOFF_PREV_BOOK_MAX = 3000;
+const HANDOFF_SUMMARY_MAX = 2000;
+const HANDOFF_WRITTEN_MAX = 3000;
 
 /** R2（B 方案不变量）：runTurn 型号 ≠ provider.defaultModel 的 warn 去重（每 provider+型号一次） */
 const routerModelMismatchWarned = new Set<string>();
@@ -160,7 +160,7 @@ function formatFootprintItem(call: HandoffFootprintCall): string {
 }
 
 /** 本棒足迹清单（无工具调用返回 undefined）：机械流水账，总长截 500 字符（件2） */
-export function formatHandoffFootprint(
+function formatHandoffFootprint(
   calls: readonly HandoffFootprintCall[],
 ): string | undefined {
   if (calls.length === 0) return undefined;

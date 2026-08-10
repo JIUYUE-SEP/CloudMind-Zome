@@ -283,6 +283,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     // A4：models 数组逐型号走与型号端点同口径校验——非法 400，杜绝
     // contextWindow:"abc"→NaN 静默禁用撞顶、非法 apiMode 静默落库等路径
     const models: ModelInfo[] = [];
+    const seenModelIds = new Set<string>();
     if (body.models !== undefined) {
       if (!Array.isArray(body.models)) {
         return reply.status(400).send({ error: "models must be an array" });
@@ -293,6 +294,11 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
         }
         const built = buildModelFromBody(rawModel);
         if (!built.ok) return reply.status(400).send({ error: built.error });
+        // P3：同 id 两型号落库会歧义 (providerId, modelId) Router 缓存键——400 拒绝
+        if (seenModelIds.has(built.model.id)) {
+          return reply.status(400).send({ error: `Duplicate model id: ${built.model.id}` });
+        }
+        seenModelIds.add(built.model.id);
         models.push(built.model);
       }
     }

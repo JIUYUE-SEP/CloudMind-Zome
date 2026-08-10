@@ -398,14 +398,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  async function abortHandoff(id: string): Promise<HandoffRecord> {
-    const res = await engineFetch(`${baseUrl.value}/handoff/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    await ensureOk(res, "abort handoff");
-    return res.json();
-  }
-
   // Compute
   async function listProviders(): Promise<Provider[]> {
     const res = await engineFetch(`${baseUrl.value}/compute/providers`);
@@ -811,7 +803,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     deleteSession,
     getSessionMessages,
     listHandoffs,
-    abortHandoff,
     listProviders,
     createProvider,
     updateProvider,

@@ -42,7 +42,7 @@ export interface HandoffStateFile {
 }
 
 /** 活跃（可被打断/续跑）的状态集合 */
-export const ACTIVE_HANDOFF_STATUSES: readonly HandoffStatus[] = [
+const ACTIVE_HANDOFF_STATUSES: readonly HandoffStatus[] = [
   "pending",
   "scheduled",
   "running",

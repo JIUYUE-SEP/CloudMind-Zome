@@ -1,13 +1,13 @@
 import { logger } from "../../logger.js";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "../types.js";
-import type { ModelInfo, ProviderConfig } from "@mindcloud/shared";
+import type { ModelInfo, ProtocolApiMode, ProviderConfig } from "@mindcloud/shared";
 import { OpenAICompatibleChatProvider } from "./openai-compatible-chat.js";
 import { OpenAIResponsesProvider } from "./openai-responses.js";
 import { AnthropicMessagesProvider } from "./anthropic-messages.js";
 
 /** ProviderConfig.apiMode 允许值（缺省 chat_completions，现有配置零破坏） */
-export const API_MODES = ["responses", "anthropic", "chat_completions"] as const;
-export type ApiMode = (typeof API_MODES)[number];
+const API_MODES: readonly ProtocolApiMode[] = ["responses", "anthropic", "chat_completions"];
+export type ApiMode = ProtocolApiMode;
 
 export function isApiMode(value: unknown): value is ApiMode {
   return typeof value === "string" && (API_MODES as readonly string[]).includes(value);

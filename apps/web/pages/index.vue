@@ -41,25 +41,6 @@ const logPanelRef = ref<InstanceType<typeof LogPanel>>();
 
 let timeTimer: ReturnType<typeof setInterval>;
 
-const fitModes = [
-  { key: "cover", label: "填充" },
-  { key: "contain", label: "适应" },
-  { key: "stretch", label: "拉伸" },
-  { key: "center", label: "平铺" },
-];
-
-const anchorList = [
-  "top-left",
-  "top-center",
-  "top-right",
-  "center-left",
-  "center",
-  "center-right",
-  "bottom-left",
-  "bottom-center",
-  "bottom-right",
-];
-
 function posToCss(p: string): string {
   const map: Record<string, string> = {
     "top-left": "0% 0%",
@@ -144,9 +125,6 @@ onBeforeUnmount(() => {
   document.removeEventListener("click", onDocClick);
 });
 
-// Keep unused imports/vars for future extensibility without lint errors
-void fitModes;
-void anchorList;
 </script>
 
 <style scoped>
