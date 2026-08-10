@@ -213,4 +213,51 @@ describe("useEngineClient token 就绪（真机 #12）", () => {
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(MockWebSocket.instances.at(-1)!.protocols).toBe("fresh");
   });
+
+  it("F4：REST 401 清 localStorage 陈旧 token，二次调用走 server 档重取", async () => {
+    localStorage.setItem("cloudmind.engineToken", "stale-local");
+    fetchEngineTokenFromServerMock.mockResolvedValue("fresh-server");
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: "Unauthorized" }),
+      } as unknown as Response)
+      .mockResolvedValueOnce(okResponse({}));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    // 陈旧 localStorage 档首轮短路（不拉 server），401 后必须清掉
+    await expect(client.listAgents()).rejects.toThrow("Failed to list agents: Unauthorized");
+    expect(localStorage.getItem("cloudmind.engineToken")).toBeNull();
+
+    // 二次调用：local 档已清，走 server 档拿到新 token
+    await expect(client.listSessions()).resolves.toEqual({});
+    expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(1);
+    const secondInit = fetchSpy.mock.calls[1]![1]!;
+    expect(new Headers(secondInit.headers).get("Authorization")).toBe("Bearer fresh-server");
+  });
+
+  it("F4：WS 4401 清 localStorage 陈旧 token，下次建连走 server 档重取", async () => {
+    localStorage.setItem("cloudmind.engineToken", "stale-local");
+    fetchEngineTokenFromServerMock.mockResolvedValue("fresh-server");
+    const { useEngineClient } = await import("@/composables/useEngineClient");
+    const client = useEngineClient();
+    client.connect("a1", "s1", {});
+    await flushMicrotasks();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(MockWebSocket.instances[0]!.protocols).toBe("stale-local");
+
+    // engine 以 4401（token 失效）关闭：清内存 + 清 localStorage
+    MockWebSocket.instances[0]!.onclose?.({ code: 4401 });
+    expect(localStorage.getItem("cloudmind.engineToken")).toBeNull();
+
+    // 下次建连重取 server 档新 token
+    client.connect("a2", "s2", {});
+    await flushMicrotasks();
+    expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances.at(-1)!.protocols).toBe("fresh-server");
+  });
 });

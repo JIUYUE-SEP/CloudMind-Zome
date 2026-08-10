@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { DocumentStore, renameWithRetry } from "../memory/document-store.js";
 import { getDataDir } from "../config/paths.js";
 import { logger } from "../logger.js";
@@ -22,13 +23,26 @@ export class HandoffStateStore {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       // A3 损坏隔离（照抄 config/repository.ts 的隔离路径语义）：重命名 .corrupt-
-      // {timestamp} 备份后以空态启动 + warn——绝不静默覆盖损坏数据（后续 save 会
-      // 重建干净文件），也不会因坏文件让整个启动崩溃。
-      const quarantinePath = `${this.store.filePath}.corrupt-${Date.now()}`;
-      await renameWithRetry(this.store.filePath, quarantinePath).catch(() => {});
+      // {timestamp}-{随机后缀} 备份后以空态启动 + warn——绝不静默覆盖损坏数据
+      // （后续 save 会重建干净文件），也不会因坏文件让整个启动崩溃。
+      // F5：随机后缀防同一毫秒内多次 loadAll 撞同名；rename 失败不再静默吞——
+      // 单独 warn 带失败原因，且外层 warn 如实区分「已隔离」与「隔离失败」。
+      const quarantinePath = `${this.store.filePath}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      let quarantined = false;
+      try {
+        await renameWithRetry(this.store.filePath, quarantinePath);
+        quarantined = true;
+      } catch (renameErr) {
+        logger.warn(
+          { err: renameErr, quarantinePath },
+          "[handoff] handoff-state.json 隔离失败（损坏文件仍在原路径，后续 save 可能覆盖它）",
+        );
+      }
       logger.warn(
-        { err: err, quarantinePath },
-        "[handoff] handoff-state.json 损坏，已隔离并以空态启动（不覆盖损坏数据）",
+        { err: err, quarantinePath, quarantined },
+        quarantined
+          ? "[handoff] handoff-state.json 损坏，已隔离并以空态启动（不覆盖损坏数据）"
+          : "[handoff] handoff-state.json 损坏且隔离失败：以空态启动，原路径损坏文件未被覆盖",
       );
       return [];
     }

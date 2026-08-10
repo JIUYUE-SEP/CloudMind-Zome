@@ -646,6 +646,44 @@ describe("A2 隐私截断", () => {
       warn.mockRestore();
     }
   });
+
+  it("F3：chat_completions 工具参数解析失败 warn 的 raw 截 500 字符", async () => {
+    const garbage = "x".repeat(700);
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"t","arguments":"${garbage}"}}]},"finish_reason":null}]}\n` +
+            `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+        ),
+      );
+    });
+    servers.push(server);
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const provider = new OpenAICompatibleChatProvider("k", `${server.url}/v1`);
+      const { events, error } = await collect(provider, {
+        model: "m",
+        messages: baseMessages(),
+        tools,
+      });
+      expect(error).toBeUndefined();
+      // 非法 JSON 参数 → 解析失败降级为 {}
+      expect(events.find((e) => e.type === "tool.call")).toMatchObject({
+        type: "tool.call",
+        name: "t",
+        arguments: {},
+      });
+      expect(warn).toHaveBeenCalledOnce();
+      const fields = warn.mock.calls[0]![0] as { raw?: string };
+      expect(fields.raw!.length).toBeLessThan(600);
+      expect(fields.raw).toContain("截断");
+      expect(fields.raw).not.toContain("x".repeat(600));
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("A7 重试分类合一", () => {

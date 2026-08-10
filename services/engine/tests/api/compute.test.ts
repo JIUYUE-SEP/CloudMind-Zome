@@ -528,7 +528,7 @@ describe("Compute API", () => {
     await app.close();
   });
 
-  it("A2：test-connection 失败日志收敛为 err.message + statusCode，不落 err 对象本体", async () => {
+  it("A2/F2：test-connection 失败日志只落固定分类文案 + status/kind，不落 errMessage 原文", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/compute/providers").send({
       id: "claude-leak",
@@ -556,12 +556,15 @@ describe("Compute API", () => {
       expect(calls).toHaveLength(1);
       const fields = calls[0]![0] as Record<string, unknown>;
       expect(fields).toMatchObject({
-        errMessage: "上游错误体含 Authorization: Bearer sk-super-secret-123456",
+        errorSummary: "上游返回 502",
         statusCode: 502,
         providerId: "claude-leak",
         apiMode: "anthropic",
       });
+      // 隐私底线：密钥片段不得出现在任何日志字段（含序列化后的整体）
       expect(fields).not.toHaveProperty("err");
+      expect(fields).not.toHaveProperty("errMessage");
+      expect(JSON.stringify(fields)).not.toContain("sk-super-secret");
     } finally {
       errorSpy.mockRestore();
     }

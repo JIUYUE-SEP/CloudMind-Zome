@@ -16,8 +16,9 @@ export interface HandoffResumeLoopDeps {
    * 入队续跑 job（ws 层接线：加载历史 → worker.enqueue；jobId 由本 loop 生成，
    * 保证 markStatus(running, { resumeJobId }) 与 worker job id 同源）。
    * signal 由 loop 持有，用户消息/disconnect 时 abort（含排队未启动的 job）。
+   * chainId = 本链代际标记（F1）：续跑 job 继承当前链，撞顶 book 带同一代际。
    */
-  enqueueResume(record: HandoffRecord, signal: AbortSignal, jobId: string): void;
+  enqueueResume(record: HandoffRecord, signal: AbortSignal, jobId: string, chainId?: string): void;
   /** 状态变化事件（ws 层转成 handoff.update 帧；失败只记 warn 不阻断状态机） */
   onUpdate?: (record: HandoffRecord) => void;
 }
@@ -40,7 +41,11 @@ export class HandoffResumeLoop {
     controller: AbortController;
     /** 本 job 已产出交接书（handleBook 先于 onDone 到达时的同步标记，防状态闪回） */
     booked?: boolean;
+    /** 本链代际标记（F1）：首棒入控制面时确定，续跑棒继承，abort 后作废 */
+    chainId?: string;
   };
+  /** 当前链代际（F1）：abort/断连时清空，新用户消息经 beginNewChain 换新 */
+  private currentChainId: string | undefined;
 
   constructor(private deps: HandoffResumeLoopDeps) {}
 
@@ -49,13 +54,34 @@ export class HandoffResumeLoop {
     return this.handleBook(info);
   }
 
+  /**
+   * 用户消息新链入口（F1）：为入队的新 job 签发新代际。
+   * abort 之后新链的 book 带此代际 → 入口闩锁放行；
+   * 旧链在途 job 的迟到 book 带旧代际 → 入口闩锁拦截。
+   */
+  beginNewChain(): string {
+    this.currentChainId = randomUUID();
+    return this.currentChainId;
+  }
+
   private async handleBook(info: HandoffBookInfo): Promise<void> {
     try {
-      // A1 ghost 闩锁（入口复核）：该 agent+session 已 cancelled/aborted——
-      // 在途 job 的迟到交接书不得经 record 覆盖成 pending 复活旧链，直接返回不调度。
+      // A1/F1 代际闩锁（入口复核）：
+      // - 条目已 aborted：只放行「abort 之后新链」的 book（代际 = 当前链代际，
+      //   beginNewChain 签发）；旧链迟到 book（旧代际/无代际）直接返回不调度。
+      // - 条目非 aborted 但代际不符：并发旧链迟到 book 晚于新链 record 到达时，
+      //   状态已非 aborted，仍按代际拦截，不得覆盖成 pending 复活旧链。
       // 落盘窗口内的复核（下方 latest.status !== "pending"）是第二道防线。
       const existing = this.deps.manager.get(makeHandoffId(info.agentId, info.sessionId));
-      if (existing?.status === "aborted") return;
+      if (existing?.status === "aborted") {
+        if (info.chainId === undefined || info.chainId !== this.currentChainId) return;
+      } else if (
+        existing !== undefined &&
+        info.chainId !== undefined &&
+        info.chainId !== this.currentChainId
+      ) {
+        return;
+      }
       // 先同步标记：交接书事件可能早于旧 job 的 onDone 完成落盘，
       // onJobDone 看到 booked 就跳过 completed（链继续，由本函数接管）
       if (this.current) this.current.booked = true;
@@ -85,7 +111,8 @@ export class HandoffResumeLoop {
       // 替换 current：上一棒（无论正常完成还是撞顶）的定时器/句柄随覆盖清理
       const prev = this.current;
       if (prev?.timer !== undefined) clearTimeout(prev.timer);
-      this.current = { record, timer, controller };
+      this.current = { record, timer, controller, chainId: info.chainId };
+      if (info.chainId !== undefined) this.currentChainId = info.chainId;
       const scheduled = await this.deps.manager.markStatus(record.id, "scheduled");
       if (scheduled) this.deps.onUpdate?.(scheduled);
     } catch (err) {
@@ -108,7 +135,7 @@ export class HandoffResumeLoop {
       const resumeJobId = `handoff_resume_${randomUUID()}`;
       const running = await this.deps.manager.markStatus(record.id, "running", { resumeJobId });
       if (running) this.deps.onUpdate?.(running);
-      this.deps.enqueueResume(record, cur.controller.signal, resumeJobId);
+      this.deps.enqueueResume(record, cur.controller.signal, resumeJobId, cur.chainId);
     } catch (err) {
       logger.error({ err }, "[handoff] 续跑入队失败（标 aborted）");
       this.current = undefined;
@@ -159,6 +186,8 @@ export class HandoffResumeLoop {
       cur.controller.abort();
       this.current = undefined;
     }
+    // F1：打断即作废旧链代际——此后旧链在途 job 的迟到 book 一律被入口闩锁拦截
+    this.currentChainId = undefined;
     const cancelled = await this.deps.manager.cancel(agentId, sessionId, reason);
     for (const c of cancelled) this.deps.onUpdate?.(c);
   }

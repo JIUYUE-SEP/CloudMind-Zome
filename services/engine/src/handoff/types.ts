@@ -68,4 +68,10 @@ export interface HandoffBookInfo {
   window: number;
   bookMessageId?: string;
   bookText: string;
+  /**
+   * 链代际标记（F1）：同一换班链（首棒+各续跑棒）共用同一个 id；
+   * abort 后新用户消息开的新链经 beginNewChain 换新 id。入口闩锁据此
+   * 区分「abort 之前旧链的迟到 book」与「abort 之后新链的正常 book」。
+   */
+  chainId?: string;
 }

@@ -388,16 +388,23 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
               }));
       return { ok: true, discovered };
     } catch (err) {
-      // A2 隐私收敛：只落 err.message + statusCode，不落 err 对象本体——
-      // 防上游错误体把 Authorization/密钥回显进日志
+      // A2/F2 隐私收敛：只落 describeUpstreamError 的固定分类文案 +
+      // status/kind + 标识字段，绝不落 errMessage 原文——上游错误体经常把
+      // Authorization/密钥回显进 message，原文进日志即泄密（客户端响应侧
+      // describeUpstreamError 同样只给固定文案）。
       const statusCode =
         typeof err === "object" && err !== null
           ? (err as { status?: unknown }).status
           : undefined;
+      const kind =
+        typeof err === "object" && err !== null
+          ? (err as { kind?: unknown }).kind
+          : undefined;
       logger.error(
         {
-          errMessage: err instanceof Error ? err.message : String(err),
+          errorSummary: describeUpstreamError(err),
           ...(typeof statusCode === "number" ? { statusCode } : {}),
+          ...(kind === "protocol" ? { kind } : {}),
           providerId: id,
           apiMode: provider.apiMode,
         },

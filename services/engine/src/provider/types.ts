@@ -59,6 +59,8 @@ export interface HandoffBookEvent {
   bookMessageId: string;
   /** 交接书正文（消息载体文本，落历史且供置顶注入） */
   bookText: string;
+  /** 链代际标记（F1）：ws 层入队时按 beginNewChain 代际打标，续跑循环据此做闩锁判定 */
+  chainId?: string;
 }
 
 export type LLMEvent =

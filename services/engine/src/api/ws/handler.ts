@@ -111,7 +111,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                 ...(record.abortReason !== undefined ? { reason: record.abortReason } : {}),
               });
             },
-            enqueueResume: (record, signal, jobId) => {
+            enqueueResume: (record, signal, jobId, chainId) => {
               void (async () => {
                 if (signal.aborted) return;
                 try {
@@ -131,7 +131,11 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                       maxShifts: record.maxShifts,
                       bookText: record.bookText,
                     },
-                    onEvent: emitJobEvent,
+                    // F1：续跑 job 继承当前链代际，撞顶 book 带同一 chainId 供闩锁判定
+                    onEvent:
+                      chainId !== undefined
+                        ? (event) => tagHandoffChain(event, chainId)
+                        : emitJobEvent,
                     onDone: (err) => {
                       void handoffLoop?.onJobDone(record, agentId, sessionId, err);
                     },
@@ -161,12 +165,22 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             window: event.window,
             bookMessageId: event.bookMessageId,
             bookText: event.bookText,
+            chainId: event.chainId,
           };
           handoffLoop?.onWatermarkBook(info);
           return;
         }
         const safeEvent = sanitizeDeltaEvent(event);
         if (safeEvent) safeSend(socket, safeEvent);
+      };
+
+      /** F1：给 handoff.book 事件补链代际标记（入队时按 beginNewChain/当前链签发） */
+      const tagHandoffChain = (event: LLMEvent, chainId: string): void => {
+        if (event.type === "handoff.book") {
+          emitJobEvent({ ...event, chainId });
+          return;
+        }
+        emitJobEvent(event);
       };
 
       // WS 连接生命周期（排查断连/1006 的关键路径日志）
@@ -277,6 +291,9 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
           // 用户消息 = abort 打断：续跑链（定时器/在途 job）立即取消，
           // 本条消息成为新的一棒（正常对话路径不受影响）
           await handoffLoop?.cancel(agentId, sessionId, "user_message");
+          // F1：新用户消息 = 新链，签发新代际；新 job 撞顶的 book 带此代际，
+          // 不会被 abort 遗留的入口闩锁误拦
+          const chainId = handoffLoop?.beginNewChain();
 
           const userMessage: ChatMessage = {
             id: randomUUID(),
@@ -312,7 +329,10 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             id: randomUUID(),
             messages: history.length > 0 ? history : [userMessage],
             sessionId,
-            onEvent: emitJobEvent,
+            onEvent:
+              chainId !== undefined
+                ? (event) => tagHandoffChain(event, chainId)
+                : emitJobEvent,
             onApprovalRequest: requestApproval,
           });
         } catch {

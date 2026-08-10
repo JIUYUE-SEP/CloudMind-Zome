@@ -35,7 +35,12 @@ function bookInfo(overrides: Partial<HandoffBookInfo> = {}): HandoffBookInfo {
 let tmpDir: string;
 let originalDataDir: string | undefined;
 let manager: HandoffManager;
-const enqueued: Array<{ record: HandoffRecord; signal: AbortSignal; jobId: string }> = [];
+const enqueued: Array<{
+  record: HandoffRecord;
+  signal: AbortSignal;
+  jobId: string;
+  chainId?: string;
+}> = [];
 const updates: string[] = [];
 
 beforeEach(async () => {
@@ -65,8 +70,8 @@ function makeLoop(delayMs = 50): HandoffResumeLoop {
   return new HandoffResumeLoop({
     manager,
     delayMs,
-    enqueueResume: (record, signal, jobId) => {
-      enqueued.push({ record, signal, jobId });
+    enqueueResume: (record, signal, jobId, chainId) => {
+      enqueued.push({ record, signal, jobId, chainId });
     },
     onUpdate: (record) => {
       updates.push(`${record.status}:${record.shift}`);
@@ -195,8 +200,8 @@ describe("HandoffResumeLoop 续跑循环", () => {
     const loop = new HandoffResumeLoop({
       manager: gatedManager,
       delayMs: 50,
-      enqueueResume: (record, signal, jobId) => {
-        enqueued.push({ record, signal, jobId });
+      enqueueResume: (record, signal, jobId, chainId) => {
+        enqueued.push({ record, signal, jobId, chainId });
       },
       onUpdate: (record) => updates.push(`${record.status}:${record.shift}`),
     });
@@ -234,6 +239,40 @@ describe("HandoffResumeLoop 续跑循环", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(enqueued).toHaveLength(0);
     expect(updates.filter((u) => u.startsWith("pending:"))).toHaveLength(1);
+  });
+
+  it("A1 代际闩锁（F1）：abort 后新链 book 正常调度续跑；旧链迟到 book 两阶段均被拦", async () => {
+    const loop = makeLoop(50);
+    // 首棒：新用户消息签发新链代际
+    const oldChainId = loop.beginNewChain();
+    await loop.onWatermarkBook(bookInfo({ chainId: oldChainId }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", shift: 1 });
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(enqueued).toHaveLength(1));
+    expect(enqueued[0]!.chainId).toBe(oldChainId);
+
+    // 用户消息打断旧链：作废旧代际，控制面标 aborted
+    await loop.cancel("a1", "s1", "user_message");
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "aborted" });
+
+    // 旧链在途 job 的迟到 book（旧代际）到达：入口拦，不复活不调度
+    await loop.onWatermarkBook(bookInfo({ shift: 2, chainId: oldChainId }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "aborted" });
+    expect(enqueued).toHaveLength(1);
+
+    // abort 后新用户消息新链：beginNewChain 换新代际，新 job 撞顶 book 正常 record
+    const newChainId = loop.beginNewChain();
+    await loop.onWatermarkBook(bookInfo({ shift: 1, chainId: newChainId }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", shift: 1 });
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(enqueued).toHaveLength(2));
+    expect(enqueued[1]!.record).toMatchObject({ status: "running", shift: 1 });
+    expect(enqueued[1]!.chainId).toBe(newChainId);
+
+    // 新链已 record 后，旧链迟到 book 再到达：状态已非 aborted，但代际不符仍被拦
+    await loop.onWatermarkBook(bookInfo({ shift: 2, chainId: oldChainId }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "running", shift: 1 });
+    expect(enqueued).toHaveLength(2);
   });
 
   it("续跑异常（非 abort）→ 控制面 aborted，链结束", async () => {

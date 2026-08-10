@@ -2,7 +2,7 @@ import { logger } from "../../logger.js";
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../types.js";
 import { ProviderError } from "../errors.js";
-import { isRetryableError } from "./shared.js";
+import { isRetryableError, truncateLogText } from "./shared.js";
 
 interface ToolCallDelta {
   index?: number;
@@ -134,7 +134,12 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
         try {
           args = buf.args ? JSON.parse(buf.args) : {};
         } catch (err) {
-          logger.warn({ err: err }, `Failed to parse tool call arguments for ${buf.name}: ${buf.args}`);
+          // A2/F3 隐私收敛：raw 走 truncateLogText 截 500（与 responses/anthropic 同口径），
+          // 超长/敏感工具参数不再整段进日志
+          logger.warn(
+            { err: err, toolName: buf.name, raw: truncateLogText(buf.args) },
+            `Failed to parse tool call arguments for ${buf.name}`,
+          );
         }
         yield { type: "tool.call", toolCallId: buf.id, name: buf.name, arguments: args };
       }

@@ -171,6 +171,22 @@ const sharedToken = ref("");
 // （真机 #12）。就绪只等一次：后续请求直接复用已解析的 Promise，不重复拉 server。
 let engineTokenReadyPromise: Promise<string> | null = null;
 
+// A6/F4：token 失效（REST 401 / WS 4401 / 构造 SyntaxError）统一作废——
+// 清内存就绪缓存 + 清 localStorage 陈旧 token，下次 resolve 走 server 档。
+// 若只清内存不清 localStorage，陈旧本地 token 会在下一轮一票否决 server 档，
+// 造成 401/4401 永锁；本函数把三条路径口径拉齐（与 WS SyntaxError 路径一致）。
+function invalidateEngineToken(): void {
+  engineTokenReadyPromise = null;
+  sharedToken.value = "";
+  if (typeof localStorage !== "undefined") {
+    try {
+      localStorage.removeItem("cloudmind.engineToken");
+    } catch {
+      // 隐私模式等场景 localStorage 不可用：内存 token 已清，重取走 server 档
+    }
+  }
+}
+
 // desktop sidecar 意外退出（kill_on_drop 会连带杀掉 engine，WS 随之断开）：
 // Tauri 侧 emit 事件到这里置位，UI 据此提示"engine 进程已退出"，
 // 而不是永远停在"重连中"（P0-3 D-B1）
@@ -273,11 +289,10 @@ export function useEngineClient(options?: EngineClientOptions) {
     const headers = new Headers(init?.headers);
     if (sharedToken.value) headers.set("Authorization", `Bearer ${sharedToken.value}`);
     const res = await fetchWithTimeout(url, { ...init, headers }, timeoutMs);
-    // A6：401（token 过期 / engine 重启后轮换）→ 作废就绪缓存并清空当前 token，
+    // A6/F4：401（token 过期 / engine 重启后轮换）→ 作废就绪缓存 + 清 localStorage，
     // 下次调用重取——engine 后启动/轮换不再被旧 token 永锁
     if (res.status === 401) {
-      engineTokenReadyPromise = null;
-      sharedToken.value = "";
+      invalidateEngineToken();
     }
     return res;
   }
@@ -582,15 +597,7 @@ export function useEngineClient(options?: EngineClientOptions) {
               return;
             }
             wsTokenRetried = true;
-            if (typeof localStorage !== "undefined") {
-              try {
-                localStorage.removeItem("cloudmind.engineToken");
-              } catch {
-                // 隐私模式等场景 localStorage 不可用：token 已在下方清空，重取走 server 档
-              }
-            }
-            sharedToken.value = "";
-            engineTokenReadyPromise = null;
+            invalidateEngineToken();
             void ensureEngineTokenReady().then(() => {
               if (!closedByCaller) open();
             });
@@ -672,10 +679,9 @@ export function useEngineClient(options?: EngineClientOptions) {
         const code = event?.code;
         // 调用方主动关闭 / 终态业务码：透传，不重连
         if (closedByCaller || (code !== undefined && TERMINAL_WS_CLOSE_CODES.has(code))) {
-          // A6：4401（token 失效/轮换）→ 作废就绪缓存，下次建连重取
+          // A6/F4：4401（token 失效/轮换）→ 作废就绪缓存 + 清 localStorage，下次建连重取
           if (code === 4401) {
-            engineTokenReadyPromise = null;
-            sharedToken.value = "";
+            invalidateEngineToken();
           }
           handlers.onClose?.(code, event?.reason);
           return;
