@@ -302,4 +302,70 @@ describe("handoff 仲裁统一（V1-V5 验收）", () => {
       warn.mockRestore();
     }
   });
+
+  it("R1 双 tab 先后消息竞态：B 的 book 不顶替 A 的 record（record 持久化 chainId 为权威锚点）", async () => {
+    const registry = new HandoffLoopRegistry();
+    const loopA = makeLoop();
+    const loopB = makeLoop();
+    registry.register("a1", "s1", loopA);
+    registry.register("a1", "s1", loopB);
+
+    // A 先发消息：无活跃链 → 本地签发 C1，job 尚未撞顶
+    const c1 = loopA.beginNewChain("a1", "s1");
+    // B 后发消息：registry 仲裁取消（无活跃链，A 本地代际不被轮换），B 本地签发 C2
+    await registry.cancel("a1", "s1", "user_message");
+    const c2 = loopB.beginNewChain("a1", "s1");
+    expect(c2).not.toBe(c1);
+
+    // A 的 job 先撞顶：book(C1) 入控制面并调度
+    await loopA.onWatermarkBook(bookInfo({ chainId: c1 }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({
+      status: "scheduled",
+      shift: 1,
+      chainId: c1,
+    });
+
+    // B 的 job 后撞顶：旧闩锁只比 B 本地代际（C2==C2）会放行顶替 A；
+    // 现在以 record 持久化 chainId（C1）为权威锚点，必须被拦
+    await loopB.onWatermarkBook(bookInfo({ chainId: c2, shift: 1 }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({
+      status: "scheduled",
+      shift: 1,
+      chainId: c1,
+    });
+
+    // A 的链正常续跑：续跑 job 带 C1，未被 B 打断
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(enqueued).toHaveLength(1));
+    expect(enqueued[0]!.chainId).toBe(c1);
+    expect(enqueued[0]!.signal.aborted).toBe(false);
+  });
+
+  it("R1 startResume 代际复核：续跑 record 与控制面权威代际不一致 → warn 不调度", async () => {
+    const loop = makeLoop();
+    const c1 = loop.beginNewChain("a1", "s1");
+    await loop.onWatermarkBook(bookInfo({ chainId: c1 }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", chainId: c1 });
+
+    // 定时器 pending 期间，外部路径把同 id record 换成 C2 权威代际（shift 2）
+    const c2 = loop.beginNewChain("a1", "s1"); // 活跃链存在 → 轮换出新代际
+    await manager.record(bookInfo({ chainId: c2, shift: 2 }));
+    await manager.markStatus("ho_a1_s1", "scheduled");
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await vi.advanceTimersByTimeAsync(200);
+      expect(enqueued).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recordId: "ho_a1_s1",
+          recordChainId: c1,
+          authorityChainId: c2,
+        }),
+        expect.stringContaining("[handoff] startResume"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

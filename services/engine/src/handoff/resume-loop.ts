@@ -2,6 +2,7 @@ import { logger } from "../logger.js";
 import { randomUUID } from "node:crypto";
 import {
   HANDOFF_RESUME_DELAY_MS,
+  isActiveHandoff,
   makeHandoffId,
   type HandoffBookInfo,
   type HandoffRecord,
@@ -83,14 +84,25 @@ export class HandoffResumeLoop {
       // 落盘窗口内的复核（下方 latest.status !== "pending"）是第二道防线。
       // V4：lost 与 aborted 同为终态（重启对账后现场已毁），旧链迟到 book
       // 同样只在代际匹配当前链时才放行——reconcile 语义不变。
+      // P2-1（2026-08-10 复审残余）：活跃 record 的持久化 chainId 是权威锚点——
+      // 双 tab 先后发消息时各 loop 本地 currentChainId 可能各自不同，B 的 book
+      // 即便与 B 本地代际相同也会顶替 A 的 record；改为比对 record chainId，
+      // 只有同链 book 才能覆盖/续跑。
       const existing = this.deps.manager.get(makeHandoffId(info.agentId, info.sessionId));
-      if (existing?.status === "aborted" || existing?.status === "lost") {
+      if (
+        existing !== undefined &&
+        isActiveHandoff(existing.status) &&
+        existing.chainId !== undefined
+      ) {
+        if (info.chainId !== existing.chainId) return;
+      } else if (existing?.status === "aborted" || existing?.status === "lost") {
         if (info.chainId === undefined || info.chainId !== this.currentChainId) return;
       } else if (
         existing !== undefined &&
         info.chainId !== undefined &&
         info.chainId !== this.currentChainId
       ) {
+        // 兼容迁移期旧数据（活跃 record 无 chainId）：退回本地代际比对
         return;
       }
       // 先同步标记：交接书事件可能早于旧 job 的 onDone 完成落盘，
@@ -138,6 +150,32 @@ export class HandoffResumeLoop {
     // REST 手动打断等外部路径可能已把状态改为 aborted：入队前复核，避免续跑复活
     const latest = this.deps.manager.get(record.id);
     if (!latest || latest.status !== "scheduled") {
+      this.current = undefined;
+      return;
+    }
+    // P2-1：续跑身份复核——要续跑的 record chainId 必须与控制面权威代际
+    // （latest.chainId）一致；不一致说明 record 已被其它链替换/覆盖，
+    // warn 记档、不调度（防旧链定时器把新链顶掉）。
+    const authorityChainId = latest.chainId;
+    if (
+      (record.chainId !== undefined &&
+        authorityChainId !== undefined &&
+        record.chainId !== authorityChainId) ||
+      (cur.chainId !== undefined &&
+        authorityChainId !== undefined &&
+        cur.chainId !== authorityChainId)
+    ) {
+      logger.warn(
+        {
+          agentId: record.agentId,
+          sessionId: record.sessionId,
+          recordId: record.id,
+          recordChainId: record.chainId,
+          loopChainId: cur.chainId,
+          authorityChainId,
+        },
+        "[handoff] startResume：续跑 record 代际与控制面权威代际不一致，不调度（warn 记档）",
+      );
       this.current = undefined;
       return;
     }

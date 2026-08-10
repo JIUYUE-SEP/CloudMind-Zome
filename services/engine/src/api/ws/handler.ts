@@ -151,7 +151,14 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                   });
                 } catch (err) {
                   logger.error({ err }, "[handoff] 续跑历史加载失败（不自动续跑）");
-                  void handoffLoop?.cancel(agentId, sessionId, "resume_history_failed");
+                  // R2（P3-1）：失败收尾同样走 registry 仲裁入口——该 agent+session
+                  // 维度下所有连接的 loop 一并取消 + 全局 record 标 aborted，
+                  // 不再直连本连接 loop.cancel 绕过仲裁面。
+                  if (context.handoffLoops) {
+                    void context.handoffLoops.cancel(agentId, sessionId, "resume_history_failed");
+                  } else {
+                    void handoffLoop?.cancel(agentId, sessionId, "resume_history_failed");
+                  }
                 }
               })();
             },
