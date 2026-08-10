@@ -9,6 +9,7 @@ import {
   HANDOFF_WRITING_GUIDANCE,
 } from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
+import { ModelApiModeRouter } from "../../src/provider/protocols/index.js";
 import { ContextPipeline, WATERMARK_REMINDER_PREFIX } from "../../src/context/pipeline.js";
 import { getTokenCounter } from "../../src/context/token-counter.js";
 import { logger } from "../../src/logger.js";
@@ -292,6 +293,64 @@ describe("runTurn", () => {
     // turn.end 在循环结束后发出且只发一次
     expect(events.at(-1)?.type).toBe("turn.end");
     expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
+  });
+
+  it("R2 不变量：runTurn 传入型号 ≠ provider.defaultModel 时 warn 一次（不 crash），预检口径仍按主型号", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const usedAdapters: string[] = [];
+      const router = new ModelApiModeRouter({
+        providerId: "ds-r2-warn",
+        provider: {
+          apiMode: "chat_completions" as const,
+          baseUrl: "https://api.example.com",
+          models: [
+            { id: "main", displayName: "Main", modelType: "llm" as const },
+            { id: "flash", displayName: "Flash", modelType: "llm" as const, apiMode: "responses" as const },
+          ],
+        },
+        defaultModel: "main",
+        createAdapter: (_providerId, apiMode) => {
+          const mode = apiMode ?? "chat_completions";
+          usedAdapters.push(mode);
+          return {
+            name: mode,
+            protocol: mode as LLMProviderProtocol,
+            supportsModel: () => true,
+            async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+              void params;
+              yield { type: "text.delta", delta: "ok" };
+              yield { type: "step.end" };
+            },
+          };
+        },
+      });
+
+      const turnInput = {
+        provider: router,
+        model: "flash",
+        messages: [userMessage("hi")],
+        tools: [],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map(),
+          approve: async () => true,
+          emit: () => {},
+        },
+        maxSteps: 5,
+      };
+      await runTurn(turnInput, () => {});
+      await runTurn(turnInput, () => {});
+
+      // chat 按实际型号 flash 走 responses 适配器；预检口径仍按 defaultModel=main（chat_completions）
+      expect(usedAdapters).toEqual(["responses"]);
+      expect(router.protocol).toBe("chat_completions");
+      // 同一 provider+型号只 warn 一次
+      expect(warn.mock.calls.filter((c) => String(c[1]).includes("runTurn 传入型号"))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("多步 ReAct：每步发 step.end，整轮只发一次 turn.end", async () => {

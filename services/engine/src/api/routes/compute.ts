@@ -404,13 +404,15 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       const validationError = validateOptionalBoolean(body[field], field);
       if (validationError) return reply.status(400).send({ error: validationError });
     }
-    if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
+    // R4：apiMode=null 表示显式清除型号级覆盖（回退 provider 级）；白名单只约束非空值
+    const rawApiMode = body.apiMode;
+    if (rawApiMode !== undefined && rawApiMode !== null && !isApiMode(rawApiMode)) {
       return reply.status(400).send({
         error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
       });
     }
     const existing = provider.models[idx];
-    provider.models[idx] = {
+    const updated: ModelInfo = {
       ...existing,
       ...(body.displayName !== undefined ? { displayName: body.displayName as string } : {}),
       ...(body.modelType !== undefined ? { modelType: body.modelType as ModelInfo["modelType"] } : {}),
@@ -425,8 +427,14 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...(body.supportsMultimodal !== undefined
         ? { supportsMultimodal: body.supportsMultimodal as boolean }
         : {}),
-      ...(body.apiMode !== undefined ? { apiMode: body.apiMode as ModelInfo["apiMode"] } : {}),
     };
+    if (rawApiMode === null) {
+      // R4：显式清除型号级覆盖，后续 chat 回落 provider 级 apiMode
+      delete updated.apiMode;
+    } else if (rawApiMode !== undefined) {
+      updated.apiMode = rawApiMode as ModelInfo["apiMode"];
+    }
+    provider.models[idx] = updated;
     await context.configRepository.save(config);
     return provider.models[idx];
   });

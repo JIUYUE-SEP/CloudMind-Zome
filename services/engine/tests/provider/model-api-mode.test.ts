@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type {
   LLMEvent,
   LLMChatParams,
@@ -8,6 +11,9 @@ import type {
   LLMProviderProtocol,
 } from "../../src/provider/types.js";
 import { ResilientLLMProvider } from "../../src/provider/resilient.js";
+import { ConfigRepository } from "../../src/config/repository.js";
+import { restoreDataDir } from "../helpers/env.js";
+import type { ProviderConfig } from "@mindcloud/shared";
 import {
   ModelApiModeRouter,
   hasModelApiModeOverride,
@@ -215,6 +221,145 @@ describe("ModelApiModeRouter（型号级 apiMode 覆盖）", () => {
       }),
     ).toBe(false);
     expect(hasModelApiModeOverride({ models: [] })).toBe(false);
+  });
+
+  it("R3：models 字段缺失（手写/旧版 config）按无覆盖处理，不抛 TypeError", () => {
+    expect(hasModelApiModeOverride({} as never)).toBe(false);
+  });
+
+  it("R1 热更新：型号表加 apiMode 后 Router 下一次 chat 即走 responses（活配置解析，无需重建/重启）", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "router-hot-update-"));
+    const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+    try {
+      const server = await startMockServer((req, res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        if (req.url?.startsWith("/responses")) {
+          res.end(
+            sse(`{"type":"response.output_text.delta","delta":"hi"}`) +
+              sse(`{"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`),
+          );
+          return;
+        }
+        res.end(
+          sse(`{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`),
+        );
+      });
+      servers.push(server);
+
+      const initialProvider = {
+        id: "ds",
+        displayName: "DeepSeek",
+        providerType: "openai" as const,
+        baseUrl: server.url,
+        apiKey: "sk-test",
+        apiMode: "chat_completions" as const,
+        models: [
+          { id: "deepseek-chat", displayName: "Chat", modelType: "llm" as const },
+          { id: "deepseek-v4-flash", displayName: "Flash", modelType: "llm" as const },
+        ],
+      };
+      const initial = {
+        providers: [initialProvider],
+        settings: {
+          memory: { compactThreshold: 0.8, keepRecent: 3, hotMemoryLimit: 10, warmMemoryLimit: 20 },
+        },
+      };
+      await fs.writeFile(path.join(tmpDir, "config.json"), JSON.stringify(initial), "utf-8");
+
+      const configRepo = new ConfigRepository();
+      const router = new ModelApiModeRouter({
+        providerId: "ds",
+        provider: initialProvider,
+        defaultModel: "deepseek-v4-flash",
+        resolveProvider: async () =>
+          (await configRepo.load()).providers.find((p) => p.id === "ds"),
+        getConfigFileStamp: () => configRepo.getConfigFileStamp(),
+      });
+
+      await collect(router, messagesFor("deepseek-v4-flash"));
+      expect(router.protocol).toBe("chat_completions");
+      expect(server.requests.map((r) => r.url)).toEqual(["/chat/completions"]);
+
+      // 模拟 REST PUT：给 flash 加 apiMode=responses（configRepo load→mutate→save 与 compute 路由同语义）
+      const config = await configRepo.load();
+      const flash = config.providers
+        .find((p) => p.id === "ds")!
+        .models.find((m) => m.id === "deepseek-v4-flash")!;
+      flash.apiMode = "responses";
+      await configRepo.save(config);
+
+      // runTurn 预检前会调 refresh：协议口径立即新（无需先 chat）
+      await router.refresh();
+      expect(router.protocol).toBe("responses");
+
+      // 下一次 chat 即走新协议，不需要重建 Router/重启
+      await collect(router, messagesFor("deepseek-v4-flash"));
+      expect(server.requests.map((r) => r.url)).toEqual(["/chat/completions", "/responses"]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      restoreDataDir(originalDataDir);
+    }
+  });
+
+  it("R1/R4：models 同引用变更后下一次 chat 按新生效 apiMode 路由；清除覆盖回落 provider 级", async () => {
+    const created: Array<{ apiMode: string | undefined }> = [];
+    const provider: Pick<
+      ProviderConfig,
+      "apiMode" | "models" | "apiKey" | "baseUrl" | "requestTimeout"
+    > = {
+      apiMode: "chat_completions",
+      baseUrl: "https://api.example.com",
+      models: [
+        { id: "flash", displayName: "Flash", modelType: "llm", apiMode: "responses" },
+      ],
+    };
+    const router = new ModelApiModeRouter({
+      providerId: "ds",
+      provider,
+      defaultModel: "flash",
+      createAdapter: (_providerId, apiMode) => {
+        created.push({ apiMode });
+        return stubAdapter(apiMode ?? "chat_completions");
+      },
+    });
+
+    await collect(router, messagesFor("flash"));
+    expect(created).toEqual([{ apiMode: "responses" }]);
+    expect(router.protocol).toBe("responses");
+
+    // 清除覆盖（R4 语义等价物）：下一次 chat 回落 provider 级 chat_completions
+    delete provider.models[0].apiMode;
+    await collect(router, messagesFor("flash"));
+    expect(created).toEqual([{ apiMode: "responses" }, { apiMode: "chat_completions" }]);
+    expect(router.protocol).toBe("chat_completions");
+  });
+
+  it("R5：defaultModel 与实际 chat 型号不一致时 protocol() 按主型号口径、chat 按实际型号路由", async () => {
+    const created: string[] = [];
+    const router = new ModelApiModeRouter({
+      providerId: "ds-r5",
+      provider: {
+        apiMode: "chat_completions" as const,
+        baseUrl: "https://api.example.com",
+        models: [
+          { id: "main", displayName: "Main", modelType: "llm" as const },
+          { id: "flash", displayName: "Flash", modelType: "llm" as const, apiMode: "responses" as const },
+        ],
+      },
+      defaultModel: "main",
+      createAdapter: (_providerId, apiMode) => {
+        created.push(apiMode ?? "chat_completions");
+        return stubAdapter(apiMode ?? "chat_completions");
+      },
+    });
+
+    expect(router.protocol).toBe("chat_completions");
+    await collect(router, messagesFor("flash"));
+    // chat 按实际型号走 responses 适配器
+    expect(created).toEqual(["responses"]);
+    // 预检口径仍按 defaultModel=main（无覆盖 → provider 级 chat_completions）
+    expect(router.protocol).toBe("chat_completions");
   });
 });
 

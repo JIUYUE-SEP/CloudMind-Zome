@@ -50,6 +50,9 @@ export const HANDOFF_PREV_BOOK_MAX = 3000;
 export const HANDOFF_SUMMARY_MAX = 2000;
 export const HANDOFF_WRITTEN_MAX = 3000;
 
+/** R2（B 方案不变量）：runTurn 型号 ≠ provider.defaultModel 的 warn 去重（每 provider+型号一次） */
+const routerModelMismatchWarned = new Set<string>();
+
 /**
  * 上下文水位主裁（改动一）：硬编码产品语义，不开放配置。
  * 0.7 = 提醒线：每回合至多追加一条 system 提醒后继续；0.9 = 撞顶线：跳出循环走兜底。
@@ -455,6 +458,29 @@ export async function runTurn(
   // 0.7-0.9 则先注入提醒再正常进循环（与循环内检查共享"每回合一次"语义）。
   // F1（协议感知预检）：chat_completions 回传不含 think → 剥；anthropic/responses
   // 真回传 think（占窗口）→ 保留计入，避免无实测兜底的首步低估。
+  // R1（型号表热更新）：预检前先让 provider 从活配置刷新协议口径（Router 实现；
+  // 其它 provider 无 refresh 直接跳过），保证 PUT 改 apiMode 后本轮预检即新口径。
+  await input.provider.refresh?.();
+  // R2（不变量）：protocol() 单值口径绑定 Router.defaultModel——runTurn 必须以
+  // defaultModel 发起；传入其它型号时预检口径可能与逐型号路由错位（think 块是否
+  // 占窗口判错），warn 一次留痕，不 crash。
+  if (input.provider.defaultModel !== undefined && input.model !== input.provider.defaultModel) {
+    const warnKey = `${input.provider.name}\u0000${input.model}`;
+    if (!routerModelMismatchWarned.has(warnKey)) {
+      routerModelMismatchWarned.add(warnKey);
+      logger.warn(
+        {
+          agentId: input.toolCtx.agentId,
+          provider: input.provider.name,
+          model: input.model,
+          defaultModel: input.provider.defaultModel,
+        },
+        `[watermark] runTurn 传入型号 ${input.model} 与 provider 预检主型号 ${input.provider.defaultModel} 不一致：` +
+          "protocol() 按主型号生效协议定口径，若二者协议族不同，think 计数/水位预检可能失真；" +
+          "不变量：runTurn 始终以 defaultModel 发起",
+      );
+    }
+  }
   const preUsed = contextUsedTokens(
     undefined,
     messages,

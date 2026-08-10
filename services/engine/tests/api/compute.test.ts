@@ -827,6 +827,34 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("R4：PUT apiMode:null 显式清除型号覆盖，回退 provider 级", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "model-apimode-clear",
+      displayName: "Model ApiMode Clear",
+      providerType: "openai",
+      baseUrl: "https://api.deepseek.com",
+      apiMode: "chat_completions",
+      models: [],
+    });
+    await authedRequest(app.server)
+      .post("/compute/providers/model-apimode-clear/models")
+      .send({ id: "deepseek-v4-flash", modelType: "llm", apiMode: "responses" });
+
+    const clearRes = await authedRequest(app.server)
+      .put("/compute/providers/model-apimode-clear/models/deepseek-v4-flash")
+      .send({ apiMode: null });
+    expect(clearRes.status).toBe(200);
+    expect(clearRes.body.apiMode).toBeUndefined();
+
+    const config = await context.configRepository.load();
+    const model = config.providers[0].models[0];
+    expect(model).not.toHaveProperty("apiMode");
+    // 清除后回退 provider 级口径
+    expect(config.providers[0].apiMode).toBe("chat_completions");
+    await app.close();
+  });
+
   it("rejects invalid model apiMode on POST/PUT", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/compute/providers").send({

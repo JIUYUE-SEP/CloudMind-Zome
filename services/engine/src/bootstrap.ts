@@ -417,6 +417,14 @@ async function main() {
         providerId: providerConfig.id,
         provider: providerConfig,
         defaultModel: agentConfig.modelId || agentConfig.model || "gpt-4o",
+        // R1（型号表热更新）：每次 chat/refresh 从 config.json 活配置解析生效
+        // apiMode——型号表 PUT 加/改/删覆盖后下一次调用即走新协议，无需重启；
+        // stamp 短缓存让配置未变时零读盘，变更时下一次调用立即感知
+        resolveProvider: async () => {
+          const config = await configRepo.load();
+          return config.providers.find((p) => p.id === providerConfig.id);
+        },
+        getConfigFileStamp: () => configRepo.getConfigFileStamp(),
       });
     }
     return createProtocolProvider(providerConfig.apiMode, protocolOptions);
@@ -446,6 +454,11 @@ async function main() {
           providerId: providerConfig.id,
           provider: providerConfig,
           defaultModel: agentConfig.modelId || agentConfig.model || "gpt-4o",
+          resolveProvider: async () => {
+            const config = await configRepo.load();
+            return config.providers.find((p) => p.id === providerConfig.id);
+          },
+          getConfigFileStamp: () => configRepo.getConfigFileStamp(),
         }),
         config: providerConfig,
       };

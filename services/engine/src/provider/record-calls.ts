@@ -30,9 +30,16 @@ export function withLLMCallRecording(
   agentId: string,
   providerInfo?: LLMCallProviderInfo,
 ): LLMProvider {
-  return {
+  const wrapped: LLMProvider = {
     name: provider.name,
-    protocol: provider.protocol,
+    // 用 getter 而非值快照：Router 的 protocol 会随活配置热更新（R1），
+    // resilient 降级切换当前 provider 时也要能取到对应协议（S2）
+    get protocol() {
+      return provider.protocol;
+    },
+    get defaultModel() {
+      return provider.defaultModel;
+    },
     supportsModel: (model: string) => provider.supportsModel(model),
     chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
       const inner = provider.chat(params);
@@ -76,4 +83,8 @@ export function withLLMCallRecording(
       })();
     },
   };
+  if (provider.refresh !== undefined) {
+    wrapped.refresh = () => provider.refresh!();
+  }
+  return wrapped;
 }

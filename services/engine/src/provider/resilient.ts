@@ -55,6 +55,16 @@ export class ResilientLLMProvider implements LLMProvider {
     return this.current.protocol;
   }
 
+  /** R2：主型号口径转发（runTurn 预检不变量检查用，取 primary 即 Router） */
+  get defaultModel(): string | undefined {
+    return this.primary.defaultModel;
+  }
+
+  /** R1：协议/路由口径刷新转发（Router 热更新；runTurn 预检前调用） */
+  async refresh(): Promise<void> {
+    await this.primary.refresh?.();
+  }
+
   supportsModel(model: string): boolean {
     return this.primary.supportsModel(model);
   }

@@ -90,6 +90,17 @@ export interface LLMProvider {
   name: string;
   /** F1：协议族标识（只读）；未声明时水位预检按保守口径（含 think）处理 */
   readonly protocol?: LLMProviderProtocol;
+  /**
+   * R2（B 方案不变量）：协议预检口径的主型号（ModelApiModeRouter 暴露）。
+   * runTurn 必须始终以该型号发起——protocol() 单值口径与逐型号路由的绑定
+   * 假设；未声明（旧实现/测试桩）时 runTurn 不做一致性检查。
+   */
+  readonly defaultModel?: string;
+  /**
+   * R1（型号表热更新）：在 runTurn 预检前刷新协议/路由口径（Router 从活配置
+   * 重算 defaultModel 的生效协议）；可选，旧实现缺省跳过。
+   */
+  refresh?(): Promise<void>;
   chat(params: LLMChatParams): AsyncIterable<LLMEvent>;
   supportsModel(model: string): boolean;
 }
