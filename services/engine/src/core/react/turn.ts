@@ -137,6 +137,14 @@ function assistantText(message: ChatMessage): string {
     .join("");
 }
 
+/** assistant 消息是否有可落盘内容（文本/思考/工具调用任一非空）——P1-2 空 content 不落盘 */
+function hasAssistantContent(message: ChatMessage): boolean {
+  if ((message.toolCalls?.length ?? 0) > 0) return true;
+  return message.content.some((c) =>
+    (c.type === "text" && Boolean(c.text)) || (c.type === "think" && Boolean(c.think)),
+  );
+}
+
 interface HandoffFootprintCall {
   name: string;
   arguments?: unknown;
@@ -171,10 +179,15 @@ function formatHandoffFootprint(
   return line;
 }
 
-/** 交接书文本机械截断（超限截断 + 省略号标注） */
+/** 交接书文本机械截断（P2：保尾切头 + 头部截断标注）：
+ * 三分法交接书【未来方向】在尾部最重要——截断时保留尾部，并标注头部已截，
+ * 避免下一棒拿到「有开头没方向」的半截书。 */
+const HANDOFF_TRUNCATE_PREFIX = "…（头部已截断）";
 function truncateHandoffText(text: string, max: number): string {
   if (text.length <= max) return text;
-  return text.slice(0, max - 1) + "…";
+  const keep = max - HANDOFF_TRUNCATE_PREFIX.length;
+  if (keep <= 0) return HANDOFF_TRUNCATE_PREFIX.slice(0, max);
+  return HANDOFF_TRUNCATE_PREFIX + text.slice(-keep);
 }
 
 function makeFallbackReply(
@@ -355,7 +368,9 @@ function contextUsedTokens(
     getTokenCounter().countMessages(messages, { stripThinking }) +
     getTokenCounter().countTools(tools);
   const measured =
-    result?.usage === undefined
+    result?.usage === undefined ||
+    !Number.isFinite(result.usage.promptTokens) ||
+    !Number.isFinite(result.usage.completionTokens)
       ? undefined
       : result.usage.promptTokens + result.usage.completionTokens;
   if (measured === undefined) return estimated;
@@ -560,21 +575,25 @@ export async function runTurn(
         })),
       );
     }
-    messages.push(result.assistantMessage);
-    appended.push(result.assistantMessage);
+    // P1-2 落盘前 guard：空 content 的 assistant 消息（provider 只发 step.end
+    // 等异常形状）不落盘不入历史——否则下一轮回传会产生 400/污染上下文。
+    if (hasAssistantContent(result.assistantMessage)) {
+      messages.push(result.assistantMessage);
+      appended.push(result.assistantMessage);
 
-    const stepMessages: ChatMessage[] = [result.assistantMessage];
-    if (result.toolMessages) {
-      messages.push(...result.toolMessages);
-      toolMessages.push(...result.toolMessages);
-      appended.push(...result.toolMessages);
-      stepMessages.push(...result.toolMessages);
-    }
+      const stepMessages: ChatMessage[] = [result.assistantMessage];
+      if (result.toolMessages) {
+        messages.push(...result.toolMessages);
+        toolMessages.push(...result.toolMessages);
+        appended.push(...result.toolMessages);
+        stepMessages.push(...result.toolMessages);
+      }
 
-    // step 级落盘（P1-6）：assistant 与其 tool 结果同批回调，崩溃只丢当前
-    // 执行中的 step；落盘失败中止本轮，热存储不留缺 tool 结果的半截 step
-    if (input.onStepAppended) {
-      await input.onStepAppended(stepMessages);
+      // step 级落盘（P1-6）：assistant 与其 tool 结果同批回调，崩溃只丢当前
+      // 执行中的 step；落盘失败中止本轮，热存储不留缺 tool 结果的半截 step
+      if (input.onStepAppended) {
+        await input.onStepAppended(stepMessages);
+      }
     }
 
     // 水位判据（改动一）：每步结束后（工具结果已追加、下一步发起前）算 r = U / W。

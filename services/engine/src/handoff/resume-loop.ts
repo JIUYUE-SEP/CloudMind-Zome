@@ -58,9 +58,18 @@ export class HandoffResumeLoop {
    * 用户消息新链入口（F1）：为入队的新 job 签发新代际。
    * abort 之后新链的 book 带此代际 → 入口闩锁放行；
    * 旧链在途 job 的迟到 book 带旧代际 → 入口闩锁拦截。
+   *
+   * 2026-08-10 语义修正（P1-4）：只在「打断了在途活跃链」（该 agent+session
+   * 存在 pending/scheduled/running 条目）时轮换；无活跃链时不轮换——
+   * 沿用当前值，从未签发过才按需生成。用户连发两条消息、第一条的 job 后撞顶
+   * 产 book 时，两条消息共用同一代际，book 不会被闩锁误杀。
    */
-  beginNewChain(): string {
-    this.currentChainId = randomUUID();
+  beginNewChain(agentId: string, sessionId: string): string {
+    if (this.deps.manager.activeFor(agentId, sessionId)) {
+      this.currentChainId = randomUUID();
+    } else if (this.currentChainId === undefined) {
+      this.currentChainId = randomUUID();
+    }
     return this.currentChainId;
   }
 
@@ -72,8 +81,10 @@ export class HandoffResumeLoop {
       // - 条目非 aborted 但代际不符：并发旧链迟到 book 晚于新链 record 到达时，
       //   状态已非 aborted，仍按代际拦截，不得覆盖成 pending 复活旧链。
       // 落盘窗口内的复核（下方 latest.status !== "pending"）是第二道防线。
+      // V4：lost 与 aborted 同为终态（重启对账后现场已毁），旧链迟到 book
+      // 同样只在代际匹配当前链时才放行——reconcile 语义不变。
       const existing = this.deps.manager.get(makeHandoffId(info.agentId, info.sessionId));
-      if (existing?.status === "aborted") {
+      if (existing?.status === "aborted" || existing?.status === "lost") {
         if (info.chainId === undefined || info.chainId !== this.currentChainId) return;
       } else if (
         existing !== undefined &&
@@ -165,29 +176,96 @@ export class HandoffResumeLoop {
     if (!cur || cur.record.id !== record.id || cur.record.shift !== record.shift) return;
     // 本 job 已产出交接书：completed 由链的下一环（handleBook）接管，避免状态闪回
     if (cur.booked) return;
+    // 代际复核（V5 恶性变体）：record 快照与控制面当前条目都必须与当前链代际
+    // 一致，否则视为旧链迟到完成——warn 记档、不转移、不 throw。
+    const latest = this.deps.manager.get(record.id);
+    if (!latest) {
+      logger.warn(
+        { agentId, sessionId, recordId: record.id, shift: record.shift },
+        "[handoff] onJobDone：控制面记录不存在，跳过收尾（记档不转移）",
+      );
+      return;
+    }
+    if (latest.status !== "running") {
+      logger.warn(
+        { agentId, sessionId, recordId: record.id, status: latest.status, shift: record.shift },
+        "[handoff] onJobDone：状态非 running，跳过收尾（记档不转移）",
+      );
+      return;
+    }
+    if (
+      cur.chainId !== undefined &&
+      record.chainId !== undefined &&
+      record.chainId !== cur.chainId
+    ) {
+      logger.warn(
+        { agentId, sessionId, recordId: record.id, recordChainId: record.chainId, currentChainId: cur.chainId },
+        "[handoff] onJobDone：job 快照代际与当前链不匹配（旧链迟到完成），跳过收尾",
+      );
+      return;
+    }
+    if (
+      cur.chainId !== undefined &&
+      latest.chainId !== undefined &&
+      latest.chainId !== cur.chainId
+    ) {
+      logger.warn(
+        { agentId, sessionId, recordId: record.id, recordChainId: latest.chainId, currentChainId: cur.chainId },
+        "[handoff] onJobDone：控制面代际与当前链不匹配，跳过收尾",
+      );
+      return;
+    }
     const isAbort = err !== undefined && cur.controller.signal.aborted;
     if (isAbort) return; // cancel() 已负责状态
     if (err !== undefined) {
       this.current = undefined;
-      const cancelled = await this.deps.manager.cancel(agentId, sessionId, "resume_failed");
-      for (const c of cancelled) this.deps.onUpdate?.(c);
+      try {
+        const cancelled = await this.deps.manager.cancel(agentId, sessionId, "resume_failed");
+        for (const c of cancelled) this.deps.onUpdate?.(c);
+      } catch (cancelErr) {
+        logger.warn(
+          { err: cancelErr, agentId, sessionId, recordId: record.id },
+          "[handoff] onJobDone 失败收尾被拦截（记档不崩溃）",
+        );
+      }
       return;
     }
     this.current = undefined;
-    const completed = await this.deps.manager.markStatus(record.id, "completed");
-    if (completed) this.deps.onUpdate?.(completed);
+    try {
+      const completed = await this.deps.manager.markStatus(record.id, "completed");
+      if (completed) this.deps.onUpdate?.(completed);
+    } catch (markErr) {
+      // 非法转移（如复核窗口内被外部改成终态）：warn 记档，绝不浮空炸进程
+      logger.warn(
+        { err: markErr, agentId, sessionId, recordId: record.id },
+        "[handoff] onJobDone 状态转移被拦截（记档不崩溃）",
+      );
+    }
   }
 
-  /** 用户消息/disconnect 打断：清定时器、abort 在途 job、控制面标 aborted */
-  async cancel(agentId: string, sessionId: string, reason: string): Promise<void> {
+  /**
+   * 打断：清定时器、abort 在途 job、控制面标 aborted。
+   * opts.global === false（V3 连接级取消）：只作用于本连接资源（定时器/在途
+   * job），不触碰全局 record——旧连接迟到 close 不得杀新连接活跃链。
+   */
+  async cancel(
+    agentId: string,
+    sessionId: string,
+    reason: string,
+    opts?: { global?: boolean },
+  ): Promise<void> {
     const cur = this.current;
+    const hadActive =
+      cur !== undefined || this.deps.manager.activeFor(agentId, sessionId) !== undefined;
     if (cur) {
       if (cur.timer !== undefined) clearTimeout(cur.timer);
       cur.controller.abort();
       this.current = undefined;
     }
-    // F1：打断即作废旧链代际——此后旧链在途 job 的迟到 book 一律被入口闩锁拦截
-    this.currentChainId = undefined;
+    // F1：打断即作废旧链代际——此后旧链在途 job 的迟到 book 一律被入口闩锁拦截。
+    // 无活跃链时不轮换（P1-4）：背靠背消息共用代际，第一条撞顶 book 不被误杀。
+    if (hadActive) this.currentChainId = undefined;
+    if (opts?.global === false) return;
     const cancelled = await this.deps.manager.cancel(agentId, sessionId, reason);
     for (const c of cancelled) this.deps.onUpdate?.(c);
   }

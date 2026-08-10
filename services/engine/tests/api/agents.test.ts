@@ -91,6 +91,26 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  it("POST /agents 重复 id → 409，不静默覆盖现有配置（P1-9，对照 models 端点）", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    const createRes = await authedRequest(app.server).post("/agents").send(agent);
+    expect(createRes.status).toBe(200);
+
+    const dup = await authedRequest(app.server)
+      .post("/agents")
+      .send({ ...agent, name: "Overwrite Attempt" });
+    expect(dup.status).toBe(409);
+    expect(dup.body.error).toContain("already exists");
+    expect(dup.body.error).toContain("a1");
+
+    // 原配置未被覆盖
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.name).toBe("A1");
+    await app.close();
+  });
+
   it("creates default SOUL.md and MIND.md for a new agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };

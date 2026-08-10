@@ -1336,3 +1336,132 @@ describe("上下文水位主裁（改动一）", () => {
     }
   });
 });
+
+describe("P1-3 usage NaN 防护", () => {
+  class NaNUsageToolProvider implements LLMProvider {
+    name = "nan-usage-tool";
+    calls = 0;
+    supportsModel() {
+      return true;
+    }
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      this.calls++;
+      const isSummary = params.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some(
+            (c) =>
+              c.type === "text" &&
+              (c.text.includes(CONTEXT_WATERMARK_SUMMARY_HINT) ||
+                c.text.includes(MAX_STEPS_SUMMARY_HINT)),
+          ),
+      );
+      if (!isSummary) {
+        yield {
+          type: "tool.call",
+          toolCallId: "tc_nan",
+          name: "dummy",
+          arguments: { value: "x".repeat(4000) },
+        };
+      } else {
+        yield { type: "text.delta", delta: "收尾" };
+      }
+      yield {
+        type: "step.end",
+        ...(isSummary ? {} : { usage: { promptTokens: Number.NaN, completionTokens: Number.NaN } }),
+      };
+    }
+  }
+
+  it("usage 为 NaN 时 measured 不污染：水位按估算正常撞顶，不空转到保险丝", async () => {
+    const provider = new NaNUsageToolProvider();
+    const events: LLMEvent[] = [];
+    const result = await runTurn(
+      {
+        provider,
+        model: "nan-usage-tool",
+        // 用户消息 + 工具定义估算 ~0.5W；工具结果追加后估算 >0.9W
+        messages: [userMessage("x".repeat(2000))],
+        tools: [
+          { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+        ],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["dummy", dummyTool]]),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+        contextWindow: 1000,
+        maxSteps: 20,
+      },
+      (e) => events.push(e),
+    );
+
+    // NaN 被守卫丢弃 → 回退本地估算并正常撞顶；老实现 NaN 比值永不触发，
+    // 会空转到 20 步保险丝（calls=21）
+    expect(result.watermarkStopped).toBe(true);
+    expect(Number.isFinite(result.watermarkUsed)).toBe(true);
+    expect(provider.calls).toBeLessThan(5);
+  });
+});
+
+describe("P1-2 空 assistant 不落盘", () => {
+  class EmptyAssistantProvider implements LLMProvider {
+    name = "empty-assistant";
+    supportsModel() {
+      return true;
+    }
+    async *chat(): AsyncIterable<LLMEvent> {
+      // 异常形状：只发 step.end，无任何内容（历史上有网关空流/截断产生空 assistant）
+      yield { type: "step.end" };
+    }
+  }
+
+  it("空 content 的 assistant 消息不落盘不入历史（下轮不 400）", async () => {
+    const persisted: ChatMessage[][] = [];
+    const events: LLMEvent[] = [];
+    const result = await runTurn(
+      {
+        provider: new EmptyAssistantProvider(),
+        model: "empty-assistant",
+        messages: [userMessage("hi")],
+        tools: [],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map(),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+        onStepAppended: async (msgs) => {
+          persisted.push(msgs);
+        },
+      },
+      (e) => events.push(e),
+    );
+
+    expect(persisted).toEqual([]);
+    expect(result.appended).toEqual([]);
+    expect(events.some((e) => e.type === "turn.end")).toBe(true);
+
+    // 再跑一轮（模拟下一轮）：历史没有被空 assistant 污染，消息数保持原样
+    const again = await runTurn(
+      {
+        provider: new EmptyAssistantProvider(),
+        model: "empty-assistant",
+        messages: [userMessage("hi")],
+        tools: [],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map(),
+          approve: async () => true,
+          emit: () => {},
+        },
+      },
+      () => {},
+    );
+    expect(again.appended).toEqual([]);
+  });
+});

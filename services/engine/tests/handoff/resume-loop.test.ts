@@ -244,7 +244,7 @@ describe("HandoffResumeLoop 续跑循环", () => {
   it("A1 代际闩锁（F1）：abort 后新链 book 正常调度续跑；旧链迟到 book 两阶段均被拦", async () => {
     const loop = makeLoop(50);
     // 首棒：新用户消息签发新链代际
-    const oldChainId = loop.beginNewChain();
+    const oldChainId = loop.beginNewChain("a1", "s1");
     await loop.onWatermarkBook(bookInfo({ chainId: oldChainId }));
     expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", shift: 1 });
     await vi.advanceTimersByTimeAsync(50);
@@ -261,7 +261,7 @@ describe("HandoffResumeLoop 续跑循环", () => {
     expect(enqueued).toHaveLength(1);
 
     // abort 后新用户消息新链：beginNewChain 换新代际，新 job 撞顶 book 正常 record
-    const newChainId = loop.beginNewChain();
+    const newChainId = loop.beginNewChain("a1", "s1");
     await loop.onWatermarkBook(bookInfo({ shift: 1, chainId: newChainId }));
     expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", shift: 1 });
     await vi.advanceTimersByTimeAsync(50);

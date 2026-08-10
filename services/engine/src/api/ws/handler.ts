@@ -137,7 +137,16 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
                         ? (event) => tagHandoffChain(event, chainId)
                         : emitJobEvent,
                     onDone: (err) => {
-                      void handoffLoop?.onJobDone(record, agentId, sessionId, err);
+                      // 2026-08-10：onJobDone 内部已做代际复核 + markStatus 防御，
+                      // 这里再兜一层 catch，绝不浮空 Promise 炸进程
+                      void handoffLoop
+                        ?.onJobDone(record, agentId, sessionId, err)
+                        .catch((doneErr) => {
+                          logger.warn(
+                            { err: doneErr, agentId, sessionId },
+                            "[handoff] onJobDone 意外异常已被捕获（不浮空）",
+                          );
+                        });
                     },
                   });
                 } catch (err) {
@@ -187,9 +196,13 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
       logger.info({ agentId, sessionId }, "[ws] 私聊连接建立");
       socket.on("close", (code: number, reason: Buffer) => {
         logger.info({ agentId, sessionId, code, reason: reason.toString() }, "[ws] 私聊连接关闭");
-        if (handoffLoop) context.handoffLoops?.unregister(agentId, sessionId, handoffLoop);
-        // 断连即打断：清定时器、abort 在途续跑、控制面标 aborted（交接书仍在历史）
-        void handoffLoop?.cancel(agentId, sessionId, "disconnect");
+        // 断连统一走 registry 仲裁面（V3）：旧连接迟到 close 只取消本连接资源，
+        // 只有无其他活跃连接时才落全局 record aborted（交接书仍在历史）
+        if (handoffLoop && context.handoffLoops) {
+          void context.handoffLoops.cancelConnection(agentId, sessionId, handoffLoop, "disconnect");
+        } else {
+          void handoffLoop?.cancel(agentId, sessionId, "disconnect");
+        }
       });
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
@@ -288,12 +301,17 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
-          // 用户消息 = abort 打断：续跑链（定时器/在途 job）立即取消，
-          // 本条消息成为新的一棒（正常对话路径不受影响）
-          await handoffLoop?.cancel(agentId, sessionId, "user_message");
-          // F1：新用户消息 = 新链，签发新代际；新 job 撞顶的 book 带此代际，
-          // 不会被 abort 遗留的入口闩锁误拦
-          const chainId = handoffLoop?.beginNewChain();
+          // 用户消息 = abort 打断：统一走 registry 仲裁面——该 agent+session
+          // 维度下所有连接的 loop 一并取消（清定时器 + abort 在途 job）+ 全局
+          // record 标 aborted。不再存在「只扫本连接」的路径。
+          if (context.handoffLoops) {
+            await context.handoffLoops.cancel(agentId, sessionId, "user_message");
+          } else {
+            await handoffLoop?.cancel(agentId, sessionId, "user_message");
+          }
+          // F1：新用户消息 = 新链，签发新代际；只在打断了在途活跃链时轮换，
+          // 无活跃链时沿用当前代际（P1-4：连发两条消息不误杀第一条的 book）
+          const chainId = handoffLoop?.beginNewChain(agentId, sessionId);
 
           const userMessage: ChatMessage = {
             id: randomUUID(),

@@ -121,7 +121,7 @@ describe("Handoff API", () => {
 
     const res = await authedRequest(app.server).delete(`/handoff/${record.id}`);
     expect(res.status).toBe(200);
-    expect(cancel).toHaveBeenCalledWith("a1", "s1", "manual");
+    expect(cancel).toHaveBeenCalledWith("a1", "s1", "manual", { global: true });
     expect(res.body).toMatchObject({ status: "aborted", abortReason: "manual" });
   });
 });

@@ -19,6 +19,7 @@ function toSummary(record: HandoffRecord) {
     updatedAt: record.updatedAt,
     resumeJobId: record.resumeJobId,
     abortReason: record.abortReason,
+    chainId: record.chainId,
   };
 }
 
@@ -52,9 +53,10 @@ export async function registerHandoffRoutes(app: FastifyInstance, context: ApiCo
     const manager = context.handoffManager;
     const record = manager?.get(id);
     if (!manager || !record) return reply.status(404).send({ error: "Handoff not found" });
-    // P1-1：与用户消息打断同语义——先经活跃 loop 清定时器 + abort 在途 job
-    // （含 running 期），再落控制面。无 loop（如 REST-only 调用方）时由 manager.abort 兜底。
-    await context.handoffLoops?.cancelAll(record.agentId, record.sessionId, "manual");
+    // 2026-08-10：与用户消息打断同语义，统一走 registry 仲裁面——先经该
+    // agent+session 全部活跃 loop 清定时器 + abort 在途 job（含 running 期），
+    // 再落控制面。无 loop（如 REST-only 调用方）时由 manager.abort 兜底。
+    await context.handoffLoops?.cancel(record.agentId, record.sessionId, "manual");
     const updated = await manager.abort(id, "manual");
     return toSummary(updated!);
   });

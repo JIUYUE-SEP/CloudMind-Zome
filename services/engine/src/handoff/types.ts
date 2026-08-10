@@ -34,6 +34,11 @@ export interface HandoffRecord {
   resumeJobId?: string;
   /** 终态成因（aborted/lost 时填写） */
   abortReason?: string;
+  /**
+   * 链代际标记（F1，持久化）：首棒入控制面时写入，续跑棒继承；
+   * 落盘到 handoff-state.json，重启后闩锁/对账仍可追溯旧链代际。
+   */
+  chainId?: string;
 }
 
 /** handoff-state.json 文件形状（DocumentStore 盖 schemaVersion） */

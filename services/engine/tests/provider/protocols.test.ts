@@ -884,7 +884,7 @@ describe("SSE 韧性（review P2-1 补充测试）", () => {
     });
   });
 
-  it("空流：responses 报缺终态；anthropic 容错收尾 step.end", async () => {
+  it("空流：responses 报缺终态；anthropic 空流判死（P1-2，可重试分类）", async () => {
     const server = await startMockServer((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end();
@@ -901,8 +901,86 @@ describe("SSE 韧性（review P2-1 补充测试）", () => {
     expect(String(r1.error)).toContain("终态事件");
 
     const a1 = await collect(new AnthropicMessagesProvider("k", server.url), params);
-    expect(a1.error).toBeUndefined();
-    expect(a1.events).toEqual([{ type: "step.end" }]);
+    expect(a1.events).toHaveLength(0);
+    expect(a1.error).toBeInstanceOf(ProviderError);
+    expect(String(a1.error)).toContain("空流");
+    expect((a1.error as ProviderError).retryable).toBe(true);
+  });
+
+  it("P1-2：anthropic 空流 → resilient 重试成功（无空 assistant 落盘，下轮不 400）", async () => {
+    let calls = 0;
+    const server = await startMockServer((_req, res) => {
+      calls++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (calls === 1) {
+        // 第一次：空流（无任何事件即结束）
+        res.end();
+        return;
+      }
+      res.end(
+        sse(`{"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":1}}}`) +
+          sse(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+          sse(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`) +
+          sse(`{"type":"message_stop"}`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new AnthropicMessagesProvider("k", server.url);
+    const resilient = new ResilientLLMProvider(provider, { maxRetries: 1, sleep: async () => {} });
+    const { events, error } = await collect(resilient, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(calls).toBe(2);
+    // 空流没有产出任何事件；重试成功路径只含真实内容，不携带空 assistant 形状
+    expect(events).toMatchObject([{ type: "text.delta", delta: "ok" }, { type: "step.end" }]);
+  });
+});
+
+describe("P1-3 usage 非有限值防护", () => {
+  it("openai-compatible：usage 缺字段（undefined）→ step.end 不带 usage，不产 NaN", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}`) +
+          sse(`{"choices":[],"usage":{"total_tokens":8}}`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new OpenAICompatibleChatProvider("k", `${server.url}/v1`);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-chat",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events.at(-1)).toEqual({ type: "step.end", finishReason: "stop" });
+    expect(events.at(-1)).not.toHaveProperty("usage");
+  });
+
+  it("openai-compatible：usage 非有限值 → 同样丢弃，不产 NaN", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}`) +
+          sse(`{"choices":[],"usage":{"prompt_tokens":null,"completion_tokens":null}}`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new OpenAICompatibleChatProvider("k", `${server.url}/v1`);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-chat",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events.at(-1)).toEqual({ type: "step.end", finishReason: "stop" });
+    expect(events.at(-1)).not.toHaveProperty("usage");
   });
 });
 

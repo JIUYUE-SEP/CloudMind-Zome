@@ -329,10 +329,11 @@ describe("水位撞顶换班移交（交接书消息载体）", () => {
     });
     const material = textOf(provider.writeParams[0]!.messages[1]!);
     const prevSection = material.split("【上一棒交接书】")[1]!.split("【本棒回顾】")[0]!.trim();
-    expect(prevSection).toContain("第 2/5 棒");
+    // P2：保尾切头——头部被标注截断，正文保留尾部
+    expect(prevSection.startsWith("…（头部已截断）")).toBe(true);
+    expect(prevSection).not.toContain("第 2/5 棒");
     expect(prevSection).not.toContain("窗口里的旧交接书");
     expect(prevSection.length).toBe(3000);
-    expect(prevSection.endsWith("…")).toBe(true);
   });
 
   it("写作调用 abort（K2）：快速失败降级为兜底总结，交接书仍随 turn 产出", async () => {
@@ -355,19 +356,22 @@ describe("水位撞顶换班移交（交接书消息载体）", () => {
   it("机械上限（K3）：本棒回顾素材截 2000、写作产出内容截 3000", async () => {
     const provider = new HandoffWatermarkProvider({
       summaryText: "x".repeat(2500),
-      writeText: WRITTEN_BOOK + "y".repeat(3500),
+      // P2：保尾切头——超长产出把三分法内容放尾部，截断后【未来方向】必须存活
+      writeText: "y".repeat(3500) + WRITTEN_BOOK,
     });
     const result = await runWatermarkHandoff(provider);
 
     const material = textOf(provider.writeParams[0]!.messages[1]!);
     const summarySection = material.split("【本棒回顾】")[1]!.trim();
     expect(summarySection.length).toBe(2000);
-    expect(summarySection.endsWith("…")).toBe(true);
+    expect(summarySection.startsWith("…（头部已截断）")).toBe(true);
 
     const bookText = textOf(result.handoffBook!);
     const content = bookText.slice(bookText.indexOf("- 内容：") + "- 内容：".length).trim();
     expect(content.length).toBe(3000);
-    expect(content.endsWith("…")).toBe(true);
+    expect(content.startsWith("…（头部已截断）")).toBe(true);
+    // P2：尾部【未来方向】必须存活（下一棒直接干活的关键）
+    expect(content).toContain("【未来方向】");
     expect(content).toContain("【任务目的】");
   });
 

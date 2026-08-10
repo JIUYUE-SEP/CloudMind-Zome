@@ -230,6 +230,32 @@ describe("ResilientLLMProvider", () => {
     await iterator.next();
     expect(resilient.protocol).toBe("anthropic");
   });
+
+  it("P1-1：消费方中途 return → 内层生成器 finally 执行（连接/包装器收尾不悬挂）", async () => {
+    let innerFinally = false;
+    const provider: LLMProvider = {
+      name: "inner-cleanup",
+      supportsModel: () => true,
+      async *chat() {
+        try {
+          yield { type: "text.delta", delta: "part" };
+          yield { type: "text.delta", delta: "more" };
+          yield { type: "step.end" };
+        } finally {
+          innerFinally = true;
+        }
+      },
+    };
+    const resilient = new ResilientLLMProvider(provider, { maxRetries: 0, sleep: noSleep });
+
+    const iterator = resilient.chat({ model: "m", messages: [] })[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value).toEqual({ type: "text.delta", delta: "part" });
+
+    // 消费方（SSE 连接 cancel / record 包装器 finally）中途 return
+    await iterator.return?.();
+    expect(innerFinally).toBe(true);
+  });
 });
 
 describe("OpenAIProvider 配置透传", () => {

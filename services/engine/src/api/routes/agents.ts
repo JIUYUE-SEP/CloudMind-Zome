@@ -86,6 +86,11 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     if (handoffError) {
       return reply.status(400).send({ error: handoffError });
     }
+    // P1-9：重复 id 显式 409（对照 models 端点），不静默覆盖现有配置
+    const existing = await context.agentRepository.get(config.id);
+    if (existing) {
+      return reply.status(409).send({ error: `Agent id already exists: ${config.id}` });
+    }
     await context.agentRepository.save(config.id, config);
     // 新建 Agent 生成默认 SOUL.md（人格模板）与 MIND.md（空经验档案）；已存在不覆盖
     await ensureMindFiles(config.id);

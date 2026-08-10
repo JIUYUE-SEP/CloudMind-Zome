@@ -620,7 +620,11 @@ export class AgentWorker {
               continue;
             }
             let body = content.trim();
-            if (body.length > PER_SKILL_CAP) body = `…（截断）`;
+            // P1-5：整段替换改为「保留前 4000 字符 + 截断标注」——截断标注
+            // 让模型知道正文不完整（不假装按规程执行）；total 按截断后真实长度累加
+            if (body.length > PER_SKILL_CAP) {
+              body = body.slice(0, PER_SKILL_CAP) + "\n…（技能正文超长，已截断保留前 4000 字符）";
+            }
             if (total + body.length > TOTAL_CAP) {
               logger.warn(`[skill] 规程自动恢复达总量上限（${TOTAL_CAP}），剩余技能跳过`);
               break;

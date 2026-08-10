@@ -217,6 +217,8 @@ export class AnthropicMessagesProvider implements LLMProvider {
       let usage: { promptTokens: number; completionTokens: number } | undefined;
       let finishReason: string | undefined;
       let stepEnded = false;
+      /** 是否已产出任何可见内容（文本/思考/工具调用）——空流判死用（P1-2） */
+      let emittedContent = false;
 
       for await (const raw of data) {
         let event: AnthropicEvent;
@@ -250,8 +252,10 @@ export class AnthropicMessagesProvider implements LLMProvider {
           case "content_block_delta": {
             const delta = event.delta;
             if (delta?.type === "text_delta" && delta.text) {
+              emittedContent = true;
               yield { type: "text.delta", delta: delta.text };
             } else if (delta?.type === "thinking_delta" && delta.thinking) {
+              emittedContent = true;
               yield { type: "thinking.delta", delta: delta.thinking };
             } else if (delta?.type === "input_json_delta" && event.index !== undefined && delta.partial_json) {
               const buf = toolBuffers.get(event.index);
@@ -265,6 +269,7 @@ export class AnthropicMessagesProvider implements LLMProvider {
             if (event.index === undefined) break;
             const buf = toolBuffers.get(event.index);
             if (buf) {
+              emittedContent = true;
               yield {
                 type: "tool.call",
                 toolCallId: buf.id,
@@ -306,8 +311,18 @@ export class AnthropicMessagesProvider implements LLMProvider {
         }
       }
 
-      // 流结束但未收到 message_stop（网关截断）：能救则救，正常收尾
+      // 流结束但未收到 message_stop（网关截断，P1-2）：
+      // - 累积内容为空 → 空流判死，抛错走重试分类（与 openai-responses 同口径
+      //   显式报错；首事件前失败，resilient 可重试/降级，不留空 assistant 落盘）；
+      // - 非空半截 → 容错收尾保留（内容已上屏，不丢）。
       if (!stepEnded) {
+        if (!emittedContent) {
+          throw new ProviderError(
+            this.name,
+            "Anthropic SSE 流提前结束且无任何内容（空流）",
+            { retryable: true },
+          );
+        }
         yield {
           type: "step.end",
           ...(finishReason ? { finishReason } : {}),

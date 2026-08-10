@@ -92,32 +92,45 @@ export class ResilientLLMProvider implements LLMProvider {
       while (current) {
         for (let attempt = 0; ; attempt++) {
           const iterator = current.chat(params)[Symbol.asyncIterator]();
-          let first: IteratorResult<LLMEvent>;
           try {
-            first = await iterator.next();
-          } catch (err) {
-            // 首事件前的失败才可重试/降级
-            const retryable = isRetryableError(err);
-            attempts.push(`${current.name}#${attempt + 1}: ${String(err)}`);
-            if (retryable && attempt < maxRetries) {
-              const delay = backoffDelay(attempt);
-              logger.warn(
-                `[resilient] provider ${current.name} 第 ${attempt + 1} 次调用失败（可重试），${delay}ms 后重试：${String(err)}`,
-              );
-              await sleep(delay);
-              continue;
+            let first: IteratorResult<LLMEvent>;
+            try {
+              first = await iterator.next();
+            } catch (err) {
+              // 首事件前的失败才可重试/降级
+              const retryable = isRetryableError(err);
+              attempts.push(`${current.name}#${attempt + 1}: ${String(err)}`);
+              if (retryable && attempt < maxRetries) {
+                const delay = backoffDelay(attempt);
+                logger.warn(
+                  `[resilient] provider ${current.name} 第 ${attempt + 1} 次调用失败（可重试），${delay}ms 后重试：${String(err)}`,
+                );
+                await sleep(delay);
+                continue;
+              }
+              if (!retryable) {
+                logger.warn(`[resilient] provider ${current.name} 不可重试错误，直接降级/终态：${String(err)}`);
+              }
+              break;
             }
-            if (!retryable) {
-              logger.warn(`[resilient] provider ${current.name} 不可重试错误，直接降级/终态：${String(err)}`);
+            // 首事件成功：yield 并转发剩余；此后失败直接上抛，绝不重试
+            if (!first.done) yield first.value;
+            for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+              yield next.value;
             }
-            break;
+            return;
+          } finally {
+            // P1-1：消费方中途 return（SSE 连接 cancel / record 包装器 finally 提前
+            // 收尾）时，内层生成器必须显式 return()——否则其 finally（连接释放/清理）
+            // 不会执行，产生悬挂连接与未收尾状态。
+            if (iterator.return) {
+              try {
+                await iterator.return();
+              } catch {
+                // 内层收尾异常不阻断外层（避免二次抛错掩盖主路径）
+              }
+            }
           }
-          // 首事件成功：yield 并转发剩余；此后失败直接上抛，绝不重试
-          if (!first.done) yield first.value;
-          for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-            yield next.value;
-          }
-          return;
         }
 
         // 当前 provider 放弃 → 依次取备用

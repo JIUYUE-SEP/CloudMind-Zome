@@ -69,6 +69,7 @@ export class HandoffManager {
       status: "pending",
       shift: info.shift,
       maxShifts: info.maxShifts,
+      chainId: info.chainId,
       ...(info.bookMessageId !== undefined ? { bookMessageId: info.bookMessageId } : {}),
       bookText: info.bookText,
       used: info.used,

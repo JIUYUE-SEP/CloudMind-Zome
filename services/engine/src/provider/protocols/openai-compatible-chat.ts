@@ -86,11 +86,16 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
 
       for await (const chunk of response) {
         // P4-5：include_usage 的末块带 usage（choices 为空）
+        // P1-3：usage 取值加 isFinite 守卫——网关缺字段/返回非有限值时保持
+        // undefined，不产 NaN 污染水位计算与用量落档
         if (chunk.usage) {
-          usage = {
-            promptTokens: chunk.usage.prompt_tokens,
-            completionTokens: chunk.usage.completion_tokens,
-          };
+          const promptTokens = chunk.usage.prompt_tokens;
+          const completionTokens = chunk.usage.completion_tokens;
+          if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) {
+            usage = { promptTokens, completionTokens };
+          } else {
+            usage = undefined;
+          }
         }
         const choice = chunk.choices[0];
         if (choice?.finish_reason) {

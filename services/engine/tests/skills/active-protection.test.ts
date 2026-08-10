@@ -241,6 +241,39 @@ describe("②③ 自动重取", () => {
     expect(hasRestore).toBe(false);
   });
 
+  it("P1-5：超长技能正文截断保留前 4000 字符 + 标注；total 按截断后真实长度累加", async () => {
+    await seedSummary(["code-review", "writing"]);
+    const longBody = "A".repeat(5000);
+    const provider = new CapturingProvider();
+    const worker = makeWorker(provider, {
+      list: async () => [],
+      getContent: async () => longBody,
+      recordUsage: async () => {},
+      readHistory: async () => [],
+      invalidate: () => {},
+    });
+
+    worker.enqueue({ id: "j1", sessionId: "s1", messages: [userMessage("hi")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const messages = provider.capturedParams?.messages ?? [];
+    const textOf = (m: ChatMessage) =>
+      m.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    const restore = messages.find((m) => m.role === "system" && textOf(m).includes("规程自动恢复"));
+    expect(restore).toBeTruthy();
+    const restoreText = textOf(restore!);
+
+    // 截断标注 + 保留前 4000 字符（不整段丢弃）
+    expect(restoreText).toContain("…（技能正文超长，已截断保留前 4000 字符）");
+    expect(restoreText).toContain("A".repeat(4000));
+    expect(restoreText).not.toContain("A".repeat(4001));
+    // total 按截断后真实长度累加：两个 4000+ 标注的正文总长 > 8000 总量上限，
+    // 第二个技能被跳过（老实现截成 5 字标注会让两个都塞进去）
+    expect(restoreText.match(/—— ([^ ]+) ——/g)).toHaveLength(1);
+    expect(restoreText).toContain("code-review");
+    expect(restoreText).not.toContain("writing");
+  });
+
   it("摘要无 usedSkills：不注入恢复消息", async () => {
     await seedSummary();
     const provider = new CapturingProvider();
