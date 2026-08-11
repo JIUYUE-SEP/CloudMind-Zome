@@ -21,7 +21,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Agents
 
 - `GET /agents` — 列出所有 Agent
-- `POST /agents` — 创建 Agent
+- `POST /agents` — 创建 Agent（**重复 id 返回 409**，不静默覆盖现有配置）
 - `GET /agents/:id` — 获取 Agent
 - `PUT /agents/:id` — 更新 Agent（**合并语义**：未传字段保留原值；显式清空传空数组/空串。2026-08-01 前为整体覆盖，部分更新会丢失未传字段）
 - `DELETE /agents/:id` — 删除 Agent
@@ -55,19 +55,19 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /sessions/:id` — 获取会话
 - `PUT /sessions/:id` — 更新会话
 - `DELETE /sessions/:id` — 删除会话
-- `GET /sessions/:id/messages?limit=xxx` — 获取会话历史消息（合并各成员仓库：按消息 id 去重，assistant/tool 消息带 `agentId` 归属标注，`limit` 为合并后总量）
+- `GET /sessions/:id/messages?limit=xxx` — 获取会话历史消息（合并各成员仓库：按消息 id 去重，assistant/tool 消息带 `agentId` 归属标注，`limit` 为合并后总量；limit clamp 缺省 100、上限 500，非法值回落缺省）
 - WebSocket `GET /ws/sessions/:sessionId` — 群聊实时对话
 
 ### Compute
 
 - `GET /compute/providers` — 列出 Provider
-- `POST /compute/providers` — 创建 Provider
-- `PUT /compute/providers/:id` — 更新 Provider
-- `DELETE /compute/providers/:id` — 删除 Provider
+- `POST /compute/providers` — 创建 Provider（`models` 数组逐型号走白名单校验，重复 id 返回 400）
+- `PUT /compute/providers/:id` — 更新 Provider（改 baseUrl/apiKey/apiMode/超时后，引用它的 worker 会被退役重建，下一次调用即生效）
+- `DELETE /compute/providers/:id` — 删除 Provider（引用它的 worker 一并退役；删除后相关 agent 报"Provider 不存在"明确错误，不会回落旧快照）
 - `POST /compute/providers/:id/test` — 测试 Provider 连接
 - `GET /compute/usage` — 获取用量统计。实时扫描 `DATA_DIR/agents/*/llm_calls.jsonl`（逐行流式读，无 100MB 上限；不缓存）。响应骨架 `{ dates, tokens, byAgent }`：`dates: [{ date, promptTokens, completionTokens, calls, errorCalls }]`（`date` 为本地时区 `YYYY-MM-DD`）、`tokens: [{ provider, model, promptTokens, completionTokens, calls }]`（provider+model 联合键，缺省 provider 记 `"unknown"`）、`byAgent: [{ agentId, promptTokens, completionTokens, calls }]`。仅统计 token 用量，不折算费用；token 为 0 的历史记录照常计入调用数
-- `POST /compute/providers/:id/models` — 为 Provider 添加模型
-- `PUT /compute/providers/:id/models/:modelId` — 更新模型
+- `POST /compute/providers/:id/models` — 为 Provider 添加模型（字段同 `buildModelFromBody` 白名单校验；型号 id 已存在返回 409）
+- `PUT /compute/providers/:id/models/:modelId` — 更新模型（`id` 不可改；`apiMode` 接受三族值，传 `null` 表示显式清除型号级覆盖、回退 provider 级）
 - `DELETE /compute/providers/:id/models/:modelId` — 删除模型
 
 **Provider 配置字段（`ProviderConfig`）**：
@@ -82,10 +82,32 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `maxRetries` | number | 2 | 同一 Provider 失败重试次数（resilient 层） |
 | `apiMode` | `"responses" \| "anthropic" \| "chat_completions"` | `chat_completions` | 协议族选择（2026-08-08）：responses 与 anthropic 为主路，chat 为兼容层；POST/PUT 校验三值，非法值 400 |
 
+**型号字段（`ModelInfo`，POST/PUT 模型与 POST Provider 的 `models` 数组同口径校验）**：
+
+| 字段 | 类型 | 缺省 | 说明 |
+|---|---|---|---|
+| `id` | string | — | 型号 id（必填，trim 后非空；PUT 时只能由路径决定，body 中改 id 返回 400） |
+| `displayName` | string | modelId | 显示名（提供了就必须非空） |
+| `modelType` | `"llm" \| "embedding" \| "image" \| "stt"` | — | 型号类型白名单，非法值 400 |
+| `contextWindow` | number | — | 可选正整数（上下文窗口，驱动水位 W 与 pipeline 预算） |
+| `maxOutputTokens` | number | — | 可选正整数 |
+| `supportsReasoning` / `supportsToolCalling` / `supportsMultimodal` | boolean | — | 能力标记，可选 |
+| `apiMode` | `"responses" \| "anthropic" \| "chat_completions"` | provider 级 | 型号级协议覆盖（2026-08-10 B 方案）：缺省 = 沿用 `ProviderConfig.apiMode`；`null` 仅 PUT 模型时用于显式清除覆盖 |
+
 > `apiMode=responses`：POST `{baseURL}/responses`（input items / SSE 终态事件携带 usage）；
 > `apiMode=anthropic`：POST `{baseURL}/anthropic/v1/messages`（DeepSeek Anthropic 兼容端点，
 > baseUrl 以 `/anthropic` 或 `/anthropic/v1` 结尾时不重复拼接）；
 > `apiMode=chat_completions`（缺省）：OpenAI Chat Completions 兼容层，行为与迁移前一致。
+> 型号级覆盖经 `ModelApiModeRouter` 按 `(providerId, effectiveApiMode)` 选路：型号无覆盖 → provider 级 → chat_completions；型号表 PUT 后下一次调用即走新协议（活配置 + config.json mtime/size 短缓存热更），无需重启。
+
+### Handoffs（换班移交）
+
+上下文水位撞顶（90%）时本轮不静默死亡，而是产出 `[交接书]` system 消息并进入**自动续跑**（换班移交，见架构文档 §4.3）。以下 REST 端点读写控制面 `handoff-state.json`：
+
+- `GET /handoff?agentId=xxx&sessionId=xxx` — 列出换班移交记录（过滤条件可选；按 updatedAt 升序）。每条返回：`{ id, agentId, sessionId, reason, status, shift, maxShifts, bookMessageId, bookText, used, window, createdAt, updatedAt, resumeJobId?, abortReason?, chainId? }`——`status` 为 `pending | scheduled | running | completed | aborted | fused | lost`；`chainId` 为链代际标记（随 record 持久化，重启后闩锁/对账仍可追溯）
+- `DELETE /handoff/:id` — 手动打断自动续跑（与用户消息打断同语义，`abortReason=manual`）：先经 `HandoffLoopRegistry` 仲裁面取消该 agent+session 维度**全部连接的续跑 loop**（清定时器 + abort 在途 job，含 running 期），再落控制面 `aborted`；无活跃 loop 时由 `manager.abort` 兜底。记录不存在返回 404；终态条目原样返回（不转移状态）
+
+> 续跑状态变化同时通过 WS 帧 `handoff.update` 推送给私聊连接（见下）。
 
 ### Config
 
@@ -154,12 +176,12 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 ### Memory
 
-- `GET /memory/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的记忆
+- `GET /memory/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的记忆（limit clamp 缺省 100、上限 500，非法值回落缺省；offset 非法回落 undefined）
 - `GET /memory/:agentId/:id` — 获取单条记忆
 
 ### Actions
 
-- `GET /actions/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的动作记录
+- `GET /actions/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的动作记录（limit clamp 缺省 100、上限 500，非法值回落缺省；offset 非法回落 undefined）
 
 ### Skills
 
@@ -191,6 +213,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `tool.call` / `tool.result` | 工具调用与执行结果（群聊帧带 `agentId`） |
 | `step.end` | ReAct 单步结束（每个 step 都发，tool_use 时循环继续） |
 | `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态） |
+| `handoff.update` | 换班移交状态变化（`status` / `shift` / `maxShifts` / `bookMessageId?` / `reason?`，仅私聊连接推送，帧带 `agentId`） |
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
 | `session.mode_changed` | 模式切换确认（仅会话 WS） |
 | `error` | 错误 |
@@ -202,5 +225,6 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - 所有 REST 响应均为 JSON。
 - 删除操作成功返回 `204 No Content`。
 - 资源不存在返回 `404 Not Found`。
+- 资源冲突（重复 id 等）返回 `409 Conflict`。
 - 参数校验失败返回 `400 Bad Request`。
 - 实现细节见 `services/engine/src/api/routes/` 与 `services/engine/src/api/ws/`。
