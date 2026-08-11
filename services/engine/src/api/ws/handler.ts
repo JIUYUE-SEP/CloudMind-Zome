@@ -62,7 +62,8 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
 
       // message 监听必须在首个 await 之前同步注册：客户端在 onopen 后立即发送，
       // 若等 getAgentWorker 完成才注册，这期间到达的消息会被 ws 静默丢弃。
-      // 与 session-handler.ts 同一模式：初始化期间先缓冲，ready 后按同一 chain 串行回放。
+      // 与 session-handler.ts 同一模式（P1-8 起群聊同样串行化）：初始化期间
+      // 先缓冲，ready 后按同一 chain 串行回放。
       const pendingMessages: unknown[] = [];
       let ready = false;
       // 串行处理消息，保证持久化与入队顺序

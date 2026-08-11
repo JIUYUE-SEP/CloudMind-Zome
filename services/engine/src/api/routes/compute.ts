@@ -181,6 +181,25 @@ function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
   return { ...provider, apiKey: provider.apiKey ? "***" : undefined };
 }
 
+/**
+ * P1-7：PUT/DELETE provider 后退役引用它的 worker（主算力链 + 降级链）。
+ * 与 agent 配置 onChange 的 retire 路径同语义：下一次 getOrCreate 按活配置
+ * 重建 provider 链（改 key/协议/超时即刻生效；删除后走 createLLMProvider 的
+ * "provider 不存在" 明确报错，而不是 Router 回落创建时快照继续打旧端点）。
+ */
+async function retireWorkersUsingProvider(context: ApiContext, providerId: string): Promise<void> {
+  if (!context.retireAgentWorker) return;
+  const agents = await context.agentRepository.list();
+  for (const agent of agents) {
+    if (
+      agent.providerId === providerId ||
+      (agent.fallbackProviderIds ?? []).includes(providerId)
+    ) {
+      context.retireAgentWorker(agent.id);
+    }
+  }
+}
+
 function isPrivateV4(ip: string): boolean {
   const parts = ip.split(".").map(Number);
   const [a, b] = parts;
@@ -362,6 +381,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       apiKey: body.apiKey || existing.apiKey,
     };
     await context.configRepository.save(config);
+    await retireWorkersUsingProvider(context, id);
     return sanitizeProvider(config.providers[idx]);
   });
 
@@ -372,6 +392,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     const config = await context.configRepository.load();
     config.providers = config.providers.filter((p) => p.id !== id);
     await context.configRepository.save(config);
+    await retireWorkersUsingProvider(context, id);
     return reply.status(204).send();
   });
 

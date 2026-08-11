@@ -532,4 +532,119 @@ describe("Session WebSocket API", () => {
     await app.close();
     await cleanup();
   });
+
+  it("P1-8：连发两条消息按 m1→m2 顺序入队（慢 worker 创建不再让 m2 先跑）", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
+
+    // 模拟 worker 创建 I/O：第一条消息的 getAgentWorker 慢 150ms，
+    // 第二条立即返回——无串行 chain 时 m2 会先入队，回复颠倒
+    const originalGetAgentWorker = context.getAgentWorker;
+    const wrappedWorkers = new Set<AgentWorker>();
+    const jobTexts: string[] = [];
+    let calls = 0;
+    context.getAgentWorker = async (agentId: string) => {
+      calls++;
+      const worker = await originalGetAgentWorker(agentId);
+      if (worker && !wrappedWorkers.has(worker)) {
+        wrappedWorkers.add(worker);
+        const originalEnqueue = worker.enqueue.bind(worker);
+        worker.enqueue = (job: Job) => {
+          // 只取触发本条 job 的最后一条用户消息（历史里含先前消息）
+          const trigger = [...job.messages].reverse().find((m) => m.role === "user");
+          jobTexts.push(
+            trigger?.content.filter((c) => c.type === "text").map((c) => c.text).join("") ?? "",
+          );
+          originalEnqueue(job);
+        };
+      }
+      if (calls === 1) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      return worker;
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "m1" }));
+        client.send(JSON.stringify({ text: "m2" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "turn.end") {
+          turnEnds++;
+          if (turnEnds === 2) {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    expect(jobTexts).toEqual(["m1", "m2"]);
+    expect(calls).toBe(2);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("P1-8：set_mode 与消息交错不并发——消息排队等 set_mode 完成后读 mode", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
+
+    // set_mode 的落库变慢：无串行 chain 时消息处理会在 session 变量更新前
+    // 读到旧 mode（undefined），交错取值不确定
+    const originalUpdate = context.sessionRepository.update.bind(context.sessionRepository);
+    context.sessionRepository.update = async (sessionLike) => {
+      await new Promise((r) => setTimeout(r, 150));
+      return originalUpdate(sessionLike);
+    };
+
+    const jobModes: (string | undefined)[] = [];
+    const originalGetAgentWorker = context.getAgentWorker;
+    context.getAgentWorker = async (agentId: string) => {
+      const worker = await originalGetAgentWorker(agentId);
+      if (worker) {
+        const originalEnqueue = worker.enqueue.bind(worker);
+        worker.enqueue = (job: Job) => {
+          jobModes.push(job.mode);
+          originalEnqueue(job);
+        };
+      }
+      return worker;
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "p8-proj" }));
+        client.send(JSON.stringify({ text: "hello" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "turn.end") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    // 消息必须排在 set_mode 之后，读到已更新的 mode=code
+    expect(jobModes).toEqual(["code"]);
+
+    await app.close();
+    await cleanup();
+  });
 });

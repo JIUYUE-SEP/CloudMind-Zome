@@ -164,6 +164,12 @@ export interface Job {
   id: string;
   messages: ChatMessage[];
   sessionId?: string;
+  /**
+   * 瞬态回合（蓝图等非人形工作流）：本轮不落 agent 热存储、不进话题
+   * tracker/压缩/向量索引、不触发话题裁判——会话历史与人格记忆零污染。
+   * LLM 调用记录（llm_calls.jsonl）由 provider 包装层负责，不受本标记影响。
+   */
+  ephemeral?: boolean;
   mode?: ChatMode;
   projectRoot?: string;
   /** 外部取消信号：已取消的排队 job 直接跳过；运行中在步骤边界中止 */
@@ -576,7 +582,7 @@ export class AgentWorker {
           .join("") ?? "";
 
       // 话题边界检测（Phase 2）：新话题开启时，旧话题送后台压缩队列
-      if (lastUser) {
+      if (lastUser && !job.ephemeral) {
         const closed = this.topicTracker.onUserMessage(lastUser, sessionId);
         if (closed) {
           closed.usedSkills = this.drainTopicSkills();
@@ -765,6 +771,8 @@ export class AgentWorker {
         // appended 顺序与 turn 内真实顺序一致（assistant 先于其 tool 结果），
         // 且天然不含 system prompt / pipeline 注入内容
         onStepAppended: async (msgs) => {
+          // 瞬态回合（蓝图）：不走热存储与话题状态，调用方自行收集产出
+          if (job.ephemeral) return;
           for (const msg of msgs) {
             await this.config.messageRepository.append({ ...msg, sessionId });
           }
@@ -818,23 +826,25 @@ export class AgentWorker {
 
       // 持久化已在 runTurn 内按 step 完成（onStepAppended），此处不再重复 append。
 
-      // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
-      const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
       turnAppended = true;
-      if (closedByCount) {
-        closedByCount.usedSkills = this.drainTopicSkills();
-        await this.enqueueCompression(closedByCount);
-      }
-      // 话题状态落盘（P1-2，turn 终点）
-      await this.persistTopicState();
-      // 回合结束：攒够 6 轮则异步挂起一次 LLM 裁判（不阻塞主流程）
-      this.maybeRunTopicJudge();
+      if (!job.ephemeral) {
+        // turn 消息并入当前话题；达到数量阈值则关闭并送压缩
+        const closedByCount = this.topicTracker.onTurnAppended(result.appended, sessionId);
+        if (closedByCount) {
+          closedByCount.usedSkills = this.drainTopicSkills();
+          await this.enqueueCompression(closedByCount);
+        }
+        // 话题状态落盘（P1-2，turn 终点）
+        await this.persistTopicState();
+        // 回合结束：攒够 6 轮则异步挂起一次 LLM 裁判（不阻塞主流程）
+        this.maybeRunTopicJudge();
 
-      // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
-      // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去。
-      // 保持 turn 级（P1-6）：索引每条消息一次 embed + sidecar upsert，step 级
-      // 不会减少调用次数。异常 turn 的已落盘消息同样索引（Minor-3，见 catch）
-      this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...result.appended]);
+        // 向量索引（fire-and-forget）：本轮的用户输入与新增回复。
+        // 与检索同开关：semanticSearch.enabled=false 时连索引成本也免去。
+        // 保持 turn 级（P1-6）：索引每条消息一次 embed + sidecar upsert，step 级
+        // 不会减少调用次数。异常 turn 的已落盘消息同样索引（Minor-3，见 catch）
+        this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...result.appended]);
+      }
     } catch (err) {
       jobError = err;
       // Minor-3：异常 turn 已按 step 落盘的消息必须并入话题体系——只进

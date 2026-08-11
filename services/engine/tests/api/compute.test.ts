@@ -14,6 +14,7 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
+import type { AgentWorker } from "../../src/core/agent-worker.js";
 import { restoreDataDir } from "../helpers/env.js";
 import { logger } from "../../src/logger.js";
 
@@ -147,6 +148,150 @@ describe("Compute API", () => {
 
     const listRes = await authedRequest(app.server).get("/compute/providers");
     expect(listRes.body).toHaveLength(0);
+    await app.close();
+  });
+
+  it("P1-7：PUT provider 退役引用它的 worker，下一次解析按新 key（不重启）", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-hot",
+      displayName: "Hot Provider",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "key-old",
+      models: [],
+    });
+    await context.agentRepository.save("a-hot", {
+      id: "a-hot",
+      name: "Hot",
+      persona: "",
+      model: "mock",
+      providerId: "p-hot",
+      skills: [],
+      tools: [],
+    });
+
+    // 模拟 bootstrap 的 worker 创建链：每次 getOrCreate 都从活配置快照 provider
+    const created: Array<{ id: string; apiKey: string | undefined }> = [];
+    const retired = new Set<string>();
+    context.retireAgentWorker = (agentId: string) => {
+      retired.add(agentId);
+    };
+    context.getAgentWorker = async (agentId: string) => {
+      const config = await context.configRepository.load();
+      const provider = config.providers.find((p) => p.id === "p-hot");
+      created.push({ id: agentId, apiKey: provider?.apiKey });
+      return { workerTag: created.length } as unknown as AgentWorker;
+    };
+
+    const before = await context.getAgentWorker("a-hot");
+    expect(created).toEqual([{ id: "a-hot", apiKey: "key-old" }]);
+
+    const putRes = await authedRequest(app.server)
+      .put("/compute/providers/p-hot")
+      .send({ apiKey: "key-new" });
+    expect(putRes.status).toBe(200);
+
+    // worker 被退役：下一次 getAgentWorker 重建，拿到新 key
+    expect(retired.has("a-hot")).toBe(true);
+    const after = await context.getAgentWorker("a-hot");
+    expect(after).not.toBe(before);
+    expect(created).toEqual([
+      { id: "a-hot", apiKey: "key-old" },
+      { id: "a-hot", apiKey: "key-new" },
+    ]);
+    await app.close();
+  });
+
+  it("P1-7：DELETE provider 退役引用它的 worker，后续明确 provider 不存在而非旧端点快照", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-del",
+      displayName: "Del Provider",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "key-old",
+      models: [],
+    });
+    await context.agentRepository.save("a-del", {
+      id: "a-del",
+      name: "Del",
+      persona: "",
+      model: "mock",
+      providerId: "p-del",
+      skills: [],
+      tools: [],
+    });
+
+    const created: string[] = [];
+    const retired = new Set<string>();
+    context.retireAgentWorker = (agentId: string) => {
+      retired.add(agentId);
+    };
+    context.getAgentWorker = async () => {
+      const config = await context.configRepository.load();
+      const provider = config.providers.find((p) => p.id === "p-del");
+      // 有 provider → 正常适配器快照；无 provider → createLLMProvider 的
+      // "provider 不存在" 明确报错路径，绝不再回落创建时快照打旧端点
+      created.push(provider ? `snapshot:${provider.apiKey}` : "error:provider-missing");
+      return { workerTag: created.length } as unknown as AgentWorker;
+    };
+
+    await context.getAgentWorker("a-del");
+    const delRes = await authedRequest(app.server).delete("/compute/providers/p-del");
+    expect(delRes.status).toBe(204);
+    expect(retired.has("a-del")).toBe(true);
+
+    await context.getAgentWorker("a-del");
+    expect(created).toEqual(["snapshot:key-old", "error:provider-missing"]);
+    await app.close();
+  });
+
+  it("P1-7：DELETE 降级链引用的 provider 同样退役 worker", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-main",
+      displayName: "Main",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "main-key",
+      models: [],
+    });
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-fb",
+      displayName: "Fallback",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "fb-key",
+      models: [],
+    });
+    await context.agentRepository.save("a-fb", {
+      id: "a-fb",
+      name: "FB",
+      persona: "",
+      model: "mock",
+      providerId: "p-main",
+      fallbackProviderIds: ["p-fb"],
+      skills: [],
+      tools: [],
+    });
+
+    let creates = 0;
+    const retired = new Set<string>();
+    context.retireAgentWorker = (agentId: string) => {
+      retired.add(agentId);
+    };
+    context.getAgentWorker = async () => {
+      creates++;
+      return { workerTag: creates } as unknown as AgentWorker;
+    };
+
+    await context.getAgentWorker("a-fb");
+    const delRes = await authedRequest(app.server).delete("/compute/providers/p-fb");
+    expect(delRes.status).toBe(204);
+    expect(retired.has("a-fb")).toBe(true);
+    await context.getAgentWorker("a-fb");
+    expect(creates).toBe(2);
     await app.close();
   });
 

@@ -103,27 +103,61 @@ async function executeLlmNode(
   };
 
   const result = await new Promise<string>((resolve) => {
-    let text = "";
+    // P1-6 补修：ReAct 每步都发 step.end——首步发起工具调用时若在首个
+    // step.end 就 resolve，会拿首步文本（通常空）返回 "(empty)" 让 turn
+    // 后台白跑。语义核对（core/react/turn.ts + agent-worker 事件序列）：
+    // 工具步 = tool.call/tool.result + step.end；收尾步 = 纯文本 + step.end
+    // （含 maxSteps/水位兜底的无工具总结）；turn.end 在整轮结束后发出。
+    // 因此只在本步无 tool.call 的 step.end（收尾步）resolve，turn.end 作
+    // 异常/极端事件序的兜底；中间工具步清空步文本继续等。
+    let stepText = "";
+    let fullText = "";
+    let stepHasToolCall = false;
     let finished = false;
     const timeout = setTimeout(() => {
       if (!finished) {
         finished = true;
-        resolve(text || "(timeout)");
+        resolve(stepText || fullText || "(timeout)");
       }
     }, LLM_TIMEOUT_MS);
 
     const onEvent = (event: LLMEvent) => {
       if (finished) return;
       if (event.type === "text.delta") {
-        text += event.delta;
+        stepText += event.delta;
+        fullText += event.delta;
+      } else if (event.type === "tool.call") {
+        stepHasToolCall = true;
       } else if (event.type === "step.end") {
+        if (!stepHasToolCall) {
+          // 收尾步：无工具调用的最终文本步
+          finished = true;
+          clearTimeout(timeout);
+          resolve(stepText || "(empty)");
+        } else {
+          // 中间工具步：不 resolve，清步缓存等下一轮
+          stepHasToolCall = false;
+          stepText = "";
+        }
+      } else if (event.type === "turn.end") {
+        // 兜底（异常/事件序极端）：本轮生成终止即收尾
         finished = true;
         clearTimeout(timeout);
-        resolve(text || "(empty)");
+        resolve(fullText || "(empty)");
       }
     };
 
-    worker.enqueue({ id: randomUUID(), messages: [message], onEvent });
+    worker.enqueue({
+      id: randomUUID(),
+      // P1-6 补修：蓝图 job 用独立命名空间 sessionId（subagent 同范式），
+      // 不回落 sessionId=agentId——主会话热存储/话题源不被蓝图流量顶替
+      sessionId: `blueprint:${execution.id}`,
+      // 蓝图是非人形工作流：瞬态回合不落 agent 热存储、不进话题 tracker/
+      // 压缩/向量索引（worker 侧 ephemeral 标记，人格历史零污染）
+      ephemeral: true,
+      messages: [message],
+      onEvent,
+    });
   });
 
   execution.logs.push(`executed llm node ${node.id}`);

@@ -59,6 +59,17 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       const pendingMessages: unknown[] = [];
       let session: Awaited<ReturnType<typeof context.sessionRepository.get>> = undefined;
       let ready = false;
+      // 串行处理消息（P1-8）：与私聊 handler.ts 同一 promise chain 模式——
+      // 同 session 消息排队（含回放），避免 m2 撞 worker 创建 I/O 先跑、
+      // set_mode 与消息交错取值不确定
+      let chain = Promise.resolve();
+
+      function dispatch(raw: unknown): void {
+        chain = chain.then(() => handleMessage(raw)).catch((err) => {
+          logger.error({ err: err }, "failed to handle session websocket message");
+          safeSend(socket, { type: "error", error: "Internal error" });
+        });
+      }
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持，维度 agent+工具）
       const pendingApprovals = new Map<
@@ -121,7 +132,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           pendingMessages.push(raw);
           return;
         }
-        void handleMessage(raw);
+        dispatch(raw);
       });
 
       session = await context.sessionRepository.get(sessionId);
@@ -137,7 +148,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       ready = true;
 
       for (const raw of pendingMessages) {
-        void handleMessage(raw);
+        dispatch(raw);
       }
 
       async function handleMessage(raw: unknown) {
