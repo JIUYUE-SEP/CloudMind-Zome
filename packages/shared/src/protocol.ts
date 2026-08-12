@@ -7,7 +7,7 @@
  * step.end / turn.end）是 engine 内部的 LLMEvent（provider/types.ts），
  * 只有 engine 一份定义，不在此重复；本文件收控制帧（此前连 engine 侧都无类型）。
  */
-import type { ChatMode, ToolCall } from "./index.js";
+import type { ToolCall } from "./index.js";
 
 // ---- WS 控制帧：server → client ----
 
@@ -19,13 +19,6 @@ export interface ApprovalRequestFrame {
   toolName: string;
   arguments: unknown;
   agentId?: string;
-}
-
-/** 模式切换确认（仅会话 WS） */
-export interface SessionModeChangedFrame {
-  type: "session.mode_changed";
-  mode: ChatMode;
-  projectId?: string;
 }
 
 /**
@@ -73,13 +66,6 @@ export interface ApprovalResponseFrame {
   approvalId: string;
   approved: boolean;
   remember: boolean;
-}
-
-/** 切换 chat / code 模式（仅会话 WS） */
-export interface SessionSetModeFrame {
-  type: "session.set_mode";
-  mode: ChatMode;
-  projectId?: string;
 }
 
 /** 聊天消息帧（无 type 字段，最长 10000 字符） */

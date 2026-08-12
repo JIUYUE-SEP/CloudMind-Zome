@@ -1,15 +1,12 @@
 import { logger } from "../../logger.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
-import path from "node:path";
-import fs from "node:fs/promises";
 import { routeMessage } from "../../conductor/conductor.js";
-import type { ChatMessage, ApprovalRequestFrame, SessionModeChangedFrame } from "@mindcloud/shared";
+import type { ChatMessage, ApprovalRequestFrame } from "@mindcloud/shared";
 import type { ApiContext } from "../context.js";
-import { getDataDir } from "../../config/paths.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
-import { isValidId, isValidChatMode, isValidProjectId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
+import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
 import { isMcpToolName } from "../../tools/mcp/index.js";
 import {
   auditAutoApproved,
@@ -60,8 +57,7 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       let session: Awaited<ReturnType<typeof context.sessionRepository.get>> = undefined;
       let ready = false;
       // 串行处理消息（P1-8）：与私聊 handler.ts 同一 promise chain 模式——
-      // 同 session 消息排队（含回放），避免 m2 撞 worker 创建 I/O 先跑、
-      // set_mode 与消息交错取值不确定
+      // 同 session 消息排队（含回放），避免 m2 撞 worker 创建 I/O 先跑
       let chain = Promise.resolve();
 
       function dispatch(raw: unknown): void {
@@ -189,34 +185,6 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             return;
           }
 
-          if (data.type === "session.set_mode") {
-            const mode = data.mode as unknown;
-            const projectId = data.projectId as unknown;
-
-            if (!isValidChatMode(mode)) {
-              safeSend(socket, { type: "error", error: "Invalid mode" });
-              return;
-            }
-
-            if (projectId !== undefined && !isValidProjectId(projectId)) {
-              safeSend(socket, { type: "error", error: "Invalid project id" });
-              return;
-            }
-
-            const updatedSession = { ...session, mode, projectId };
-            await context.sessionRepository.update(updatedSession);
-            session = updatedSession;
-
-            if (projectId) {
-              const projectRoot = path.join(getDataDir(), "projects", projectId);
-              await fs.mkdir(projectRoot, { recursive: true });
-            }
-
-            const frame: SessionModeChangedFrame = { type: "session.mode_changed", mode, projectId };
-            safeSend(socket, frame);
-            return;
-          }
-
           // 带 type 的未知控制帧静默忽略（聊天消息不带 type），
           // 避免前端协议超前时穿透到聊天错误路径
           if (typeof data.type === "string") return;
@@ -269,16 +237,10 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             const repo = context.getMessageRepository(agentId);
             const history = await repo.listBySession(sessionId, { limit: 20 });
 
-            const projectRoot = session.mode === "code" && session.projectId
-              ? path.join(getDataDir(), "projects", session.projectId)
-              : undefined;
-
             worker.enqueue({
               id: randomUUID(),
               messages: history,
               sessionId,
-              mode: session.mode,
-              projectRoot,
               onEvent: (event) => {
                 // 与私聊 handler 同一校验：delta 帧只放行 string，脏帧丢弃
                 const safeEvent = sanitizeDeltaEvent(event);

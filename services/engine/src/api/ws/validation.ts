@@ -1,6 +1,5 @@
 import { logger } from "../../logger.js";
 import type { FastifyRequest } from "fastify";
-import type { ChatMode } from "@mindcloud/shared";
 import { isValidAgentId, isApprovalRememberable } from "@mindcloud/shared";
 
 export { isApprovalRememberable };
@@ -47,14 +46,6 @@ export function extractWsToken(req: FastifyRequest): string | undefined {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   return offered[0];
-}
-
-export function isValidChatMode(value: unknown): value is ChatMode {
-  return value === "chat" || value === "code";
-}
-
-export function isValidProjectId(value: unknown): value is string {
-  return isValidAgentId(value);
 }
 
 export function sanitizeInput(text: unknown): { ok: false; error: string } | { ok: true; text: string } {

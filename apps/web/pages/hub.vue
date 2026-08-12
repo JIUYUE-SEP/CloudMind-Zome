@@ -71,10 +71,6 @@
         :agent-id="selectedAgentId"
       />
       <div v-else-if="selectedType === 'group' && selectedSession" class="group-chat-wrapper">
-        <div class="group-mode-switch">
-          <button :class="{ active: sessionMode === 'chat' }" @click="setMode('chat')">聊天</button>
-          <button :class="{ active: sessionMode === 'code' }" @click="setMode('code')">编程</button>
-        </div>
         <div class="group-body">
           <GroupChatView
             :key="selectedId"
@@ -100,7 +96,6 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import type { ChatMode } from "@mindcloud/shared";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
 import { useEngineClient, type Session } from "@/composables/useEngineClient";
@@ -142,8 +137,6 @@ const groupStatusHint = computed(() => {
   if (groupReconnectAttempts.value > 0) return `连接已断开，重连中（第 ${groupReconnectAttempts.value} 次）…`;
   return "";
 });
-const sessionMode = ref<ChatMode>("chat");
-const sessionProjectId = ref<string | undefined>(undefined);
 let groupConnection: ReturnType<typeof client.connectSession> | null = null;
 
 const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
@@ -176,8 +169,6 @@ async function selectGroup(session: Session) {
   selectedType.value = "group";
   selectedAgentId.value = "";
   selectedSession.value = session;
-  sessionMode.value = session.mode || "chat";
-  sessionProjectId.value = session.projectId;
   // 先断旧连接，await 期间旧会话的 delta 不会串进新会话
   closeGroupConnection();
   const msgs = await fetchGroupMessages(session.id);
@@ -211,15 +202,8 @@ function connectGroup(sessionId: string) {
     onOpen: () => {
       groupIsConnected.value = true;
       groupReconnectAttempts.value = 0;
-      if (selectedSession.value?.mode === "code") {
-        sessionMode.value = "code";
-      }
     },
     ...groupHandlers,
-    onModeChanged: (mode, projectId) => {
-      sessionMode.value = mode;
-      sessionProjectId.value = projectId;
-    },
     onReconnecting: (attempt) => {
       groupIsConnected.value = false;
       groupReconnectAttempts.value = attempt;
@@ -246,16 +230,6 @@ function closeGroupConnection() {
   groupIsConnected.value = false;
   groupReconnectAttempts.value = 0;
   resetGroupStream();
-}
-
-function setMode(mode: ChatMode) {
-  const projectId = mode === "code" ? selectedSession.value?.id : sessionProjectId.value;
-  const sent = groupConnection?.setMode(mode, projectId);
-  if (!sent) {
-    pushGroupError("切换模式失败：连接未就绪");
-    return;
-  }
-  sessionMode.value = mode;
 }
 
 function onGroupSend(text: string) {
@@ -539,32 +513,6 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
-}
-
-.group-mode-switch {
-  display: flex;
-  gap: 4px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--mc-panel);
-  flex-shrink: 0;
-}
-
-.group-mode-switch button {
-  flex: 1;
-  padding: 7px 0;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--mc-panel);
-  border-radius: 6px;
-  color: var(--mc-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.group-mode-switch button.active {
-  background: rgba(0, 229, 201, 0.12);
-  border-color: rgba(0, 229, 201, 0.3);
-  color: var(--mc-accent);
 }
 
 .group-body {

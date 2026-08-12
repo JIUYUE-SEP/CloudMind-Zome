@@ -63,7 +63,7 @@ function mockFetch(url: string) {
   return Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as unknown as Response);
 }
 
-describe("Hub page group chat code mode", () => {
+describe("Hub page group chat", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     globalThis.fetch = vi.fn(mockFetch) as unknown as typeof globalThis.fetch;
@@ -75,23 +75,6 @@ describe("Hub page group chat code mode", () => {
     vi.restoreAllMocks();
     MockWebSocket.instances.forEach((ws) => ws.close());
   });
-
-  async function selectGroup(wrapper: ReturnType<typeof mount>) {
-    await flushPromises();
-    const groupTab = wrapper.findAll(".comm-mode-btn").find((el) => el.text() === "群聊");
-    expect(groupTab?.exists()).toBe(true);
-    await groupTab!.trigger("click");
-    await flushPromises();
-
-    const item = wrapper.findAll(".comm-item").find((el) => el.text().includes("Team"));
-    expect(item?.exists()).toBe(true);
-    await item!.trigger("click");
-    await flushPromises();
-  }
-
-  function currentWs() {
-    return MockWebSocket.instances[MockWebSocket.instances.length - 1];
-  }
 
   async function mountHub() {
     return mount(Hub, {
@@ -105,49 +88,6 @@ describe("Hub page group chat code mode", () => {
       },
     });
   }
-
-  it("renders chat/code mode switch after selecting a group session", async () => {
-    const wrapper = await mountHub();
-    await selectGroup(wrapper);
-    expect(wrapper.find(".group-mode-switch").exists()).toBe(true);
-    const buttons = wrapper.findAll(".group-mode-switch button");
-    expect(buttons.length).toBe(2);
-    expect(buttons[0].text()).toBe("聊天");
-    expect(buttons[1].text()).toBe("编程");
-  });
-
-  it("sends session.set_mode frame when switching to code mode", async () => {
-    const wrapper = await mountHub();
-    await selectGroup(wrapper);
-    const codeBtn = wrapper.findAll(".group-mode-switch button")[1];
-    await codeBtn.trigger("click");
-    await flushPromises();
-
-    const ws = currentWs();
-    const last = ws.sent[ws.sent.length - 1];
-    expect(JSON.parse(last)).toEqual({
-      type: "session.set_mode",
-      mode: "code",
-      projectId: "s1",
-    });
-    expect((wrapper.vm as unknown as { sessionMode: string }).sessionMode).toBe("code");
-  });
-
-  it("updates state on session.mode_changed", async () => {
-    const wrapper = await mountHub();
-    await selectGroup(wrapper);
-    const ws = currentWs();
-
-    ws.onmessage?.({
-      data: JSON.stringify({ type: "session.mode_changed", mode: "code", projectId: "s1" }),
-    });
-    await flushPromises();
-
-    expect((wrapper.vm as unknown as { sessionMode: string }).sessionMode).toBe("code");
-    expect(
-      (wrapper.vm as unknown as { sessionProjectId?: string }).sessionProjectId,
-    ).toBe("s1");
-  });
 
   it("快速切换群聊时，先选会话的迟到历史不覆盖后选会话", async () => {
     const s2 = { ...groupSession, id: "s2", name: "Team2" };

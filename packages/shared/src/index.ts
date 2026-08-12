@@ -1,5 +1,3 @@
-export type ChatMode = "chat" | "code";
-
 export * from "./constants.js";
 export * from "./protocol.js";
 

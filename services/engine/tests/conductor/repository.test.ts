@@ -51,4 +51,33 @@ describe("SessionRepository", () => {
     const list = await repo.list();
     expect(list).toHaveLength(0);
   });
+
+  it("兼容历史 sessions.jsonl：含遗留 mode/projectId 字段的行加载不炸，update 不删旧字段", async () => {
+    const repo = new SessionRepository();
+    const created = await repo.create({ name: "Old", agentIds: ["a1"], type: "group" });
+
+    // 模拟旧版本写入：直接给落盘行补上 mode/projectId（新代码类型已无该字段）
+    const filePath = path.join(tmpDir, "sessions.jsonl");
+    const lines = (await fs.readFile(filePath, "utf-8")).trim().split("\n");
+    const legacyLines = lines.map((line) => {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (record.id !== created.id) return line;
+      return JSON.stringify({ ...record, mode: "code", projectId: "legacy-proj" });
+    });
+    await fs.writeFile(filePath, legacyLines.join("\n") + "\n", "utf-8");
+
+    // 加载不抛错，字段被忽略但数据仍在
+    const loaded = await repo.list();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].name).toBe("Old");
+
+    // update 走 spread 保留未识别字段：旧数据不因新代码写回而被删除
+    loaded[0].name = "Updated";
+    await repo.update(loaded[0]);
+    const raw = await fs.readFile(filePath, "utf-8");
+    const saved = JSON.parse(raw.trim().split("\n")[0]) as Record<string, unknown>;
+    expect(saved.mode).toBe("code");
+    expect(saved.projectId).toBe("legacy-proj");
+    expect(saved.name).toBe("Updated");
+  });
 });

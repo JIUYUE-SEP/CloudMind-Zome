@@ -1,4 +1,4 @@
-import type { AgentConfig, ChatMode } from "@mindcloud/shared";
+import type { AgentConfig } from "@mindcloud/shared";
 import type {
   ChatMessageRecord,
   HandoffUpdateFrame,
@@ -46,8 +46,6 @@ export interface Session {
   name: string;
   agentIds: string[];
   type: "group" | "intermind";
-  mode?: ChatMode;
-  projectId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -125,7 +123,6 @@ export interface WebSocketHandlers {
   onReconnecting?: (attempt: number, delayMs: number) => void;
   // 重连成功（仅断线后的再次 onOpen 触发，首次连接不触发）；调用方应在此拉取状态对齐
   onReconnected?: () => void;
-  onModeChanged?: (mode: ChatMode, projectId?: string) => void;
   /** 换班移交状态帧（水位撞顶自动续跑/保险丝/abort 的可见化） */
   onHandoffUpdate?: (update: HandoffUpdateFrame) => void;
 }
@@ -133,7 +130,6 @@ export interface WebSocketHandlers {
 export interface Connection {
   send(text: string): boolean;
   sendRaw(message: object): boolean;
-  setMode(mode: ChatMode, projectId?: string): boolean;
   close(): void;
 }
 
@@ -641,9 +637,6 @@ export function useEngineClient(options?: EngineClientOptions) {
               if (isSession) handlers.onTurnEnd?.(data.agentId);
               else handlers.onTurnEnd?.();
               break;
-            case "session.mode_changed":
-              handlers.onModeChanged?.(data.mode, data.projectId);
-              break;
             case "handoff.update":
               handlers.onHandoffUpdate?.(data);
               break;
@@ -712,9 +705,6 @@ export function useEngineClient(options?: EngineClientOptions) {
         return false;
       },
       sendRaw: sendRawFrame,
-      // 经闭包而非 this.sendRaw 调用：解构 setMode 后 this 会丢失
-      setMode: (mode: ChatMode, projectId?: string) =>
-        sendRawFrame({ type: "session.set_mode", mode, projectId }),
       close() {
         closedByCaller = true;
         clearReconnectTimer();

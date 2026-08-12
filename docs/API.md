@@ -201,8 +201,6 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 |---|---|
 | `{ "text": "..." }` | 聊天消息（无 type 字段，最长 10000 字符） |
 | `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` / `write_file` / `edit_file` / `dispatch_subagent` / `dispatch_subagent_batch` 不可 remember） |
-| `session.set_mode` | 切换 chat / code 模式（仅会话 WS，可带 `projectId`） |
-
 未知 type 帧静默忽略。
 
 **Server → Client**：
@@ -215,7 +213,6 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态） |
 | `handoff.update` | 换班移交状态变化（`status` / `shift` / `maxShifts` / `bookMessageId?` / `reason?`，仅私聊连接推送，帧带 `agentId`） |
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
-| `session.mode_changed` | 模式切换确认（仅会话 WS） |
 | `error` | 错误 |
 
 握手时校验 Origin（无 Origin 的非浏览器客户端放行；`tauri://` 协议及 `*.tauri.localhost` 域放行；`NODE_ENV=e2e` 全放行）。

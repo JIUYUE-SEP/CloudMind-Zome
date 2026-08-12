@@ -20,8 +20,7 @@ function mockOf(p: LLMProvider | undefined): MockLLMProvider {
   return p as MockLLMProvider;
 }
 import type { ApiContext } from "../../src/api/context.js";
-import { getDataDir } from "../../src/config/paths.js";
-import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
+import type { Tool, ToolResult } from "../../src/tools/types.js";
 import WebSocket from "ws";
 import { restoreDataDir } from "../helpers/env.js";
 import { TEST_AUTH_TOKEN } from "../helpers/auth.js";
@@ -180,123 +179,6 @@ describe("Session WebSocket API", () => {
     await cleanup();
   });
 
-  it("rejects invalid mode", async () => {
-    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
-    const app = await createServer(context);
-    const address = await app.listen({ port: 0 });
-    const port = Number(new URL(address).port);
-
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
-
-    const messages: unknown[] = [];
-    await new Promise<void>((resolve, reject) => {
-      client.on("open", () => {
-        client.send(JSON.stringify({ type: "session.set_mode", mode: "invalid" }));
-      });
-      client.on("message", (data) => {
-        messages.push(JSON.parse(String(data)));
-        client.close();
-        resolve();
-      });
-      client.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 5000);
-    });
-
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toEqual({ type: "error", error: "Invalid mode" });
-
-    const session = await context.sessionRepository.get(sessionId);
-    expect(session?.mode).toBeUndefined();
-
-    await app.close();
-    await cleanup();
-  });
-
-  it("rejects invalid project id", async () => {
-    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
-    const app = await createServer(context);
-    const address = await app.listen({ port: 0 });
-    const port = Number(new URL(address).port);
-
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
-
-    const messages: unknown[] = [];
-    await new Promise<void>((resolve, reject) => {
-      client.on("open", () => {
-        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "../escape" }));
-      });
-      client.on("message", (data) => {
-        messages.push(JSON.parse(String(data)));
-        client.close();
-        resolve();
-      });
-      client.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 5000);
-    });
-
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toEqual({ type: "error", error: "Invalid project id" });
-
-    const projectRoot = path.join(getDataDir(), "projects", "../escape");
-    await expect(fs.stat(projectRoot)).rejects.toThrow();
-
-    const session = await context.sessionRepository.get(sessionId);
-    expect(session?.mode).toBeUndefined();
-    expect(session?.projectId).toBeUndefined();
-
-    await app.close();
-    await cleanup();
-  });
-
-  it("does not use projectRoot in chat mode even when projectId is set", async () => {
-    const capturedRoots: (string | undefined)[] = [];
-    const rootCapturingTool: Tool = {
-      name: "capture_root",
-      description: "captures projectRoot",
-      parameters: z.object({}),
-      accesses: [{ resource: "file", action: "read" }],
-      async execute(ctx: ToolContext): Promise<ToolResult> {
-        capturedRoots.push(ctx.projectRoot);
-        return { success: true, output: "captured" };
-      },
-    };
-
-    const { context, cleanup, sessionId, providers } = await buildSessionWsContext(["a1"], [rootCapturingTool]);
-    mockOf(providers.get("a1")).setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
-
-    const app = await createServer(context);
-    const address = await app.listen({ port: 0 });
-    const port = Number(new URL(address).port);
-
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
-
-    const messages: unknown[] = [];
-    await new Promise<void>((resolve, reject) => {
-      client.on("open", () => {
-        client.send(JSON.stringify({ type: "session.set_mode", mode: "chat", projectId: "proj-chat" }));
-      });
-      client.on("message", (data) => {
-        const message = JSON.parse(String(data));
-        messages.push(message);
-        if (message.type === "session.mode_changed") {
-          client.send(JSON.stringify({ text: "run tool" }));
-        }
-        if (message.type === "step.end") {
-          client.close();
-          resolve();
-        }
-      });
-      client.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 5000);
-    });
-
-    expect(messages.some((m) => (m as { type: string }).type === "session.mode_changed")).toBe(true);
-    expect(capturedRoots).toContain(undefined);
-
-    await app.close();
-    await cleanup();
-  });
-
   it("silently ignores unknown control frames instead of erroring", async () => {
     const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
     const app = await createServer(context);
@@ -308,7 +190,9 @@ describe("Session WebSocket API", () => {
     const messages: unknown[] = [];
     await new Promise<void>((resolve, reject) => {
       client.on("open", async () => {
-        // 未知控制帧（前端协议超前/遗留帧）：应静默忽略，不回错误
+        // 未知/遗留控制帧（已移除的 session.set_mode、code.file_open）：
+        // 应静默忽略，不回错误，也不改动会话
+        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "legacy" }));
         client.send(JSON.stringify({ type: "code.file_open", path: "src/a.ts" }));
         await new Promise((r) => setTimeout(r, 300));
         // 随后的正常聊天消息仍应被处理
@@ -328,79 +212,6 @@ describe("Session WebSocket API", () => {
 
     expect(messages.some((m) => (m as { type: string }).type === "error")).toBe(false);
     expect(messages.some((m) => (m as { type: string }).type === "text.delta")).toBe(true);
-
-    await app.close();
-    await cleanup();
-  });
-
-  it("sets code mode and injects projectRoot into tool context", async () => {
-    const capturedJobs: Job[] = [];
-    const capturedRoots: (string | undefined)[] = [];
-    const rootCapturingTool: Tool = {
-      name: "capture_root",
-      description: "captures projectRoot",
-      parameters: z.object({}),
-      accesses: [{ resource: "file", action: "read" }],
-      async execute(ctx: ToolContext): Promise<ToolResult> {
-        capturedRoots.push(ctx.projectRoot);
-        return { success: true, output: "captured" };
-      },
-    };
-
-    const { context, cleanup, sessionId, providers } = await buildSessionWsContext(["a1"], [rootCapturingTool]);
-    mockOf(providers.get("a1")).setNextToolCalls([{ toolCallId: "tc-1", name: "capture_root", arguments: {} }]);
-
-    // Wrap worker to capture enqueued jobs
-    const originalGetAgentWorker = context.getAgentWorker;
-    context.getAgentWorker = async (id: string) => {
-      const worker = await originalGetAgentWorker(id);
-      if (!worker) return worker;
-      const originalEnqueue = worker.enqueue.bind(worker);
-      worker.enqueue = (job: Job) => {
-        capturedJobs.push(job);
-        return originalEnqueue(job);
-      };
-      return worker;
-    };
-
-    const app = await createServer(context);
-    const address = await app.listen({ port: 0 });
-    const port = Number(new URL(address).port);
-
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
-
-    const messages: unknown[] = [];
-    await new Promise<void>((resolve, reject) => {
-      client.on("open", () => {
-        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "test-project" }));
-      });
-      client.on("message", (data) => {
-        const message = JSON.parse(String(data));
-        messages.push(message);
-        if (message.type === "session.mode_changed") {
-          client.send(JSON.stringify({ text: "run tool" }));
-        }
-        if (message.type === "step.end") {
-          client.close();
-          resolve();
-        }
-      });
-      client.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 5000);
-    });
-
-    expect(messages.some((m) => (m as { type: string }).type === "session.mode_changed")).toBe(true);
-
-    const session = await context.sessionRepository.get(sessionId);
-    expect(session?.mode).toBe("code");
-    expect(session?.projectId).toBe("test-project");
-
-    const expectedProjectRoot = path.join(getDataDir(), "projects", "test-project");
-    await expect(fs.stat(expectedProjectRoot)).resolves.toBeDefined();
-
-    expect(capturedJobs.length).toBeGreaterThan(0);
-    expect(capturedJobs.some((job) => job.mode === "code" && job.projectRoot === expectedProjectRoot)).toBe(true);
-    expect(capturedRoots).toContain(expectedProjectRoot);
 
     await app.close();
     await cleanup();
@@ -595,56 +406,4 @@ describe("Session WebSocket API", () => {
     await cleanup();
   });
 
-  it("P1-8：set_mode 与消息交错不并发——消息排队等 set_mode 完成后读 mode", async () => {
-    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
-
-    // set_mode 的落库变慢：无串行 chain 时消息处理会在 session 变量更新前
-    // 读到旧 mode（undefined），交错取值不确定
-    const originalUpdate = context.sessionRepository.update.bind(context.sessionRepository);
-    context.sessionRepository.update = async (sessionLike) => {
-      await new Promise((r) => setTimeout(r, 150));
-      return originalUpdate(sessionLike);
-    };
-
-    const jobModes: (string | undefined)[] = [];
-    const originalGetAgentWorker = context.getAgentWorker;
-    context.getAgentWorker = async (agentId: string) => {
-      const worker = await originalGetAgentWorker(agentId);
-      if (worker) {
-        const originalEnqueue = worker.enqueue.bind(worker);
-        worker.enqueue = (job: Job) => {
-          jobModes.push(job.mode);
-          originalEnqueue(job);
-        };
-      }
-      return worker;
-    };
-
-    const app = await createServer(context);
-    const address = await app.listen({ port: 0 });
-    const port = Number(new URL(address).port);
-
-    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
-    await new Promise<void>((resolve, reject) => {
-      client.on("open", () => {
-        client.send(JSON.stringify({ type: "session.set_mode", mode: "code", projectId: "p8-proj" }));
-        client.send(JSON.stringify({ text: "hello" }));
-      });
-      client.on("message", (data) => {
-        const message = JSON.parse(String(data));
-        if (message.type === "turn.end") {
-          client.close();
-          resolve();
-        }
-      });
-      client.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 10000);
-    });
-
-    // 消息必须排在 set_mode 之后，读到已更新的 mode=code
-    expect(jobModes).toEqual(["code"]);
-
-    await app.close();
-    await cleanup();
-  });
 });

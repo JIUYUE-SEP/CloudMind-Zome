@@ -18,7 +18,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 > 创建一个 Agent，给它文件和 Shell 工具，设置一个定时任务。它会定期把整理好的资料写成 Markdown 存入工作区，等你上线时汇报。
 
 **代码协作**
-> 在会话中切换到 code 模式，Agent 可读取项目文件、执行命令、精确编辑代码（写入操作需人工审批）。
+> 给 Agent 文件与 Shell/命令工具，Agent 可读取项目文件、执行命令、精确编辑代码（写入操作需人工审批）。
 
 **多角色写作**
 > 创建三个 Agent：大纲规划、正文撰写、编辑校对。使用 Plan 编排步骤，每个 Agent 只记得自己的角色和上下文。
@@ -28,7 +28,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 ## 功能
 
 - **私聊** — 与单个 Agent 一对一对话，WebSocket 流式输出（正文 / 思考 / 工具调用分帧推送）
-- **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）；同 session 消息经 promise chain 串行处理（灭回复颠倒与 set_mode 交错）
+- **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）；同 session 消息经 promise chain 串行处理（灭回复颠倒）
 - **Intermind 私信** — 人形间写信型私信：`send_private_message` 写信入 `intermind:<peer>` 独立会话并触发接收方一轮感知回合即时读信；感知回合内回信搭车（只入队、不再次唤醒，连环惊醒机制上不可能）；免审批但需工具白名单显式授权，warn 级审计留痕；傀儡硬禁邮（swarm 无法轰炸）；`read_private_messages` 可读完整来往信件（不受 200 字摘要截断）；设计定案见 [`docs/design/intermind.md`](docs/design/intermind.md)
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
 - **工具调用** — ReActLoop 调用 13 个内置工具（真实清单见 `services/engine/src/tools/builtin/index.ts`）：
@@ -56,7 +56,6 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **定时任务** — Cron 调度，到点自动给 Agent 派发任务
 - **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试）；错误分类重试（429/5xx/网络/超时指数退避）+ Agent 级备用 Provider 降级链（`fallbackProviderIds`）；型号级 `apiMode` 三族协议切换（`chat_completions` / `anthropic` / `responses`，缺省回落 provider 级），配置热更下一次调用即生效、无需重启
 - **蓝图工作流** — start / llm / tool / end 节点编排（线性链）
-- **会话模式** — chat / code 双模式，code 模式下工具可访问项目目录
 - **桌面应用** — Tauri 启动 Rust sidecar，sidecar 守护 Node 引擎（失败自动重启）
 
 > 规划中：蓝图分支/并行/审批、公共 Skill 池、generate_image 工具、多用户

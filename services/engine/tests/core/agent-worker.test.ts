@@ -394,14 +394,13 @@ describe("AgentWorker", () => {
     consoleSpy.mockRestore();
   });
 
-  it("code 模式不再注入 code assistant 指令（L1.5 已移除）", async () => {
+  it("不再注入 code assistant 指令（L1.5 已移除）", async () => {
     const provider = new CapturingProvider();
     const worker = new AgentWorker(makeConfig(provider));
 
     worker.enqueue({
       id: "j-code",
       messages: [userMessage("hi")],
-      mode: "code",
       onEvent: () => {},
     });
 
@@ -421,14 +420,13 @@ ${SECURITY_GUIDELINE}` },
     expect(messages?.[1]).toEqual(userMessage("hi"));
   });
 
-  it("chat 模式注入 SOUL 人格为 L1 system 消息", async () => {
+  it("注入 SOUL 人格为 L1 system 消息", async () => {
     const provider = new CapturingProvider();
     const worker = new AgentWorker(makeConfig(provider));
 
     worker.enqueue({
       id: "j-chat",
       messages: [userMessage("hi")],
-      mode: "chat",
       onEvent: () => {},
     });
 
@@ -455,7 +453,6 @@ ${SECURITY_GUIDELINE}` },
     worker.enqueue({
       id: "j-code",
       messages: [userMessage("hi")],
-      mode: "code",
       sessionId: "sess-1",
       onEvent: () => {},
     });

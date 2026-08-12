@@ -15,7 +15,6 @@ import {
 } from "../handoff/types.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
-import type { ChatMode } from "@mindcloud/shared";
 import { ContextPipeline } from "../context/pipeline.js";
 import { SECURITY_GUIDELINE } from "../context/security-guideline.js";
 import { TopicTracker, type PendingTopicJudge } from "../memory/topic/tracker.js";
@@ -170,8 +169,6 @@ export interface Job {
    * LLM 调用记录（llm_calls.jsonl）由 provider 包装层负责，不受本标记影响。
    */
   ephemeral?: boolean;
-  mode?: ChatMode;
-  projectRoot?: string;
   /** 外部取消信号：已取消的排队 job 直接跳过；运行中在步骤边界中止 */
   signal?: AbortSignal;
   onEvent: (event: LLMEvent) => void;
@@ -652,7 +649,7 @@ export class AgentWorker {
       // 结果经 pipeline 注入（参与预算与降级），不再以消息位 prepend。
       // 失败不静默：retrievalFailed 让组装层尾随"记忆检索暂时不可用"的明确告知；
       // 检索结果已在历史文件中，不会也不应被再次持久化。
-      let semanticMemories: SemanticMemory[] = [];      if (this.semanticRetriever && job.mode !== "code" && lastUser && lastUserText.trim()) {
+      let semanticMemories: SemanticMemory[] = [];      if (this.semanticRetriever && lastUser && lastUserText.trim()) {
         try {
           const excludeIds = new Set(job.messages.map((m) => m.id));
           semanticMemories = await this.semanticRetriever.retrieve(
@@ -729,7 +726,6 @@ export class AgentWorker {
         toolCtx: {
           agentId: this.config.agentId,
           workspaceDir: this.config.workspaceDir,
-          projectRoot: job.projectRoot,
           tools: toolsMap,
           intermindRide: job.intermindRide,
           approve: async (name, args, toolCallId) => {

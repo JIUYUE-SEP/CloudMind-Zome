@@ -49,14 +49,14 @@ describe("readTool", () => {
     expect(result.output).toBe("hello");
   });
 
-  it("reads files inside the project root in code mode", async () => {
+  it("reads files inside the project root", async () => {
     fs.writeFileSync(path.join(projectRoot, "main.ts"), "export const x = 1;");
     const result = await readTool.execute(makeCtx(workspaceDir, projectRoot), { path: "main.ts" });
     expect(result.success).toBe(true);
     expect(result.output).toBe("export const x = 1;");
   });
 
-  it("rejects path traversal from project root in code mode", async () => {
+  it("rejects path traversal from the project root", async () => {
     const result = await readTool.execute(makeCtx(workspaceDir, projectRoot), { path: "../outside.txt" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("path traversal detected");
@@ -113,26 +113,26 @@ describe("writeTool", () => {
     expect(fs.readFileSync(path.join(workspaceDir, "files", "files", "notes.md"), "utf-8")).toBe("hello");
   });
 
-  it("writes files inside the project root in code mode", async () => {
+  it("writes files inside the project root", async () => {
     const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "src/main.ts", content: "export const x = 1;" });
     expect(result.success).toBe(true);
     expect(fs.readFileSync(path.join(projectRoot, "src", "main.ts"), "utf-8")).toBe("export const x = 1;");
   });
 
-  it("rejects path traversal from project root in code mode", async () => {
+  it("rejects path traversal from the project root", async () => {
     const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "../outside.txt", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("path traversal detected");
   });
 
-  it("rejects protected files in code mode too", async () => {
+  it("rejects protected files inside the project root too", async () => {
     const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "config.json", content: "x" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("cannot write protected file");
   });
 });
 
-describe("chat 模式 fallback 路径安全（P2-1）", () => {
+describe("无 projectRoot（默认）fallback 路径安全（P2-1）", () => {
   let workspaceDir: string;
   let outsideDir: string;
 
