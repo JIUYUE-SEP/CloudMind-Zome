@@ -23,6 +23,7 @@
     "@grpc/proto-loader": "^0.8.0",
     "@mindcloud/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "cordis": "4.0.0-rc.8",
     "cron-parser": "^5.0.0",
     "fastify": "^5.3.0",
     "openai": "^4.95.0",
