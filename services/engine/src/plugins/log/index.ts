@@ -1,6 +1,6 @@
 import type { Context } from "cordis";
 import type { Logger } from "pino";
-import { logger } from "../../logger.js";
+import { logger } from "./logger.js";
 
 /**
  * log 插件（P1）：收编进程单例 logger 与 log-buffer 环形缓冲（同目录），
