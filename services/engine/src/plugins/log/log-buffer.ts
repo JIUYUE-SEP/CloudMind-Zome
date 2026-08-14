@@ -1,5 +1,7 @@
 // engine 日志内存缓冲：pino 默认只写 stdout，这里并行 tee 一份到内存环形缓冲，
 // 供 GET /logs 返回给前端 LogPanel。只保留最近 MAX_ENTRIES 条，进程重启即清空。
+//
+// P1 自 api/log-buffer.ts 迁址 plugins/log/（解除 logger → api 层间倒置），语义未改。
 
 export interface BufferedLogEntry {
   time: number;

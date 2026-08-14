@@ -1,6 +1,4 @@
 import { describe, it, expect } from "vitest";
-// @ts-expect-error —— cordis@4.0.0-rc.8 类型面在 Node16 解析下为空（lib/*.d.ts
-// 内部导入缺扩展名，traceResolution 实证）；运行时不受影响，详见 _template.ts 头注。
 import { Context } from "cordis";
 import * as template from "../../src/plugins/_template.js";
 

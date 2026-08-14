@@ -1,5 +1,5 @@
 import pino from "pino";
-import { createLogBufferStream } from "./api/log-buffer.js";
+import { createLogBufferStream } from "./plugins/log/log-buffer.js";
 
 // 共享日志流（stdout + /logs 环形缓冲）：Fastify 请求日志与各业务模块
 // 共用同一出口，保证两类日志同进 LogPanel

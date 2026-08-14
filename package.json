@@ -43,6 +43,9 @@
       "brace-expansion@^1": "^1.1.16",
       "brace-expansion@^2": "^2.1.2",
       "brace-expansion@^5": "^5.0.9"
+    },
+    "patchedDependencies": {
+      "cordis@4.0.0-rc.8": "patches/cordis@4.0.0-rc.8.patch"
     }
   }
 }

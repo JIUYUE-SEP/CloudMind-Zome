@@ -1,8 +1,3 @@
-// @ts-expect-error —— cordis@4.0.0-rc.8 类型面在 Node16 解析下为空：其 lib/*.d.ts
-// 内部相对导入无扩展名（Node16 ESM 模式不做扩展名搜索，traceResolution 实证
-// './context' not resolved），entry 的 export * 全部落空。运行时不受影响
-// （lib 为单文件 bundle），本抑制仅为 P0 期过渡；恢复途径：pnpm patch 补扩展名
-// 或上游修复（属 P1 前置，见 P0 交付报告），恢复后删除本注释即回全类型。
 import type { Context } from "cordis";
 
 /**

@@ -1,0 +1,171 @@
+diff --git a/lib/context.d.ts b/lib/context.d.ts
+index fda68c8988b5a50793d81e956b6d067ba3033343..237553de522a8876a3a96ddd488373fe50236d23 100644
+--- a/lib/context.d.ts
++++ b/lib/context.d.ts
+@@ -1,10 +1,10 @@
+ import { Dict } from 'cosmokit';
+-import { EventsService } from './events';
+-import { LoggerService } from './logger';
+-import { ReflectService } from './reflect';
+-import { InjectKey, RegistryService } from './registry';
+-import { symbols } from './utils';
+-import './fiber';
++import { EventsService } from './events.js';
++import { LoggerService } from './logger.js';
++import { ReflectService } from './reflect.js';
++import { InjectKey, RegistryService } from './registry.js';
++import { symbols } from './utils.js';
++import './fiber.js';
+ export interface Context {
+     [symbols.isolate]: Dict<symbol>;
+     [symbols.intercept]: Dict;
+diff --git a/lib/events.d.ts b/lib/events.d.ts
+index 4ce8a52ec6513d6d213f30c49c05dce0a8d1362e..8bd8c98a5745c0c1586a48891e427c338ad6c297 100644
+--- a/lib/events.d.ts
++++ b/lib/events.d.ts
+@@ -1,12 +1,12 @@
+ import { Promisify } from 'cosmokit';
+-import { Context } from './context';
+-import { Fiber, FiberState } from './fiber';
++import { Context } from './context.js';
++import { Fiber, FiberState } from './fiber.js';
+ export declare function isBailed(value: any): boolean;
+ export type Parameters<F> = F extends (...args: infer P) => any ? P : never;
+ export type ReturnType<F> = F extends (...args: any) => infer R ? R : never;
+ export type ThisType<F> = F extends (this: infer T, ...args: any) => any ? T : never;
+ export type DispatchMode = 'emit' | 'parallel' | 'serial' | 'bail' | 'waterfall';
+-declare module './context' {
++declare module './context.js' {
+     interface Context {
+         parallel<K extends keyof Events>(name: K, ...args: Parameters<Events[K]>): Promise<void>;
+         parallel<K extends keyof Events>(thisArg: NoInfer<ThisType<Events[K]>>, name: K, ...args: Parameters<Events[K]>): Promise<void>;
+diff --git a/lib/fiber.d.ts b/lib/fiber.d.ts
+index a676704c793a415cd9a38e68e34601842d1e412a..4dbb8ae30c84dc56438f50f0b890ead2ef46e9c2 100644
+--- a/lib/fiber.d.ts
++++ b/lib/fiber.d.ts
+@@ -1,10 +1,10 @@
+ import { Awaitable, Dict } from 'cosmokit';
+-import { Context } from './context';
+-import { Plugin } from './registry';
+-import { DisposableList } from './utils';
+-import { Impl } from './reflect';
++import { Context } from './context.js';
++import { Plugin } from './registry.js';
++import { DisposableList } from './utils.js';
++import { Impl } from './reflect.js';
+ import { StandardSchemaV1 } from '@standard-schema/spec';
+-declare module './context' {
++declare module './context.js' {
+     interface Context extends Pick<Fiber, 'effect'> {
+         fiber: Fiber;
+     }
+diff --git a/lib/index.d.ts b/lib/index.d.ts
+index 4a560639825cbea145a774fbafda80d272a75de1..408056c69be2dae692f3df35ef4099e056bca0ba 100644
+--- a/lib/index.d.ts
++++ b/lib/index.d.ts
+@@ -1,7 +1,7 @@
+-export * from './context';
+-export * from './events';
+-export * from './fiber';
+-export * from './logger';
+-export * from './registry';
+-export * from './service';
+-export * from './utils';
++export * from './context.js';
++export * from './events.js';
++export * from './fiber.js';
++export * from './logger.js';
++export * from './registry.js';
++export * from './service.js';
++export * from './utils.js';
+diff --git a/lib/logger.d.ts b/lib/logger.d.ts
+index 04fcc902793e8c485806e1b78db4ff3b9d309815..d395257a94c30b39084471c46ffeea0445a02b15 100644
+--- a/lib/logger.d.ts
++++ b/lib/logger.d.ts
+@@ -1,7 +1,7 @@
+-import { Context } from './context';
+-import { Fiber } from './fiber';
+-import { symbols } from './utils';
+-declare module './context' {
++import { Context } from './context.js';
++import { Fiber } from './fiber.js';
++import { symbols } from './utils.js';
++declare module './context.js' {
+     interface Intercept {
+         logger: LoggerService.Intercept;
+     }
+@@ -68,7 +68,7 @@ export declare class LoggerService {
+     _snExporter: number;
+     exporters: Map<number, Exporter>;
+     constructor(ctx: Context);
+-    exporter(exporter: Exporter): import("./fiber").Disposable<Promise<void>>;
++    exporter(exporter: Exporter): import("./fiber.js").Disposable<Promise<void>>;
+     private _resolveConfig;
+     [symbols.invoke](name?: string): Logger;
+ }
+diff --git a/lib/reflect.d.ts b/lib/reflect.d.ts
+index e4171733700061b25ec96593b7a6cc64d8d4dd2d..a5ad4c8f68d0404a4a1639429a9b93a7f39c64f5 100644
+--- a/lib/reflect.d.ts
++++ b/lib/reflect.d.ts
+@@ -1,7 +1,7 @@
+ import { Dict } from 'cosmokit';
+-import { Context } from './context';
+-import { Fiber } from './fiber';
+-declare module './context' {
++import { Context } from './context.js';
++import { Fiber } from './fiber.js';
++declare module './context.js' {
+     interface Context {
+         get<K extends string & keyof this>(name: K, strict?: boolean): undefined | this[K];
+         get(name: string, strict?: boolean): any;
+@@ -40,10 +40,10 @@ export declare class ReflectService {
+     get(name: string, strict?: boolean): any;
+     _getImpl(name: string, strict?: boolean): Impl | undefined;
+     set(name: string, value: any, error?: Error): boolean;
+-    provide(name: string, value?: any, check?: () => boolean): import("./fiber").Disposable<Promise<void>>;
++    provide(name: string, value?: any, check?: () => boolean): import("./fiber.js").Disposable<Promise<void>>;
+     notify(names: string[], filter?: (ctx: Context, name: string) => boolean): Fiber[];
+-    accessor(name: string, options: Omit<Property.Accessor, 'type'>): import("./fiber").Disposable<Promise<void>>;
+-    mixin(source: any, mixins: string[] | Dict<string>): import("./fiber").Disposable<Promise<void>>;
++    accessor(name: string, options: Omit<Property.Accessor, 'type'>): import("./fiber.js").Disposable<Promise<void>>;
++    mixin(source: any, mixins: string[] | Dict<string>): import("./fiber.js").Disposable<Promise<void>>;
+     trace<T>(value: T): T;
+     bind<T extends Function>(callback: T): T;
+ }
+diff --git a/lib/registry.d.ts b/lib/registry.d.ts
+index ccf076b380ee8103dfc8656a0486a8f181867b06..bd6249cdbd6d2898f9ffab9bb9e6f7824668e93e 100644
+--- a/lib/registry.d.ts
++++ b/lib/registry.d.ts
+@@ -1,8 +1,8 @@
+ import { Dict } from 'cosmokit';
+ import { StandardSchemaV1 } from '@standard-schema/spec';
+-import { Context } from './context';
+-import { Fiber } from './fiber';
+-import { DisposableList, symbols } from './utils';
++import { Context } from './context.js';
++import { Fiber } from './fiber.js';
++import { DisposableList, symbols } from './utils.js';
+ export type Inject<M = Dict> = (keyof M)[] | {
+     [K in keyof M]?: M[K];
+ };
+@@ -51,7 +51,7 @@ type GetPluginParameters<P> = P extends (ctx: Context, ...args: infer R) => any
+     apply(ctx: Context, ...args: infer R): any;
+ } ? R : never;
+ type GetPluginConfig<P> = P extends Plugin.Transform<infer S, any> ? S : GetPluginParameters<P>[0];
+-declare module './context' {
++declare module './context.js' {
+     interface Context {
+         inject(deps: Inject, callback: Plugin.Function<void>): Fiber & PromiseLike<Fiber>;
+         plugin<P extends Plugin>(plugin: P, ...args: Spread<GetPluginConfig<P>>): Fiber & PromiseLike<Fiber>;
+diff --git a/lib/service.d.ts b/lib/service.d.ts
+index 488128b53b4742c78b06a0a6550a5badf7182bfa..58d037146996f35f87f5464b03e929d6ad3d6549 100644
+--- a/lib/service.d.ts
++++ b/lib/service.d.ts
+@@ -1,5 +1,5 @@
+-import { Context } from './context';
+-import { symbols } from './utils';
++import { Context } from './context.js';
++import { symbols } from './utils.js';
+ export declare abstract class Service<out T = never> {
+     protected ctx: Context;
+     static readonly init: unique symbol;

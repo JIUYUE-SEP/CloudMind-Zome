@@ -1,11 +1,13 @@
 import { logger } from "./logger.js";
 import { createServer } from "./api/server.js";
+import { Context } from "cordis";
+import * as logPlugin from "./plugins/log/index.js";
+import * as configPlugin from "./plugins/config/index.js";
 import { AgentRepository } from "./memory/repositories/agent.js";
 import { MessageRepository } from "./memory/repositories/message.js";
 import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
 import { LLMCallRepository } from "./memory/repositories/llm-call.js";
-import { ConfigRepository } from "./config/repository.js";
 import { resolveConfiguredTools } from "./config/agent-tools.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { MockLLMProvider, ErrorLLMProvider } from "./provider/llm.js";
@@ -84,7 +86,13 @@ async function findBuiltinSkillsDir(): Promise<string | undefined> {
 }
 
 async function main() {
-  const configRepo = new ConfigRepository();
+  // Cordis 组合根（P1 起）：log/config 两插件挂载，实例从 ctx 取回继续喂现有
+  // 手工接线；其余接线一行不动，P2+ 逐期收口
+  // （docs/superpowers/plans/2026-08-14-cordis-plugin-migration.md）
+  const root = new Context();
+  await root.plugin(logPlugin);
+  await root.plugin(configPlugin);
+  const configRepo = root.config;
   const agentRepository = new AgentRepository();
   // worker 注册表（P3-6）：创建/替换/退役的唯一权威
   const workerRegistry = new WorkerRegistry();

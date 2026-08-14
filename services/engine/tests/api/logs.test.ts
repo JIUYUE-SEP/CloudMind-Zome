@@ -12,7 +12,7 @@ import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
-import { clearBufferedLogs } from "../../src/api/log-buffer.js";
+import { clearBufferedLogs } from "../../src/plugins/log/log-buffer.js";
 import type { ApiContext } from "../../src/api/context.js";
 import { restoreDataDir } from "../helpers/env.js";
 

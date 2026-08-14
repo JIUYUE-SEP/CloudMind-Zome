@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getBufferedLogs } from "../log-buffer.js";
+import { getBufferedLogs } from "../../plugins/log/log-buffer.js";
 
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 200;
