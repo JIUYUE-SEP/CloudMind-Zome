@@ -6,13 +6,12 @@ import { AgentRepository } from "../../src/memory/repositories/agent.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import {
   IntermindService,
-  intermindSessionId,
   buildPrivateMessageNotice,
 } from "../../src/intermind/service.js";
 import { readPrivateMessagesTool } from "../../src/tools/builtin/read_private_messages.js";
 import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
-import type { ChatMessageRecord } from "@mindcloud/shared";
+import { intermindSessionId, type ChatMessageRecord } from "@mindcloud/shared";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import { AgentWorker as RealAgentWorker } from "../../src/core/agent-worker.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";

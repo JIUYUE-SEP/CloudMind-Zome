@@ -51,3 +51,16 @@ export const DEFAULT_ENGINE_PORT = 8848;
 export const DEFAULT_ENGINE_URL = `http://${DEFAULT_ENGINE_HOST}:${DEFAULT_ENGINE_PORT}`;
 /** sidecar gRPC 默认地址（`ZOME_SIDECAR_ADDR` 可覆盖） */
 export const DEFAULT_SIDECAR_ADDR = "127.0.0.1:50051";
+
+// ---- 跨模块共享契约常量（P3 插件化：切 tools→subagent/intermind 值边的落点） ----
+
+/** dispatch_subagent 前台模式超时上限（dispatcher 与工具共用同一口径） */
+export const MAX_FOREGROUND_TIMEOUT_MS = 300_000;
+
+/** Intermind 私信会话 id 前缀 */
+export const INTERMIND_SESSION_PREFIX = "intermind:";
+
+/** 私信会话 id 约定：与对端 agent 的来往信件会话 */
+export function intermindSessionId(peerAgentId: string): string {
+  return `${INTERMIND_SESSION_PREFIX}${peerAgentId}`;
+}

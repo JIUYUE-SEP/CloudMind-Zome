@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ChatMessageRecord } from "@mindcloud/shared";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
-import { intermindSessionId } from "../../intermind/service.js";
+import { intermindSessionId } from "@mindcloud/shared";
 
 const READ_PRIVATE_MESSAGES_DEFAULT_LIMIT = 50;
 const READ_PRIVATE_MESSAGES_MAX_LIMIT = 200;

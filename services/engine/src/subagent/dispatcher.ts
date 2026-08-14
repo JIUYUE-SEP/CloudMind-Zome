@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
+import { MAX_FOREGROUND_TIMEOUT_MS, type AgentConfig, type ChatMessage } from "@mindcloud/shared";
 import type { BackgroundManager } from "./background.js";
 import type { PuppetRunner } from "./puppet.js";
 import type { SubagentOptions, SubagentResult, SubagentTask } from "./types.js";
 
-export const MAX_FOREGROUND_TIMEOUT_MS = 300_000;
+// MAX_FOREGROUND_TIMEOUT_MS 已迁至 @mindcloud/shared（P3 切 tools→subagent 值边）
 
 export interface SubagentDispatcherDependencies {
   getAgentConfig(agentId: string): Promise<AgentConfig | undefined>;

@@ -4,12 +4,15 @@ import { Context } from "cordis";
 import * as logPlugin from "./plugins/log/index.js";
 import * as configPlugin from "./plugins/config/index.js";
 import * as llmPlugin from "./plugins/llm/index.js";
+import * as toolsPlugin from "./plugins/tools/index.js";
+import * as skillsPlugin from "./plugins/skills/index.js";
+import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
+import { assertServices } from "./plugins/require-services.js";
 import { AgentRepository } from "./memory/repositories/agent.js";
 import { MessageRepository } from "./memory/repositories/message.js";
 import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
 import { LLMCallRepository } from "./memory/repositories/llm-call.js";
-import { resolveConfiguredTools } from "./config/agent-tools.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { ResilientLLMProvider } from "./provider/resilient.js";
 import type { LLMProvider } from "./provider/types.js";
@@ -17,15 +20,12 @@ import { MockEmbedderProvider } from "./provider/embedder.js";
 import { AgentWorker } from "./core/agent-worker.js";
 import { createContextPipelineForAgent } from "./core/pipeline-factory.js";
 import { resolveContextWindow } from "./compute/context-window.js";
-import { getBuiltinTools } from "./tools/builtin/index.js";
-import { McpClientManager } from "./tools/mcp/index.js";
 import type { ApiContext } from "./api/context.js";
 import type { AgentConfig, ChatMessage, ProviderConfig } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
 import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
-import { createSkillService } from "./skills/service.js";
 import { RecallService } from "./memory/recall.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
@@ -48,45 +48,26 @@ import { HandoffLoopRegistry } from "./handoff/registry.js";
 import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./plugins/llm/record-calls.js";
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { getAuthToken, getAuthTokenFilePath } from "./config/auth-token.js";
 import { classifyListenError } from "./api/listen-error.js";
 import { getGitShortHash } from "./git-commit.js";
 import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
 
-/** 从 cwd 向上找 monorepo 根下的 packages/skills（内置技能目录） */
-async function findBuiltinSkillsDir(): Promise<string | undefined> {
-  // env 兜底（功能 review M4）：与 ZOME_PROTO_PATH 同一模式——生产包内
-  // 向上查找不命中时，可显式指向内置目录，不再静默丢失
-  const fromEnv = process.env.ZOME_BUILTIN_SKILLS_DIR;
-  if (fromEnv) {
-    const ok = await fs.stat(fromEnv).then((s) => s.isDirectory()).catch(() => false);
-    if (ok) return fromEnv;
-    logger.warn(`[skills] ZOME_BUILTIN_SKILLS_DIR 指向的目录不存在：${fromEnv}（回退向上查找）`);
-  }
-  let dir = process.cwd();
-  for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, "packages", "skills");
-    const ok = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (ok) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // 内置目录缺失此前静默吞掉（loader 对不存在目录 catch 跳过），打包排障零线索
-  logger.warn(`[skills] 未找到内置技能目录 packages/skills（cwd=${process.cwd()} 向上 6 级不命中），内置 skill 不可用`);
-  return undefined;
-}
+// findBuiltinSkillsDir 已迁入 skills 插件（P3：plugins/skills/index.ts，
+// 三分支语义一字未改）；本文件的 ApiContext.listSkills 经 import 复用。
 
 async function main() {
-  // Cordis 组合根（P1 起）：log/config 两插件挂载，实例从 ctx 取回继续喂现有
-  // 手工接线；其余接线一行不动，P2+ 逐期收口
+  // Cordis 组合根（P1 起）：插件挂载，实例从 ctx 取回继续喂现有
+  // 手工接线；其余接线一行不动，后续期逐期收口
   // （docs/superpowers/plans/2026-08-14-cordis-plugin-migration.md）
   const root = new Context();
   await root.plugin(logPlugin);
   await root.plugin(configPlugin);
   await root.plugin(llmPlugin);
+  // tools（P3）：MCP connectAll 在插件 apply 内完成（启动时序不变）；
+  // fiber 引用留给关停钩——close 挂插件 disposer
+  const toolsFiber = await root.plugin(toolsPlugin);
   const configRepo = root.config;
   const agentRepository = new AgentRepository();
   // worker 注册表（P3-6）：创建/替换/退役的唯一权威
@@ -99,19 +80,17 @@ async function main() {
 
   const sidecarClient = new SidecarClient();
 
-  // 技能服务（阶段 5 一期，Skill 工具化）：L1 目录（发现入口）与 Skill 工具
-  // （取规程正文）共用同一套三级目录加载
-  const skillService = createSkillService({
-    getAgentConfig: (agentId) => agentRepository.get(agentId),
-    resolveDirs: async (agentId) => {
-      const dirs: string[] = [];
-      const builtin = await findBuiltinSkillsDir();
-      if (builtin) dirs.push(builtin);
-      dirs.push(path.join(getDataDir(), "skills"));
-      dirs.push(path.join(getAgentDir(agentId), "skills"));
-      return dirs;
-    },
-  });
+  // skills 插件（P3）：getAgentConfig 依赖 agentRepository（P4/P6 才插件化）——
+  // 批准的过渡形态：经插件 config 回调进场，后续期换位 inject
+  await root.plugin(skillsPlugin, { getAgentConfig: (agentId) => agentRepository.get(agentId) });
+
+  // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
+  // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
+  // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
+  assertServices(root, ["log", "config", "llm", "tools", "skills"]);
+
+  // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
+  const skillService = root.skills;
 
   // 回忆服务（recall 工具）：只读本 agent 自己的压缩档目录与归档原文
   const recallService = new RecallService({
@@ -126,9 +105,9 @@ async function main() {
     getAgentWorker: (agentId) => getOrCreateWorker(agentId),
   });
 
-  // MCP servers：启动时按 DATA_DIR/mcp-servers.json 连接，单个失败降级不影响整体
-  const mcpManager = McpClientManager.loadDefault();
-  await mcpManager.connectAll();
+  // MCP servers 生命周期已收编进 tools 插件（P3）：loadDefault+connectAll 在
+  // 插件 apply 内完成（启动时序不变），close 挂插件 disposer（关停钩 dispose 触发）；
+  // ApiContext 的 mcpManager 经 root.tools.manager 透传。
 
   // subagent 调度链路：runAgentCollect 经 AgentWorker 队列执行（保持串行不变量），
   // dispatcher/background 为全局单例，同时暴露给工具上下文与 REST 路由。
@@ -187,11 +166,7 @@ async function main() {
         providerId: agentConfig.providerId,
         maxContextTokens: agentConfig.maxContextTokens,
         configRepository: configRepo,
-        tools: [
-          ...getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name)),
-          // MCP 工具动态命名（mcp__ 前缀），与 worker 同一份快照
-          ...mcpManager.getTools(),
-        ],
+        tools: root.tools.forAgent(agentConfig),
         workspaceDir: getAgentDir(ownerAgentId),
         services: {
           subagentDispatcher,
@@ -286,11 +261,7 @@ async function main() {
       );
       const embedder = await root.llm.createEmbedder(agentConfig);
     const imageProvider = await root.llm.createImage(agentConfig);
-    const tools = [
-      ...getBuiltinTools().filter((t) => resolveConfiguredTools(agentConfig).includes(t.name)),
-      // MCP 工具动态命名（mcp__ 前缀），不参与 agent 配置白名单过滤，与内置工具同管线
-      ...mcpManager.getTools(),
-    ];
+    const tools = root.tools.forAgent(agentConfig);
     const workspaceDir = getAgentDir(agentId);
 
     // G2（双源统一）：pipeline 预算与水位 W 同一查找链——型号表 contextWindow 优先
@@ -397,7 +368,7 @@ async function main() {
     backgroundManager,
     handoffManager,
     handoffLoops: handoffLoopRegistry,
-    mcpManager,
+    mcpManager: root.tools.manager,
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,
     skillService,
@@ -532,7 +503,9 @@ async function main() {
     },
     close: async () => {
       scheduler.stop();
-      await mcpManager.close();
+      // MCP close 挂 tools 插件 disposer（P3 可逆注册首个真实用例）：
+      // dispose 该 fiber 即触发 effect 清理（含 mcpManager.close()）
+      await toolsFiber.dispose();
       await app.close();
     },
     timeoutMs: 10_000,

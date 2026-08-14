@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentConfig, ChatMessageRecord } from "@mindcloud/shared";
+import { INTERMIND_SESSION_PREFIX, intermindSessionId, type AgentConfig, type ChatMessageRecord } from "@mindcloud/shared";
 import { logger } from "../logger.js";
 import type { AgentWorker } from "../core/agent-worker.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
@@ -21,13 +21,10 @@ import {
  * 搭车只落通知不触发感知回合。裸原文只进 intermind 来信线程，主会话只见通知。
  */
 
-export const INTERMIND_SESSION_PREFIX = "intermind:";
 /** 私信通知注入的主会话：与前端私聊 WS/REST 的缺省会话同 id */
 export const INTERMIND_NOTICE_SESSION_ID = "default";
-
-export function intermindSessionId(peerAgentId: string): string {
-  return `${INTERMIND_SESSION_PREFIX}${peerAgentId}`;
-}
+// INTERMIND_SESSION_PREFIX 与 intermindSessionId 已迁至 @mindcloud/shared
+// （P3 切 tools→intermind 值边；会话 id 约定跨模块共享契约）
 
 export interface IntermindSessionSummary {
   peer: string;
