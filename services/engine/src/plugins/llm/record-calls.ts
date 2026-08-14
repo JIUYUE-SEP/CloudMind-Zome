@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { logger } from "../logger.js";
-import type { LLMProvider, LLMChatParams, LLMEvent } from "./types.js";
-import type { LLMCallRecord } from "../memory/repositories/types.js";
+import { logger } from "../../logger.js";
+import type { LLMProvider, LLMChatParams, LLMEvent } from "../../provider/types.js";
+import type { LLMCallRecord } from "../../memory/repositories/types.js";
 
 export interface LLMCallSink {
   append(record: LLMCallRecord): Promise<void>;

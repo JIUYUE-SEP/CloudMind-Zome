@@ -4,7 +4,7 @@ import type { ChatMessage } from "@mindcloud/shared";
 import type { LLMProvider } from "../provider/types.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import { runTurn } from "../core/react/turn.js";
-import { auditFailClosed } from "../api/ws/approval-audit.js";
+import { auditFailClosed } from "../plugins/approval-audit/index.js";
 import type { ConfigRepository } from "../config/repository.js";
 import { resolveContextWindow } from "../compute/context-window.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../context/pipeline.js";

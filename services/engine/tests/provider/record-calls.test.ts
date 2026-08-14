@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { withLLMCallRecording, type LLMCallSink } from "../../src/provider/record-calls.js";
+import { withLLMCallRecording, type LLMCallSink } from "../../src/plugins/llm/record-calls.js";
 import type { LLMProvider, LLMEvent } from "../../src/provider/types.js";
 import type { LLMCallRecord } from "../../src/memory/repositories/types.js";
 import { logger } from "../../src/logger.js";

@@ -4,7 +4,7 @@ import { ResilientLLMProvider } from "../../src/provider/resilient.js";
 import { isRetryableError } from "../../src/provider/protocols/shared.js";
 import { ProviderError } from "../../src/provider/errors.js";
 import { OpenAIProvider } from "../../src/provider/llm.js";
-import { withLLMCallRecording } from "../../src/provider/record-calls.js";
+import { withLLMCallRecording } from "../../src/plugins/llm/record-calls.js";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../src/provider/types.js";
 import type { LLMCallRecord } from "../../src/memory/repositories/types.js";
 

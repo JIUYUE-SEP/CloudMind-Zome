@@ -15,7 +15,7 @@ import {
   type PendingSegmentSnapshot,
 } from "../../src/memory/topic/state.js";
 import { archivedMessageIds, writeCompressedTopic } from "../../src/memory/topic/store.js";
-import { withLLMCallRecording } from "../../src/provider/record-calls.js";
+import { withLLMCallRecording } from "../../src/plugins/llm/record-calls.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { restoreDataDir } from "../helpers/env.js";
 

@@ -3,6 +3,12 @@ import { logger } from "../../logger.js";
 /**
  * 审批全链路审计日志（P4-3，体验 review O-M2）。
  *
+ * P2 自 api/ws/approval-audit.ts 迁址本目录（插件化迁移）：解除
+ * core/agent-worker.ts 与 subagent/puppet.ts 对 api/ 层的值级反向依赖
+ * （迁移方案 A2 节点名的层间倒置）。取舍：本文件是纯函数汇集面
+ * （全部经 logger 单例出口，无自有状态），按 P2 任务书批准仅归位文件、
+ * 不上架 ctx 服务——无状态可挂，空 apply 是伪插件。
+ *
  * 审批是安全卖点，链路必须可回溯："这个操作是谁批的、什么时候批的、
  * 批的什么"。事件与字段约定：
  * - 请求/批准/拒绝/超时/免问记入/免问命中/免问被拒/fail-closed 各一条；

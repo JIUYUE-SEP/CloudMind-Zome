@@ -15,7 +15,7 @@ import {
   auditRememberRejected,
   auditRequest,
   auditTimeout,
-} from "./approval-audit.js";
+} from "../../plugins/approval-audit/index.js";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 
 const MAX_PENDING_MESSAGES = 100;

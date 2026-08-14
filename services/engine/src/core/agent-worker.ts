@@ -41,7 +41,7 @@ import {
   type MindChunk,
 } from "../mind/mind-files.js";
 import { UnsupportedSchemaVersionError } from "../versioning.js";
-import { auditFailClosed, auditTrustedAutoApprove } from "../api/ws/approval-audit.js";
+import { auditFailClosed, auditTrustedAutoApprove } from "../plugins/approval-audit/index.js";
 
 logger.info("[agent-worker] module loaded");
 

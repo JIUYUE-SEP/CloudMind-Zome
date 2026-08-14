@@ -10,7 +10,7 @@ import {
   auditAutoApproved,
   auditTrustedAutoApprove,
   auditFailClosed,
-} from "../../src/api/ws/approval-audit.js";
+} from "../../src/plugins/approval-audit/index.js";
 
 describe("summarizeArgs 审计参摘要（P4-3）", () => {
   it("path 全文保留（审计定位关键）", () => {

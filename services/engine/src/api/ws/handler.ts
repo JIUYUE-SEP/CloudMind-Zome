@@ -18,7 +18,7 @@ import {
   auditRememberRejected,
   auditRequest,
   auditTimeout,
-} from "./approval-audit.js";
+} from "../../plugins/approval-audit/index.js";
 
 function safeSend(socket: WebSocket, data: string | object): void {
   try {
