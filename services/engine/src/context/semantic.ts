@@ -2,7 +2,6 @@ import { logger } from "../logger.js";
 import type { MemoryIndexer } from "../memory/indexer.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import type { ChatMessageRecord } from "../memory/repositories/types.js";
-import { archivedMessageIds } from "../memory/topic/store.js";
 import type { SemanticMemory } from "./layers.js";
 
 export interface SemanticSearchConfig {
@@ -67,12 +66,17 @@ function recordText(record: ChatMessageRecord): string {
  * L4 语义检索器（Phase 3 从 agent-worker 迁入）：
  * embedder + sidecar HNSW 仍由 MemoryIndexer 承载，本类负责
  * 候选获取 → 去重 → 归档排除 → 时间衰减打分 → minScore 过滤 → topK。
+ *
+ * P5：归档 id 查询能力（memory/topic/store.archivedMessageIds）改构造注入——
+ * context/ 对 memory/ 的值级 import 切断（残余边处理，装配方从 memory 域取下喂入）。
  */
 export class SemanticRetriever {
   constructor(
     private indexer: MemoryIndexer,
     private repo: IMessageRepository,
     private config: SemanticSearchConfig,
+    /** 已压缩话题原文 id 查询（构造注入，原值级 import memory/topic/store 已切） */
+    private archivedIds: (agentId: string) => Promise<Set<string>>,
   ) {}
 
   /**
@@ -96,7 +100,7 @@ export class SemanticRetriever {
     const [records, archivedIds] = await Promise.all([
       this.repo.getByIds(candidateIds),
       // 已压缩话题的原文 id（压缩档 frontmatter 索引，不读 messages_archived.jsonl 全文）
-      archivedMessageIds(agentId),
+      this.archivedIds(agentId),
     ]);
 
     const now = Date.now();

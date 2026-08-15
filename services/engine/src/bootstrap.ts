@@ -8,6 +8,8 @@ import * as toolsPlugin from "./plugins/tools/index.js";
 import * as skillsPlugin from "./plugins/skills/index.js";
 import * as memoryPlugin from "./plugins/memory/index.js";
 import * as mindPlugin from "./plugins/mind/index.js";
+import * as pipelinePlugin from "./plugins/pipeline/index.js";
+import * as computePlugin from "./plugins/compute/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -19,8 +21,6 @@ import { ResilientLLMProvider } from "./provider/resilient.js";
 import type { LLMProvider } from "./provider/types.js";
 import { MockEmbedderProvider } from "./provider/embedder.js";
 import { AgentWorker } from "./core/agent-worker.js";
-import { createContextPipelineForAgent } from "./core/pipeline-factory.js";
-import { resolveContextWindow } from "./compute/context-window.js";
 import type { ApiContext } from "./api/context.js";
 import type { AgentConfig, ChatMessage, ProviderConfig } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
@@ -71,6 +71,10 @@ async function main() {
   // 概念基座先行；两者 inject 皆空（document-store 为库级直 import，不经 ctx）
   await root.plugin(memoryPlugin);
   await root.plugin(mindPlugin);
+  // pipeline/compute（P5）：均不依赖 memory/mind（pipeline 无依赖；compute 只
+  // inject config 已就位）——worker 创建链的两个工厂面，挂在使用点之前即可
+  await root.plugin(pipelinePlugin);
+  await root.plugin(computePlugin);
   const configRepo = root.config;
   // agentRepository 实例改经 ctx.memory 取（P4；agents 服务的配置半边，
   // P6 才与 WorkerRegistry 合体为 agents 插件——本期只换来源）
@@ -92,7 +96,7 @@ async function main() {
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
@@ -169,6 +173,7 @@ async function main() {
         providerId: agentConfig.providerId,
         maxContextTokens: agentConfig.maxContextTokens,
         configRepository: configRepo,
+        compute: root.compute,
         tools: root.tools.forAgent(agentConfig),
         workspaceDir: getAgentDir(ownerAgentId),
         services: {
@@ -269,11 +274,11 @@ async function main() {
 
     // G2（双源统一）：pipeline 预算与水位 W 同一查找链——型号表 contextWindow 优先
     // 驱动预算；查不到回退 agent 显式 maxContextTokens / 80_000（pipeline-factory 兜底）
-    const resolvedContextWindow = await resolveContextWindow(configRepo, {
+    const resolvedContextWindow = await root.compute.resolveContextWindow(configRepo, {
       providerId: agentConfig.providerId,
       modelId: agentConfig.modelId || agentConfig.model || "gpt-4o",
     });
-    const contextPipeline = createContextPipelineForAgent(agentConfig, resolvedContextWindow);
+    const contextPipeline = root.pipeline.createContextPipelineForAgent(agentConfig, resolvedContextWindow);
 
     // 只有配置了真实 embedder 时才启用向量索引；Mock embedder 的随机向量没有检索意义
     const memoryIndexer =
@@ -297,6 +302,8 @@ async function main() {
       trustAllTools: agentConfig.trustAllTools,
       // P4：灵魂层消费改经 ctx.mind（装配层透传；worker 内不再 import mind/ 模块）
       mind: root.mind,
+      // P5：W 查找链消费改经 ctx.compute（装配层透传）
+      compute: root.compute,
       // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
       skillCatalog: (await skillService.list(agentId)).map((s) => `- ${s.name}：${s.description}`),
       memoryIndexer,
@@ -380,6 +387,7 @@ async function main() {
     puppetModelService,
     intermindService,
     mind: root.mind,
+    compute: root.compute,
     retireAgentWorker: (agentId) => workerRegistry.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];

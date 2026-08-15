@@ -20,6 +20,7 @@ import type { SkillService } from "../skills/service.js";
 import type { PuppetModelService } from "../subagent/puppet-models.js";
 import type { IntermindService } from "../intermind/service.js";
 import type { MindService } from "../plugins/mind/index.js";
+import type { ComputeFace } from "../plugins/compute/index.js";
 import type { ChatMessage } from "@mindcloud/shared";
 
 export interface ApiContext {
@@ -55,6 +56,8 @@ export interface ApiContext {
   intermindService?: IntermindService;
   /** 灵魂层服务面（P4：agents 路由 ensureMindFiles 等经此取；bootstrap 装配层透传 ctx.mind） */
   mind?: MindService;
+  /** 算力解析面（P5：compute 路由 usage 聚合经此取；bootstrap 装配层透传 ctx.compute） */
+  compute?: ComputeFace;
   /** 退役 agent 的 worker（skills/reload 复用配置变更的退役/重建机制：下次使用按新目录重建） */
   retireAgentWorker?(agentId: string): void;
 }

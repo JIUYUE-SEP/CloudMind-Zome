@@ -18,6 +18,7 @@ import {
   type Job,
 } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import {
   HANDOFF_BOOK_PREFIX,
   HANDOFF_WRITING_GUIDANCE,
@@ -149,6 +150,7 @@ function runWorkerJob(
   } as IMessageRepository;
   const worker = new AgentWorker({
     mind: mindService,
+    compute: computeService,
     agentId: "agent-1",
     model: "mock",
     provider,

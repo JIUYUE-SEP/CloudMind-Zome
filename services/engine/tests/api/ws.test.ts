@@ -14,6 +14,7 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import type { Tool, ToolResult } from "../../src/tools/types.js";
@@ -47,6 +48,7 @@ async function buildWsContext(
   const providerInstance = provider;
   const worker = new AgentWorker({
       mind: mindService,
+      compute: computeService,
     agentId,
     model: "mock",
     provider: providerInstance,
@@ -388,6 +390,7 @@ describe("WebSocket API", () => {
     const worker1 = (await context.getAgentWorker("agent-ws"))!;
     const worker2 = new AgentWorker({
       mind: mindService,
+      compute: computeService,
       agentId: "agent-ws",
       model: "mock",
       provider: new CountingMock("p2"),

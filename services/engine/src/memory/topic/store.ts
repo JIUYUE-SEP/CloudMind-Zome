@@ -10,6 +10,7 @@ import {
   frontmatterVersion,
 } from "../../versioning.js";
 import type { CompressedTopic } from "./types.js";
+// P5 核实：本边为 type-only（TopicSummary 仅类型引用），按 P3 复审口径批准保留
 import type { TopicSummary } from "../../context/layers.js";
 
 /** 压缩档 frontmatter 迁移链（P1-1）：当前 v1 无实际迁移，机制就位 */

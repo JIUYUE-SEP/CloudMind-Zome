@@ -6,7 +6,7 @@ import type { LLMProvider, LLMEvent } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import type { ConfigRepository } from "../config/repository.js";
-import { resolveContextWindow } from "../compute/context-window.js";
+import type { ComputeFace } from "../plugins/compute/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../context/pipeline.js";
 import {
   HANDOFF_DEFAULT_MAX_SHIFTS,
@@ -22,7 +22,7 @@ import { CompressionQueue } from "../memory/topic/queue.js";
 import { runCompressionTask } from "../memory/topic/compression-task.js";
 import { judgeTopicBoundary } from "../memory/topic/judge.js";
 import { addPendingSegment, removePendingSegment, saveTopicState } from "../memory/topic/state.js";
-import { latestSummaries } from "../memory/topic/store.js";
+import { latestSummaries, archivedMessageIds } from "../memory/topic/store.js";
 import {
   normalizeTopicCompressionConfig,
   type TopicCompressionConfig,
@@ -155,6 +155,8 @@ export interface AgentWorkerConfig {
   trustAllTools?: boolean;
   /** 灵魂层服务面（P4 inject 化：消费改经 ctx.mind，bootstrap 装配层透传；原 mind/ 值级 import 已切） */
   mind: MindService;
+  /** 算力解析面（P5 inject 化：W 查找链改经 ctx.compute，bootstrap 装配层透传） */
+  compute: ComputeFace;
 }
 
 export interface Job {
@@ -242,6 +244,8 @@ export class AgentWorker {
         config.memoryIndexer,
         config.messageRepository,
         this.semanticConfig,
+        // P5：归档查询能力构造注入（semantic 值边已切；core→memory 边本就在）
+        archivedMessageIds,
       );
     }
   }
@@ -683,7 +687,7 @@ export class AgentWorker {
       // H1（W 链补档）：W 查找链与 pipeline 预算同三档——型号表 contextWindow →
       // agent 显式 maxContextTokens → 80_000。真机验证发现 W 缺档只回落 80K，
       // 而 pipeline 回落 agent 值（如 3000 → budget 2700），水位与预算双源分裂。
-      const resolvedContextWindow = await resolveContextWindow(this.config.configRepository, {
+      const resolvedContextWindow = await this.config.compute.resolveContextWindow(this.config.configRepository, {
         providerId: this.config.providerId,
         modelId: this.config.model,
       });

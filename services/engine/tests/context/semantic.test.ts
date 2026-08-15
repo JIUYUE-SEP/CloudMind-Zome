@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
-import { writeCompressedTopic } from "../../src/memory/topic/store.js";
+import { archivedMessageIds, writeCompressedTopic } from "../../src/memory/topic/store.js";
 import { restoreDataDir } from "../helpers/env.js";
 import {
   SemanticRetriever,
@@ -121,7 +121,7 @@ describe("SemanticRetriever", () => {
       rec("new-low", "新但低相关", new Date(NOW - 1 * DAY).toISOString()),
       rec("old-high", "旧但高相关", new Date(NOW - 100 * DAY).toISOString()),
     ]);
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     const out = await r.retrieve("a1", "query", new Set(), "default");
 
     // new-low: 0.5 × 1.0 = 0.5；old-high: 0.9 × 0.3 = 0.27 → 新的排前
@@ -133,7 +133,7 @@ describe("SemanticRetriever", () => {
   it("时间衰减档位随钉住的系统时间正确切换（7 天档线两侧）", async () => {
     const indexer = makeIndexer([{ id: "m", score: 0.5 }]);
     const createdAt = new Date(NOW - 1 * DAY).toISOString();
-    const r = new SemanticRetriever(indexer, makeRepo([rec("m", "内容", createdAt)]), config);
+    const r = new SemanticRetriever(indexer, makeRepo([rec("m", "内容", createdAt)]), config, archivedMessageIds);
 
     // 钉在 NOW：消息 1 天前，一周内档 1.0
     expect((await r.retrieve("a1", "q", new Set(), "default"))[0]!.score).toBeCloseTo(0.5);
@@ -151,7 +151,7 @@ describe("SemanticRetriever", () => {
       { id: "fresh", score: 0.8 },
     ]);
     const repo = makeRepo([rec("in-history", "已在历史", new Date(NOW).toISOString()), rec("fresh", "新的", new Date(NOW).toISOString())]);
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(["in-history"]), "default");
     expect(out.map((m) => m.id)).toEqual(["fresh"]);
   });
@@ -182,7 +182,7 @@ describe("SemanticRetriever", () => {
         rec("archived", "已归档原文", new Date(NOW).toISOString()),
         rec("alive", "未归档", new Date(NOW).toISOString()),
       ]);
-      const r = new SemanticRetriever(indexer, repo, config);
+      const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
       const out = await r.retrieve("a1", "q", new Set(), "default");
       expect(out.map((m) => m.id)).toEqual(["alive"]);
     } finally {
@@ -200,7 +200,7 @@ describe("SemanticRetriever", () => {
       rec("same", "同场景", new Date(NOW).toISOString(), "s1"),
       rec("cross", "跨场景", new Date(NOW).toISOString(), "s2"),
     ]);
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(), "s1");
     expect(out.find((m) => m.id === "same")!.source).toBeUndefined();
     expect(out.find((m) => m.id === "cross")!.source).toBe("s2");
@@ -215,7 +215,7 @@ describe("SemanticRetriever", () => {
       rec("high", "高相关", new Date(NOW - 100 * DAY).toISOString()), // 0.9×0.3=0.27
       rec("low", "低相关", new Date(NOW).toISOString()), // 0.4×1.0=0.4
     ]);
-    const r = new SemanticRetriever(indexer, repo, { ...config, minScore: 0.35 });
+    const r = new SemanticRetriever(indexer, repo, { ...config, minScore: 0.35 }, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(), "default");
     expect(out.map((m) => m.id)).toEqual(["low"]);
   });
@@ -224,7 +224,7 @@ describe("SemanticRetriever", () => {
     const hits = Array.from({ length: 6 }, (_, i) => ({ id: `m${i}`, score: 0.9 - i * 0.1 }));
     const indexer = makeIndexer(hits);
     const repo = makeRepo(hits.map((h) => rec(h.id, `内容${h.id}`, new Date(NOW).toISOString())));
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(), "default");
     expect(out).toHaveLength(3);
     expect(indexer.search).toHaveBeenCalledWith("a1", "q", 6);
@@ -233,10 +233,10 @@ describe("SemanticRetriever", () => {
   it("enabled=false / 空 query 直接返回空且不发起检索", async () => {
     const indexer = makeIndexer([{ id: "x", score: 1 }]);
     const repo = makeRepo([rec("x", "内容", new Date(NOW).toISOString())]);
-    const disabled = new SemanticRetriever(indexer, repo, { ...config, enabled: false });
+    const disabled = new SemanticRetriever(indexer, repo, { ...config, enabled: false }, archivedMessageIds);
     expect(await disabled.retrieve("a1", "q", new Set(), "default")).toEqual([]);
 
-    const empty = new SemanticRetriever(indexer, repo, config);
+    const empty = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     expect(await empty.retrieve("a1", "   ", new Set(), "default")).toEqual([]);
     expect(indexer.search).not.toHaveBeenCalled();
   });
@@ -244,14 +244,14 @@ describe("SemanticRetriever", () => {
   it("无候选命中时返回空数组", async () => {
     const indexer = makeIndexer([]);
     const repo = makeRepo([]);
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     expect(await r.retrieve("a1", "q", new Set(), "default")).toEqual([]);
   });
 
   it("注入内容按 2000 字符截断（与索引侧一致）", async () => {
     const indexer = makeIndexer([{ id: "big", score: 0.9 }]);
     const repo = makeRepo([rec("big", "x".repeat(5000), new Date(NOW).toISOString())]);
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(), "default");
     expect(out).toHaveLength(1);
     expect(out[0]!.content).toHaveLength(2000);
@@ -263,7 +263,7 @@ describe("SemanticRetriever", () => {
       { id: "real", score: 0.8 },
     ]);
     const repo = makeRepo([rec("real", "存在", new Date(NOW).toISOString())]);
-    const r = new SemanticRetriever(indexer, repo, config);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(), "default");
     expect(out.map((m) => m.id)).toEqual(["real"]);
   });

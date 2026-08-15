@@ -14,6 +14,7 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker, type Job } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { LLMEvent, LLMProvider } from "../../src/provider/types.js";
 
@@ -53,6 +54,7 @@ async function buildSessionWsContext(
       agentId,
       new AgentWorker({
         mind: mindService,
+        compute: computeService,
         agentId,
         model: "mock",
         provider,

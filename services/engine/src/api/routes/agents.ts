@@ -91,8 +91,13 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
       return reply.status(409).send({ error: `Agent id already exists: ${config.id}` });
     }
     await context.agentRepository.save(config.id, config);
+    // P5 复审加固（fail-closed）：mind 未装配时显式 500 带原因，不静默跳过
+    // （生产由 bootstrap 必传 + assertServices 兜底；此分支只在装配出错的路径触发）
+    if (!context.mind) {
+      return reply.status(500).send({ error: "mind service not assembled (ApiContext.mind missing)" });
+    }
     // 新建 Agent 生成默认 SOUL.md（人格模板）与 MIND.md（空经验档案）；已存在不覆盖
-    await context.mind?.ensureMindFiles(config.id);
+    await context.mind.ensureMindFiles(config.id);
     return config;
   });
 

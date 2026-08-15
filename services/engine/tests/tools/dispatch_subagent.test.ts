@@ -7,6 +7,7 @@ import { SubagentDispatcher } from "../../src/subagent/dispatcher.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
 import { PuppetRunner } from "../../src/subagent/puppet.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import type { PuppetModelDefinition } from "../../src/subagent/puppet-models.js";
 import type { PuppetModelService } from "../../src/subagent/puppet-models.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
@@ -64,7 +65,7 @@ function makePuppetDispatcher(
   const runner = new PuppetRunner({
     getRuntime: async (id) =>
       id === "a1"
-        ? { provider: new MockLLMProvider(), model: "mock", tools: [], workspaceDir: tmpDir }
+        ? { provider: new MockLLMProvider(), model: "mock", tools: [], workspaceDir: tmpDir, compute: computeService }
         : undefined,
     getPuppetModel,
   });

@@ -113,6 +113,21 @@ describe("runCompressionTask 摘要注入检测（P2 review Major-3）", () => {
     expect(await repo.listBySession("s1")).toEqual([]);
     expect(await fs.stat(compressedDir("a1")).catch(() => null)).toBeNull();
   });
+
+  it("注入检测经 deps.mind 调用（防回归成全局 import，P5 复审建议落地）", async () => {
+    const ids = ["m1", "m2"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new FixedReplyProvider("话题主题：常规\n关键结论：\n- 结论\n经验：\n");
+    const d = deps(repo, provider);
+    const spy = vi.spyOn(d.mind, "isInjectionSuspect");
+
+    await runCompressionTask(makeSegment(ids), d);
+
+    // 直接调用断言：检测必经构造注入的 deps.mind 面，而非模块级全局 import
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
 });
 
 describe("runCompressionTask 压缩前复核拆分（方案 C 定案 4）", () => {

@@ -7,6 +7,7 @@ import type { Blueprint } from "../../src/blueprint/types.js";
 import type { ApiContext } from "../../src/api/context.js";
 import { AgentWorker, type Job } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { getAgentDir } from "../../src/config/paths.js";
@@ -30,6 +31,7 @@ async function buildWorkerContext(): Promise<{
   const provider = new MockLLMProvider();
   const worker = new AgentWorker({
     mind: mindService,
+    compute: computeService,
     agentId: "a1",
     model: "mock",
     provider,

@@ -6,7 +6,7 @@ import type { Tool, ToolContext } from "../tools/types.js";
 import { runTurn } from "../core/react/turn.js";
 import { auditFailClosed } from "../plugins/approval-audit/index.js";
 import type { ConfigRepository } from "../config/repository.js";
-import { resolveContextWindow } from "../compute/context-window.js";
+import type { ComputeFace } from "../plugins/compute/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../context/pipeline.js";
 import type { PuppetModelDefinition } from "./puppet-models.js";
 
@@ -29,6 +29,8 @@ export interface PuppetRuntime {
   maxContextTokens?: number;
   /** 配置仓库（水位 W 查找链；缺省时水位窗口按 80_000 兜底） */
   configRepository?: ConfigRepository;
+  /** 算力解析面（P5 inject 化：W 查找链改经 ctx.compute，bootstrap 装配层透传） */
+  compute: ComputeFace;
   tools: Tool[];
   workspaceDir: string;
   services?: ToolContext["services"];
@@ -133,7 +135,7 @@ export class PuppetRunner {
     // 改动三 + S3：W 查找链统一入口（傀儡与 worker 同链）——型号表 contextWindow
     // → agent 显式 maxContextTokens → 80_000 三档；dispatch 调用方可不传回退档
     const contextWindow =
-      (await resolveContextWindow(runtime.configRepository, {
+      (await runtime.compute.resolveContextWindow(runtime.configRepository, {
         providerId: runtime.providerId,
         modelId: runtime.model,
       })) ?? runtime.maxContextTokens ?? DEFAULT_CONTEXT_WINDOW;

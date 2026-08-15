@@ -13,6 +13,7 @@ import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import type { FastifyInstance } from "fastify";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -54,6 +55,7 @@ async function buildContext(): Promise<{ context: ApiContext; cleanup: () => Pro
     sessionRepository: new SessionRepository(),
     blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async () => undefined,
+    compute: computeService,
   };
 
   return {

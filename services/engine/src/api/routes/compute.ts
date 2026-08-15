@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import type { ModelInfo } from "@mindcloud/shared";
 import OpenAI from "openai";
-import { aggregateUsage } from "../../compute/usage.js";
 import { isApiMode } from "../../provider/protocols/index.js";
 import {
   ANTHROPIC_VERSION,
@@ -444,7 +443,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
   app.get("/compute/usage", {
     schema: { summary: "Get compute usage statistics", tags: ["compute"] },
   }, async () => {
-    return aggregateUsage();
+    // P5：usage 消费改经 ApiContext 从 ctx.compute 透传（原 compute/usage 直 import 已切）
+    return context.compute?.aggregateUsage();
   });
 
   app.post("/compute/providers/:id/models", {

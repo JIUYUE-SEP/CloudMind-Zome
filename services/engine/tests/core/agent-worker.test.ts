@@ -7,6 +7,8 @@ import path from "node:path";
 import { AgentWorker, normalizeReactMaxSteps } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
 import type { MindService } from "../../src/plugins/mind/index.js";
+import { computeService } from "../../src/plugins/compute/index.js";
+import type { ComputeFace } from "../../src/plugins/compute/index.js";
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
 import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
 import {
@@ -105,6 +107,7 @@ function makeConfig(
   approve: () => Promise<true>;
   trustAllTools?: boolean;
   mind: MindService;
+  compute: ComputeFace;
 } {
   return {
     agentId: "agent-1",
@@ -119,6 +122,7 @@ function makeConfig(
     } as IMessageRepository,
     approve: async () => true,
     mind: mindService,
+    compute: computeService,
     ...(trustAllTools !== undefined ? { trustAllTools } : {}),
   };
 }

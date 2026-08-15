@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { PuppetRunner, buildPuppetSystemPrompt, type PuppetRuntime } from "../../src/subagent/puppet.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import {
   CONTEXT_WATERMARK_SUMMARY_HINT,
   HANDOFF_WRITING_GUIDANCE,
@@ -48,7 +49,7 @@ class SpyProvider implements LLMProvider {
 }
 
 function makeRuntime(provider: LLMProvider, tools: Tool[] = []): PuppetRuntime {
-  return { provider, model: "mock", tools, workspaceDir: os.tmpdir() };
+  return { provider, model: "mock", tools, workspaceDir: os.tmpdir(), compute: computeService };
 }
 
 function makeDispatcher(opts: {
@@ -554,6 +555,7 @@ describe("⑧ 水位 W 查找链（puppet）", () => {
         model: "mock",
         providerId: "p1",
         configRepository,
+        compute: computeService,
         tools: [readTool],
         workspaceDir: os.tmpdir(),
       }),
@@ -639,6 +641,7 @@ describe("⑧ 水位 W 查找链（puppet）", () => {
         providerId: "p1",
         maxContextTokens: 10,
         configRepository,
+        compute: computeService,
         tools: [readTool],
         workspaceDir: os.tmpdir(),
       }),

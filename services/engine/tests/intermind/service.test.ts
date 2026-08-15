@@ -10,6 +10,7 @@ import {
 } from "../../src/intermind/service.js";
 import { readPrivateMessagesTool } from "../../src/tools/builtin/read_private_messages.js";
 import { mindService } from "../../src/plugins/mind/index.js";
+import { computeService } from "../../src/plugins/compute/index.js";
 import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
 import { intermindSessionId, type ChatMessageRecord } from "@mindcloud/shared";
@@ -236,6 +237,7 @@ describe("IntermindService.send", () => {
     const recipientRepo = new MessageRepository("a2");
     const worker = new RealAgentWorker({
       mind: mindService,
+      compute: computeService,
       agentId: "a2",
       model: "mock",
       provider: new MockLLMProvider(),
