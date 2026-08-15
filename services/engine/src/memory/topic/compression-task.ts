@@ -1,6 +1,7 @@
 import { logger } from "../../logger.js";
 import type { IMessageRepository } from "../repositories/types.js";
 import type { LLMProvider } from "../../provider/types.js";
+import type { MindService } from "../../plugins/mind/index.js";
 import { compressTopic } from "./compressor.js";
 import { reviewTopicSegments } from "./judge.js";
 import { removeCompressedTopic, writeCompressedTopic } from "./store.js";
@@ -21,11 +22,8 @@ export interface CompressionTaskDeps {
   /** 裁判/复核模型链（boundaryModel || compressionModel || 主模型，调用方解析好） */
   boundaryModel?: string;
   messageRepository: IMessageRepository;
-  /** mind 能力注入（P4）：经验沉淀 + 注入检测；方法签名与 mind/mind-files、injection-filter 同源 */
-  mind: {
-    appendMindExperiences(agentId: string, experiences: unknown[]): Promise<unknown>;
-    isInjectionSuspect(text: string): boolean;
-  };
+  /** mind 能力注入（P4）：经验沉淀 + 注入检测；类型复用 MindService（与源函数逐字一致），type-only 不算值边 */
+  mind: Pick<MindService, "appendMindExperiences" | "isInjectionSuspect">;
 }
 
 export async function runCompressionTask(
