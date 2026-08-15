@@ -49,6 +49,10 @@ export const mindService: MindService = {
   isInjectionSuspect,
 };
 
+// P6 收口：MindChunk 类型经本面再导出——core/agent-worker 的 mind/ 类型边
+// 统一收束到插件挂载面（type-only，P4 遗留清单 P6 项）
+export type { MindChunk } from "../../mind/mind-files.js";
+
 export function apply(ctx: Context): void {
   ctx.provide("mind", mindService);
 }

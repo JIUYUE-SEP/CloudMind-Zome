@@ -10,6 +10,7 @@ import * as memoryPlugin from "./plugins/memory/index.js";
 import * as mindPlugin from "./plugins/mind/index.js";
 import * as pipelinePlugin from "./plugins/pipeline/index.js";
 import * as computePlugin from "./plugins/compute/index.js";
+import * as agentsPlugin from "./plugins/agents/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -19,16 +20,13 @@ import { LLMCallRepository } from "./memory/repositories/llm-call.js";
 import { SessionRepository } from "./conductor/repository.js";
 import { ResilientLLMProvider } from "./provider/resilient.js";
 import type { LLMProvider } from "./provider/types.js";
-import { MockEmbedderProvider } from "./provider/embedder.js";
-import { AgentWorker } from "./core/agent-worker.js";
 import type { ApiContext } from "./api/context.js";
-import type { AgentConfig, ChatMessage, ProviderConfig } from "@mindcloud/shared";
+import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
 import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
-import { MemoryIndexer } from "./memory/indexer.js";
 import { loadTopicState } from "./memory/topic/state.js";
 import { registerShutdownHandlers } from "./shutdown.js";
 import { PlanManager } from "./plan/manager.js";
@@ -44,7 +42,6 @@ import { createSubagentTerminalNotifier } from "./subagent/notify.js";
 import { HandoffManager } from "./handoff/manager.js";
 import { HandoffStateStore } from "./handoff/state.js";
 import { HandoffLoopRegistry } from "./handoff/registry.js";
-import { WorkerRegistry } from "./core/worker-registry.js";
 import { withLLMCallRecording } from "./plugins/llm/record-calls.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -76,16 +73,9 @@ async function main() {
   await root.plugin(pipelinePlugin);
   await root.plugin(computePlugin);
   const configRepo = root.config;
-  // agentRepository 实例改经 ctx.memory 取（P4；agents 服务的配置半边，
-  // P6 才与 WorkerRegistry 合体为 agents 插件——本期只换来源）
+  // agentRepository 实例改经 ctx.memory 取（P4 起；P6 起 agents 插件与
+  // WorkerRegistry 合体收编进 ctx.agents，onChange→retire 接线在插件内部）
   const agentRepository = root.memory.agentRepository;
-  // worker 注册表（P3-6）：创建/替换/退役的唯一权威
-  const workerRegistry = new WorkerRegistry();
-
-  agentRepository.onChange = (agentId: string, _config: AgentConfig | null) => {
-    void _config;
-    workerRegistry.retire(agentId);
-  };
 
   const sidecarClient = new SidecarClient();
 
@@ -93,10 +83,23 @@ async function main() {
   // 批准的过渡形态：经插件 config 回调进场，后续期换位 inject
   await root.plugin(skillsPlugin, { getAgentConfig: (agentId) => agentRepository.get(agentId) });
 
+  // agents 插件（P6 主峰）：worker 创建链收编。P7 模块与 sidecar 经 config 回调
+  // 进场——回调在首个 worker 创建时才被调用（闭包延迟求值），此处 subagentDispatcher
+  // 等尚未声明是安全的（TDZ 不会被触发：apply 不急切调用，见 plugins/agents 头注）
+  await root.plugin(agentsPlugin, {
+    getSubagentServices: () => ({
+      subagentDispatcher,
+      subagentSwarm,
+      puppetModelService,
+      intermindService,
+    }),
+    getSidecar: () => sidecarClient,
+  });
+
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
@@ -109,7 +112,7 @@ async function main() {
   const intermindService = new IntermindService({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
     getMessageRepository: (agentId) => new MessageRepository(agentId),
-    getAgentWorker: (agentId) => getOrCreateWorker(agentId),
+    getAgentWorker: (agentId) => root.agents.getOrCreateWorker(agentId),
   });
 
   // MCP servers 生命周期已收编进 tools 插件（P3）：loadDefault+connectAll 在
@@ -123,7 +126,7 @@ async function main() {
     messages: ChatMessage[],
     opts?: { signal?: AbortSignal },
   ): Promise<string> {
-    const worker = await getOrCreateWorker(agentId);
+    const worker = await root.agents.getOrCreateWorker(agentId);
     if (!worker) throw new Error(`Agent ${agentId} not found`);
     // 独立 sessionId，避免子 agent 任务污染私聊会话历史
     const taskId = `subagent_${randomUUID()}`;
@@ -199,7 +202,7 @@ async function main() {
       // （开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
       onTaskTerminal: createSubagentTerminalNotifier({
         getAgentConfig: (agentId) => agentRepository.get(agentId),
-        getWorker: getOrCreateWorker,
+        getWorker: root.agents.getOrCreateWorker,
       }),
     },
     new SubagentTaskRepository(),
@@ -243,126 +246,8 @@ async function main() {
     return manager;
   }
 
-  async function getOrCreateWorker(agentId: string): Promise<AgentWorker | undefined> {
-    return workerRegistry.getOrCreate(agentId, async () => {
-      const agentConfig = await agentRepository.get(agentId);
-      if (!agentConfig) return undefined;
-
-      // 包装顺序 resilient( record( provider ) )：record 在内层，
-      // 每次底层尝试（含重试、含备用）独立落档 llm_calls.jsonl
-      const recordLLM = (p: LLMProvider, providerConfig?: ProviderConfig) =>
-        withLLMCallRecording(p, new LLMCallRepository(agentId), agentId, {
-          providerId: providerConfig?.id,
-          providerName: providerConfig?.displayName ?? providerConfig?.id,
-        });
-      const primaryProviderConfig = await root.llm.findProviderConfig(agentConfig.providerId);
-      const provider = new ResilientLLMProvider(
-        recordLLM(await root.llm.createProvider(agentConfig), primaryProviderConfig),
-        {
-          maxRetries: primaryProviderConfig?.maxRetries ?? 2,
-          fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
-          fallbackFactory: async (id) => {
-            const fallback = await root.llm.createFallback(id, agentConfig);
-            return fallback ? recordLLM(fallback.provider, fallback.config) : undefined;
-          },
-        },
-      );
-      const embedder = await root.llm.createEmbedder(agentConfig);
-    const imageProvider = await root.llm.createImage(agentConfig);
-    const tools = root.tools.forAgent(agentConfig);
-    const workspaceDir = getAgentDir(agentId);
-
-    // G2（双源统一）：pipeline 预算与水位 W 同一查找链——型号表 contextWindow 优先
-    // 驱动预算；查不到回退 agent 显式 maxContextTokens / 80_000（pipeline-factory 兜底）
-    const resolvedContextWindow = await root.compute.resolveContextWindow(configRepo, {
-      providerId: agentConfig.providerId,
-      modelId: agentConfig.modelId || agentConfig.model || "gpt-4o",
-    });
-    const contextPipeline = root.pipeline.createContextPipelineForAgent(agentConfig, resolvedContextWindow);
-
-    // 只有配置了真实 embedder 时才启用向量索引；Mock embedder 的随机向量没有检索意义
-    const memoryIndexer =
-      embedder instanceof MockEmbedderProvider ? undefined : new MemoryIndexer(sidecarClient, embedder);
-
-    const worker = new AgentWorker({
-      agentId,
-      model: agentConfig.modelId || agentConfig.model || "gpt-4o",
-      provider,
-      tools,
-      workspaceDir,
-      messageRepository: new MessageRepository(agentId),
-      approve: () => true,
-      temperature: agentConfig.temperature,
-      topP: agentConfig.topP,
-      reactMaxSteps: agentConfig.reactMaxSteps,
-      handoffMaxShifts: agentConfig.handoffMaxShifts,
-      maxContextTokens: agentConfig.maxContextTokens,
-      providerId: agentConfig.providerId,
-      configRepository: configRepo,
-      trustAllTools: agentConfig.trustAllTools,
-      // P4：灵魂层消费改经 ctx.mind（装配层透传；worker 内不再 import mind/ 模块）
-      mind: root.mind,
-      // P5：W 查找链消费改经 ctx.compute（装配层透传）
-      compute: root.compute,
-      // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
-      skillCatalog: (await skillService.list(agentId)).map((s) => `- ${s.name}：${s.description}`),
-      memoryIndexer,
-      embedder,
-      imageProvider,
-      // swarm 只接 worker（主人会话）；傀儡 runtime 故意不接——防嵌套批量（16×16）
-      services: {
-        subagentDispatcher,
-        subagentSwarm,
-        skillService,
-        configRepository: configRepo,
-        puppetModelService,
-        intermindService,
-        recallService,
-      },
-      // M2 + G2：上下文预算由 W 查找链驱动（型号表 contextWindow），查不到接
-      // agent 级配置（maxContextTokens），再缺省 80000
-      contextPipeline,
-      // H2：生产路径开启 pipeline 预算热更同步（compute 模型表 PUT 后无需重启/退役）
-      contextPipelineHotSync: true,
-      // Phase 2：话题压缩配置接 agent 级字段，缺省全开（30 分钟窗 / 20 条阈值 / 主模型压缩）
-      topicCompression: {
-        ...(agentConfig.compressionModel !== undefined ? { compressionModel: agentConfig.compressionModel } : {}),
-        ...(agentConfig.topicBoundaryModel !== undefined
-          ? { boundaryModel: agentConfig.topicBoundaryModel }
-          : {}),
-        ...(agentConfig.topicDetectionWindowMinutes !== undefined
-          ? { windowMinutes: agentConfig.topicDetectionWindowMinutes }
-          : {}),
-        ...(agentConfig.topicMessageThreshold !== undefined
-          ? { messageThreshold: agentConfig.topicMessageThreshold }
-          : {}),
-      },
-      // Phase 3：语义检索配置接 agent 级字段，缺省全开（topK=10 / minScore=0）
-      semanticSearch: {
-        ...(agentConfig.semanticSearchEnabled !== undefined
-          ? { enabled: agentConfig.semanticSearchEnabled }
-          : {}),
-        ...(agentConfig.semanticTopK !== undefined ? { topK: agentConfig.semanticTopK } : {}),
-        ...(agentConfig.semanticMinScore !== undefined ? { minScore: agentConfig.semanticMinScore } : {}),
-      },
-    });
-      // P3-6：TopicTracker 交接——被替换 worker 的开放话题快照（topic-state.json，
-      // P1-2/M-b 按 step 落盘）重建进新 worker，话题边界状态不分叉。
-      // 首次创建时文件通常不存在（启动对账已清理），读到即交接
-      try {
-        const topicState = await loadTopicState(agentId);
-        if (topicState?.open && topicState.open.messageIds.length > 0) {
-          const openMessages = await new MessageRepository(agentId).getByIds(topicState.open.messageIds);
-          if (openMessages.length > 0) {
-            worker.restoreTopicOpen(openMessages, topicState.open.sourceId, topicState.open.sourceName);
-          }
-        }
-      } catch (err) {
-        logger.warn({ err: err }, `[topic] worker 话题状态交接失败（跳过）：${agentId}`);
-      }
-      return worker;
-    });
-  }
+  // worker 创建链已收编进 agents 插件（P6：plugins/agents/index.ts）；
+  // 下方 getOrCreateWorker 调用点全部改经 ctx.agents 取。
 
   const context: ApiContext = {
     agentRepository,
@@ -373,7 +258,7 @@ async function main() {
     configRepository: configRepo,
     sessionRepository: new SessionRepository(),
     blueprintRepository: new BlueprintRepository(),
-    getAgentWorker: getOrCreateWorker,
+    getAgentWorker: root.agents.getOrCreateWorker,
     getPlanManager,
     runAgentCollect,
     subagentDispatcher,
@@ -388,7 +273,7 @@ async function main() {
     intermindService,
     mind: root.mind,
     compute: root.compute,
-    retireAgentWorker: (agentId) => workerRegistry.retire(agentId),
+    retireAgentWorker: (agentId) => root.agents.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];
       const builtin = await findBuiltinSkillsDir();
@@ -515,7 +400,7 @@ async function main() {
   // 本 handler——那条路径的重启孤儿由上面的启动对账兜底。
   registerShutdownHandlers({
     drain: async () => {
-      await Promise.allSettled([...workerRegistry.all()].map((w) => w.drainCompression()));
+      await Promise.allSettled([...root.agents.workerRegistry.all()].map((w) => w.drainCompression()));
     },
     close: async () => {
       scheduler.stop();

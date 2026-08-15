@@ -29,7 +29,7 @@ import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/rep
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { reconcileOrphanedTopic, reconcilePendingSegments } from "../../src/memory/reconcile.js";
 import { loadTopicState, saveTopicState } from "../../src/memory/topic/state.js";
-import { archivedMessageIds } from "../../src/memory/topic/store.js";
+import { archivedMessageIds, writeCompressedTopic } from "../../src/memory/topic/store.js";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -1982,6 +1982,43 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     worker.enqueue({ id: "j3", sessionId: "sess-2", messages: [currentUser("u3", "部署方案呢")], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
     expect(recalledIn()).toBe(true);
+  });
+
+  it("归档排除装配（P6 复审建议）：worker 的 L4 检索走真 archivedMessageIds——恒空装配会静默回流", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    await repo.append(pastRecord("arc-1", "已压缩的往事内容"));
+    // "arc-1" 已是某压缩话题的原文（摘要在 L5）——真 archivedMessageIds 会把它排出 L4
+    await writeCompressedTopic("agent-1", {
+      topicId: "tp_assert_wired",
+      label: "旧话题",
+      summary: "摘要",
+      keyPoints: [],
+      msgIds: ["arc-1"],
+      msgCount: 1,
+      importance: "normal",
+      sourceId: "default",
+      compressedAt: new Date().toISOString(),
+    });
+    const indexer = {
+      search: vi.fn(async () => [{ id: "arc-1", score: 0.9 }]),
+    } as unknown as MemoryIndexer;
+
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+    });
+
+    worker.enqueue({ id: "j1", sessionId: "sess-1", messages: [currentUser("u1", "往事再聊聊")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const recalled = (provider.capturedParams?.messages ?? [])
+      .filter((m) => m.role === "user")
+      .map((m) => m.content.map((c) => (c.type === "text" ? c.text : "")).join(""))
+      .some((t) => t.includes("已压缩的往事内容"));
+    // 真装配：归档原文不进 L4；若装配退化为恒空 archivedIds，此处会变 true（静默回流）
+    expect(recalled).toBe(false);
   });
 
   it("检索失败：尾随 system 消息明确告知记忆检索不可用", async () => {

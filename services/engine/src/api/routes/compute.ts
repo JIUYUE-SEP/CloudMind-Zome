@@ -442,9 +442,14 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
 
   app.get("/compute/usage", {
     schema: { summary: "Get compute usage statistics", tags: ["compute"] },
-  }, async () => {
+  }, async (request, reply) => {
+    // P6 复审加固（fail-closed）：compute 未装配时显式 500 带原因（agents.ts P5 先例；
+    // 该路由的 compute 消费点只此一处，已同口径）
+    if (!context.compute) {
+      return reply.status(500).send({ error: "compute service not assembled (ApiContext.compute missing)" });
+    }
     // P5：usage 消费改经 ApiContext 从 ctx.compute 透传（原 compute/usage 直 import 已切）
-    return context.compute?.aggregateUsage();
+    return context.compute.aggregateUsage();
   });
 
   app.post("/compute/providers/:id/models", {

@@ -34,8 +34,8 @@ import {
   type SemanticSearchConfig,
 } from "../context/semantic.js";
 import type { SemanticMemory, TopicSummary } from "../context/layers.js";
-import type { MindChunk } from "../mind/mind-files.js";
-import type { MindService } from "../plugins/mind/index.js";
+// P6 收口：MindChunk 统一从插件挂载面取（type-only；原 mind/mind-files 类型边已收束）
+import type { MindChunk, MindService } from "../plugins/mind/index.js";
 import { UnsupportedSchemaVersionError } from "../versioning.js";
 import { auditFailClosed, auditTrustedAutoApprove } from "../plugins/approval-audit/index.js";
 

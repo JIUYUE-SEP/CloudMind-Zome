@@ -15,8 +15,11 @@ process.env.NODE_ENV = "e2e";
 // tests/e2e 里直连 engine REST 的用例也用这个值
 process.env.CLOUDMIND_AUTH_TOKEN = "e2e-test-token";
 
-const engine = spawn("pnpm", ["--filter", "@mindcloud/engine", "dev"], {
-  cwd: root,
+// e2e 引擎直起（不经 pnpm dev 的 tsx watch）：tsx watch 在 node spawn
+// (shell:true + pipe) 下于本机静默卡死（banner 后无任何输出，纯净代码同现，
+// 属预存环境问题）；e2e 一次性运行不需要 watch，直起 tsx 语义相同。
+const engine = spawn("npx", ["tsx", "src/bootstrap.ts"], {
+  cwd: path.join(root, "services", "engine"),
   stdio: "pipe",
   shell: true,
   env: { ...process.env, CLOUDMIND_DATA_DIR: tmpDir, NODE_ENV: "e2e" },
