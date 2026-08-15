@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatMessage } from "@mindcloud/shared";
 import { AgentWorker } from "../../src/core/agent-worker.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { runTurn, type TurnInput } from "../../src/core/react/turn.js";
 import { ContextPipeline } from "../../src/context/pipeline.js";
 import { ContextPipeline as Pipeline } from "../../src/context/pipeline.js";
@@ -110,6 +111,7 @@ describe("AgentWorker 经 pipeline 组装", () => {
     const provider = new CapturingProvider();
     const appended: ChatMessage[] = [];
     const worker = new AgentWorker({
+      mind: mindService,
       agentId: "a1",
       model: "mock",
       provider,

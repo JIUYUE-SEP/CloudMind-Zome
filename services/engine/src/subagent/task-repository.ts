@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { DocumentStore, renameWithRetry } from "../memory/document-store.js";
+import { DocumentStore, renameWithRetry } from "../plugins/memory/document-store.js";
 import { getAgentDir, getDataDir, sanitizeAgentId } from "../config/paths.js";
 import type { SubagentTaskKind, SubagentTaskStatus } from "./types.js";
 

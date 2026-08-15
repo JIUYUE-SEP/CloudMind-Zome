@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { AgentWorker } from "../../src/core/agent-worker.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { writeCompressedTopic, latestSummaries } from "../../src/memory/topic/store.js";
 import { runCompressionTask } from "../../src/memory/topic/compression-task.js";
@@ -89,6 +90,7 @@ class CapturingProvider implements LLMProvider {
 
 function makeWorker(provider: LLMProvider, skillService?: SkillService): AgentWorker {
   return new AgentWorker({
+    mind: mindService,
     agentId: "a1",
     model: "mock",
     provider,
@@ -162,6 +164,7 @@ describe("① 压缩写入 usedSkills", () => {
     };
     await runCompressionTask(segment, {
       agentId: "a1",
+      mind: mindService,
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: {

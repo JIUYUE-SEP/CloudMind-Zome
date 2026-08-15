@@ -1,7 +1,7 @@
 import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
 import { MemoryIndexer } from "../../src/memory/indexer.js";
-import { ErrorThrottle } from "../../src/scheduler/error-throttle.js";
+import { ErrorThrottle } from "../../src/plugins/log/error-throttle.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import type { EmbedderProvider } from "../../src/provider/types.js";
 import type { SidecarClient } from "../../src/sidecar/client.js";

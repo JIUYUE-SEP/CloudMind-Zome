@@ -2,7 +2,7 @@ import { logger } from "../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir, sanitizeAgentId } from "../config/paths.js";
-import { renameWithRetry } from "../memory/document-store.js";
+import { renameWithRetry } from "../plugins/memory/document-store.js";
 import {
   CURRENT_SCHEMA_VERSION,
   MigrationChain,

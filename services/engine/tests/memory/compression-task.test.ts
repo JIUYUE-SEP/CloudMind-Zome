@@ -7,6 +7,7 @@ import type { LLMProvider, LLMEvent, LLMChatParams } from "../../src/provider/ty
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
 import { runCompressionTask, type CompressionTaskDeps } from "../../src/memory/topic/compression-task.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import type { TopicSegment } from "../../src/memory/topic/types.js";
 import { archivedMessageIds, compressedDir } from "../../src/memory/topic/store.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -59,7 +60,7 @@ describe("runCompressionTask 摘要注入检测（P2 review Major-3）", () => {
   });
 
   function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
-    return { agentId: "a1", provider, model: "mock", messageRepository: repo };
+    return { agentId: "a1", provider, model: "mock", messageRepository: repo, mind: mindService };
   }
 
   it("摘要含注入内容：不落档、消息降级仅归档（不进 L5 回流）", async () => {
@@ -154,7 +155,7 @@ describe("runCompressionTask 压缩前复核拆分（方案 C 定案 4）", () =
   }
 
   function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
-    return { agentId: "a1", provider, model: "mock", messageRepository: repo };
+    return { agentId: "a1", provider, model: "mock", messageRepository: repo, mind: mindService };
   }
 
   async function compressedMsgIdSets(agentId: string): Promise<string[][]> {

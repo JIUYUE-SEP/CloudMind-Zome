@@ -19,6 +19,7 @@ import {
 } from "../../src/subagent/notify.js";
 import type { SubagentTask } from "../../src/subagent/types.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { waitForTerminalTail } from "../helpers/background-tail.js";
@@ -148,6 +149,7 @@ describe("④ 通知注入", () => {
   it("终态→owner 感知回合（历史有通知+产出），notified 幂等不重复", async () => {
     const messageRepository = new MessageRepository("a1");
     const worker = new AgentWorker({
+      mind: mindService,
       agentId: "a1",
       model: "mock",
       provider: new MockLLMProvider(),
@@ -220,6 +222,7 @@ describe("⑤ 开关关闭时无注入", () => {
   it("subagentNotify=false：任务终态后 owner 无感知回合", async () => {
     const messageRepository = new MessageRepository("a1");
     const worker = new AgentWorker({
+      mind: mindService,
       agentId: "a1",
       model: "mock",
       provider: new MockLLMProvider(),

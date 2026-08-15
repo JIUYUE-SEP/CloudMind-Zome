@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import type { AgentConfig } from "@mindcloud/shared";
 import { isValidAgentId } from "@mindcloud/shared";
-import { ensureMindFiles } from "../../mind/mind-files.js";
 import { HANDOFF_MAX_SHIFTS_MIN, HANDOFF_MAX_SHIFTS_MAX } from "../../handoff/types.js";
 
 // AgentConfig 已知字段（功能 Minor-1）：POST/PUT 对未知字段显式 400，
@@ -93,7 +92,7 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     }
     await context.agentRepository.save(config.id, config);
     // 新建 Agent 生成默认 SOUL.md（人格模板）与 MIND.md（空经验档案）；已存在不覆盖
-    await ensureMindFiles(config.id);
+    await context.mind?.ensureMindFiles(config.id);
     return config;
   });
 

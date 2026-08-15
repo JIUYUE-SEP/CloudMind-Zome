@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { AgentRepository } from "../../../src/memory/repositories/agent.js";
-import { ErrorThrottle } from "../../../src/scheduler/error-throttle.js";
+import { ErrorThrottle } from "../../../src/plugins/log/error-throttle.js";
 import { logger } from "../../../src/logger.js";
 import { getAgentDir } from "../../../src/config/paths.js";
 import type { AgentConfig } from "@mindcloud/shared";

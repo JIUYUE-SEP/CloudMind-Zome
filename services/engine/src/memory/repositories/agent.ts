@@ -3,10 +3,10 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AgentConfig } from "@mindcloud/shared";
-import { DocumentStore } from "../document-store.js";
+import { DocumentStore } from "../../plugins/memory/document-store.js";
 import { UnsupportedSchemaVersionError } from "../../versioning.js";
 import { getAgentDir, getDataDir, sanitizeAgentId } from "../../config/paths.js";
-import { ErrorThrottle } from "../../scheduler/error-throttle.js";
+import { ErrorThrottle } from "../../plugins/log/error-throttle.js";
 import type { IAgentRepository } from "./types.js";
 
 const MAX_CACHE_SIZE = 64;

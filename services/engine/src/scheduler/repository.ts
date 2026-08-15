@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { DocumentStore } from "../memory/document-store.js";
+// document-store 已迁入 memory 插件目录作内部实现（P4）；本边为批准的保留边——
+// 库级直 import（非 ctx 服务），scheduler P7 插件化时再评估收口
+import { DocumentStore } from "../plugins/memory/document-store.js";
 import { getAgentDir, sanitizeAgentId } from "../config/paths.js";
 import type { ScheduledTask } from "./types.js";
 

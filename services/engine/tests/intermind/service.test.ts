@@ -9,6 +9,7 @@ import {
   buildPrivateMessageNotice,
 } from "../../src/intermind/service.js";
 import { readPrivateMessagesTool } from "../../src/tools/builtin/read_private_messages.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
 import { intermindSessionId, type ChatMessageRecord } from "@mindcloud/shared";
@@ -234,6 +235,7 @@ describe("IntermindService.send", () => {
   it("收信后主会话只增一条通知消息：裸原文不进主会话，只在 intermind 线程（#8）", async () => {
     const recipientRepo = new MessageRepository("a2");
     const worker = new RealAgentWorker({
+      mind: mindService,
       agentId: "a2",
       model: "mock",
       provider: new MockLLMProvider(),

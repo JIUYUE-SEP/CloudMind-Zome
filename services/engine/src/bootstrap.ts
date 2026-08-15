@@ -6,9 +6,10 @@ import * as configPlugin from "./plugins/config/index.js";
 import * as llmPlugin from "./plugins/llm/index.js";
 import * as toolsPlugin from "./plugins/tools/index.js";
 import * as skillsPlugin from "./plugins/skills/index.js";
+import * as memoryPlugin from "./plugins/memory/index.js";
+import * as mindPlugin from "./plugins/mind/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
-import { AgentRepository } from "./memory/repositories/agent.js";
 import { MessageRepository } from "./memory/repositories/message.js";
 import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
@@ -26,10 +27,8 @@ import { getAgentDir, getDataDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
 import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
-import { RecallService } from "./memory/recall.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { MemoryIndexer } from "./memory/indexer.js";
-import { reconcileHotStorage, reconcileOrphanedTopic, reconcilePendingSegments } from "./memory/reconcile.js";
 import { loadTopicState } from "./memory/topic/state.js";
 import { registerShutdownHandlers } from "./shutdown.js";
 import { PlanManager } from "./plan/manager.js";
@@ -68,8 +67,14 @@ async function main() {
   // tools（P3）：MCP connectAll 在插件 apply 内完成（启动时序不变）；
   // fiber 引用留给关停钩——close 挂插件 disposer
   const toolsFiber = await root.plugin(toolsPlugin);
+  // memory/mind（P4）：mind 的领域数据落在 document-store（memory 插件内部实现），
+  // 概念基座先行；两者 inject 皆空（document-store 为库级直 import，不经 ctx）
+  await root.plugin(memoryPlugin);
+  await root.plugin(mindPlugin);
   const configRepo = root.config;
-  const agentRepository = new AgentRepository();
+  // agentRepository 实例改经 ctx.memory 取（P4；agents 服务的配置半边，
+  // P6 才与 WorkerRegistry 合体为 agents 插件——本期只换来源）
+  const agentRepository = root.memory.agentRepository;
   // worker 注册表（P3-6）：创建/替换/退役的唯一权威
   const workerRegistry = new WorkerRegistry();
 
@@ -87,15 +92,13 @@ async function main() {
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
 
-  // 回忆服务（recall 工具）：只读本 agent 自己的压缩档目录与归档原文
-  const recallService = new RecallService({
-    getMessageRepository: (agentId) => new MessageRepository(agentId),
-  });
+  // 回忆服务（recall 工具）实例改经 ctx.memory 取（P4 上架）；下游引用面不变
+  const recallService = root.memory.recall;
   // Puppet 型号库（单 3）：内置四型号 + DATA_DIR/puppet-models/*.json 自定义（同名覆盖）
   const puppetModelService = createPuppetModelService();
   // Intermind 人形间私信（一期）：写信/唤醒/会话检索（getOrCreateWorker 为函数声明，可提前引用）
@@ -292,6 +295,8 @@ async function main() {
       providerId: agentConfig.providerId,
       configRepository: configRepo,
       trustAllTools: agentConfig.trustAllTools,
+      // P4：灵魂层消费改经 ctx.mind（装配层透传；worker 内不再 import mind/ 模块）
+      mind: root.mind,
       // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
       skillCatalog: (await skillService.list(agentId)).map((s) => `- ${s.name}：${s.description}`),
       memoryIndexer,
@@ -374,6 +379,7 @@ async function main() {
     skillService,
     puppetModelService,
     intermindService,
+    mind: root.mind,
     retireAgentWorker: (agentId) => workerRegistry.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];
@@ -401,7 +407,7 @@ async function main() {
     for (const agent of agents) {
       try {
         const repo = new MessageRepository(agent.id);
-        const count = await reconcileHotStorage(agent.id, repo);
+        const count = await root.memory.reconcileHotStorage(agent.id, repo);
         if (count > 0) {
           logger.info(`[reconcile] agent=${agent.id} 补归档孤儿消息 ${count} 条`);
         }
@@ -432,16 +438,18 @@ async function main() {
               agent.model ||
               "gpt-4o",
             messageRepository: repo,
+            // P4：compression-task 已 inject 化，mind 能力从 ctx.mind 取下喂入
+            mind: root.mind,
           };
           // M-b：先补"已关闭已入队未压缩"的 pending 段（desktop /F 主路径缺口）
           if (hasPending) {
-            const pendingCount = await reconcilePendingSegments(agent.id, repo, deps);
+            const pendingCount = await root.memory.reconcilePendingSegments(agent.id, repo, deps);
             if (pendingCount > 0) {
               logger.info(`[reconcile] agent=${agent.id} 补处理 pending 压缩段消息 ${pendingCount} 条`);
             }
           }
           if (hasOpen) {
-            const orphanCount = await reconcileOrphanedTopic(agent.id, repo, deps);
+            const orphanCount = await root.memory.reconcileOrphanedTopic(agent.id, repo, deps);
             if (orphanCount > 0) {
               logger.info(`[reconcile] agent=${agent.id} 处理重启孤儿消息 ${orphanCount} 条`);
             }

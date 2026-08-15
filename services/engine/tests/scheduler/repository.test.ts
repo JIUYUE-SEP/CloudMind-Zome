@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
-import { DocumentStore } from "../../src/memory/document-store.js";
+import { DocumentStore } from "../../src/plugins/memory/document-store.js";
 import { restoreDataDir } from "../helpers/env.js";
 
 describe("SchedulerRepository concurrency", () => {

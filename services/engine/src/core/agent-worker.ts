@@ -34,12 +34,8 @@ import {
   type SemanticSearchConfig,
 } from "../context/semantic.js";
 import type { SemanticMemory, TopicSummary } from "../context/layers.js";
-import {
-  loadSoul,
-  loadMindChunks,
-  retrieveMindChunks,
-  type MindChunk,
-} from "../mind/mind-files.js";
+import type { MindChunk } from "../mind/mind-files.js";
+import type { MindService } from "../plugins/mind/index.js";
 import { UnsupportedSchemaVersionError } from "../versioning.js";
 import { auditFailClosed, auditTrustedAutoApprove } from "../plugins/approval-audit/index.js";
 
@@ -157,6 +153,8 @@ export interface AgentWorkerConfig {
   semanticSearch?: Partial<SemanticSearchConfig>;
   /** 全部信任开关：有审批通道时 requiresApproval 工具自动批准（仍审计留痕）；缺省 false */
   trustAllTools?: boolean;
+  /** 灵魂层服务面（P4 inject 化：消费改经 ctx.mind，bootstrap 装配层透传；原 mind/ 值级 import 已切） */
+  mind: MindService;
 }
 
 export interface Job {
@@ -233,6 +231,7 @@ export class AgentWorker {
         model: this.topicConfig.compressionModel || this.config.model,
         boundaryModel: this.boundaryModel,
         messageRepository: this.config.messageRepository,
+        mind: this.config.mind,
       });
       // M-b：任务成功完成才清 pending；失败由队列捕获告警，pending 保留待对账
       await removePendingSegment(this.config.agentId, segment.topicId);
@@ -555,7 +554,7 @@ export class AgentWorker {
 
       const promptParts: string[] = [];
       // SOUL.md 人格核心：L1 第一部分（固定前缀，缓存命中；缺失时默认模板兜底）
-      promptParts.push(await loadSoul(this.config.agentId));
+      promptParts.push(await this.config.mind.loadSoul(this.config.agentId));
       // Skills 段（阶段 5 一期）：只注目录（发现入口），正文经 Skill 工具按需取回
       if (this.config.skillCatalog && this.config.skillCatalog.length > 0) {
         promptParts.push(
@@ -670,7 +669,7 @@ export class AgentWorker {
       let mindChunks: MindChunk[] = [];
       if (lastUser && lastUserText.trim()) {
         try {
-          mindChunks = retrieveMindChunks(await loadMindChunks(this.config.agentId), lastUserText);
+          mindChunks = this.config.mind.retrieveMindChunks(await this.config.mind.loadMindChunks(this.config.agentId), lastUserText);
         } catch (err) {
           logger.warn({ err: err }, "[mind] MIND.md 读取失败，本轮不注入经验");
           // M-a 顺手统一（Minor-1）：高版本数据是明确错误而非"读取失败"，

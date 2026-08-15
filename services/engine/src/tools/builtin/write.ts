@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { renameWithRetry } from "../../memory/document-store.js";
+import { renameWithRetry } from "../../plugins/memory/document-store.js";
 import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Scheduler } from "../../src/scheduler/scheduler.js";
-import { ErrorThrottle } from "../../src/scheduler/error-throttle.js";
+import { ErrorThrottle } from "../../src/plugins/log/error-throttle.js";
 import { logger } from "../../src/logger.js";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
 import type { ApiContext } from "../../src/api/context.js";

@@ -7,6 +7,7 @@ import { MessageRepository } from "../../src/memory/repositories/message.js";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
 import { reconcileOrphanedTopic } from "../../src/memory/reconcile.js";
 import type { CompressionTaskDeps } from "../../src/memory/topic/compression-task.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { loadTopicState, saveTopicState } from "../../src/memory/topic/state.js";
 import { archivedMessageIds } from "../../src/memory/topic/store.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -46,7 +47,7 @@ function makeMsg(id: string, sessionId = "s1"): ChatMessageRecord {
 }
 
 function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
-  return { agentId: "a1", provider, model: "mock-model", messageRepository: repo };
+  return { agentId: "a1", provider, model: "mock-model", messageRepository: repo, mind: mindService };
 }
 
 describe("reconcileOrphanedTopic 开放话题跳过（真机 #10 方案 2）", () => {

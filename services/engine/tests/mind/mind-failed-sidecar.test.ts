@@ -3,8 +3,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // 模拟 Windows 上 rename 持久失败（文件被占用超过重试窗口）：只拦 renameWithRetry，
 // 其余 document-store 行为保持真实
-vi.mock("../../src/memory/document-store.js", async (importActual) => {
-  const actual = await importActual<typeof import("../../src/memory/document-store.js")>();
+vi.mock("../../src/plugins/memory/document-store.js", async (importActual) => {
+  const actual = await importActual<typeof import("../../src/plugins/memory/document-store.js")>();
   return {
     ...actual,
     renameWithRetry: vi.fn(async () => {

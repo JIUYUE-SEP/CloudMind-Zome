@@ -13,8 +13,8 @@ import { createSkillService, type SkillService } from "../../skills/service.js";
  * 过渡形态（P3 任务书批准）：getAgentConfig 依赖 agentRepository
  * （P4/P6 才插件化），本期经**插件 config 回调**进场——
  * `ctx.plugin(skillsPlugin, { getAgentConfig: ... })`，后续期换位 inject。
- * SkillService 内部对 memory/document-store 的值级出边（skills/service.ts:3）
- * 同 P1 config 的批准形态保留直 import，P4 收口。
+ * SkillService 内部对 document-store 的值级出边（skills/service.ts:3）：
+ * 库级直 import（非 ctx 服务），路径随 P4 迁址（plugins/memory/）更新，语义不变。
  */
 export const name = "skills";
 
@@ -34,6 +34,11 @@ declare module "cordis" {
 }
 
 export function apply(ctx: Context, config: Config): void {
+  // P3 复审建议落地（P4）：config 缺失显式断言——与 assertServices 同风格，
+  // 缺 getAgentConfig 回调即启动即炸（插件名在错误信息与 fiber 栈里），不带病进运行时
+  if (typeof config?.getAgentConfig !== "function") {
+    throw new Error("[skills] 插件 config 缺失：必须提供 getAgentConfig 回调（P3 批准的过渡形态）");
+  }
   ctx.provide(
     "skills",
     createSkillService({

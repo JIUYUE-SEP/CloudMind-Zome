@@ -14,6 +14,7 @@ import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import type { SidecarClient } from "../../src/sidecar/client.js";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
@@ -38,6 +39,7 @@ async function buildTestContext(
     sessionRepository: new SessionRepository(),
     blueprintRepository: new BlueprintRepository(),
     getAgentWorker: async () => undefined,
+    mind: mindService,
     ...extra,
   };
 

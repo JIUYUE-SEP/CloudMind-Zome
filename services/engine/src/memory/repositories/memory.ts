@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DocumentStore } from "../document-store.js";
+import { DocumentStore } from "../../plugins/memory/document-store.js";
 import { getAgentDir, sanitizeAgentId } from "../../config/paths.js";
 import type { IMemoryRepository, MemoryRecord } from "./types.js";
 

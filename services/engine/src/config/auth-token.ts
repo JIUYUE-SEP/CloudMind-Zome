@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { renameWithRetry } from "../memory/document-store.js";
+import { renameWithRetry } from "../plugins/memory/document-store.js";
 import { getDataDir } from "./paths.js";
 
 // 按文件路径缓存"读取或创建"的 Promise（与 crypto.ts 的 master key 同一模式）：

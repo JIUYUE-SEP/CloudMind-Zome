@@ -16,6 +16,7 @@ import {
 } from "../../src/memory/topic/state.js";
 import { archivedMessageIds, writeCompressedTopic } from "../../src/memory/topic/store.js";
 import { withLLMCallRecording } from "../../src/plugins/llm/record-calls.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { LLMCallRepository } from "../../src/memory/repositories/llm-call.js";
 import { restoreDataDir } from "../helpers/env.js";
 
@@ -65,7 +66,7 @@ function makePending(topicId: string, ids: string[], archiveOnly: boolean): Pend
 }
 
 function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
-  return { agentId: "a1", provider, model: "mock-model", messageRepository: repo };
+  return { agentId: "a1", provider, model: "mock-model", messageRepository: repo, mind: mindService };
 }
 
 describe("reconcilePendingSegments 已入队未压缩段对账（M-b）", () => {

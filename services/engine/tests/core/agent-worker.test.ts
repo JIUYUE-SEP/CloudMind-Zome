@@ -5,6 +5,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentWorker, normalizeReactMaxSteps } from "../../src/core/agent-worker.js";
+import { mindService } from "../../src/plugins/mind/index.js";
+import type { MindService } from "../../src/plugins/mind/index.js";
 import type { ApprovalRequest } from "../../src/core/agent-worker.js";
 import { SKILL_DISCIPLINE } from "../../src/core/agent-worker.js";
 import {
@@ -102,6 +104,7 @@ function makeConfig(
   messageRepository: IMessageRepository;
   approve: () => Promise<true>;
   trustAllTools?: boolean;
+  mind: MindService;
 } {
   return {
     agentId: "agent-1",
@@ -115,6 +118,7 @@ function makeConfig(
       ...messageRepository,
     } as IMessageRepository,
     approve: async () => true,
+    mind: mindService,
     ...(trustAllTools !== undefined ? { trustAllTools } : {}),
   };
 }
@@ -1674,6 +1678,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     const goodProvider = new CapturingProvider();
     const count = await reconcilePendingSegments("agent-1", repo, {
       agentId: "agent-1",
+      mind: mindService,
       provider: goodProvider,
       model: "mock",
       messageRepository: repo,
@@ -1728,6 +1733,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     // 已落盘 step 在 topic-state 视野内，由运行时自然收
     const count = await reconcileOrphanedTopic("agent-1", repo, {
       agentId: "agent-1",
+      mind: mindService,
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: repo,
@@ -1809,6 +1815,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     // 启动对账跳过开放话题（#10 方案 2）：半截消息留在热存储与 open 状态，由运行时收
     const count = await reconcileOrphanedTopic("agent-1", repo, {
       agentId: "agent-1",
+      mind: mindService,
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: repo,
@@ -1832,6 +1839,7 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     // 启动对账：跳过开放话题——消息留在热存储，状态不消费
     const count = await reconcileOrphanedTopic("agent-1", repo, {
       agentId: "agent-1",
+      mind: mindService,
       provider: new CapturingProvider(),
       model: "mock",
       messageRepository: repo,

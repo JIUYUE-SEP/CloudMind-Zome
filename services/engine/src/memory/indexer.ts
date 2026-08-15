@@ -1,7 +1,7 @@
 import { logger } from "../logger.js";
 import type { EmbedderProvider } from "../provider/types.js";
 import { SidecarCallError, type SidecarClient } from "../sidecar/client.js";
-import { ErrorThrottle } from "../scheduler/error-throttle.js";
+import { ErrorThrottle } from "../plugins/log/error-throttle.js";
 
 const MAX_INDEX_CHARS = 2000;
 const EMBED_TIMEOUT_MS = 5000;

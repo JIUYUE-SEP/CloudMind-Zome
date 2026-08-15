@@ -1,8 +1,6 @@
 import { logger } from "../../logger.js";
 import type { IMessageRepository } from "../repositories/types.js";
 import type { LLMProvider } from "../../provider/types.js";
-import { appendMindExperiences } from "../../mind/mind-files.js";
-import { isInjectionSuspect } from "../../mind/injection-filter.js";
 import { compressTopic } from "./compressor.js";
 import { reviewTopicSegments } from "./judge.js";
 import { removeCompressedTopic, writeCompressedTopic } from "./store.js";
@@ -11,6 +9,9 @@ import type { TopicSegment } from "./types.js";
 /**
  * 压缩任务执行体（P1-2 提取）：原 AgentWorker 压缩队列回调的共享实现，
  * 供 worker 后台队列与启动对账（reconcileOrphanedTopic）两条路径复用。
+ *
+ * P4 inject 化：mind 能力（经验沉淀/注入检测）不再值级 import mind/ 模块，
+ * 经 deps.mind 构造注入（解 memory→mind 包级值边），装配方从 ctx.mind 取下喂入。
  */
 export interface CompressionTaskDeps {
   agentId: string;
@@ -20,6 +21,11 @@ export interface CompressionTaskDeps {
   /** 裁判/复核模型链（boundaryModel || compressionModel || 主模型，调用方解析好） */
   boundaryModel?: string;
   messageRepository: IMessageRepository;
+  /** mind 能力注入（P4）：经验沉淀 + 注入检测；方法签名与 mind/mind-files、injection-filter 同源 */
+  mind: {
+    appendMindExperiences(agentId: string, experiences: unknown[]): Promise<unknown>;
+    isInjectionSuspect(text: string): boolean;
+  };
 }
 
 export async function runCompressionTask(
@@ -60,7 +66,7 @@ async function compressAndArchiveSegment(
   // （消息离开热存储进归档、不进 L5 回流），不再落档。误伤口径：讨论注入
   // 手法本身的话题可能被误降为仅归档（不丢消息、热存储有界性不变，接受）。
   const summaryText = [enriched.label, ...enriched.keyPoints, enriched.summary].join("\n");
-  if (isInjectionSuspect(summaryText)) {
+  if (deps.mind.isInjectionSuspect(summaryText)) {
     logger.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${enriched.topicId}`);
     await deps.messageRepository.archiveAndRemove(enriched.msgIds);
     return;
@@ -70,7 +76,7 @@ async function compressAndArchiveSegment(
   // 失败仅 warn 跳过，不影响压缩主流程
   if (compressed.experiences && compressed.experiences.length > 0) {
     try {
-      await appendMindExperiences(
+      await deps.mind.appendMindExperiences(
         deps.agentId,
         compressed.experiences.map((e) => ({
           ...e,

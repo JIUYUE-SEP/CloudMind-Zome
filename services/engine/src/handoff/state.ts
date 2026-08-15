@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { DocumentStore, renameWithRetry } from "../memory/document-store.js";
+import { DocumentStore, renameWithRetry } from "../plugins/memory/document-store.js";
 import { getDataDir } from "../config/paths.js";
 import { logger } from "../logger.js";
 import { isActiveHandoff, type HandoffRecord, type HandoffStateFile } from "./types.js";

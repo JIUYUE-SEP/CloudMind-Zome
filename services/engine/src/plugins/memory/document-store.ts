@@ -1,4 +1,4 @@
-import { logger } from "../logger.js";
+import { logger } from "../../logger.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -7,7 +7,7 @@ import {
   MigrationChain,
   splitSchemaVersion,
   stampSchemaVersion,
-} from "../versioning.js";
+} from "../../versioning.js";
 
 // 写队列挂在模块级、按文件路径串行：
 // DocumentStore 实例由调用方随手 new，实例级队列起不到跨调用串行化的作用，

@@ -2,7 +2,7 @@ import { logger } from "../logger.js";
 import type { ApiContext } from "../api/context.js";
 import { SchedulerRepository } from "./repository.js";
 import { computeNextRun, isDue } from "./engine.js";
-import { ErrorThrottle } from "./error-throttle.js";
+import { ErrorThrottle } from "../plugins/log/error-throttle.js";
 import type { ScheduledTask } from "./types.js";
 import { randomUUID } from "node:crypto";
 

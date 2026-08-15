@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { AgentWorker } from "../../src/core/agent-worker.js";
+import { mindService } from "../../src/plugins/mind/index.js";
 import { WorkerRegistry } from "../../src/core/worker-registry.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { LLMProvider, LLMEvent } from "../../src/provider/types.js";
@@ -17,6 +18,7 @@ function userMessage(text: string): ChatMessage {
 
 function makeWorker(provider: LLMProvider): AgentWorker {
   return new AgentWorker({
+    mind: mindService,
     agentId: "a1",
     model: "mock",
     provider,

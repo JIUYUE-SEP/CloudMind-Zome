@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ErrorThrottle } from "../../src/scheduler/error-throttle.js";
+import { ErrorThrottle } from "../../src/plugins/log/error-throttle.js";
 
 describe("ErrorThrottle（P4-4）", () => {
   it("首次立即记录；退避窗口内只计数；窗口到时带累计并加大退避", () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { DocumentStore } from "../memory/document-store.js";
+import { DocumentStore } from "../plugins/memory/document-store.js";
 import { getDataDir } from "../config/paths.js";
 import type { Session } from "./types.js";
 

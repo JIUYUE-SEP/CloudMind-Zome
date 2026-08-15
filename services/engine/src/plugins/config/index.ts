@@ -22,8 +22,7 @@ declare module "cordis" {
 }
 
 export function apply(ctx: Context): void {
-  // 批准的过渡形态（P1 任务书）：ConfigRepository 对 memory/document-store 的
-  // 值级出边（auth-token.ts:4、crypto.ts:4、repository.ts:4）本期保留直 import——
-  // document-store 是 memory 基座，P4 才插件化，本期不绕道提前收它。
+  // document-store 已迁入 memory 插件目录作内部实现（P4 收口）：本边为
+  // 库级直 import（非 ctx 服务），路径随迁址更新，语义不变。
   ctx.provide("config", new ConfigRepository());
 }
