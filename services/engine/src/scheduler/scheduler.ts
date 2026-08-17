@@ -1,5 +1,6 @@
 import { logger } from "../logger.js";
-import type { ApiContext } from "../api/context.js";
+import type { IAgentRepository } from "../memory/repositories/types.js";
+import type { AgentWorker } from "../core/agent-worker.js";
 import { SchedulerRepository } from "./repository.js";
 import { computeNextRun, isDue } from "./engine.js";
 import { ErrorThrottle } from "../plugins/log/error-throttle.js";
@@ -10,6 +11,16 @@ export interface SchedulerOptions {
   pollIntervalMs?: number;
   /** 测试注入带假时钟的节流器（生产缺省） */
   errorThrottle?: ErrorThrottle;
+}
+
+/**
+ * Scheduler 实际消费的窄依赖（P7c 构造瘦身：不再吃整个 ApiContext）——
+ * 只用 agentRepository.list() 扫全量 agent + getAgentWorker 解析 worker，
+ * 两字段语义与原 ApiContext 同名项一字不差。
+ */
+export interface SchedulerDeps {
+  agentRepository: IAgentRepository;
+  getAgentWorker(agentId: string): Promise<AgentWorker | undefined>;
 }
 
 /** 错误指纹：消息前 120 字符足够区分原因，又不因长栈/长输出稀释 key */
@@ -25,7 +36,7 @@ export class Scheduler {
   /** P4-4：tick/任务错误节流（同 key 退避记录+计数+恢复，不每秒刷屏） */
   private readonly errors: ErrorThrottle;
 
-  constructor(private context: ApiContext, private options: SchedulerOptions = {}) {
+  constructor(private deps: SchedulerDeps, private options: SchedulerOptions = {}) {
     this.errors = options.errorThrottle ?? new ErrorThrottle();
   }
 
@@ -48,7 +59,7 @@ export class Scheduler {
     if (this.runningTick) return;
     this.runningTick = true;
     try {
-      const agents = await this.context.agentRepository.list();
+      const agents = await this.deps.agentRepository.list();
       for (const agent of agents) {
         const repo = new SchedulerRepository(agent.id);
         const tasks = await repo.list();
@@ -101,7 +112,7 @@ export class Scheduler {
       }
       await repo.update(task);
 
-      const worker = await this.context.getAgentWorker(agentId);
+      const worker = await this.deps.getAgentWorker(agentId);
       if (!worker) return;
 
       await worker.runScheduledTask({

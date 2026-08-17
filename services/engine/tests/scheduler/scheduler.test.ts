@@ -2,11 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Scheduler } from "../../src/scheduler/scheduler.js";
+import { Scheduler, type SchedulerDeps } from "../../src/scheduler/scheduler.js";
 import { ErrorThrottle } from "../../src/plugins/log/error-throttle.js";
 import { logger } from "../../src/logger.js";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
-import type { ApiContext } from "../../src/api/context.js";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import type { ScheduledTask } from "../../src/scheduler/types.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -44,7 +43,7 @@ describe("Scheduler", () => {
     }
   });
 
-  function makeContext(worker: AgentWorker): ApiContext {
+  function makeDeps(worker: AgentWorker): SchedulerDeps {
     return {
       agentRepository: {
         list: async () => [{ id: "agent-1", name: "agent", model: "gpt-4", provider: "openai", tools: [] }],
@@ -53,7 +52,7 @@ describe("Scheduler", () => {
         delete: async () => {},
       },
       getAgentWorker: async () => worker,
-    } as unknown as ApiContext;
+    } as unknown as SchedulerDeps;
   }
 
   function makeWorker(): AgentWorker {
@@ -65,10 +64,10 @@ describe("Scheduler", () => {
     const workerPromise = new Promise<AgentWorker>((resolve) => {
       resolveWorker = resolve;
     });
-    const context = makeContext(undefined as unknown as AgentWorker);
-    context.getAgentWorker = async () => workerPromise;
+    const deps = makeDeps(undefined as unknown as AgentWorker);
+    deps.getAgentWorker = async () => workerPromise;
 
-    const scheduler = new Scheduler(context);
+    const scheduler = new Scheduler(deps);
     const repo = new SchedulerRepository("agent-1");
     await repo.create({
       agentId: "agent-1",
@@ -107,7 +106,7 @@ describe("Scheduler", () => {
 
   it("updates nextRunAt and enqueues due task", async () => {
     const worker = makeWorker();
-    const scheduler = new Scheduler(makeContext(worker));
+    const scheduler = new Scheduler(makeDeps(worker));
     const repo = new SchedulerRepository("agent-1");
     const past = new Date(Date.now() - 1000).toISOString();
     const task = await repo.create({
@@ -136,12 +135,12 @@ describe("Scheduler", () => {
   });
 
   it("catches errors in runTask and does not crash tick", async () => {
-    const context = makeContext(undefined as unknown as AgentWorker);
-    context.getAgentWorker = async () => {
+    const deps = makeDeps(undefined as unknown as AgentWorker);
+    deps.getAgentWorker = async () => {
       throw new Error("worker failed");
     };
 
-    const scheduler = new Scheduler(context);
+    const scheduler = new Scheduler(deps);
     const repo = new SchedulerRepository("agent-1");
     await repo.create({
       agentId: "agent-1",
@@ -162,12 +161,12 @@ describe("Scheduler", () => {
       resolveWorker = resolve;
     });
     const getAgentWorker = vi.fn(async () => workerPromise);
-    const context: ApiContext = {
-      ...makeContext(undefined as unknown as AgentWorker),
+    const deps: SchedulerDeps = {
+      ...makeDeps(undefined as unknown as AgentWorker),
       getAgentWorker,
     };
 
-    const scheduler = new Scheduler(context);
+    const scheduler = new Scheduler(deps);
     const repo = new SchedulerRepository("agent-1");
     const task = await repo.create({
       agentId: "agent-1",
@@ -197,8 +196,8 @@ describe("Scheduler", () => {
     const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
 
     let shouldFail = true;
-    const context: ApiContext = {
-      ...makeContext(makeWorker()),
+    const deps: SchedulerDeps = {
+      ...makeDeps(makeWorker()),
       agentRepository: {
         list: async () => {
           if (shouldFail) throw new Error("config store corrupted");
@@ -207,9 +206,9 @@ describe("Scheduler", () => {
         get: async () => undefined,
         save: async () => {},
         delete: async () => {},
-      } as unknown as ApiContext["agentRepository"],
+      } as unknown as SchedulerDeps["agentRepository"],
     };
-    const scheduler = new Scheduler(context, { errorThrottle: throttle });
+    const scheduler = new Scheduler(deps, { errorThrottle: throttle });
     const tick = () => (scheduler as unknown as SchedulerInternals).tick();
 
     // t=0 首次记录；t=100/900 折叠；t=1100 第二次记录（带累计）

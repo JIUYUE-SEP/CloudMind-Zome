@@ -14,6 +14,8 @@ import * as agentsPlugin from "./plugins/agents/index.js";
 import * as conductorPlugin from "./plugins/conductor/index.js";
 import * as blueprintPlugin from "./plugins/blueprint/index.js";
 import * as handoffPlugin from "./plugins/handoff/index.js";
+import * as schedulerPlugin from "./plugins/scheduler/index.js";
+import * as plansPlugin from "./plugins/plans/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -25,13 +27,10 @@ import type { LLMProvider } from "./provider/types.js";
 import type { ApiContext } from "./api/context.js";
 import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
-import { Scheduler } from "./scheduler/scheduler.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { loadTopicState } from "./memory/topic/state.js";
 import { registerShutdownHandlers } from "./shutdown.js";
-import { PlanManager } from "./plan/manager.js";
-import { PlanRepository } from "./plan/repository.js";
 import { SubagentDispatcher } from "./subagent/dispatcher.js";
 import { BackgroundManager } from "./subagent/background.js";
 import { SubagentTaskRepository } from "./subagent/task-repository.js";
@@ -101,10 +100,16 @@ async function main() {
     getSidecar: () => sidecarClient,
   });
 
+  // scheduler/plans（P7c）：调度器与 per-agent PlanManager 懒创建收编；
+  // inject agents（plans 另需 llm）——上方 agents 激活后才激活。
+  // scheduler 只构造不 start：start/stop 生命周期仍在下方原位置驱动
+  await root.plugin(schedulerPlugin);
+  await root.plugin(plansPlugin);
+
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
@@ -230,24 +235,8 @@ async function main() {
     background: backgroundManager,
   });
 
-  const planManagers = new Map<string, PlanManager>();
-  async function getPlanManager(agentId: string): Promise<PlanManager | undefined> {
-    const existing = planManagers.get(agentId);
-    if (existing) return existing;
-    const agentConfig = await agentRepository.get(agentId);
-    if (!agentConfig) return undefined;
-    const manager = new PlanManager(
-      {
-        provider: await root.llm.createProvider(agentConfig),
-        model: agentConfig.modelId || agentConfig.model || "gpt-4o",
-      },
-      new PlanRepository(agentId),
-    );
-    // 从 plans.jsonl 恢复历史 plan（running 步骤回退 pending，见 PlanManager.load）
-    await manager.load();
-    planManagers.set(agentId, manager);
-    return manager;
-  }
+  // per-agent PlanManager 懒创建已收编进 plans 插件（P7c：plugins/plans/index.ts）；
+  // 下方 ApiContext.getPlanManager 改经 root.plans 取（语义逐字不变）。
 
   // worker 创建链已收编进 agents 插件（P6：plugins/agents/index.ts）；
   // 下方 getOrCreateWorker 调用点全部改经 ctx.agents 取。
@@ -262,7 +251,7 @@ async function main() {
     sessionRepository: root.conductor.sessionRepository,
     blueprintRepository: root.blueprint.blueprintRepository,
     getAgentWorker: root.agents.getOrCreateWorker,
-    getPlanManager,
+    getPlanManager: root.plans.getPlanManager,
     runAgentCollect,
     subagentDispatcher,
     backgroundManager,
@@ -289,7 +278,9 @@ async function main() {
     },
   };
 
-  const scheduler = new Scheduler(context, { pollIntervalMs: 5000 });
+  // Scheduler 实例改经 scheduler 插件构造（P7c：plugins/scheduler/index.ts，
+  // 窄依赖 + 5s 轮询选项随构造迁入）；start 仍在下方原位置（启动对账之后、
+  // createServer 之前），先后序一字不动。
 
   // subagent 后台任务启动对账：持久化记录回填内存索引，running 一律标 lost
   // （重启语义：现场已毁、不知死活≠已知失败，交人工决策而非自动续跑）
@@ -359,7 +350,7 @@ async function main() {
     }
   }
 
-  scheduler.start();
+  root.scheduler.start();
 
   const app = await createServer(context);
   // 在 listen 前确保 token 已就绪/落盘：desktop Rust 侧等 /health 通过后
@@ -405,7 +396,7 @@ async function main() {
   // 本 handler——那条路径的重启孤儿由上面的启动对账兜底。
   registerShutdownHandlers({
     // 先停止接收新任务（scheduler 触发的压缩段），再 drain 存量队列
-    stop: () => scheduler.stop(),
+    stop: () => root.scheduler.stop(),
     drain: async () => {
       await Promise.allSettled([...root.agents.workerRegistry.all()].map((w) => w.drainCompression()));
     },
