@@ -130,6 +130,8 @@ describe("IntermindService.send", () => {
     const main = await new MessageRepository("a1").listBySession("default");
     expect(main).toHaveLength(1);
     expect(main[0]!.role).toBe("user");
+    // M40：通知带发送方 agentId 归因（role 保持 user，协议/前端零影响）
+    expect(main[0]!.agentId).toBe("a2");
     expect(textOf(main[0]!)).toBe(
       "【来自 乙 的私信】回信——可用 send_private_message 给 ta 回信（to: a2）",
     );
@@ -173,6 +175,33 @@ describe("IntermindService.send", () => {
       expect(text).toContain("send_private_message");
       expect(text).toContain("——可用 send_private_message 给 ta 回信（to: ");
     }
+  });
+
+  it("搭车通知角色语义（M40）：role 保持 user，agentId 归因与用户亲口消息可区分", async () => {
+    const repo = new MessageRepository("a1");
+    // 用户亲口消息（ws 私聊路径落盘形态：role user、无 agentId）
+    await repo.append({
+      id: "m-user",
+      sessionId: "default",
+      role: "user",
+      content: [{ type: "text", text: "用户亲口" }],
+      createdAt: new Date().toISOString(),
+    });
+    await service.send("a2", "a1", "回信内容", { wake: false });
+
+    const main = await repo.listBySession("default");
+    expect(main).toHaveLength(2);
+    const notice = main.find((m) => m.id !== "m-user")!;
+    // role 保持 user：系统通知同范式——chat_completions 协议对中段 system 原样透传，
+    // 改 system 会把对端来信摘要抬权为 system 指令（兼容性风险），故不动 role
+    expect(notice.role).toBe("user");
+    // 数据面归因：通知带发送方 agentId，用户亲口消息不带——REST/前端/审计可区分
+    expect(notice.agentId).toBe("a2");
+    expect(main.find((m) => m.id === "m-user")!.agentId).toBeUndefined();
+    // 通知文本格式不破坏（#9 前缀 + 回信指引 + senderId）
+    expect(textOf(notice)).toBe(
+      "【来自 乙 的私信】回信内容——可用 send_private_message 给 ta 回信（to: a2）",
+    );
   });
 
   it("目标 agent 不存在：明确抛错，不写信不唤醒", async () => {
@@ -386,6 +415,46 @@ describe("IntermindService 会话检索", () => {
     const empty = await readPrivateMessagesTool.execute(ctx, { from: "ghost" });
     expect(empty.success).toBe(true);
     expect((empty.output as { count: number }).count).toBe(0);
+  });
+
+  it("read_private_messages before 翻页跨热存储+归档（M36）：归档侧历史完整可翻", async () => {
+    const repo = new MessageRepository("a2");
+    // 4 封来信落热存储后，最旧 2 封归档（模拟 H8 溢出后的存储形态）
+    for (let i = 1; i <= 4; i++) {
+      await repo.append({
+        id: `m-${i}`,
+        sessionId: "intermind:a1",
+        role: "user",
+        content: [{ type: "text", text: `第${i}封` }],
+        agentId: "a1",
+        createdAt: `2026-08-01T00:00:0${i}.000Z`,
+      });
+    }
+    await repo.archiveAndRemove(["m-1", "m-2"]);
+
+    const ctx: ToolContext = {
+      agentId: "a2",
+      workspaceDir: "/tmp",
+      approve: async () => true,
+      services: { intermindService: service },
+    };
+    // 第一页：limit=3 → 跨存储归并后最近 3 封；满页 hint 的游标指向本页最旧一封（m-2，热存储头部）
+    const page1 = await readPrivateMessagesTool.execute(ctx, { from: "a1", limit: 3 });
+    expect(page1.success).toBe(true);
+    const out1 = page1.output as {
+      count: number;
+      hint: string;
+      messages: Array<{ id: string; text: string }>;
+    };
+    expect(out1.messages.map((m) => m.text)).toEqual(["第2封", "第3封", "第4封"]);
+    expect(out1.hint).toContain('before: "m-2"');
+
+    // 第二页：before=m-2 → 只剩归档侧的第1封（游标本身已归档不误拒，跨存储翻页成立）
+    const page2 = await readPrivateMessagesTool.execute(ctx, { from: "a1", limit: 3, before: "m-2" });
+    expect(page2.success).toBe(true);
+    const out2 = page2.output as { hint: string; messages: Array<{ text: string }> };
+    expect(out2.messages.map((m) => m.text)).toEqual(["第1封"]);
+    expect(out2.hint).toContain("已读到最早");
   });
 
   it("before 未知游标：明确抛错（REST 映射 400）", async () => {

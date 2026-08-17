@@ -164,9 +164,16 @@ export class IntermindService {
       // 搭车（回信）：同一格式通知落接收方主会话，但不触发感知回合——
       // 真机 #9：此前注入的是裸信件原文，接收方分不清「对方回信」与「用户怪话」。
       // 落盘失败抛错不静默（与写信同哲学）：静默失败会重现「没收到回信」。
+      // M40：role 保持 user（系统通知同范式，见 agent-worker.enqueueSystemNotice
+      // 注释：L1 system 是人格/纪律区，通知是瞬时外部环境消息；且 chat_completions
+      // 协议对中段 system 原样透传，对端来信摘要会被抬权成 system 指令——兼容性
+      // 风险实证），改以 agentId 归因标记区分「对端来信通知」与「用户亲口消息」：
+      // LLM 入参 ChatMessage 无 agentId 字段（协议零影响、模型侧仍靠【】前缀区分），
+      // REST 历史/前端/审计数据面可按 agentId 识别归因（群聊归属标注同构）。
       await this.deps.getMessageRepository(toAgentId).append({
         id: randomUUID(),
         role: "user",
+        agentId: fromAgentId,
         content: [{ type: "text", text: noticeText }],
         createdAt: new Date().toISOString(),
         sessionId: INTERMIND_NOTICE_SESSION_ID,

@@ -94,6 +94,67 @@ describe("read_private_messages 工具", () => {
     expect(service.listMessages).toHaveBeenCalledWith("a1", "a2", { limit: 7 });
   });
 
+  it("before 游标透传 service.listMessages（M36：超长线程向前翻页）", async () => {
+    const service = makeService();
+    const result = await readPrivateMessagesTool.execute(
+      makeCtx({ services: { intermindService: service } }),
+      { from: "a2", before: "m-cursor" },
+    );
+    expect(result.success).toBe(true);
+    expect(service.listMessages).toHaveBeenCalledWith("a1", "a2", {
+      limit: 50,
+      before: "m-cursor",
+    });
+  });
+
+  it("翻页指引（M36，recall 同风格 hint）：满页给 before 游标，非满页/空页表明已读完", async () => {
+    // 满页（count === limit）：可能还有更早的信，hint 带本页最旧一封的 id 作游标
+    const full = makeService({
+      listMessages: vi.fn(async () => [
+        record({ id: "m-old", createdAt: "2026-08-06T00:00:00.000Z" }),
+        record({ id: "m-new", createdAt: "2026-08-07T00:00:00.000Z" }),
+      ]),
+    });
+    const fullResult = await readPrivateMessagesTool.execute(
+      makeCtx({ services: { intermindService: full } }),
+      { from: "a2", limit: 2 },
+    );
+    expect(fullResult.success).toBe(true);
+    const fullHint = (fullResult.output as { hint: string }).hint;
+    expect(fullHint).toContain("可能还有更早的信");
+    expect(fullHint).toContain('before: "m-old"');
+
+    // 非满页（count < limit）：窗口未满 = 已读到最早，不给翻页游标
+    const partial = makeService({
+      listMessages: vi.fn(async () => [record({ id: "m-only" })]),
+    });
+    const partialResult = await readPrivateMessagesTool.execute(
+      makeCtx({ services: { intermindService: partial } }),
+      { from: "a2", limit: 10 },
+    );
+    const partialHint = (partialResult.output as { hint: string }).hint;
+    expect(partialHint).toContain("已读到最早");
+    expect(partialHint).not.toContain("before");
+
+    // 空页：无来往私信
+    const empty = await readPrivateMessagesTool.execute(makeCtx(), { from: "ghost" });
+    expect((empty.output as { hint: string }).hint).toContain("没有与 ghost 的来往私信");
+  });
+
+  it("before 未知游标：service 抛错原样转为失败（M36）", async () => {
+    const service = makeService({
+      listMessages: vi.fn(async () => {
+        throw new Error("Invalid before cursor: no-such-id");
+      }),
+    });
+    const result = await readPrivateMessagesTool.execute(
+      makeCtx({ services: { intermindService: service } }),
+      { from: "a2", before: "no-such-id" },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Invalid before cursor");
+  });
+
   it("傀儡上下文：明确拒绝（傀儡无社交权），不调用 service", async () => {
     const service = makeService();
     const result = await readPrivateMessagesTool.execute(

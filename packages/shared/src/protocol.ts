@@ -77,8 +77,9 @@ export interface ChatTextFrame {
 
 /**
  * 消息记录（engine `memory/repositories/types.ts` 原定义为权威：role 含
- * "system"、必有 sessionId）。`agentId` 只在群聊历史合并时由引擎标注
- * （assistant/tool 消息归属），user 消息与私聊历史不带。
+ * "system"、必有 sessionId）。`agentId` 标注消息归属：群聊历史合并时由引擎
+ * 标注（assistant/tool 消息）；intermind 搭车通知（role=user）也带来源 agentId
+ * 归因（M40）；私聊用户亲口消息不带。
  */
 export interface ChatMessageRecord {
   id: string;

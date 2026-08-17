@@ -299,4 +299,99 @@ describe("HandoffResumeLoop 续跑循环", () => {
     await bookPromise;
     expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", shift: 2 });
   });
+
+  it("M38 fused 闩锁：fused 作废旧代际——旧链迟到 book 被拦，新链签发新代际续跑", async () => {
+    const loop = makeLoop();
+    const fusedChain = loop.beginNewChain("a1", "s1");
+    // 首棒即撞顶（shift >= maxShifts）→ fused，链终结且旧代际作废
+    await loop.onWatermarkBook(bookInfo({ shift: 3, maxShifts: 3, chainId: fusedChain }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "fused", shift: 3 });
+
+    // 旧链迟到 book（旧代际、未撞顶棒次）：fused 终态闩锁拦截，
+    // 不得覆盖成 pending 复活已烧断的链（修前 fused 不在闩锁分支，同代际迟到 book 会复活链）
+    await loop.onWatermarkBook(bookInfo({ shift: 2, maxShifts: 3, chainId: fusedChain }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "fused", shift: 3 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(enqueued).toHaveLength(0);
+
+    // 新用户消息新链：fused 已作废旧代际，beginNewChain 必签发新代际（修前沿用 fused 链代际）
+    const newChain = loop.beginNewChain("a1", "s1");
+    expect(newChain).not.toBe(fusedChain);
+    // 新链 book 经 fused 闩锁放行（代际 = 当前链），正常调度续跑
+    await loop.onWatermarkBook(bookInfo({ chainId: newChain }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({
+      status: "scheduled",
+      shift: 1,
+      chainId: newChain,
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(enqueued).toHaveLength(1));
+    expect(enqueued[0]!.chainId).toBe(newChain);
+  });
+
+  it("M38 入队失败收尾走仲裁入口：aborted + onUpdate 帧 + 旧代际作废（新链新代际）", async () => {
+    const loop = new HandoffResumeLoop({
+      manager,
+      delayMs: 50,
+      enqueueResume: () => {
+        throw new Error("enqueue boom");
+      },
+      onUpdate: (record) => updates.push(`${record.status}:${record.shift}`),
+    });
+    const chain = loop.beginNewChain("a1", "s1");
+    await loop.onWatermarkBook(bookInfo({ chainId: chain }));
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() =>
+      expect(manager.get("ho_a1_s1")).toMatchObject({
+        status: "aborted",
+        abortReason: "enqueue_failed",
+      }),
+    );
+    // 仲裁入口语义：aborted 帧经 onUpdate 发出（前端可感知失败收尾）
+    expect(updates).toContain("aborted:1");
+    // 旧代际已作废：新链签发新代际（修前直连 manager.cancel 不清 currentChainId，会沿用）
+    const next = loop.beginNewChain("a1", "s1");
+    expect(next).not.toBe(chain);
+  });
+
+  it("M38 续跑失败收尾走仲裁入口：aborted + onUpdate 帧 + 旧代际作废（新链新代际）", async () => {
+    const loop = makeLoop();
+    const chain = loop.beginNewChain("a1", "s1");
+    await loop.onWatermarkBook(bookInfo({ chainId: chain }));
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(enqueued).toHaveLength(1));
+    const record = enqueued[0]!.record;
+
+    await loop.onJobDone(record, "a1", "s1", new Error("boom"));
+    expect(manager.get("ho_a1_s1")).toMatchObject({
+      status: "aborted",
+      abortReason: "resume_failed",
+    });
+    expect(updates).toContain("aborted:1");
+    const next = loop.beginNewChain("a1", "s1");
+    expect(next).not.toBe(chain);
+  });
+
+  it("M38 record 落盘失败收尾走仲裁入口：清定时器 + 控制面 aborted + 旧代际作废，不再续跑", async () => {
+    const loop = makeLoop(50);
+    const chain = loop.beginNewChain("a1", "s1");
+    await loop.onWatermarkBook(bookInfo({ chainId: chain }));
+    expect(manager.get("ho_a1_s1")).toMatchObject({ status: "scheduled", shift: 1 });
+
+    // 下一棒 book 入控制面时 record 抛错：收尾走仲裁入口（record_failed）
+    const recordSpy = vi.spyOn(manager, "record").mockRejectedValueOnce(new Error("disk full"));
+    await loop.onWatermarkBook(bookInfo({ shift: 2, chainId: chain }));
+    recordSpy.mockRestore();
+    expect(manager.get("ho_a1_s1")).toMatchObject({
+      status: "aborted",
+      abortReason: "record_failed",
+    });
+    expect(updates).toContain("aborted:1");
+    // 本地资源已清：旧定时器不再触发续跑
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(enqueued).toHaveLength(0);
+    // 旧代际已作废：新链签发新代际
+    const next = loop.beginNewChain("a1", "s1");
+    expect(next).not.toBe(chain);
+  });
 });

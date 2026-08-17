@@ -84,6 +84,9 @@ export class HandoffResumeLoop {
       // 落盘窗口内的复核（下方 latest.status !== "pending"）是第二道防线。
       // V4：lost 与 aborted 同为终态（重启对账后现场已毁），旧链迟到 book
       // 同样只在代际匹配当前链时才放行——reconcile 语义不变。
+      // M38：fused 也是终态（保险丝撞顶停跑），纳入同一闩锁分支——fused 时
+      // 本链代际已作废（下方保险丝分支清 currentChainId），旧链迟到 book
+      // 一律代际不符被拦，不再覆盖成 pending 复活已烧断的链。
       // P2-1（2026-08-10 复审残余）：活跃 record 的持久化 chainId 是权威锚点——
       // 双 tab 先后发消息时各 loop 本地 currentChainId 可能各自不同，B 的 book
       // 即便与 B 本地代际相同也会顶替 A 的 record；改为比对 record chainId，
@@ -95,7 +98,11 @@ export class HandoffResumeLoop {
         existing.chainId !== undefined
       ) {
         if (info.chainId !== existing.chainId) return;
-      } else if (existing?.status === "aborted" || existing?.status === "lost") {
+      } else if (
+        existing?.status === "aborted" ||
+        existing?.status === "lost" ||
+        existing?.status === "fused"
+      ) {
         if (info.chainId === undefined || info.chainId !== this.currentChainId) return;
       } else if (
         existing !== undefined &&
@@ -119,6 +126,10 @@ export class HandoffResumeLoop {
       // 保险丝：棒数撞顶（shift >= maxShifts）→ fused，不再调度下一棒
       if (record.shift >= record.maxShifts) {
         this.current = undefined;
+        // M38：fused 是终态——本链代际随链一并作废。不清的话新链 beginNewChain
+        // 会沿用 fused 链旧代际（无活跃链不轮换，P1-4），旧链迟到 book 与新链
+        // 同代际无法区分（代际区分力下降）；作废后新链必签发新代际。
+        this.currentChainId = undefined;
         const fused = await this.deps.manager.markStatus(record.id, "fused");
         if (fused) this.deps.onUpdate?.(fused);
         logger.info(
@@ -140,7 +151,11 @@ export class HandoffResumeLoop {
       if (scheduled) this.deps.onUpdate?.(scheduled);
     } catch (err) {
       logger.error({ err }, "[handoff] 交接书入控制面失败（本轮不自动续跑）");
-      await this.deps.manager.cancel(info.agentId, info.sessionId, "record_failed").catch(() => {});
+      // M38：错误收尾统一走本 loop 的仲裁入口（registry 仲裁面对单 loop 的作用
+      // 就是 loop.cancel(global: true)，此处同语义复用）：清定时器/abort 在途
+      // job/作废旧代际 + 控制面 aborted + onUpdate，不再直连 manager.cancel
+      // 漏掉本地资源清理。多 loop 扇出由控制面 aborted + 各 loop 复核兜底（V1/V5）。
+      await this.cancel(info.agentId, info.sessionId, "record_failed").catch(() => {});
     }
   }
 
@@ -187,13 +202,9 @@ export class HandoffResumeLoop {
       this.deps.enqueueResume(record, cur.controller.signal, resumeJobId, cur.chainId);
     } catch (err) {
       logger.error({ err }, "[handoff] 续跑入队失败（标 aborted）");
-      this.current = undefined;
-      const cancelled = await this.deps.manager.cancel(
-        record.agentId,
-        record.sessionId,
-        "enqueue_failed",
-      );
-      for (const c of cancelled) this.deps.onUpdate?.(c);
+      // M38：错误收尾统一走仲裁入口（语义同 registry.cancel 对本 loop 的作用）：
+      // current 清理/abort/旧代际作废 + 控制面 aborted + onUpdate 一次完成
+      await this.cancel(record.agentId, record.sessionId, "enqueue_failed");
     }
   }
 
@@ -256,10 +267,10 @@ export class HandoffResumeLoop {
     const isAbort = err !== undefined && cur.controller.signal.aborted;
     if (isAbort) return; // cancel() 已负责状态
     if (err !== undefined) {
-      this.current = undefined;
       try {
-        const cancelled = await this.deps.manager.cancel(agentId, sessionId, "resume_failed");
-        for (const c of cancelled) this.deps.onUpdate?.(c);
+        // M38：错误收尾统一走仲裁入口（语义同 registry.cancel 对本 loop 的作用）：
+        // current 清理/abort/旧代际作废 + 控制面 aborted + onUpdate 一次完成
+        await this.cancel(agentId, sessionId, "resume_failed");
       } catch (cancelErr) {
         logger.warn(
           { err: cancelErr, agentId, sessionId, recordId: record.id },
