@@ -4,8 +4,8 @@
 
 ## 目录定位
 
-- 迁移 P1–P9 期，bootstrap.ts 里各模块的构造与接线将逐步收口为本目录下的插件（每期范围见迁移方案 B3 表）。
-- **P9 之前 bootstrap.ts 仍是组合根**：插件由 bootstrap 显式 `ctx.plugin()` 挂载；之后 bootstrap 退役为薄薄的 cordis 树挂载点。
+- 迁移 P0–P9 期已完成（2026-08-17）：bootstrap.ts 各模块的构造与接线已全部收口为本目录下的插件（每期范围见迁移方案 B3 表）。
+- **bootstrap.ts 已退役为薄组合根**（约 136 行）：21 个插件挂载 → assertServices → `serial("engine/ready")`（启动对账/scheduler start 挂此事件）→ `http.listen()` → 关停钩。
 - 器官清单（`DATA_DIR/agents/<id>/plugins.yml`、全局 `DATA_DIR/plugins.json`）驱动的外部插件发现属迁移第二阶段，不在本目录。
 
 ## 插件解剖（四件套）
