@@ -187,7 +187,8 @@ export interface Job {
   sessionId?: string;
   /**
    * 瞬态回合（蓝图等非人形工作流）：本轮不落 agent 热存储、不进话题
-   * tracker/压缩/向量索引、不触发话题裁判——会话历史与人格记忆零污染。
+   * tracker/压缩/向量索引、不触发话题裁判，也不注入 L5 话题摘要与 L4 语义检索
+   * （M8 补齐注入侧跳过）——会话历史与人格记忆零污染。
    * LLM 调用记录（llm_calls.jsonl）由 provider 包装层负责，不受本标记影响。
    */
   ephemeral?: boolean;
@@ -398,18 +399,8 @@ export class AgentWorker {
     this.enqueue(job);
   }
 
-  pause(): void {
-    this.status = "paused";
-  }
-
-  resume(): void {
-    this.status = "idle";
-    this.processQueue();
-  }
-
   /**
-   * 退役（P3-6，配置变更竞态）：进程内 worker 被替换时调用。
-   * 与 pause（可 resume）语义分开——退役不可逆：
+   * 退役（P3-6，配置变更竞态）：进程内 worker 被替换时调用。退役不可逆：
    * - 在途 job 继续跑完（结果正常落盘）；
    * - 排队未执行的 job 显式收尾：发 turn.end 终帧（前端"生成中"解锁）+
    *   onDone(aborted)——runAgentCollect 的 Promise 立即 settle，subagent
@@ -657,10 +648,11 @@ export class AgentWorker {
         await this.persistTopicState();
       }
 
-      // L5 话题摘要：最近压缩档注入组装（读取失败按空处理并明确告知，不静默降级）
+      // L5 话题摘要：最近压缩档注入组装（读取失败按空处理并明确告知，不静默降级）。
+      // M8：瞬态回合跳过——与写入侧同口径，蓝图等 ephemeral 流量不注入 L5
       let retrievalFailed = false;
       let topicSummaries: TopicSummary[] = [];
-      if (this.topicConfig.enabled) {
+      if (!job.ephemeral && this.topicConfig.enabled) {
         try {
           topicSummaries = await latestSummaries(this.config.agentId, this.topicConfig.hotMemoryCount);
         } catch (err) {
@@ -717,7 +709,9 @@ export class AgentWorker {
       // 结果经 pipeline 注入（参与预算与降级），不再以消息位 prepend。
       // 失败不静默：retrievalFailed 让组装层尾随"记忆检索暂时不可用"的明确告知；
       // 检索结果已在历史文件中，不会也不应被再次持久化。
-      let semanticMemories: SemanticMemory[] = [];      if (this.semanticRetriever && lastUser && lastUserText.trim()) {
+      let semanticMemories: SemanticMemory[] = [];
+      // M8：瞬态回合跳过检索——与写入侧同口径，蓝图等 ephemeral 流量不注入 L4
+      if (!job.ephemeral && this.semanticRetriever && lastUser && lastUserText.trim()) {
         try {
           const excludeIds = new Set(job.messages.map((m) => m.id));
           semanticMemories = await this.semanticRetriever.retrieve(

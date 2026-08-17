@@ -165,6 +165,51 @@ describe("ContextPipeline", () => {
     expect(systems).toContain("[系统提醒] 其他系统通知（非水位）");
   });
 
+  it("M6：组装时跳过历史中的旧交接书（role=system 且以 [交接书] 开头）", async () => {
+    const pipeline = makePipeline(10000);
+    const staleBook: ChatMessage = {
+      id: "hb1",
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "[交接书] 上下文水位撞顶，本轮任务未完成，换班移交（第 1/5 棒）。\n" +
+            "【已完成】…\n【未来方向】…",
+        },
+      ],
+      createdAt: "2026-07-17T00:00:00Z",
+    };
+    const result = await pipeline.assemble(
+      makeInput({ history: [staleBook, ...history(2)] }),
+    );
+
+    expect(result.messages.some((m) => m.id === "hb1")).toBe(false);
+    expect(result.messages.map(textOf).some((t) => t.startsWith("[交接书]"))).toBe(false);
+    // 其余历史照常组装
+    expect(result.messages.filter((m) => m.role === "user")).toHaveLength(2);
+  });
+
+  it("M6：handoffPinned 置顶注入不受 L3 过滤影响（最新交接书仍置顶）", async () => {
+    const pipeline = makePipeline(10000);
+    const staleBook: ChatMessage = {
+      id: "hb1",
+      role: "system",
+      content: [{ type: "text", text: "[交接书] 旧棒次的过期计划" }],
+      createdAt: "2026-07-17T00:00:00Z",
+    };
+    const result = await pipeline.assemble(
+      makeInput({
+        history: [staleBook, ...history(1)],
+        handoffPinned: "[系统提示] 这是上一棒留给你的交接书。\n\n----------\n\n[交接书] 最新计划",
+      }),
+    );
+    // 历史中的旧交接书被过滤；置顶通道的最新交接书在头部（与 L3 过滤不同路径）
+    expect(result.messages.some((m) => m.id === "hb1")).toBe(false);
+    expect(result.messages[0].role).toBe("system");
+    expect(textOf(result.messages[0])).toContain("[交接书] 最新计划");
+  });
+
   it("超预算时按 L3 逐级截断直到满足预算", async () => {
     // 25 条 × 11 单位 ≈ 275；预算 100 → keep-15（165）→ 仍超 → keep-5（55）→ 满足
     const pipeline = makePipeline(100);
@@ -193,19 +238,6 @@ describe("ContextPipeline", () => {
     const systems = result.messages.filter((m) => m.role === "system");
     expect(systems).toHaveLength(1); // L1 永不压缩
     expect(result.messages.filter((m) => m.role === "user")).toHaveLength(2);
-  });
-
-  it("mentionDesc 映射为 L2 system 消息且永不降级", async () => {
-    const pipeline = makePipeline(50);
-    const result = await pipeline.assemble(
-      makeInput({
-        mindContext: "人格",
-        mentionDesc: "@提醒",
-        history: history(25),
-      }),
-    );
-    const systems = result.messages.filter((m) => m.role === "system");
-    expect(systems).toHaveLength(2); // L1/L2 全保留
   });
 
   it("topicSummaries 伪装成 user 历史消息注入（自然化、非 system 元信息）", async () => {
@@ -393,6 +425,57 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
     expect(other.messages.map(textOf).join("")).toContain("记忆一");
   });
 
+  it("M10：一次性会话（subagent_/blueprint:）不登记去重状态——同条目再来仍注入", async () => {
+    const pipeline = makePipeline(10000);
+    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    for (const sourceId of ["subagent_abc", "blueprint:exec-1"]) {
+      const first = await pipeline.assemble(makeInput({ sourceId, semanticMemories: [memory] }));
+      expect(first.messages.map(textOf).join("")).toContain("记忆一");
+      // 一次性会话不登记：同前缀会话再次经过时不被去重误伤
+      const second = await pipeline.assemble(makeInput({ sourceId, semanticMemories: [memory] }));
+      expect(second.messages.map(textOf).join("")).toContain("记忆一");
+    }
+  });
+
+  it("M10：一次性会话不挤占 64 槽 FIFO——真实会话的去重状态不被逐出", async () => {
+    const pipeline = makePipeline(10000);
+    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    // 真实会话先登记
+    await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [memory] }));
+    // 64 个一次性会话经过：若登记会撑满 MAX_DEDUP_SESSIONS(64) 并逐出 sess-1
+    for (let i = 0; i < 64; i++) {
+      await pipeline.assemble(makeInput({ sourceId: `subagent_${i}`, semanticMemories: [memory] }));
+    }
+    // sess-1 的去重状态仍在：同条目不重复注入
+    const again = await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [memory] }));
+    expect(again.messages.map(textOf).join("")).not.toContain("记忆一");
+  });
+
+  it("M10：单会话去重条数上限——超栽最旧条目，极旧记忆可再次注入", async () => {
+    const pipeline = makePipeline(10000);
+    const oldest = { id: "m0", content: "最旧记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    // 首轮注入 m0（登记为第 1 条）
+    await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [oldest] }));
+    // 逐轮注入 256 条新记忆：达到 256 条上限时最旧的 m0 被逐出
+    for (let i = 1; i <= 256; i++) {
+      await pipeline.assemble(
+        makeInput({
+          sourceId: "sess-1",
+          semanticMemories: [
+            { id: `m${i}`, content: `记忆${i}`, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+          ],
+        }),
+      );
+    }
+    // m0 已被逐出去重状态：再次出现时可注入
+    const replay = await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [oldest] }));
+    expect(replay.messages.map(textOf).join("")).toContain("最旧记忆");
+    // 最近的 m256 仍在去重状态内：不重复注入
+    const latest = { id: "m256", content: "记忆256", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const deduped = await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [latest] }));
+    expect(deduped.messages.map(textOf).join("")).not.toContain("记忆256");
+  });
+
   it("被降级丢弃的记忆不计入已注入，下一轮预算宽裕时仍可注入", async () => {
     const pipeline = makePipeline(150);
     const memory = { id: "m1", content: "珍贵记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
@@ -424,7 +507,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
 
   it("缓存前缀稳定：L4/L5/历史变化不改变头部 system 消息内容与位置", async () => {
     const pipeline = makePipeline(10000);
-    const base = { mindContext: "人格内容", mentionDesc: "@提醒" };
+    const base = { mindContext: "人格内容" };
     const r1 = await pipeline.assemble(
       makeInput({
         ...base,
@@ -446,14 +529,10 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
         topicSummaries: [topicSummary("tp9", "另一个摘要")],
       }),
     );
-    // 头部两条 system（L1/L2）内容与位置完全一致 → 前缀缓存命中
+    // 头部 L1 system 内容与位置完全一致 → 前缀缓存命中
     expect(r1.messages[0].role).toBe("system");
     expect(textOf(r1.messages[0])).toBe("人格内容");
-    expect(r1.messages[1].role).toBe("system");
-    expect(textOf(r1.messages[1])).toBe("@提醒");
-    expect(textOf(r2.messages[0])).toBe(textOf(r1.messages[0]));
-    expect(textOf(r2.messages[1])).toBe(textOf(r1.messages[1]));
     expect(r2.messages[0].role).toBe("system");
-    expect(r2.messages[1].role).toBe("system");
+    expect(textOf(r2.messages[0])).toBe(textOf(r1.messages[0]));
   });
 });

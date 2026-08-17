@@ -33,14 +33,15 @@ export interface TopicSummary {
  * 上下文分层（设计文档 docs/design/context-pipeline-v2.md 第二节）。
  *
  * 可压缩性决策（不可变更）：
- * - L1（人格）/ L2（@提及提醒）/ L6-core（核心工具）：永不压缩
+ * - L1（人格）/ L6-core（核心工具）：永不压缩
  * - L5（话题摘要）/ L4（语义检索）/ L6-ext（扩展工具）/ L3（热上下文）：可按降级序列裁剪
+ *
+ * M7：L2（@提及提醒）层已删除——mentionDesc 自始至终无生产者（群聊 mention
+ * 路由信息未接线进 pipeline），属死输入清理；未来若接线群聊 @ 提醒再恢复该层。
  */
 export interface ContextLayers {
   /** L1 人格文件内容（SOUL.md + skill 索引；不含 MIND.md） */
   l1: string;
-  /** L2 @提及提醒（mentionDesc） */
-  l2?: string;
   /** L3 热上下文（当前场景近期消息），降级时从最旧处截断 */
   l3: ChatMessage[];
   /** MIND.md 经验检索命中块（伪装成 assistant 历史消息，注入 L3 之后；Phase 1 不参与降级） */
@@ -66,7 +67,6 @@ export function createLayers(
 ): ContextLayers {
   return {
     l1: init.l1 ?? "",
-    l2: init.l2,
     l3: init.l3,
     mind: init.mind ?? [],
     l4: init.l4 ?? [],

@@ -10,8 +10,8 @@ import { createContextPipelineForAgent } from "../../core/pipeline-factory.js";
  * - context/ 目录物理位置不动（无倒置要解），本文件作挂载面。
  * - token-counter 保持进程单例（context/token-counter.ts:58-63 注释明言防
  *   WASM 泄漏）：不包装不复制，context/ 内部直 import 保留。
- * - L2 空槽位保护：context/pipeline.ts:57 声明未接线的 L2 是 P8 perception
- *   期的现成挂点——本期不许"顺手接线"。
+ * - L2 @提及层曾为空槽位（声明未接线、无生产者），已随审计 M7 修复整层
+ *   删除（context/layers.ts 注释留有恢复指引）。
  */
 export const name = "pipeline";
 

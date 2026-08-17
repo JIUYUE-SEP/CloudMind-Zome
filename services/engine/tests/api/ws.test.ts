@@ -408,7 +408,8 @@ describe("WebSocket API", () => {
       },
       approve: () => true,
     });
-    // 模拟注册表行为：初始指向 worker1；配置变更后 pause 旧 worker 并替换
+    // 模拟注册表行为：初始指向 worker1；配置变更后 retire 旧 worker 并替换
+    //（生产注册表走 worker-registry 的 retire()，pause/resume 公开方法已删除——M2）
     let current: AgentWorker = worker1;
     context.getAgentWorker = async (id: string) => (id === "agent-ws" ? current : undefined);
 
@@ -428,8 +429,8 @@ describe("WebSocket API", () => {
         if (message.type === "turn.end") {
           turnEnds++;
           if (turnEnds === 1) {
-            // 开着聊天页改配置：注册表 pause 旧 worker 并换上新 worker
-            worker1.pause();
+            // 开着聊天页改配置：注册表 retire 旧 worker 并换上新 worker
+            worker1.retire();
             current = worker2;
             client.send(JSON.stringify({ text: "second" }));
           } else {

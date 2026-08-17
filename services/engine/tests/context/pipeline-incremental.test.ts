@@ -96,7 +96,6 @@ function assembleFullRecount(
 ): AssembleResult {
   const layers = createLayers({
     l1: input.mindContext,
-    l2: input.mentionDesc,
     l3: [...input.history],
     l4: (input.semanticMemories ?? []).filter((m) => m.score > CONFIDENCE_DROP),
     l5: [...(input.topicSummaries ?? [])],
@@ -149,7 +148,6 @@ describe("降级循环增量计数（P5-4）：与全量重算参照一致", () 
     silenceLogs();
     const input = makeInput({
       mindContext: "人格设定",
-      mentionDesc: "@提及提醒",
       history: history(30, "热上下文消息"),
       semanticMemories: memories(12),
       topicSummaries: topics(5),

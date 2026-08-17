@@ -36,19 +36,16 @@ function textOf(m: ChatMessage): string {
 }
 
 describe("assembleMessages 最终设计：固定前缀 + 伪装历史", () => {
-  it("L1/L2 相邻置于头部（system prompt 固定前缀），L3 历史尾随", () => {
+  it("L1 置于头部（system prompt 固定前缀），L3 历史尾随", () => {
     const layers = createLayers({
       l1: "人格内容",
-      l2: "@提醒",
       l3: history(2),
     });
     const messages = assembleMessages(layers, { now: NOW });
 
     expect(messages[0].role).toBe("system");
     expect(textOf(messages[0])).toContain("人格内容");
-    expect(messages[1].role).toBe("system");
-    expect(textOf(messages[1])).toContain("@提醒");
-    expect(messages.slice(2)).toEqual(layers.l3);
+    expect(messages.slice(1)).toEqual(layers.l3);
   });
 
   it("L4/L5 伪装成 user 历史消息，不再是 system 元信息", () => {
@@ -59,7 +56,7 @@ describe("assembleMessages 最终设计：固定前缀 + 伪装历史", () => {
     });
     const messages = assembleMessages(layers, { now: NOW });
 
-    // 没有任何 system 元信息消息（无 L1/L2 时 system 数量为 0）
+    // 没有任何 system 元信息消息（无 L1 时 system 数量为 0）
     expect(messages.every((m) => m.role !== "system")).toBe(true);
     const all = messages.map(textOf).join("\n");
     expect(all).not.toContain("以下是过去话题的摘要");
@@ -189,18 +186,15 @@ describe("MIND.md 经验注入：assistant 历史消息，热上下文后面", (
     expect(messages.every((m) => m.role !== "assistant")).toBe(true);
   });
 
-  it("MIND 消息不进入固定前缀：L1/L2 system 仍居头部且内容不变", () => {
+  it("MIND 消息不进入固定前缀：L1 system 仍居头部且内容不变", () => {
     const layers = createLayers({
       l1: "人格内容",
-      l2: "@提醒",
       l3: history(1),
       mind: [chunk("经验", "内容")],
     });
     const messages = assembleMessages(layers, { now: NOW });
     expect(messages[0].role).toBe("system");
     expect(textOf(messages[0])).toBe("人格内容");
-    expect(messages[1].role).toBe("system");
-    expect(textOf(messages[1])).toBe("@提醒");
     // MIND 内容不出现在任何 system 消息中
     expect(
       messages.filter((m) => m.role === "system").map(textOf).join(""),

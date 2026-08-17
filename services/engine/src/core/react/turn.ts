@@ -34,7 +34,8 @@ export const CONTEXT_WATERMARK_FALLBACK_REPLY =
 export const EMPTY_STOP_SUMMARY_HINT =
   "本轮输出异常中断（空内容收尾），请根据已获得的信息直接给出最终回复，不要再调用工具";
 
-/** 交接书消息载体前缀（水位撞顶=换班移交：换班不死） */
+/** 交接书消息载体前缀（水位撞顶=换班移交：换班不死）。
+ *  context/pipeline.ts 的 L3 历史过滤持有同值本地副本（反向 import 成环故不复用），改动须两处同步 */
 export const HANDOFF_BOOK_PREFIX = "[交接书]";
 
 /**

@@ -82,18 +82,16 @@ describe("MIND.md 注入（pipeline 接线）", () => {
 
   it("缓存前缀稳定：MIND 检索结果变化不改变头部 system 消息", async () => {
     const pipeline = makePipeline(10000);
-    const base = { mindContext: "人格内容", mentionDesc: "@提醒" };
+    const base = { mindContext: "人格内容" };
     const r1 = await pipeline.assemble(
       makeInput({ ...base, sourceId: "s1", history: history(2), mindChunks: [chunk("经验A", "内容A")] }),
     );
     const r2 = await pipeline.assemble(
       makeInput({ ...base, sourceId: "s2", history: history(3), mindChunks: [chunk("经验B", "内容B")] }),
     );
-    // 头部两条 system（L1/L2）内容与位置跨轮完全一致 → 前缀缓存命中
+    // 头部 L1 system 内容与位置跨轮完全一致 → 前缀缓存命中
     expect(textOf(r2.messages[0])).toBe(textOf(r1.messages[0]));
-    expect(textOf(r2.messages[1])).toBe(textOf(r1.messages[1]));
     expect(r2.messages[0].role).toBe("system");
-    expect(r2.messages[1].role).toBe("system");
   });
 
   it("超预算时 MIND 消息不被降级（L3 截断后仍在）", async () => {

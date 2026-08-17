@@ -45,6 +45,25 @@ function isWatermarkReminder(m: ChatMessage): boolean {
   return text.startsWith(WATERMARK_REMINDER_PREFIX);
 }
 
+/**
+ * M6：旧交接书（换班移交消息载体）的过滤特征——文本以该前缀开头。
+ * 与 core/react/turn.ts 的 HANDOFF_BOOK_PREFIX 同值（turn.ts 依赖本模块，
+ * context 反向 import core 会成环，故此处本地定义，两处修改须同步）。
+ * 交接书是"当棒"的任务快照：跨回合经 L3 原样回放会拿过期计划误导模型；
+ * 续跑时最新交接书经 handoffPinned 置顶注入，历史副本无需再进上下文。
+ * 盘上保留不删，仅组装 L3 时不带入新回合。
+ */
+const HANDOFF_BOOK_PREFIX = "[交接书]";
+
+function isHandoffBook(m: ChatMessage): boolean {
+  if (m.role !== "system") return false;
+  const text = m.content
+    .filter((c) => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+  return text.startsWith(HANDOFF_BOOK_PREFIX);
+}
+
 export interface AssembleInput {
   agentId: string;
   /** 当前会话完整历史（L3） */
@@ -53,8 +72,6 @@ export interface AssembleInput {
   mindContext: string;
   /** L6 工具定义（Phase 1 全部视为 L6-core，永不裁剪） */
   tools: ToolSchema[];
-  /** L2 @提及提醒 */
-  mentionDesc?: string;
   /** 当前场景 ID（session/group；Phase 3 跨场景标注与多轮去重分键使用） */
   sourceId: string;
   sourceName?: string;
@@ -83,6 +100,25 @@ export interface AssembleResult {
 
 /** 多轮去重状态的会话数上限（FIFO 逐出最旧会话，防长驻进程无界增长） */
 const MAX_DEDUP_SESSIONS = 64;
+
+/**
+ * 单会话去重条数上限（M10）：超栽最旧条目（Set 迭代序 = 插入序，FIFO）。
+ * 长会话注入条目无限增长会让去重状态成为常驻内存大头；逐出最旧的代价仅是
+ * 极旧条目未来可能再次注入一次（可接受退化，优于无界增长）。
+ */
+const MAX_DEDUP_ENTRIES_PER_SESSION = 256;
+
+/**
+ * 一次性会话 id 前缀（M10）：subagent 任务（subagent_<uuid>）、蓝图执行
+ * （blueprint:<executionId>）——会话随回合结束即弃、id 永不复用，登记去重
+ * 状态无意义；且此类会话高频创建，会挤占 MAX_DEDUP_SESSIONS 的 FIFO 槽位，
+ * 把真实会话的去重状态提前逐出。识别为一次性则不登记。
+ */
+const ONESHOT_SESSION_PREFIXES = ["subagent_", "blueprint:"];
+
+function isOneshotSession(sourceId: string): boolean {
+  return ONESHOT_SESSION_PREFIXES.some((p) => sourceId.startsWith(p));
+}
 
 /**
  * ContextPipeline v2（最终设计）：L1-L6 组装 + 降级循环 + 多轮去重。
@@ -150,18 +186,33 @@ export class ContextPipeline {
   /** 只记录本轮实际注入（降级后仍在层内）的条目 */
   private markInjected(sourceId: string, layers: ContextLayers): void {
     if (layers.l4.length === 0 && layers.l5.length === 0) return;
+    // M10：一次性会话（subagent_/blueprint:）不登记——会话即弃，不占 FIFO 槽位
+    if (isOneshotSession(sourceId)) return;
     const seen = this.seenSet(sourceId);
-    for (const m of layers.l4) seen.add(`mem:${m.id}`);
-    for (const t of layers.l5) seen.add(`topic:${t.id}`);
+    for (const m of layers.l4) this.addSeenEntry(seen, `mem:${m.id}`);
+    for (const t of layers.l5) this.addSeenEntry(seen, `topic:${t.id}`);
+  }
+
+  /** M10：单会话条数上限——超限先逐出最旧条目（Set 迭代序 = 插入序，FIFO） */
+  private addSeenEntry(seen: Set<string>, key: string): void {
+    if (seen.has(key)) return;
+    while (seen.size >= MAX_DEDUP_ENTRIES_PER_SESSION) {
+      const oldest = seen.keys().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
+    seen.add(key);
   }
 
   async assemble(input: AssembleInput): Promise<AssembleResult> {
-    const seen = this.seenSet(input.sourceId);
+    // M10：一次性会话（subagent_/blueprint:）用回合级空集——去重状态不登记、随回合丢弃
+    const seen = isOneshotSession(input.sourceId)
+      ? new Set<string>()
+      : this.seenSet(input.sourceId);
     const layers = createLayers({
       l1: input.mindContext,
-      l2: input.mentionDesc,
-      // S6：历史中的旧水位提醒不随新回合重放（防过期水位数字误导；文件保留不动）
-      l3: input.history.filter((m) => !isWatermarkReminder(m)),
+      // S6+M6：历史中的旧水位提醒与旧交接书不随新回合重放（过期快照误导模型；文件保留不动）
+      l3: input.history.filter((m) => !isWatermarkReminder(m) && !isHandoffBook(m)),
       // 置信度控制（设计决策 4）：≤ 0.5 直接丢弃；多轮去重：已注入 id 跳过
       l4: (input.semanticMemories ?? []).filter(
         (m) => m.score > CONFIDENCE_DROP && !seen.has(`mem:${m.id}`),
@@ -188,13 +239,12 @@ export class ContextPipeline {
     // l4 入层时已按 CONFIDENCE_DROP 过滤（≤0.5 不入层），memoryToMessage 不会返回 null
     const l4Tokens = layers.l4.map((m) => countOne(memoryToMessage(m, now)!));
     const l5Tokens = layers.l5.map((t) => countOne(topicToMessage(t, now)));
-    // 固定部分（L1/L2 前缀、MIND、规程恢复、检索失败告知）不参与降级，只计一次；
+    // 固定部分（L1 前缀、MIND、规程恢复、检索失败告知）不参与降级，只计一次；
     // 构造条件与 assembleMessages 逐条对应，口径一致
     const fixedMessages: ChatMessage[] = [];
-    // 置顶注入（交接书）与 L1/L2 等固定层同口径计入预算：永不降级
+    // 置顶注入（交接书）与 L1 等固定层同口径计入预算：永不降级
     if (input.handoffPinned) fixedMessages.push(systemMessage(input.handoffPinned));
     if (layers.l1.trim()) fixedMessages.push(systemMessage(layers.l1));
-    if (layers.l2?.trim()) fixedMessages.push(systemMessage(layers.l2));
     if (layers.mind.length > 0) fixedMessages.push(mindToMessage(layers.mind, now));
     if (input.skillRestore) fixedMessages.push(systemMessage(input.skillRestore));
     if (input.retrievalFailed) fixedMessages.push(retrievalFailedMessage());

@@ -324,24 +324,26 @@ describe("AgentWorker", () => {
     expect(pipeline.budgetTokens).toBe(28_800);
   });
 
-  it("pauses and resumes the queue", async () => {
+  it("M2：pause/resume 公开方法已删除——retire 自置 paused 且拒绝新入队（退役语义不变）", async () => {
     const worker = new AgentWorker(makeConfig());
     const events: LLMEvent[] = [];
 
-    worker.pause();
+    worker.retire();
+    expect(worker.status).toBe("paused");
+
+    // 退役后入队被守卫拒绝并立即 settle：只发提示帧 + 终帧，不真正执行回合
+    const onDone = vi.fn();
     worker.enqueue({
       id: "j1",
       messages: [userMessage("hi")],
       onEvent: (e) => events.push(e),
+      onDone,
     });
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(events.length).toBe(0);
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(onDone.mock.calls[0]![0]).toBeInstanceOf(Error);
+    expect(events.some((e) => e.type === "turn.end")).toBe(true);
+    expect(events.some((e) => e.type === "text.delta" && !e.delta.includes("配置已变更"))).toBe(false);
     expect(worker.status).toBe("paused");
-
-    worker.resume();
-    await vi.waitFor(() => expect(events.some((e) => e.type === "text.delta")).toBe(true));
-    await vi.waitFor(() => expect(worker.status).toBe("idle"));
   });
 
   it("runScheduledTask persists user messages when sessionId is provided", async () => {
@@ -1947,6 +1949,63 @@ describe("AgentWorker L4 语义检索集成（Phase 3）", () => {
     expect(systemTexts[0]).toContain("数字心智");
     expect(systemTexts[0]).not.toContain("部署方案");
     expect(userTexts.some((t) => t.includes("已归档的旧消息"))).toBe(false);
+  });
+
+  it("M8：ephemeral 瞬态回合注入侧同样跳过 L5 摘要与 L4 检索", async () => {
+    const provider = new CapturingProvider();
+    const repo = new MessageRepository("agent-1");
+    await repo.append(pastRecord("past-1", "上周聊过的部署方案"));
+    // 压缩档落盘：L5 有源（正常回合应注入摘要；msgIds 不含 past-1，不干扰 L4 命中）
+    await writeCompressedTopic("agent-1", {
+      topicId: "tp_old",
+      label: "旧话题",
+      summary: "旧话题的摘要",
+      keyPoints: [],
+      msgIds: ["arc-x"],
+      msgCount: 1,
+      importance: "normal",
+      sourceId: "old-session",
+      compressedAt: new Date().toISOString(),
+    });
+    const indexer = {
+      search: vi.fn(async () => [{ id: "past-1", score: 0.9 }]),
+    } as unknown as MemoryIndexer;
+    // 注入自有 pipeline 并 spy assemble：直接观察 worker 传给管线的 L4/L5 输入
+    const pipeline = new ContextPipeline();
+    const assembleSpy = vi.spyOn(pipeline, "assemble");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      memoryIndexer: indexer,
+      contextPipeline: pipeline,
+    });
+
+    // 瞬态回合：L5 不加载、L4 不检索（assemble 输入为空数组，indexer 零调用）
+    worker.enqueue({
+      id: "j-eph",
+      messages: [currentUser("u-eph", "部署方案再聊聊")],
+      sessionId: "blueprint:exec-1",
+      ephemeral: true,
+      onEvent: () => {},
+    });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    const ephInput = assembleSpy.mock.calls.at(-1)![0];
+    expect(ephInput.topicSummaries).toEqual([]);
+    expect(ephInput.semanticMemories).toEqual([]);
+    expect(indexer.search).not.toHaveBeenCalled();
+
+    // 对照：正常回合 L4 检索执行、L5 摘要注入
+    worker.enqueue({
+      id: "j-normal",
+      messages: [currentUser("u-norm", "部署方案再聊聊")],
+      sessionId: "s-normal",
+      onEvent: () => {},
+    });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    const normInput = assembleSpy.mock.calls.at(-1)![0];
+    expect(indexer.search).toHaveBeenCalled();
+    expect(normInput.semanticMemories!.length).toBeGreaterThan(0);
+    expect(normInput.topicSummaries!.length).toBeGreaterThan(0);
   });
 
   it("多轮去重：同一会话第二轮不再注入同一记忆，新会话可再次注入", async () => {

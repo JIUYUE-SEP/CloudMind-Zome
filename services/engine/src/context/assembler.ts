@@ -32,7 +32,7 @@ function timestampOf(msg: ChatMessage): number {
  * 把分层内容组装为发给 LLM 的 messages（最终设计）。
  *
  * 结构（缓存友好的固定前缀 + 自然对话流）：
- * - 头部 system prompt（固定，缓存命中）：L1 人格（SOUL.md + skill）→ L2 @提及提醒
+ * - 头部 system prompt（固定，缓存命中）：L1 人格（SOUL.md + skill）
  * - messages 动态部分：L4/L5 伪装成的 user 历史消息与 L3 真实历史
  *   按 createdAt 归并排序（稳定：时间相等时伪装消息在前），穿插在自然对话流中；
  *   MIND.md 经验块伪装成 assistant 历史消息，追加在热上下文之后（不参与归并）；
@@ -49,12 +49,9 @@ export function assembleMessages(layers: ContextLayers, opts: AssembleOptions = 
     messages.push(systemMessage(opts.handoffPinned));
   }
 
-  // 固定前缀：L1/L2 相邻且内容在会话内不变，前缀缓存命中率最大化
+  // 固定前缀：L1 内容在会话内不变，前缀缓存命中率最大化
   if (layers.l1.trim()) {
     messages.push(systemMessage(layers.l1));
-  }
-  if (layers.l2?.trim()) {
-    messages.push(systemMessage(layers.l2));
   }
 
   // L4/L5 → 自然化 user 历史消息（≤0.5 的记忆在 recall 层返回 null 被丢弃）
