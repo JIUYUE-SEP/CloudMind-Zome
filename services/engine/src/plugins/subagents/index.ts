@@ -7,7 +7,7 @@ import { SubagentTaskRepository } from "../../subagent/task-repository.js";
 import { PuppetRunner, type PuppetRuntime } from "../../subagent/puppet.js";
 import { createPuppetModelService, type PuppetModelService } from "../../subagent/puppet-models.js";
 import { SubagentSwarm } from "../../subagent/batch.js";
-import { createSubagentTerminalNotifier } from "../../subagent/notify.js";
+import { createSubagentBatchTerminalNotifier, createSubagentTerminalNotifier } from "../../subagent/notify.js";
 import { withLLMCallRecording } from "../llm/record-calls.js";
 import { LLMCallRepository } from "../../memory/repositories/llm-call.js";
 import { ResilientLLMProvider } from "../../provider/resilient.js";
@@ -177,6 +177,11 @@ export async function apply(ctx: Context): Promise<void> {
       // 终态通知（阶段 4）：任务 completed/failed → perception 单口注入 owner
       // 感知回合（P8a；开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
       onTaskTerminal: createSubagentTerminalNotifier({
+        getAgentConfig: (agentId) => agentRepository.get(agentId),
+        injectNotice: (payload) => ctx.perception.injectNotice(payload),
+      }),
+      // M24：swarm 批量终态聚合为一条汇总注入（同批一次感知回合；开关/单口同上）
+      onBatchTerminal: createSubagentBatchTerminalNotifier({
         getAgentConfig: (agentId) => agentRepository.get(agentId),
         injectNotice: (payload) => ctx.perception.injectNotice(payload),
       }),

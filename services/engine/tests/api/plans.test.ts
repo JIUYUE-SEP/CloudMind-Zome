@@ -282,14 +282,61 @@ describe("Plans API", () => {
       await vi.waitFor(() => expect(receivedSignal).toBeDefined());
       req.destroy();
 
-      // 断连应中止正在执行的 step（标记 failed），而不是空转到自然结束
+      // 断连应中止正在执行的 step（M22：标 aborted 而非 failed——可恢复中断，
+      // 下次 /run 会重跑），而不是空转到自然结束
       await vi.waitFor(() => expect(receivedSignal?.aborted).toBe(true));
       await vi.waitFor(() =>
-        expect(local.planManager.get(planId)?.steps[0].status).toBe("failed"),
+        expect(local.planManager.get(planId)?.steps[0].status).toBe("aborted"),
       );
     } finally {
       await localApp.close();
       await local.cleanup();
+    }
+  });
+
+  it("M22：步骤硬超时标 aborted 并释放运行锁，重跑会重新执行 aborted 步骤", async () => {
+    const prevTimeout = process.env.ZOME_PLAN_STEP_TIMEOUT_MS;
+    process.env.ZOME_PLAN_STEP_TIMEOUT_MS = "50";
+    try {
+      let calls = 0;
+      const local = await buildContext("a1", (_id, _messages, opts) => {
+        calls += 1;
+        if (calls === 1) {
+          // 首轮挂起直到信号中止（模拟 provider 流挂起），触发 50ms 硬超时
+          return new Promise<string>((_, reject) => {
+            opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          });
+        }
+        return Promise.resolve("done:second-run");
+      });
+      const localApp = await createServer(local.context);
+      await localApp.ready();
+      try {
+        const created = await authedRequest(localApp.server).post("/agents/a1/plans").send({ goal: "- one" });
+        const planId = created.body.id;
+
+        const first = await authedRequest(localApp.server).post(`/agents/a1/plans/${planId}/run`);
+        expect(first.status).toBe(200);
+        expect(first.body.steps[0].status).toBe("aborted");
+        expect(first.body.status).toBe("pending");
+
+        // 锁已释放（不再 409）；aborted 步骤随 /run 重新执行
+        const second = await authedRequest(localApp.server).post(`/agents/a1/plans/${planId}/run`);
+        expect(second.status).toBe(200);
+        expect(second.body.steps[0].status).toBe("completed");
+        expect(second.body.steps[0].output).toBe("done:second-run");
+        expect(second.body.status).toBe("completed");
+        expect(calls).toBe(2);
+      } finally {
+        await localApp.close();
+        await local.cleanup();
+      }
+    } finally {
+      if (prevTimeout === undefined) {
+        delete process.env.ZOME_PLAN_STEP_TIMEOUT_MS;
+      } else {
+        process.env.ZOME_PLAN_STEP_TIMEOUT_MS = prevTimeout;
+      }
     }
   });
 });

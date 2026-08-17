@@ -6,7 +6,8 @@ export interface PlanStep {
   type: PlanStepType;
   target?: string;
   input?: unknown;
-  status: "pending" | "running" | "completed" | "failed" | "awaiting_approval";
+  // aborted：断连/步骤硬超时等外部中止（区别于 failed——中断可恢复，/run 会重跑）
+  status: "pending" | "running" | "completed" | "failed" | "aborted" | "awaiting_approval";
   output?: unknown;
   error?: string;
 }

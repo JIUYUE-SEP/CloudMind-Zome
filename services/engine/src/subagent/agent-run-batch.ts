@@ -82,21 +82,29 @@ function isUserCancellation(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
-// 常量沿用 kimi：burst 5 连发、700ms 坡道、限流重试 3s×2^n、
+// 常量沿用 kimi：burst 5 连发、700ms 坡道、限流重试 3s×2^n（M23 起 30s 封顶）、
 // 容量衰减每 2s 减 1 下限 1、3 分钟恢复 +1
 const INITIAL_LAUNCH_LIMIT = 5;
 const INITIAL_LAUNCH_INTERVAL_MS = 700;
 const RATE_LIMIT_RETRY_BASE_MS = 3000;
 const RATE_LIMIT_RETRY_FACTOR = 2;
+// M23：退避上限——3s×2^n 不封顶会把长尾重试排到过远的未来
+const RATE_LIMIT_RETRY_MAX_MS = 30_000;
+// M23：限流退出条件——限流态下连续 N 次尝试完成（未再撞 429）即判定 provider
+// 已恢复，退出限流态回正常坡道；此前限流态无出口，一次 429 永久压制吞吐
+const RATE_LIMIT_EXIT_SUCCESS_STREAK = 3;
 const RATE_LIMIT_CAPACITY_SHRINK_INTERVAL_MS = 2000;
 const RATE_LIMIT_CAPACITY_RECOVERY_INTERVAL_MS = 3 * 60 * 1000;
 const RATE_LIMIT_SUSPENDED_REASON = "Provider rate limit; subagent requeued for retry.";
 
 const AGENT_SWARM_MAX_CONCURRENCY_ENV = "ZOME_SWARM_MAX_CONCURRENCY";
 
-/** retry.createTimeout 等价：minTimeout × factor^attempts（不随机抖动） */
+/** retry.createTimeout 等价：minTimeout × factor^attempts（不随机抖动），M23 起 30s 封顶 */
 function rateLimitRetryDelayMs(attempt: number): number {
-  return RATE_LIMIT_RETRY_BASE_MS * Math.pow(RATE_LIMIT_RETRY_FACTOR, Math.max(0, attempt));
+  return Math.min(
+    RATE_LIMIT_RETRY_BASE_MS * Math.pow(RATE_LIMIT_RETRY_FACTOR, Math.max(0, attempt)),
+    RATE_LIMIT_RETRY_MAX_MS,
+  );
 }
 
 type RateLimitedOutcome = {
@@ -147,6 +155,8 @@ export class AgentRunBatch {
   private started = false;
   private rateLimitMode = false;
   private startedSuccessCount = 0;
+  // M23：限流态下连续成功计数（限流退出条件用；429/失败复位）
+  private rateLimitSuccessStreak = 0;
   private rateLimitCapacity = 1;
   private lastRateLimitAt: number | undefined;
   private lastCapacityShrinkAt: number | undefined;
@@ -389,6 +399,7 @@ export class AgentRunBatch {
 
     if ("status" in outcome) {
       this.results[attempt.state.index] = outcome;
+      this.trackRateLimitRecovery(outcome);
     } else if (this.isOnlyUnfinishedTask(attempt.state)) {
       // 最后一个任务不重排：限流也直接 failed（避免无限续跑拖住整批）
       this.results[attempt.state.index] = {
@@ -434,6 +445,7 @@ export class AgentRunBatch {
 
     const now = Date.now();
     this.lastRateLimitAt = now;
+    this.rateLimitSuccessStreak = 0; // M23：再撞 429，限流退出计数复位
     state.retryCount += 1;
     const retryDelay = rateLimitRetryDelayMs(state.retryCount - 1);
     state.retryReadyAt = now + retryDelay;
@@ -441,7 +453,11 @@ export class AgentRunBatch {
     this.enterRateLimitMode(now);
 
     if (!attempt.ready) {
-      this.globalRetryIntervalMs = Math.max(this.globalRetryIntervalMs * 2, retryDelay);
+      // 未 ready 的 429 加倍全局发射间隔（M23 起同样 30s 封顶）
+      this.globalRetryIntervalMs = Math.min(
+        Math.max(this.globalRetryIntervalMs * 2, retryDelay),
+        RATE_LIMIT_RETRY_MAX_MS,
+      );
       this.nextRateLimitLaunchAt = Math.max(
         this.nextRateLimitLaunchAt,
         now + this.globalRetryIntervalMs,
@@ -468,6 +484,31 @@ export class AgentRunBatch {
     }
 
     this.shrinkRateLimitCapacity(now, false);
+  }
+
+  /**
+   * M23 限流恢复退出：限流态下每完成一次尝试计数 +1，累计
+   * RATE_LIMIT_EXIT_SUCCESS_STREAK 次即退出限流态回正常坡道；
+   * 非 completed 终局复位计数（429 在 requeueRateLimited 复位）
+   */
+  private trackRateLimitRecovery(outcome: SwarmRunResult): void {
+    if (!this.rateLimitMode) return;
+    if (outcome.status !== "completed") {
+      this.rateLimitSuccessStreak = 0;
+      return;
+    }
+    this.rateLimitSuccessStreak += 1;
+    if (this.rateLimitSuccessStreak >= RATE_LIMIT_EXIT_SUCCESS_STREAK) {
+      this.exitRateLimitMode();
+    }
+  }
+
+  /** 退出限流态：发射计数清零重走 burst 坡道，限流唤醒计时器清掉（schedule 转正常路径） */
+  private exitRateLimitMode(): void {
+    this.rateLimitMode = false;
+    this.rateLimitSuccessStreak = 0;
+    this.normalLaunchCount = 0;
+    this.clearRateLimitTimer();
   }
 
   private shrinkRateLimitCapacity(now: number, force: boolean): void {
@@ -590,6 +631,11 @@ export class AgentRunBatch {
     this.clearNormalTimer();
     this.clearRateLimitTimer();
     for (const attempt of this.active.values()) {
+      // M23：批次收尾（取消/失败）时中止在途 attempt——此前只摘监听不 abort，
+      // 孤儿调用继续空转烧钱（多数路径已经 batch controller 联动中止，此为兜底）
+      if (!attempt.controller.signal.aborted) {
+        attempt.controller.abort(this.controller.signal.reason ?? new Error("Aborted"));
+      }
       attempt.cleanup();
     }
     this.active.clear();

@@ -22,7 +22,7 @@ function task(prompt: string, index: number): SwarmTask {
 
 interface RecordedLauncher extends AgentRunBatchLauncher {
   spawns: Array<{ prompt: string; at: number }>;
-  retries: Array<{ agentId: string; at: number }>;
+  retries: Array<{ agentId: string; prompt: string; at: number }>;
   suspendedEvents: SwarmSuspendedEvent[];
 }
 
@@ -41,7 +41,7 @@ function makeLauncher(
       return Promise.resolve({ agentId, completion: behavior(o.prompt, agentId) });
     },
     retry: (agentId, o) => {
-      recorded.retries.push({ agentId, at: Date.now() });
+      recorded.retries.push({ agentId, prompt: o.prompt, at: Date.now() });
       o.onReady?.();
       return Promise.resolve({ agentId, completion: behavior(o.prompt, agentId) });
     },
@@ -182,5 +182,92 @@ describe("③ 限流场景", () => {
     for (let i = 1; i < launcher.retries.length; i++) {
       expect(launcher.retries[i]!.at - launcher.retries[i - 1]!.at).toBeGreaterThanOrEqual(3000);
     }
+  });
+});
+
+describe("M23 限流恢复退出与退避封顶", () => {
+  it("连续 3 次成功后退出限流态：回队任务走正常坡道立即重发（不再等 3s 退避）", async () => {
+    vi.useFakeTimers();
+    const failed = new Set<string>();
+    const launcher = makeLauncher((prompt, agentId) => {
+      // a 首次 429；其余立即成功——b/c/d 的连续完成触发限流退出
+      if (prompt === "a" && !failed.has(agentId)) {
+        failed.add(agentId);
+        return Promise.reject(Object.assign(new Error("rate limited"), { status: 429 }));
+      }
+      return Promise.resolve(`done:${prompt}`);
+    });
+    const tasks = ["a", "b", "c", "d", "e"].map((p, i) => task(p, i));
+    const promise = new AgentRunBatch(launcher, tasks).run();
+
+    const t0 = launcher.spawns[0]!.at;
+    // fake timers 下微任务链与计时器推进交织：小步推进直到 retry 发射
+    for (let i = 0; i < 12 && launcher.retries.length === 0; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(launcher.retries).toHaveLength(1);
+    // 限流态已退出：retry 立即发射（远小于 3s 退避）；修复前此处 ≥3000ms
+    expect(launcher.retries[0]!.at - t0).toBeLessThan(3000);
+
+    const results = await promise;
+    expect(results.every((r) => r.status === "completed")).toBe(true);
+  });
+
+  it("退避 3s×2^n 按 30s 封顶（长尾重试不排向无穷远）", async () => {
+    vi.useFakeTimers();
+    const attemptsByKey = new Map<string, number>();
+    const launcher = makeLauncher((prompt, agentId) => {
+      // c 立即成功；a/b 各 429 六轮后成功（退避序列 3/6/12/24/30/30s）
+      if (prompt === "c") return Promise.resolve("done:c");
+      const key = `${prompt}:${agentId}`;
+      const n = (attemptsByKey.get(key) ?? 0) + 1;
+      attemptsByKey.set(key, n);
+      if (n <= 6) {
+        return Promise.reject(Object.assign(new Error("rate limited"), { status: 429 }));
+      }
+      return Promise.resolve(`done:${prompt}`);
+    });
+    const promise = new AgentRunBatch(launcher, [task("a", 0), task("b", 1), task("c", 2)]).run();
+
+    await vi.advanceTimersByTimeAsync(150_000);
+    const results = await promise;
+    expect(results.every((r) => r.status === "completed")).toBe(true);
+
+    // 同一任务的相邻发射间隔：3s,6s,12s,24s 后触顶 30s，不再翻倍
+    const timesByPrompt = new Map<string, number[]>();
+    for (const s of launcher.spawns) timesByPrompt.set(s.prompt, [s.at]);
+    for (const r of launcher.retries) timesByPrompt.get(r.prompt)!.push(r.at);
+    for (const prompt of ["a", "b"]) {
+      const times = timesByPrompt.get(prompt)!.sort((x, y) => x - y);
+      expect(times).toHaveLength(7); // 1 spawn + 6 retry
+      const gaps = times.slice(1).map((t, i) => t - times[i]!);
+      expect(Math.max(...gaps)).toBeLessThanOrEqual(30_000);
+      expect(gaps.filter((g) => g === 30_000).length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("批次收尾时中止在途 attempt（cleanup 联动 abort，孤儿不空转）", async () => {
+    vi.useFakeTimers();
+    const attemptSignals: AbortSignal[] = [];
+    const launcher = makeLauncher(() => new Promise<string>(() => {}));
+    const baseSpawn = launcher.spawn;
+    launcher.spawn = (o) => {
+      attemptSignals.push(o.signal);
+      return baseSpawn(o);
+    };
+    const batchController = new AbortController();
+    const tasks = [task("x", 0), task("y", 1)].map((t) => ({
+      ...t,
+      signal: batchController.signal,
+    }));
+    const promise = new AgentRunBatch(launcher, tasks).run();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attemptSignals).toHaveLength(2);
+
+    // 用户取消：批次即刻收尾，在途 attempt 的 signal 全部中止
+    batchController.abort(Object.assign(new Error("user cancel"), { name: "AbortError" }));
+    const results = await promise;
+    expect(results.every((r) => r.status === "aborted")).toBe(true);
+    expect(attemptSignals.every((s) => s.aborted)).toBe(true);
   });
 });

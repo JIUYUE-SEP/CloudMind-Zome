@@ -54,9 +54,12 @@ export class SubagentSwarm {
     }
     const manager = this.deps.background;
     const runPuppet = this.deps.runPuppet;
+    // M24：本批任务的终态通知聚合身份——同批终态合并为一条汇总通知（替代逐任务通知风暴）
+    const notifyBatch = { id: `swarm_${randomUUID()}`, total: items.length };
 
     // Launcher 接傀儡执行：spawn 注册新任务记录（kind=puppet），
-    // retry 复用同一记录（taskId 不变、attempts+1）；首版 resume 与 retry 同实现
+    // retry 复用同一记录（taskId 不变、attempts+1）；首版 resume 与 retry 同实现。
+    // 傀儡 signal = 调度核 attempt 信号 ∪ runTracked 硬超时信号（M23：任一中止都停傀儡）
     const launcher: AgentRunBatchLauncher = {
       spawn: async (o): Promise<SwarmAttemptHandle> => {
         const task: SubagentTask = {
@@ -65,22 +68,27 @@ export class SubagentSwarm {
           taskDescription: o.prompt,
           messages: [],
         };
-        const handle = manager.startTracked(task, ownerConfig, opts.timeoutMs ?? 120_000, "puppet", () =>
-          runPuppet(ownerAgentId, o.prompt, { signal: o.signal }),
+        const handle = manager.startTracked(
+          task,
+          ownerConfig,
+          opts.timeoutMs ?? 120_000,
+          "puppet",
+          (signal) => runPuppet(ownerAgentId, o.prompt, { signal: AbortSignal.any([o.signal, signal]) }),
+          notifyBatch,
         );
         o.onReady?.();
         return { agentId: handle.taskId, completion: handle.completion };
       },
       retry: async (taskId, o): Promise<SwarmAttemptHandle> => {
-        const handle = manager.retryTracked(taskId, () =>
-          runPuppet(ownerAgentId, o.prompt, { signal: o.signal }),
+        const handle = manager.retryTracked(taskId, (signal) =>
+          runPuppet(ownerAgentId, o.prompt, { signal: AbortSignal.any([o.signal, signal]) }),
         );
         o.onReady?.();
         return { agentId: handle.taskId, completion: handle.completion };
       },
       resume: async (taskId, o): Promise<SwarmAttemptHandle> => {
-        const handle = manager.retryTracked(taskId, () =>
-          runPuppet(ownerAgentId, o.prompt, { signal: o.signal }),
+        const handle = manager.retryTracked(taskId, (signal) =>
+          runPuppet(ownerAgentId, o.prompt, { signal: AbortSignal.any([o.signal, signal]) }),
         );
         o.onReady?.();
         return { agentId: handle.taskId, completion: handle.completion };

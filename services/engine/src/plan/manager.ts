@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { logger } from "../logger.js";
 import type { LLMProvider } from "../provider/types.js";
 import type { PlanRepository } from "./repository.js";
 import type { Plan, PlanStep, PlanStepType } from "./types.js";
@@ -43,18 +44,26 @@ export class PlanManager {
     }
   }
 
-  /** 状态变更后落盘；step.output 序列化超上限时截断（仅影响落盘副本，不动内存态） */
+  /**
+   * 状态变更后落盘；step.output 序列化超上限时截断（仅影响落盘副本，不动内存态）。
+   * 落盘失败只记 warn、不抛出（与 BackgroundManager.persist 同口径）：内存态为准
+   * 继续流转——否则 running 落盘失败会让 step 永久卡 running、plan 卡死至重启
+   */
   private async persist(plan: Plan): Promise<void> {
     if (!this.repository) return;
-    const snapshot = structuredClone(plan);
-    for (const step of snapshot.steps) {
-      if (step.output === undefined) continue;
-      const serialized = JSON.stringify(step.output);
-      if (serialized.length > MAX_OUTPUT_SERIALIZED_BYTES) {
-        step.output = serialized.slice(0, MAX_OUTPUT_SERIALIZED_BYTES) + TRUNCATED_SUFFIX;
+    try {
+      const snapshot = structuredClone(plan);
+      for (const step of snapshot.steps) {
+        if (step.output === undefined) continue;
+        const serialized = JSON.stringify(step.output);
+        if (serialized.length > MAX_OUTPUT_SERIALIZED_BYTES) {
+          step.output = serialized.slice(0, MAX_OUTPUT_SERIALIZED_BYTES) + TRUNCATED_SUFFIX;
+        }
       }
+      await this.repository.upsert(snapshot);
+    } catch (err) {
+      logger.warn({ err }, `[plan] 计划 ${plan.id} 状态落盘失败（内存态继续流转，下次状态变更重试落盘）`);
     }
-    await this.repository.upsert(snapshot);
   }
 
   async createPlan(goal: string): Promise<Plan> {
@@ -101,7 +110,18 @@ export class PlanManager {
     return Array.from(this.plans.values());
   }
 
-  async executeStep(planId: string, stepId: string, executor: (step: PlanStep) => Promise<unknown>): Promise<Plan> {
+  /**
+   * 执行单个步骤并流转状态。opts.signal 中止（客户端断连/步骤硬超时）时
+   * step 标 aborted 而非 failed：中断语义可恢复（/run 把 aborted 当可重跑
+   * 步骤），plan 回 pending 等待再次 /run——与 load() 把 running 回退
+   * pending 的重启恢复同一语义；plans.jsonl 原样落盘 aborted，load 不动它
+   */
+  async executeStep(
+    planId: string,
+    stepId: string,
+    executor: (step: PlanStep) => Promise<unknown>,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Plan> {
     const plan = this.plans.get(planId);
     if (!plan) throw new Error(`Plan ${planId} not found`);
     const step = plan.steps.find((s) => s.id === stepId);
@@ -122,8 +142,14 @@ export class PlanManager {
       step.status = "completed";
     } catch (err) {
       step.error = String(err);
-      step.status = "failed";
-      plan.status = "failed";
+      if (opts?.signal?.aborted) {
+        // 外部中止：标 aborted（可恢复），plan 回 pending 而非 failed
+        step.status = "aborted";
+        plan.status = "pending";
+      } else {
+        step.status = "failed";
+        plan.status = "failed";
+      }
     }
 
     if (plan.status !== "failed" && plan.steps.every((s) => s.status === "completed")) {
