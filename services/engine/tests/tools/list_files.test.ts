@@ -120,11 +120,13 @@ describe("listFilesTool", () => {
     expect(result.error).toMatch(/absolute paths are not allowed/);
   });
 
-  it("returns an error when projectRoot is not configured", async () => {
+  it("falls back to workspaceDir when projectRoot is not configured", async () => {
+    fs.writeFileSync(path.join(workspaceDir, "note.txt"), "hi");
     const ctx = makeCtx(workspaceDir);
     const result = await listFilesTool.execute(ctx, { path: "." });
-    expect(result.success).toBe(false);
-    expect(result.error).toBe("No project root configured");
+    expect(result.success).toBe(true);
+    const entries = (result.output as { entries: Array<{ name: string; type: EntryType }> }).entries;
+    expect(entries).toEqual([{ name: "note.txt", type: "file" }]);
   });
 
   it("returns an error when the target path does not exist", async () => {

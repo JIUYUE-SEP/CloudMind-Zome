@@ -104,11 +104,15 @@ describe("runCommandTool", () => {
     expect(result.error).toMatch(/absolute paths are not allowed/);
   });
 
-  it("fails when projectRoot is not configured", async () => {
+  it("falls back to workspaceDir when projectRoot is not configured", async () => {
     const ctx = makeCtx(workspaceDir);
-    const result = await runCommandTool.execute(ctx, { command: "echo hello" });
-    expect(result.success).toBe(false);
-    expect(result.error).toBe("No project root configured");
+    const result = await runCommandTool.execute(ctx, {
+      command: "node -e \"console.log(process.cwd())\"",
+    });
+    expect(result.success).toBe(true);
+    const output = result.output as { stdout: string; stderr: string; exitCode: number };
+    expect(output.exitCode).toBe(0);
+    expect(output.stdout.trim()).toBe(path.resolve(workspaceDir));
   });
 
   it("returns success false for a nonexistent command", async () => {

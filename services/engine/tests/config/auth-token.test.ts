@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -66,5 +66,42 @@ describe("config/auth-token", () => {
     expect(extractBearerToken("Bearer   ")).toBeUndefined();
     expect(extractBearerToken("bearer xyz")).toBeUndefined();
     expect(extractBearerToken(undefined)).toBeUndefined();
+  });
+
+  it("读取错误（EACCES）时抛出，且 token 文件不被改写", async () => {
+    const existing = "a".repeat(64);
+    await fs.writeFile(getAuthTokenFilePath(), existing, "utf-8");
+    const eacces = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    vi.spyOn(fs, "readFile").mockRejectedValueOnce(eacces);
+
+    await expect(getAuthToken()).rejects.toThrow(/auth-token 文件读取失败/);
+    expect(await fs.readFile(getAuthTokenFilePath(), "utf-8")).toBe(existing);
+  });
+
+  it("token 文件为空时抛出（不静默重新生成覆盖）", async () => {
+    await fs.writeFile(getAuthTokenFilePath(), "", "utf-8");
+
+    await expect(getAuthToken()).rejects.toThrow(/auth-token 文件损坏/);
+    expect(await fs.readFile(getAuthTokenFilePath(), "utf-8")).toBe("");
+  });
+
+  it("token 格式不符（非 64 位 hex）时抛出，且文件不被改写", async () => {
+    const corrupt = "not-a-valid-token";
+    await fs.writeFile(getAuthTokenFilePath(), corrupt, "utf-8");
+
+    await expect(getAuthToken()).rejects.toThrow(/auth-token 文件损坏/);
+    expect(await fs.readFile(getAuthTokenFilePath(), "utf-8")).toBe(corrupt);
+  });
+
+  it("失败后缓存不被毒化：读取恢复后再次调用成功", async () => {
+    const eacces = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    const spy = vi.spyOn(fs, "readFile").mockRejectedValueOnce(eacces);
+    await expect(getAuthToken()).rejects.toThrow(/auth-token 文件读取失败/);
+    spy.mockRestore();
+
+    // 缓存若残留 rejected Promise，这里会直接再抛；正常则应生成 token 并落盘
+    const token = await getAuthToken();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(await fs.readFile(getAuthTokenFilePath(), "utf-8")).toBe(token);
   });
 });

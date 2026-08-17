@@ -399,11 +399,12 @@ async function main() {
   // （超时 10s 兜底，不卡死关停）。Windows desktop 的 taskkill /F 强杀不会触发
   // 本 handler——那条路径的重启孤儿由上面的启动对账兜底。
   registerShutdownHandlers({
+    // 先停止接收新任务（scheduler 触发的压缩段），再 drain 存量队列
+    stop: () => scheduler.stop(),
     drain: async () => {
       await Promise.allSettled([...root.agents.workerRegistry.all()].map((w) => w.drainCompression()));
     },
     close: async () => {
-      scheduler.stop();
       // MCP close 挂 tools 插件 disposer（P3 可逆注册首个真实用例）：
       // dispose 该 fiber 即触发 effect 清理（含 mcpManager.close()）
       await toolsFiber.dispose();

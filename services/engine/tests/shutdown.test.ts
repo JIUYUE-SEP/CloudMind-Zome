@@ -58,15 +58,87 @@ describe("gracefulShutdown 优雅关停（P1-2）", () => {
   it("drain 超时：超时也退，不卡死关停", async () => {
     const exit = vi.fn();
     const close = vi.fn(async () => {});
+    const logs: string[] = [];
     await gracefulShutdown({
       drain: () => new Promise(() => {}), // 永不完成的压缩
       close,
       timeoutMs: 50,
       exit,
-      log: () => {},
+      log: (msg) => logs.push(msg),
     });
     expect(exit).toHaveBeenCalledWith(0);
     expect(close).toHaveBeenCalled();
+    expect(logs.some((m) => m.includes("drain 未在 50ms 内完成"))).toBe(true);
+  });
+
+  it("close 永久不 resolve：closeTimeoutMs 后仍 exit(0)", async () => {
+    const exit = vi.fn();
+    const logs: string[] = [];
+    await gracefulShutdown({
+      drain: async () => {},
+      close: () => new Promise(() => {}), // 永不完成的关闭（如 WebSocket 长连接挂住 app.close()）
+      closeTimeoutMs: 50,
+      exit,
+      log: (msg) => logs.push(msg),
+    });
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(logs.some((m) => m.includes("close 未在 50ms 内完成"))).toBe(true);
+  });
+
+  it("close 默认超时 5s 兜底（fake timers）", async () => {
+    vi.useFakeTimers();
+    try {
+      const exit = vi.fn();
+      const done = gracefulShutdown({
+        drain: async () => {},
+        close: () => new Promise(() => {}),
+        exit,
+        log: () => {},
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await done;
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop 在 drain 之前调用，drain 在 close 之前", async () => {
+    const order: string[] = [];
+    await gracefulShutdown({
+      stop: () => {
+        order.push("stop");
+      },
+      drain: async () => {
+        order.push("drain");
+      },
+      close: async () => {
+        order.push("close");
+      },
+      exit: (code) => order.push(`exit-${code}`),
+      log: () => {},
+    });
+    expect(order).toEqual(["stop", "drain", "close", "exit-0"]);
+  });
+
+  it("stop 抛错不阻断关停，仍走到 exit(0)", async () => {
+    const exit = vi.fn();
+    const order: string[] = [];
+    await gracefulShutdown({
+      stop: () => {
+        throw new Error("stop boom");
+      },
+      drain: async () => {
+        order.push("drain");
+      },
+      close: async () => {
+        order.push("close");
+      },
+      exit,
+      log: () => {},
+    });
+    expect(order).toEqual(["drain", "close"]);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   it("drain 自身失败不阻断退出", async () => {

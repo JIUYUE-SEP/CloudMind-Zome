@@ -33,10 +33,8 @@ export const editFileTool: Tool = {
   accesses: [{ resource: "file", action: "write" }],
   requiresApproval: true,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
-    const projectRoot = ctx.projectRoot;
-    if (!projectRoot) {
-      return { success: false, error: "No project root configured" };
-    }
+    // 生产装配点不注入 projectRoot，缺省回落 workspaceDir（同 read_file）
+    const projectRoot = ctx.projectRoot ?? ctx.workspaceDir;
 
     try {
       const { path: filePath, oldString, newString } = parameters.parse(args);
