@@ -16,31 +16,21 @@ import * as blueprintPlugin from "./plugins/blueprint/index.js";
 import * as handoffPlugin from "./plugins/handoff/index.js";
 import * as schedulerPlugin from "./plugins/scheduler/index.js";
 import * as plansPlugin from "./plugins/plans/index.js";
+import * as intermindPlugin from "./plugins/intermind/index.js";
+import * as subagentsPlugin from "./plugins/subagents/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
 import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
 import { LLMCallRepository } from "./memory/repositories/llm-call.js";
-import { ResilientLLMProvider } from "./provider/resilient.js";
-import type { LLMProvider } from "./provider/types.js";
 import type { ApiContext } from "./api/context.js";
-import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
-import { getAgentDir, getDataDir } from "./config/paths.js";
+import { getDataDir } from "./config/paths.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { loadTopicState } from "./memory/topic/state.js";
 import { registerShutdownHandlers } from "./shutdown.js";
-import { SubagentDispatcher } from "./subagent/dispatcher.js";
-import { BackgroundManager } from "./subagent/background.js";
-import { SubagentTaskRepository } from "./subagent/task-repository.js";
-import { PuppetRunner, type PuppetRuntime } from "./subagent/puppet.js";
-import { createPuppetModelService } from "./subagent/puppet-models.js";
-import { IntermindService } from "./intermind/service.js";
-import { SubagentSwarm } from "./subagent/batch.js";
-import { createSubagentTerminalNotifier } from "./subagent/notify.js";
 import { withLLMCallRecording } from "./plugins/llm/record-calls.js";
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getAuthToken, getAuthTokenFilePath } from "./config/auth-token.js";
 import { classifyListenError } from "./api/listen-error.js";
@@ -88,14 +78,15 @@ async function main() {
   await root.plugin(skillsPlugin, { getAgentConfig: (agentId) => agentRepository.get(agentId) });
 
   // agents 插件（P6 主峰）：worker 创建链收编。P7 模块与 sidecar 经 config 回调
-  // 进场——回调在首个 worker 创建时才被调用（闭包延迟求值），此处 subagentDispatcher
-  // 等尚未声明是安全的（TDZ 不会被触发：apply 不急切调用，见 plugins/agents 头注）
+  // 进场——回调在首个 worker 创建时才被调用（闭包延迟求值），届时下方 intermind/
+  // subagents 插件（P7d）已挂载上架，经 root.subagents/root.intermind 取实例
+  // （挂载顺序安全，见 plugins/agents 头注）
   await root.plugin(agentsPlugin, {
     getSubagentServices: () => ({
-      subagentDispatcher,
-      subagentSwarm,
-      puppetModelService,
-      intermindService,
+      subagentDispatcher: root.subagents.dispatcher,
+      subagentSwarm: root.subagents.swarm,
+      puppetModelService: root.subagents.puppetModelService,
+      intermindService: root.intermind,
     }),
     getSidecar: () => sidecarClient,
   });
@@ -106,134 +97,33 @@ async function main() {
   await root.plugin(schedulerPlugin);
   await root.plugin(plansPlugin);
 
+  // intermind/subagents（P7d 收尾）：人形间私信与 subagent 调度链路（含傀儡
+  // 执行路径、swarm、型号库）收编；intermind 先挂（subagents inject 它）。
+  // backgroundManager.load() 启动对账收进 subagents 插件 apply（listen 前
+  // 对账时序不变，handoff P7b 同款先例）；agents 的 services 字典经上方
+  // config 回调闭包延迟求值取这里上架的面，环不成立
+  await root.plugin(intermindPlugin);
+  await root.plugin(subagentsPlugin);
+
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans", "intermind", "subagents"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
-
-  // 回忆服务（recall 工具）实例改经 ctx.memory 取（P4 上架）；下游引用面不变
-  const recallService = root.memory.recall;
-  // Puppet 型号库（单 3）：内置四型号 + DATA_DIR/puppet-models/*.json 自定义（同名覆盖）
-  const puppetModelService = createPuppetModelService();
-  // Intermind 人形间私信（一期）：写信/唤醒/会话检索（getOrCreateWorker 为函数声明，可提前引用）
-  const intermindService = new IntermindService({
-    getAgentConfig: (agentId) => agentRepository.get(agentId),
-    getMessageRepository: (agentId) => new MessageRepository(agentId),
-    getAgentWorker: (agentId) => root.agents.getOrCreateWorker(agentId),
-  });
 
   // MCP servers 生命周期已收编进 tools 插件（P3）：loadDefault+connectAll 在
   // 插件 apply 内完成（启动时序不变），close 挂插件 disposer（关停钩 dispose 触发）；
   // ApiContext 的 mcpManager 经 root.tools.manager 透传。
 
-  // subagent 调度链路：runAgentCollect 经 AgentWorker 队列执行（保持串行不变量），
-  // dispatcher/background 为全局单例，同时暴露给工具上下文与 REST 路由。
-  async function runAgentCollect(
-    agentId: string,
-    messages: ChatMessage[],
-    opts?: { signal?: AbortSignal },
-  ): Promise<string> {
-    const worker = await root.agents.getOrCreateWorker(agentId);
-    if (!worker) throw new Error(`Agent ${agentId} not found`);
-    // 独立 sessionId，避免子 agent 任务污染私聊会话历史
-    const taskId = `subagent_${randomUUID()}`;
-    return new Promise<string>((resolve, reject) => {
-      let text = "";
-      worker.enqueue({
-        id: taskId,
-        sessionId: taskId,
-        messages,
-        signal: opts?.signal,
-        onEvent: (event) => {
-          if (event.type === "text.delta") text += event.delta;
-        },
-        onDone: (err) => (err ? reject(err) : resolve(text)),
-      });
-    });
-  }
+  // intermind 服务与 subagent 调度链路（runAgentCollect/puppetRunner/
+  // backgroundManager/dispatcher/swarm/puppetModelService）已收编进
+  // intermind/subagents 插件（P7d：plugins/intermind、plugins/subagents）；
+  // 下方 ApiContext 与 agents config 回调改经 root.intermind/root.subagents 取。
 
-  // puppet 执行路径（2b）：傀儡 = 调用方的一次性分身（无 SOUL/无记忆/记忆即弃），
-  // provider/model/工具复用 worker 创建链（resilient(record(provider))，含 MCP 工具），
-  // LLM 调用落档记 owner；不走 AgentWorker，runTurn 裸跑
-  const puppetRunner = new PuppetRunner({
-    getPuppetModel: (name) => puppetModelService.get(name),
-    getRuntime: async (ownerAgentId): Promise<PuppetRuntime | undefined> => {
-      const agentConfig = await agentRepository.get(ownerAgentId);
-      if (!agentConfig) return undefined;
-      const recordLLM = (p: LLMProvider, providerConfig?: ProviderConfig) =>
-        withLLMCallRecording(p, new LLMCallRepository(ownerAgentId), ownerAgentId, {
-          providerId: providerConfig?.id,
-          providerName: providerConfig?.displayName ?? providerConfig?.id,
-        });
-      const primaryProviderConfig = await root.llm.findProviderConfig(agentConfig.providerId);
-      const provider = new ResilientLLMProvider(
-        recordLLM(await root.llm.createProvider(agentConfig), primaryProviderConfig),
-        {
-          maxRetries: primaryProviderConfig?.maxRetries ?? 2,
-          fallbackProviderIds: agentConfig.fallbackProviderIds ?? [],
-          fallbackFactory: async (id) => {
-            const fallback = await root.llm.createFallback(id, agentConfig);
-            return fallback ? recordLLM(fallback.provider, fallback.config) : undefined;
-          },
-        },
-      );
-      return {
-        provider,
-        model: agentConfig.modelId || agentConfig.model || "gpt-4o",
-        providerId: agentConfig.providerId,
-        maxContextTokens: agentConfig.maxContextTokens,
-        configRepository: configRepo,
-        compute: root.compute,
-        tools: root.tools.forAgent(agentConfig),
-        workspaceDir: getAgentDir(ownerAgentId),
-        services: {
-          subagentDispatcher,
-          configRepository: configRepo,
-          puppetModelService,
-          intermindService,
-          recallService,
-        },
-      };
-    },
-  });
-
-  const backgroundManager = new BackgroundManager(
-    {
-      runAgent: runAgentCollect,
-      runPuppet: (ownerAgentId, taskDescription, opts) =>
-        puppetRunner.run(ownerAgentId, taskDescription, {
-          signal: opts?.signal,
-          puppetModel: opts?.puppetModel,
-        }),
-      // 终态通知（阶段 4）：任务 completed/failed → owner worker 注入感知回合
-      // （开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
-      onTaskTerminal: createSubagentTerminalNotifier({
-        getAgentConfig: (agentId) => agentRepository.get(agentId),
-        getWorker: root.agents.getOrCreateWorker,
-      }),
-    },
-    new SubagentTaskRepository(),
-  );
   // 换班移交控制面与续跑循环注册表已收编进 handoff 插件（P7b：
   // plugins/handoff/index.ts）；下方引用改经 root.handoff 取。
-  const subagentDispatcher = new SubagentDispatcher({
-    getAgentConfig: (agentId) => agentRepository.get(agentId),
-    runAgent: runAgentCollect,
-    background: backgroundManager,
-    puppet: puppetRunner,
-  });
-
-  // swarm 批量派发（阶段 3）：全傀儡成员（无审批桥接，写类 fail-closed），
-  // 调度核 AgentRunBatch 的 Launcher 接 PuppetRunner，任务记录进同一后台任务表
-  const subagentSwarm = new SubagentSwarm({
-    getAgentConfig: (agentId) => agentRepository.get(agentId),
-    runPuppet: (ownerAgentId, prompt, opts) =>
-      puppetRunner.run(ownerAgentId, prompt, { signal: opts?.signal }),
-    background: backgroundManager,
-  });
 
   // per-agent PlanManager 懒创建已收编进 plans 插件（P7c：plugins/plans/index.ts）；
   // 下方 ApiContext.getPlanManager 改经 root.plans 取（语义逐字不变）。
@@ -252,9 +142,9 @@ async function main() {
     blueprintRepository: root.blueprint.blueprintRepository,
     getAgentWorker: root.agents.getOrCreateWorker,
     getPlanManager: root.plans.getPlanManager,
-    runAgentCollect,
-    subagentDispatcher,
-    backgroundManager,
+    runAgentCollect: root.subagents.runAgentCollect,
+    subagentDispatcher: root.subagents.dispatcher,
+    backgroundManager: root.subagents.backgroundManager,
     // handoff 三件套实例改经插件面取（P7b 换源；连接桥工厂供 WS 私聊 handler attach）
     handoffManager: root.handoff.manager,
     handoffLoops: root.handoff.loops,
@@ -263,8 +153,8 @@ async function main() {
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,
     skillService,
-    puppetModelService,
-    intermindService,
+    puppetModelService: root.subagents.puppetModelService,
+    intermindService: root.intermind,
     mind: root.mind,
     compute: root.compute,
     retireAgentWorker: (agentId) => root.agents.retire(agentId),
@@ -282,9 +172,9 @@ async function main() {
   // 窄依赖 + 5s 轮询选项随构造迁入）；start 仍在下方原位置（启动对账之后、
   // createServer 之前），先后序一字不动。
 
-  // subagent 后台任务启动对账：持久化记录回填内存索引，running 一律标 lost
-  // （重启语义：现场已毁、不知死活≠已知失败，交人工决策而非自动续跑）
-  await backgroundManager.load();
+  // subagent 后台任务启动对账已收进 subagents 插件 apply（P7d）：持久化记录
+  // 回填内存索引、running 一律标 lost 在插件挂载时完成，listen 前对账时序不变
+  // （handoff P7b 同款先例）。
   // 换班控制面启动对账已收进 handoff 插件 apply（P7b）：活跃续跑条目标 lost
   // 在插件挂载时完成，listen 前对账时序不变。
 
