@@ -10,6 +10,7 @@ import {
   reconcileOrphanedTopic,
   reconcilePendingSegments,
 } from "../../memory/reconcile.js";
+import { registerStartupReconcile } from "./startup-reconcile.js";
 
 /**
  * memory 插件（P4）：存储基座面上架 ctx.memory。
@@ -20,12 +21,17 @@ import {
  *   WorkerRegistry 合体为 agents 插件，本期只换实例来源）；
  * - document-store 已迁入本目录作内部实现（方案 B1 定案：不作独立服务露面），
  *   各 repository 与其他模块对它保持库级直 import（非 ctx 服务）；
- * - per-agent 的 MemoryIndexer（worker 创建链按 embedder 现造）不上架。
+ * - per-agent 的 MemoryIndexer（worker 创建链按 embedder 现造）不上架；
+ * - P9：启动对账迁入（./startup-reconcile.ts），经 engine/ready 事件驱动
+ *   （serial，注册序 = 激活序——本插件先于 scheduler 激活，对账先于轮询，
+ *   顺序依赖见事件 JSDoc 与 plugins/scheduler 头注）；inject 随之追加
+ *   llm/mind（对账的 provider 工厂与 ctx.mind 面）。不得 inject agents——
+ *   agents inject memory，成环死等。
  */
 export const name = "memory";
 
-/** 无 ctx 服务依赖（repositories/recall 自给自足，路径经 config/paths 模块函数） */
-export const inject: string[] = [];
+/** repositories/recall 自给自足；llm（对账 provider 工厂）/mind（对账 deps）为 P9 对账依赖（见头注） */
+export const inject = ["llm", "mind"];
 
 /**
  * memory/archived 事件载荷（P8b）：话题压缩归档成功（先归档后移除热存储
@@ -77,6 +83,15 @@ declare module "cordis" {
      * （压缩任务 → 队列告警 + pending 段保留）必须按序等待。
      */
     "memory/archived": (payload: MemoryArchivedEvent) => void | Promise<void>;
+    /**
+     * @mode serial —— engine 启动装配就绪（P9）：bootstrap 在 assertServices
+     * 之后、http listen 之前 `await root.serial("engine/ready")` 发射一次。
+     * serial 按注册序等待异步监听——监听注册序 = 插件激活序（memory 先于
+     * scheduler），保证启动对账完成才起 scheduler 轮询（原 bootstrap
+     * 「对账 → scheduler.start() → createServer」先后序的事件化表达；
+     * 顺序依赖同见 plugins/scheduler 头注）。
+     */
+    "engine/ready": () => void | Promise<void>;
   }
 }
 
@@ -96,4 +111,6 @@ export function apply(ctx: Context, config?: Config): void {
     // P8b：事件通道透传（缺省不上架该字段，agents 装配层按 undefined 处理）
     ...(config?.onTopicArchived ? { onTopicArchived: config.onTopicArchived } : {}),
   } satisfies MemoryFace);
+  // P9：启动对账监听 engine/ready（见 ./startup-reconcile.ts 头注的顺序依赖）
+  registerStartupReconcile(ctx);
 }

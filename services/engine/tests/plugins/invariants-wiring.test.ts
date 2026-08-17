@@ -373,6 +373,10 @@ describe("P8b 事件缝 wiring", () => {
       ctx.on("memory/archived", (p) => {
         seen.push(p);
       });
+      // P9：memory inject ["llm", "mind"]（启动对账依赖）——先备齐依赖再挂载
+      await ctx.plugin(configPlugin);
+      await ctx.plugin(llmPlugin);
+      await ctx.plugin(mindPlugin);
       await ctx.plugin(memoryPlugin, {
         onTopicArchived: (agentId, ids) => ctx.serial("memory/archived", { agentId, ids }),
       });
@@ -381,6 +385,9 @@ describe("P8b 事件缝 wiring", () => {
       expect(seen).toEqual([{ agentId: "a1", ids: ["m1"] }]);
 
       const ctx2 = new Context();
+      await ctx2.plugin(configPlugin);
+      await ctx2.plugin(llmPlugin);
+      await ctx2.plugin(mindPlugin);
       await ctx2.plugin(memoryPlugin);
       expect(ctx2.memory.onTopicArchived).toBeUndefined();
     });
