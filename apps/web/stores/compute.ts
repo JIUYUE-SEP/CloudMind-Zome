@@ -55,12 +55,6 @@ export const useComputeStore = defineStore("compute", () => {
     return created;
   }
 
-  async function updateModel(providerId: string, modelId: string, body: Partial<ModelInfo>) {
-    const updated = await client.updateModel(providerId, modelId, body);
-    await load();
-    return updated;
-  }
-
   async function deleteModel(providerId: string, modelId: string) {
     await client.deleteModel(providerId, modelId);
     await load();
@@ -78,7 +72,6 @@ export const useComputeStore = defineStore("compute", () => {
     testConnection,
     getProvider,
     addModel,
-    updateModel,
     deleteModel,
   };
 });

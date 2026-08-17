@@ -16,6 +16,7 @@
       :status-hint="statusHint"
       @send="onSend"
       @approval-respond="onApprovalRespond"
+      @approval-expired="onApprovalExpired"
     />
   </div>
 </template>
@@ -33,6 +34,8 @@ import BackButton from "@/components/BackButton.vue";
 import {
   findPendingApproval,
   settleApproval,
+  expireApproval,
+  expireAllPendingApprovals,
   type ApprovalResponsePayload,
 } from "@/utils/approval";
 
@@ -107,6 +110,9 @@ function connect() {
       isConnected.value = false;
       reconnectAttempts.value = attempt;
       resetStreamState();
+      // M44：断线即失效——engine 在 socket close 时已把 pending 审批按拒绝收尾，
+      // 重连后也没有回执路径，卡片不得永远 pending
+      expireAllPendingApprovals(messages.value);
     },
     onReconnected: () => {
       // 重连成功：拉取最新消息列表对齐断线期间的状态
@@ -124,6 +130,8 @@ function connect() {
       isConnected.value = false;
       reconnectAttempts.value = 0;
       resetStreamState();
+      // M44：终态关闭同样断线即失效（engine 侧 pending 审批已随连接收尾）
+      expireAllPendingApprovals(messages.value);
     },
   });
 }
@@ -155,6 +163,11 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
     // 发送失败必须让用户感知：卡片闩锁已置位，静默失败会把卡片锁成死态
     pushError("审批回执发送失败：连接未就绪，请重试");
   }
+}
+
+// 审批卡片 60s 倒计时到点（M44，engine 同刻按超时拒绝）：本地标失效
+function onApprovalExpired(approvalId: string) {
+  expireApproval(messages.value, approvalId);
 }
 </script>
 

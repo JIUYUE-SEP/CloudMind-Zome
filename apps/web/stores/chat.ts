@@ -8,6 +8,8 @@ import {
   findPendingApproval,
   settleApproval,
   expireApprovalByToolCallId,
+  expireApproval as expireApprovalById,
+  expireAllPendingApprovals,
 } from "@/utils/approval";
 
 const { recordsToDisplay } = useChatRecords();
@@ -103,6 +105,9 @@ export const useChatStore = defineStore("chat", () => {
         isConnected.value = false;
         isStreaming.value = false;
         reconnectAttempts.value = attempt;
+        // M44：断线即失效——engine 在 socket close 时已把 pending 审批按拒绝收尾，
+        // 重连后也没有回执路径，卡片不得永远 pending
+        expireAllPendingApprovals(messages.value);
       },
       onReconnected: () => {
         if (stale()) return;
@@ -202,6 +207,8 @@ export const useChatStore = defineStore("chat", () => {
         isStreaming.value = false;
         reconnectAttempts.value = 0;
         handoffStatus.value = null;
+        // M44：终态关闭同样断线即失效（engine 侧 pending 审批已随连接收尾）
+        expireAllPendingApprovals(messages.value);
         // engine 主动关闭会带原因（4001 agent 不存在、4002 session 不存在、4403 冲突等）
         if (reason) {
           pushErrorMessage(`连接已关闭：${reason}`);
@@ -259,6 +266,11 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  // 审批卡片 60s 倒计时到点（M44，engine 同刻按超时拒绝）：本地标失效
+  function expireApproval(approvalId: string) {
+    expireApprovalById(messages.value, approvalId);
+  }
+
   /** 切换到目标 agent（ChatView 挂载/切换）：先认领新 agent 再清旧状态 */
   function switchTo(agentId: string) {
     currentAgentId = agentId;
@@ -306,5 +318,6 @@ export const useChatStore = defineStore("chat", () => {
     disconnectFor,
     send,
     respondApproval,
+    expireApproval,
   };
 });

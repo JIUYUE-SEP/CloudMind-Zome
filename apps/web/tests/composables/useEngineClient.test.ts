@@ -201,11 +201,8 @@ describe("useEngineClient URL 路径段编码", () => {
   it("含斜杠的 modelId 被编码，URL 不多出路径段", async () => {
     const urls = captureUrl();
     const client = useEngineClient();
-    await client.updateModel("p1", "openai/gpt-4o", { displayName: "GPT-4o" });
-    expect(urls[0]).toContain("/compute/providers/p1/models/openai%2Fgpt-4o");
-
     await client.deleteModel("p1", "openai/gpt-4o");
-    expect(urls[1]).toContain("/models/openai%2Fgpt-4o");
+    expect(urls[0]).toContain("/compute/providers/p1/models/openai%2Fgpt-4o");
   });
 
   it("providerId / sessionId / taskId / blueprintId 均编码", async () => {
@@ -214,8 +211,8 @@ describe("useEngineClient URL 路径段编码", () => {
     await client.deleteProvider("my provider");
     expect(urls[0]).toContain("/compute/providers/my%20provider");
 
-    await client.updateSession("s 1", { name: "x" });
-    expect(urls[1]).toContain("/sessions/s%201");
+    await client.getSessionMessages("s 1");
+    expect(urls[1]).toContain("/sessions/s%201/messages");
 
     await client.deleteScheduledTask("a1", "task/1");
     expect(urls[2]).toContain("/scheduler/a1/task%2F1");
@@ -341,6 +338,51 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
 
     vi.advanceTimersByTime(60_000);
     expect(ReconnectMockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("4401（token 失效）重取 token 后自动重建一次，不透传 onClose（M43）", async () => {
+    const client = useEngineClient();
+    const onOpen = vi.fn();
+    const onClose = vi.fn();
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    client.connect("agent-1", "default", { onOpen, onClose, onReconnecting, onReconnected });
+    await flushTokenReady();
+    lastReconnectSocket().open();
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    lastReconnectSocket().drop(4401, "invalid token");
+    // 不落终态分支：onClose 不透传，走 token 重取微任务链立即重建（无退避定时器）
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onReconnecting).toHaveBeenCalledWith(1, 0);
+    await flushTokenReady();
+    expect(ReconnectMockWebSocket.instances).toHaveLength(2);
+
+    // 重建成功：按「断线后重连」语义触发 onReconnected 让调用方对齐状态
+    lastReconnectSocket().open();
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("4401 重建一次仍 4401：停止重建并透传 onClose，保持未连接人工恢复（M43）", async () => {
+    const client = useEngineClient();
+    const onClose = vi.fn();
+    const onReconnecting = vi.fn();
+    client.connect("agent-1", "default", { onClose, onReconnecting });
+    await flushTokenReady();
+    lastReconnectSocket().open();
+
+    lastReconnectSocket().drop(4401);
+    await flushTokenReady();
+    expect(ReconnectMockWebSocket.instances).toHaveLength(2);
+
+    // 重建后仍 4401（新 token 也不被接受）：透传终态，不再发起第三次建连
+    lastReconnectSocket().drop(4401, "token still invalid");
+    expect(onClose).toHaveBeenCalledWith(4401, "token still invalid");
+    await flushTokenReady();
+    vi.advanceTimersByTime(60_000);
+    expect(ReconnectMockWebSocket.instances).toHaveLength(2);
+    expect(onReconnecting).toHaveBeenCalledTimes(1);
   });
 
   it("调用方 close() 后不再重连", async () => {

@@ -145,6 +145,62 @@ describe("Hub page group chat", () => {
       .groupMessages;
     expect(msgs.map((m) => m.id)).toEqual(["new-s2"]);
   });
+
+  it("群聊历史加载在途时卸载组件：迟到响应不再建立连接（M41 alive 门）", async () => {
+    let resolveMessages!: (value: unknown) => void;
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes("/sessions/s1/messages")) {
+        // 历史加载挂起：组件卸载后才 resolve
+        return new Promise((resolve) => {
+          resolveMessages = resolve;
+        });
+      }
+      return mockFetch(url);
+    }) as unknown as typeof globalThis.fetch;
+
+    const wrapper = await mountHub();
+    await flushPromises();
+    const groupTab = wrapper.findAll(".comm-mode-btn").find((el) => el.text() === "群聊");
+    await groupTab!.trigger("click");
+    await flushPromises();
+    await wrapper.findAll(".comm-item").find((el) => el.text().includes("Team"))!.trigger("click");
+    await flushPromises();
+
+    // 历史加载仍在途时卸载：await 返回后不得 connectGroup（迟到建连会常驻泄漏）
+    wrapper.unmount();
+    resolveMessages({ ok: true, json: () => Promise.resolve([]) });
+    await flushPromises();
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it("群聊断线时 pending 审批卡片标为 expired（M44 断线即失效）", async () => {
+    const wrapper = await mountHub();
+    await flushPromises();
+    const groupTab = wrapper.findAll(".comm-mode-btn").find((el) => el.text() === "群聊");
+    await groupTab!.trigger("click");
+    await flushPromises();
+    await wrapper.findAll(".comm-item").find((el) => el.text().includes("Team"))!.trigger("click");
+    await flushPromises();
+
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    const vm = wrapper.vm as unknown as { groupMessages: { approval?: { status: string } }[] };
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: "tool.approval_request",
+        approvalId: "ap1",
+        toolCallId: "t1",
+        toolName: "run_command",
+        arguments: { command: "rm -rf /tmp/x" },
+      }),
+    });
+    expect(vm.groupMessages.at(-1)!.approval?.status).toBe("pending");
+
+    // 无关闭码 = 异常断开 → onReconnecting：engine 侧 pending 审批已随连接按拒绝收尾
+    ws.onclose?.();
+    expect(vm.groupMessages.at(-1)!.approval?.status).toBe("expired");
+
+    wrapper.unmount();
+  });
 });
 
 describe("Hub page private chat switching（#6 切会话消息丢失）", () => {

@@ -10,6 +10,7 @@
           :args="msg.approval.arguments"
           :status="msg.approval.status"
           @respond="onApprovalRespond"
+          @expired="chat.expireApproval"
         />
         <MessageBubble
           v-else

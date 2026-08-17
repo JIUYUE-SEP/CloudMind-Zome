@@ -82,6 +82,7 @@
             :status-hint="groupStatusHint"
             @send="onGroupSend"
             @approval-respond="onGroupApprovalRespond"
+            @approval-expired="onGroupApprovalExpired"
           />
         </div>
       </div>
@@ -104,6 +105,8 @@ import { useGroupChatStream } from "@/composables/useGroupChatStream";
 import {
   findPendingApproval,
   settleApproval,
+  expireApproval,
+  expireAllPendingApprovals,
   type ApprovalResponsePayload,
 } from "@/utils/approval";
 import BackButton from "@/components/BackButton.vue";
@@ -146,7 +149,12 @@ onMounted(() => {
   sessions.load();
 });
 
+// 组件卸载在途：selectGroup 的 await 返回后不得落地数据或建立连接
+// （与 sessions/[id].vue 同款 alive 防护；迟到建连配合自动重连会常驻泄漏）
+let alive = true;
+
 onUnmounted(() => {
+  alive = false;
   groupConnection?.close();
 });
 
@@ -172,6 +180,8 @@ async function selectGroup(session: Session) {
   // 先断旧连接，await 期间旧会话的 delta 不会串进新会话
   closeGroupConnection();
   const msgs = await fetchGroupMessages(session.id);
+  // await 期间组件已卸载：不得落地消息，更不得建立迟到的群聊连接（M41）
+  if (!alive) return;
   // await 期间又选了别的会话/私聊：过期的历史结果不得覆盖当前消息列表
   if (seq !== groupSelectSeq) return;
   if (msgs) {
@@ -208,6 +218,9 @@ function connectGroup(sessionId: string) {
       groupIsConnected.value = false;
       groupReconnectAttempts.value = attempt;
       resetGroupStream();
+      // M44：断线即失效——engine 在 socket close 时已把 pending 审批按拒绝收尾，
+      // 重连后也没有回执路径，卡片不得永远 pending
+      expireAllPendingApprovals(groupMessages.value);
     },
     onReconnected: () => {
       // 重连成功：拉取最新消息列表对齐断线期间的状态
@@ -220,6 +233,8 @@ function connectGroup(sessionId: string) {
       groupIsConnected.value = false;
       groupReconnectAttempts.value = 0;
       resetGroupStream();
+      // M44：终态关闭同样断线即失效（engine 侧 pending 审批已随连接收尾）
+      expireAllPendingApprovals(groupMessages.value);
     },
   });
 }
@@ -258,6 +273,11 @@ function onGroupApprovalRespond(payload: ApprovalResponsePayload) {
     // 发送失败必须让用户感知：卡片闩锁已置位，静默失败会把卡片锁成死态
     pushGroupError("审批回执发送失败：连接未就绪，请重试");
   }
+}
+
+// 审批卡片 60s 倒计时到点（M44，engine 同刻按超时拒绝）：本地标失效
+function onGroupApprovalExpired(approvalId: string) {
+  expireApproval(groupMessages.value, approvalId);
 }
 </script>
 

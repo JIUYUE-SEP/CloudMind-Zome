@@ -72,7 +72,7 @@ class MockWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
 
   constructor() {
     MockWebSocket.instances.push(this);
@@ -162,6 +162,41 @@ describe("chat store 流式状态以 turn 为界", () => {
     ws.onclose?.();
     expect(store.isStreaming).toBe(false);
     expect(store.messages.at(-1)!.isStreaming).toBe(false);
+  });
+
+  it("异常断开进重连时 pending 审批卡片标为 expired（M44 断线即失效）", async () => {
+    const { store, ws, frame } = await connectAndSend();
+    frame({
+      type: "tool.approval_request",
+      approvalId: "ap1",
+      toolCallId: "t1",
+      toolName: "run_command",
+      arguments: { command: "rm -rf /tmp/x" },
+    });
+    const card = () => store.messages.find((m) => m.approval);
+    expect(card()?.approval?.status).toBe("pending");
+
+    // 无关闭码 = 异常断开 → onReconnecting；engine 侧 pending 审批已随连接按拒绝收尾
+    ws.onclose?.();
+    expect(card()?.approval?.status).toBe("expired");
+    store.disconnect();
+  });
+
+  it("终态关闭（4403 冲突）时 pending 审批卡片同样标为 expired（M44）", async () => {
+    const { store, ws, frame } = await connectAndSend();
+    frame({
+      type: "tool.approval_request",
+      approvalId: "ap1",
+      toolCallId: "t1",
+      toolName: "run_command",
+      arguments: { command: "rm -rf /tmp/x" },
+    });
+    const card = () => store.messages.find((m) => m.approval);
+    expect(card()?.approval?.status).toBe("pending");
+
+    ws.onclose?.({ code: 4403, reason: "会话已被其他连接占用" });
+    expect(card()?.approval?.status).toBe("expired");
+    store.disconnect();
   });
 
   it("过期连接的迟发帧被丢弃，不写脏新会话", async () => {

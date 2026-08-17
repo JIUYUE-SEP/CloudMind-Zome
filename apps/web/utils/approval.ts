@@ -10,8 +10,14 @@ export { isApprovalRememberable } from "@mindcloud/shared";
 export type ApprovalRequestPayload = Omit<ApprovalRequestFrame, "type">;
 
 // 卡片状态：pending 等待用户操作；approved/denied 本端已处理；
-// expired 表示收到了同 toolCallId 的 tool.result（60 秒超时或已在其他窗口处理）
+// expired 表示收到了同 toolCallId 的 tool.result（60 秒超时或已在其他窗口处理）、
+// 本地 60s 倒计时到点，或断线（engine 在 socket close 时已把 pending 审批按拒绝收尾）
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+
+// 与 engine 的审批超时对齐（services/engine ws handler/session-handler 的
+// APPROVAL_TIMEOUT_MS = 60_000）：前端卡片倒计时到点即标 expired，
+// 不再苦等可能永远到不了的 tool.result（断线场景）
+export const APPROVAL_TIMEOUT_MS = 60_000;
 
 export interface ApprovalInfo {
   approvalId: string;
@@ -78,6 +84,27 @@ export function expireApprovalByToolCallId<T extends ApprovalHostMessage>(
 ): void {
   for (const msg of messages) {
     if (msg.approval && msg.approval.toolCallId === toolCallId && msg.approval.status === "pending") {
+      msg.approval.status = "expired";
+    }
+  }
+}
+
+// 审批卡片 60s 倒计时到点：把指定 pending 卡片标记为失效（engine 同刻按超时拒绝）
+export function expireApproval<T extends ApprovalHostMessage>(
+  messages: T[],
+  approvalId: string
+): void {
+  const msg = findPendingApproval(messages, approvalId);
+  if (msg?.approval) {
+    msg.approval.status = "expired";
+  }
+}
+
+// 断线即失效：engine 在 socket close 时已把该连接的 pending 审批按拒绝收尾
+// （ws/handler.ts），重连后也不存在回执路径——所有 pending 卡片一次性标记失效
+export function expireAllPendingApprovals<T extends ApprovalHostMessage>(messages: T[]): void {
+  for (const msg of messages) {
+    if (msg.approval && msg.approval.status === "pending") {
       msg.approval.status = "expired";
     }
   }

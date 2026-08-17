@@ -254,7 +254,13 @@ describe("useEngineClient token 就绪（真机 #12）", () => {
     MockWebSocket.instances[0]!.onclose?.({ code: 4401 });
     expect(localStorage.getItem("cloudmind.engineToken")).toBeNull();
 
-    // 下次建连重取 server 档新 token
+    // M43：不干等人工恢复——重取 server 档新 token 后自动重建一次
+    await flushMicrotasks();
+    expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(MockWebSocket.instances[1]!.protocols).toBe("fresh-server");
+
+    // 下次建连复用已重取的 token（server 档不重复拉取）
     client.connect("a2", "s2", {});
     await flushMicrotasks();
     expect(fetchEngineTokenFromServerMock).toHaveBeenCalledTimes(1);

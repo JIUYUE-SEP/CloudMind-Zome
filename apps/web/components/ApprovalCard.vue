@@ -47,8 +47,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { isApprovalRememberable, type ApprovalStatus, type ApprovalResponsePayload } from "@/utils/approval";
+import { computed, onUnmounted, ref } from "vue";
+import {
+  APPROVAL_TIMEOUT_MS,
+  isApprovalRememberable,
+  type ApprovalStatus,
+  type ApprovalResponsePayload,
+} from "@/utils/approval";
 
 const props = defineProps<{
   approvalId: string;
@@ -60,6 +65,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "respond", payload: ApprovalResponsePayload): void;
+  // 60s 倒计时到点（与 engine 审批超时对齐）：父级把卡片标为 expired
+  (e: "expired", approvalId: string): void;
 }>();
 
 // run_command 等裸执行工具不允许"本会话不再询问"（引擎侧同样拒绝记忆）
@@ -150,9 +157,30 @@ const statusText = computed(() => {
     case "expired":
       return "已超时或已处理";
     default:
-      return "等待审批";
+      return `等待审批（剩余 ${remainingSeconds.value}s）`;
   }
 });
+
+// 审批倒计时（M44，与 engine APPROVAL_TIMEOUT_MS=60s 对齐）：卡片挂载≈审批请求
+// 到达（历史不还原审批卡片，见 useChatRecords.recordsToDisplay）。到点 emit expired
+// 由父级把卡片标为失效——engine 同刻也会按超时拒绝并回 tool.result，两端殊途同归；
+// 断线时收不到结果帧，全靠本地计时兜底，卡片不再永远 pending
+const remainingSeconds = ref(APPROVAL_TIMEOUT_MS / 1000);
+const startedAt = Date.now();
+const countdownTimer = setInterval(() => {
+  // 已处理（允许/拒绝/失效）的卡片不再计时，更不会迟到 emit
+  if (props.status !== "pending") {
+    clearInterval(countdownTimer);
+    return;
+  }
+  const leftMs = APPROVAL_TIMEOUT_MS - (Date.now() - startedAt);
+  remainingSeconds.value = Math.max(0, Math.ceil(leftMs / 1000));
+  if (leftMs <= 0) {
+    clearInterval(countdownTimer);
+    emit("expired", props.approvalId);
+  }
+}, 1000);
+onUnmounted(() => clearInterval(countdownTimer));
 
 // 防重复回执由 store 侧保证（findPendingApproval + 同步 settleApproval）。
 // 组件本地不加闩锁：回执发送失败时卡片保持 pending 可重试，

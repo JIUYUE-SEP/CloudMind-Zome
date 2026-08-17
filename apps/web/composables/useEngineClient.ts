@@ -356,22 +356,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  // engine 只应用 name/agentIds（其余字段静默丢弃），类型与之一致
-  async function updateSession(id: string, patch: Partial<Pick<Session, "name" | "agentIds">>): Promise<Session> {
-    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    await ensureOk(res, "update session");
-    return res.json();
-  }
-
-  async function deleteSession(id: string): Promise<void> {
-    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
-    await ensureOk(res, "delete session");
-  }
-
   async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
     if (limit) params.set("limit", String(limit));
@@ -451,16 +435,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  async function updateModel(providerId: string, modelId: string, body: Partial<ModelInfo>): Promise<ModelInfo> {
-    const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    await ensureOk(res, "update model");
-    return res.json();
-  }
-
   async function deleteModel(providerId: string, modelId: string): Promise<void> {
     const res = await engineFetch(`${baseUrl.value}/compute/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, { method: "DELETE" });
     await ensureOk(res, "delete model");
@@ -536,8 +510,9 @@ export function useEngineClient(options?: EngineClientOptions) {
     await ensureOk(res, "delete scheduled task");
   }
 
-  // engine 主动关闭的业务码：终态（agent/session 不存在、参数非法、鉴权失败、Origin 拒绝），
-  // 重连无意义，直接透传 onClose；其余（1006 异常断开等）一律自动重连
+  // engine 主动关闭的业务码：终态（agent/session 不存在、参数非法、Origin 拒绝），
+  // 重连无意义，直接透传 onClose；4401（token 失效）例外——先重取 token 自动重建一次，
+  // 仍 4401 才按终态透传（见 onclose）；其余（1006 异常断开等）一律自动重连
   const TERMINAL_WS_CLOSE_CODES = new Set([4001, 4002, 4003, 4004, 4401, 4403]);
 
   // WS 断线自动重连（P0-3 D-B2）：指数退避 1s/2s/4s…封顶 30s，永不放弃——
@@ -557,6 +532,8 @@ export function useEngineClient(options?: EngineClientOptions) {
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     // A6：SyntaxError 重取 token 已试过一次——重取后仍非法（如显式配置档）不再无限重试
     let wsTokenRetried = false;
+    // M43：4401 自动重建已试过一次——重建后仍 4401（新 token 也不被接受）不再无限循环
+    let ws4401Retried = false;
 
     const clearReconnectTimer = () => {
       if (reconnectTimer !== undefined) {
@@ -601,6 +578,7 @@ export function useEngineClient(options?: EngineClientOptions) {
         const isReconnect = hasConnectedOnce;
         hasConnectedOnce = true;
         wsTokenRetried = false;
+        ws4401Retried = false;
         reconnectAttempts = 0;
         handlers.onOpen?.();
         // 断线后的重连成功：调用方拉取会话状态对齐（最新消息列表）
@@ -662,12 +640,24 @@ export function useEngineClient(options?: EngineClientOptions) {
 
       socket.onclose = (event) => {
         const code = event?.code;
+        // A6/F4：4401（token 失效/轮换）→ 作废就绪缓存 + 清 localStorage，下次建连重取
+        if (code === 4401) {
+          invalidateEngineToken();
+        }
+        // M43：4401 不再直接终态——三失效点已作废旧 token，重取后自动重建一次；
+        // 重建仍 4401（新 token 也不被接受，如显式配置档错误）才落入终态分支透传，
+        // 保持「未连接」由人工恢复，避免无限重建
+        if (!closedByCaller && code === 4401 && !ws4401Retried) {
+          ws4401Retried = true;
+          reconnectAttempts += 1;
+          handlers.onReconnecting?.(reconnectAttempts, 0);
+          void ensureEngineTokenReady().then(() => {
+            if (!closedByCaller) open();
+          });
+          return;
+        }
         // 调用方主动关闭 / 终态业务码：透传，不重连
         if (closedByCaller || (code !== undefined && TERMINAL_WS_CLOSE_CODES.has(code))) {
-          // A6/F4：4401（token 失效/轮换）→ 作废就绪缓存 + 清 localStorage，下次建连重取
-          if (code === 4401) {
-            invalidateEngineToken();
-          }
           handlers.onClose?.(code, event?.reason);
           return;
         }
@@ -789,8 +779,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     getMessages,
     listSessions,
     createSession,
-    updateSession,
-    deleteSession,
     getSessionMessages,
     listHandoffs,
     listProviders,
@@ -799,7 +787,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     deleteProvider,
     testProvider,
     addModel,
-    updateModel,
     deleteModel,
     getConfig,
     updateConfig,

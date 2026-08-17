@@ -19,6 +19,7 @@
           :status="msg.approval.status"
           :agent-name="msg.approval.agentId ? agentName(msg.approval.agentId) : undefined"
           @respond="onApprovalRespond"
+          @expired="onApprovalExpired"
         />
         <div v-else class="msg-row">
           <div v-if="msg.role === 'assistant' && msg.agentId" class="speaker">
@@ -62,6 +63,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "send", text: string): void;
   (e: "approval-respond", payload: ApprovalResponsePayload): void;
+  // 审批卡片 60s 倒计时到点（M44）：透传给页面把卡片标为 expired
+  (e: "approval-expired", approvalId: string): void;
 }>();
 
 const messagesEl = ref<HTMLElement | null>(null);
@@ -98,6 +101,10 @@ function onSend(text: string) {
 
 function onApprovalRespond(payload: ApprovalResponsePayload) {
   emit("approval-respond", payload);
+}
+
+function onApprovalExpired(approvalId: string) {
+  emit("approval-expired", approvalId);
 }
 </script>
 

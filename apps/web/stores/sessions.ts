@@ -27,17 +27,5 @@ export const useSessionsStore = defineStore("sessions", () => {
     return created;
   }
 
-  async function update(id: string, patch: Partial<Session>) {
-    const updated = await client.updateSession(id, patch);
-    const idx = sessions.value.findIndex((s) => s.id === id);
-    if (idx >= 0) sessions.value[idx] = updated;
-    return updated;
-  }
-
-  async function remove(id: string) {
-    await client.deleteSession(id);
-    sessions.value = sessions.value.filter((s) => s.id !== id);
-  }
-
-  return { sessions, isLoading, error, load, create, update, remove };
+  return { sessions, isLoading, error, load, create };
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import ApprovalCard from "../../components/ApprovalCard.vue";
 
@@ -186,5 +186,31 @@ describe("ApprovalCard", () => {
       props: { ...baseProps, status: "expired" as const },
     });
     expect(wrapper.text()).toContain("已超时或已处理");
+  });
+
+  it("pending 卡片显示 60s 倒计时，到点 emit expired（M44，与 engine 审批超时对齐）", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(ApprovalCard, { props: baseProps });
+    expect(wrapper.text()).toContain("等待审批（剩余 60s）");
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(wrapper.text()).toContain("等待审批（剩余 1s）");
+    expect(wrapper.emitted("expired")).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(wrapper.emitted("expired")).toEqual([["ap-1"]]);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("倒计时中途卡片被处理：计时器停止，不迟到 emit expired", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(ApprovalCard, { props: baseProps });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await wrapper.setProps({ status: "approved" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(wrapper.emitted("expired")).toBeUndefined();
+    wrapper.unmount();
+    vi.useRealTimers();
   });
 });
