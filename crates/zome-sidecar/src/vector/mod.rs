@@ -61,6 +61,9 @@ type HnswIndex = Hnsw<'static, f32, DistCosine>;
 pub struct VectorIndexState {
     dir: PathBuf,
     /// 索引维度：首个向量的维度即全索引维度（0 = 空索引未定维）。
+    /// 空索引（新建，或冷载入无有效行/异维行被众数维度跳过）dim 保持 0，
+    /// 由首个非空 upsert 钉住维度，此后异维写入/查询一律在 gRPC 入口
+    /// 以 invalid_argument 显式拒绝（H10b）。
     /// anndists DistCosine::eval 对异维向量直接 assert panic，且污染文件会让
     /// 每次冷载入复发——异维 upsert/search 必须在入口拒绝（P0 review 返工）
     dim: usize,
@@ -75,7 +78,19 @@ pub struct VectorIndexState {
 }
 
 impl VectorIndexState {
+    /// 索引当前维度（0 = 空索引未定维）：gRPC 入口据此做维度校验（H10b）
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
     pub async fn upsert(&mut self, doc_id: &str, embedding: &[f32]) {
+        // 空向量不入索引（H10b 防御层）：0 维写入会让 dim 永远钉不住、
+        // 并在距离求值处 panic。gRPC 入口已先行 invalid_argument 拒绝，
+        // 此处兜底直接调用方
+        if embedding.is_empty() {
+            tracing::warn!("empty embedding for {} rejected", doc_id);
+            return;
+        }
         // 维度门禁（P0 review 返工）：异维向量入索引会在距离求值处 panic，
         // 拒绝并告警，不落盘、不入索引
         if self.dim == 0 {

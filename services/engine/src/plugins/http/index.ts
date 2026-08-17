@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import type { Context } from "cordis";
 import { logger } from "../../logger.js";
 import { createServer } from "../../api/server.js";
@@ -26,11 +27,13 @@ import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
  *   再 await getAuthToken()（listen 前 token 就绪竞态注释逐字保留）、
  *   CLOUDMIND_AUTH_TOKEN 未设提示日志、PORT/env 解析、
  *   app.listen({ port, host: "127.0.0.1" })、EADDRINUSE 经
- *   classifyListenError 以 exit code 2 退出、启动 banner（git 短哈希可选）。
+ *   classifyListenError 以 exit code 2 退出、启动 banner（git 短哈希可选）、
+ *   listen 成功后落 engine.pid（H9，供 sidecar 收编击杀）。
  *   组合根只调一次；重复调用防御性报错。
  * - app.close() 挂本插件 fiber 的 effect disposer（P3 tools 同款先例）：
  *   bootstrap 关停钩 dispose 本 fiber 即触发——只许 dispose 子 fiber，
- *   根 fiber dispose = restart（P3 实证），严禁碰 root。
+ *   根 fiber dispose = restart（P3 实证），严禁碰 root。disposer 同时
+ *   best-effort 清理 engine.pid（仅当内容仍是本进程 pid）。
  */
 export const name = "http";
 
@@ -143,6 +146,19 @@ export function apply(ctx: Context): void {
         : addr
           ? `${addr.address}:${addr.port}`
           : "unknown";
+    // H9：listen 成功后落 pidfile——sidecar 收编（adopt）本进程时凭它在校验
+    // 身份后击杀，闭合 restart 恢复闭环。必须在 listen 成功之后写：
+    // EADDRINUSE 退出时覆写健康 engine 的 pidfile 会让 sidecar 杀错目标。
+    // 失败不阻断：sidecar 按无 pid 处理（旧语义：只监控不击杀）
+    try {
+      await fs.writeFile(path.join(getDataDir(), "engine.pid"), String(process.pid), {
+        mode: 0o600,
+      });
+    } catch (err) {
+      logger.warn(
+        `[http] engine.pid 落盘失败，sidecar 收编将不可击杀：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     // S1：启动 banner 带 git 短哈希（代码版本），无 git 时省略该字段不崩
     logger.info(
       {
@@ -158,5 +174,16 @@ export function apply(ctx: Context): void {
   // listen 从未被调用（测试挂载场景）时 app 为 undefined，空转不炸
   ctx.effect(() => async () => {
     await app?.close();
+    // H9 pidfile 清理：只在内容仍是本进程 pid 时删除（防误删后继 engine 的
+    // pidfile）；best-effort——ENOENT/IO 错误一律忽略，不阻断关停
+    try {
+      const pidFile = path.join(getDataDir(), "engine.pid");
+      const content = await fs.readFile(pidFile, "utf-8");
+      if (content.trim() === String(process.pid)) {
+        await fs.rm(pidFile, { force: true });
+      }
+    } catch {
+      /* best-effort */
+    }
   });
 }

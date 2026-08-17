@@ -23,14 +23,25 @@ impl ZomeSidecar for ZomeSidecarService {
         let req = request.into_inner();
         let agent_id = crate::sanitize_agent_id(&req.agent_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        // 维度校验（H10b）：空向量非法——原实现空首插会把 0 维写进索引，
+        // 维度永远钉不住且距离求值 panic
+        if req.embedding.is_empty() {
+            return Err(Status::invalid_argument("embedding must not be empty"));
+        }
         let state = vector::get_or_load(&agent_id)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        state
-            .write()
-            .await
-            .upsert(&req.doc_id, &req.embedding)
-            .await;
+        let mut guard = state.write().await;
+        // 首个非空写入钉住索引维度（dim==0 = 空索引未定维）；此后异维写入
+        // 显式报错（含期望/实际维度），不再静默吞掉
+        let dim = guard.dim();
+        if dim != 0 && req.embedding.len() != dim {
+            return Err(Status::invalid_argument(format!(
+                "embedding dim mismatch: index dim is {dim}, got {}",
+                req.embedding.len()
+            )));
+        }
+        guard.upsert(&req.doc_id, &req.embedding).await;
         Ok(Response::new(UpsertResponse {}))
     }
 
@@ -44,9 +55,18 @@ impl ZomeSidecar for ZomeSidecarService {
         let state = vector::get_or_load(&agent_id)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        let results = state
-            .read()
-            .await
+        let guard = state.read().await;
+        // 维度校验（H10b）：查询与索引维度不一致显式报错——原实现静默返回空，
+        // 调用方无法区分"无相似结果"与"维度用错"。空索引（dim==0 未定维）
+        // 不校验，检索恒返回空
+        let dim = guard.dim();
+        if dim != 0 && req.query.len() != dim {
+            return Err(Status::invalid_argument(format!(
+                "query dim mismatch: index dim is {dim}, got {}",
+                req.query.len()
+            )));
+        }
+        let results = guard
             .search(&req.query, req.top_k as usize)
             .into_iter()
             .map(|(doc_id, score)| SearchResult { doc_id, score })

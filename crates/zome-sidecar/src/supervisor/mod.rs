@@ -29,6 +29,11 @@ static SUPERVISOR: std::sync::LazyLock<Mutex<Option<Supervisor>>> =
 #[derive(Clone)]
 pub struct Supervisor {
     child: Arc<Mutex<Option<Child>>>,
+    /// 收编 engine 的 pid（H9，来自数据目录 engine.pid）：child=None 时凭它
+    /// 在校验进程身份后击杀收编进程，闭合 restart/shutdown 恢复闭环；
+    /// pidfile 缺失/损坏为 None（维持旧语义：只监控不击杀）。
+    /// 击杀或确认已死后取走置 None，同一 pid 绝不触碰第二次（pid 复用防护）
+    adopted_pid: Arc<Mutex<Option<u32>>>,
 }
 
 fn node_bin() -> String {
@@ -115,24 +120,77 @@ fn engine_command(cwd: &Path, entry: &Path) -> Command {
 pub async fn spawn_node_engine() -> anyhow::Result<()> {
     if is_node_healthy().await {
         // 已有运行中的 engine（上次异常退出遗留）：直接复用，避免重复 spawn 导致端口冲突。
-        // 收编同样注册进 SUPERVISOR 纳入监控（child=None：不是我们 spawn 的不能 kill，
-        // 但崩溃后 restart 路径会由我们重新拉起），否则被收编的 engine 挂死后再无人恢复。
+        // 收编同样注册进 SUPERVISOR 纳入监控，并记录 engine.pid 中的 pid（H9）：
+        // 收编进程挂死后 restart/shutdown 校验身份再击杀，恢复闭环不再断裂；
+        // pidfile 缺失/损坏则 adopted_pid=None，维持旧语义（只监控不击杀）。
         warn!("node engine already healthy; adopting existing process");
         *SUPERVISOR.lock().await = Some(Supervisor {
             child: Arc::new(Mutex::new(None)),
+            adopted_pid: Arc::new(Mutex::new(read_engine_pid())),
         });
         return Ok(());
     }
-    let (cwd, entry) = engine_entry()?;
-    let mut cmd = engine_command(&cwd, &entry);
+    let spawned: anyhow::Result<Child> = (|| {
+        let (cwd, entry) = engine_entry()?;
+        let mut cmd = engine_command(&cwd, &entry);
+        info!("spawning node engine: {:?}", cmd);
+        Ok(cmd.kill_on_drop(true).spawn()?)
+    })();
+    match spawned {
+        Ok(child) => {
+            *SUPERVISOR.lock().await = Some(Supervisor {
+                child: Arc::new(Mutex::new(Some(child))),
+                adopted_pid: Arc::new(Mutex::new(None)),
+            });
+            Ok(())
+        }
+        Err(e) => {
+            // H10a：注册空 Supervisor 再返回 Err——main 记档后不退出，
+            // watch_node_health 的 restart 必须拿到 Supervisor 句柄才能
+            // 低频重试拉起（如 engine 入口稍后构建完成才就位）
+            *SUPERVISOR.lock().await = Some(Supervisor {
+                child: Arc::new(Mutex::new(None)),
+                adopted_pid: Arc::new(Mutex::new(None)),
+            });
+            Err(e)
+        }
+    }
+}
 
-    info!("spawning node engine: {:?}", cmd);
-    let child = cmd.kill_on_drop(true).spawn()?;
+/// engine.pid 内容解析（纯函数，供单测）：合法内容为单个十进制 pid
+fn parse_pid_file(content: &str) -> Option<u32> {
+    content.trim().parse::<u32>().ok().filter(|pid| *pid > 0)
+}
 
-    *SUPERVISOR.lock().await = Some(Supervisor {
-        child: Arc::new(Mutex::new(Some(child))),
-    });
-    Ok(())
+/// 读数据目录 engine.pid（H9）：收编的 engine 不是我们 spawn 的 child，
+/// 只有凭 pidfile 才能在 restart/shutdown 时击杀它、闭合恢复闭环。
+/// 缺失/损坏按无 pid 处理（记 warn，维持只监控不击杀的旧语义）
+fn read_engine_pid() -> Option<u32> {
+    let path = data_dir().join("engine.pid");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let pid = parse_pid_file(&content);
+            if pid.is_none() {
+                warn!("engine.pid 内容损坏（{}）：按无 pid 处理", path.display());
+            }
+            pid
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn!(
+                "engine.pid 缺失（{}）：收编的 engine 将无法被击杀",
+                path.display()
+            );
+            None
+        }
+        Err(e) => {
+            warn!(
+                "engine.pid 读取失败（{}: {}）：按无 pid 处理",
+                path.display(),
+                e
+            );
+            None
+        }
+    }
 }
 
 /// is_node_healthy 被 gRPC Health 高频调用（engine 侧最多每 10s 一次），
@@ -300,6 +358,168 @@ async fn restart() {
     }
 }
 
+/// 收编进程的核验状态（H9）：击杀前必须先确认"是这个进程、且确实是 engine"，
+/// 防 pid 复用误杀无关进程
+#[derive(Debug, PartialEq, Eq)]
+enum AdoptedProcState {
+    /// 进程存活且身份确认为 node engine（cmdline 含 bootstrap.js / 映像 node.exe）
+    Engine,
+    /// 进程存活但身份不符（疑似 pid 复用）——只记 warn，绝不杀
+    Stranger,
+    /// 进程已退出（含僵尸），或平台无从校验（如非 Linux unix 无 /proc）——不杀
+    Gone,
+}
+
+/// /proc/<pid>/cmdline（NUL 分隔）是否指向 node engine 入口 bootstrap.js
+/// （纯函数，供单测）
+#[cfg(unix)]
+fn cmdline_is_bootstrap_engine(cmdline: &[u8]) -> bool {
+    String::from_utf8_lossy(cmdline)
+        .split('\0')
+        .any(|arg| arg.contains("bootstrap.js"))
+}
+
+#[cfg(unix)]
+async fn adopted_proc_state(pid: u32) -> AdoptedProcState {
+    // /proc 仅 Linux 有；其他 unix（macOS）读不到 → Gone（无从校验则绝不杀）。
+    // 僵尸进程 cmdline 为空，等同已死
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(cmdline) if cmdline.is_empty() => AdoptedProcState::Gone,
+        Ok(cmdline) => {
+            if cmdline_is_bootstrap_engine(&cmdline) {
+                AdoptedProcState::Engine
+            } else {
+                AdoptedProcState::Stranger
+            }
+        }
+        Err(_) => AdoptedProcState::Gone,
+    }
+}
+
+/// tasklist /FO CSV /NH 输出解析（纯函数，供单测）：
+/// 有该 pid 行且映像为 node.exe → Engine；有该 pid 行但映像不符 → Stranger；
+/// 无匹配行（含 "INFO: No tasks ..." 提示）→ Gone
+#[cfg(any(windows, test))]
+fn parse_tasklist_state(output: &str, pid: u32) -> AdoptedProcState {
+    let pid = pid.to_string();
+    for line in output.lines() {
+        let mut fields = line.split(',');
+        let image = fields.next().unwrap_or("").trim_matches('"');
+        let field_pid = fields.next().unwrap_or("").trim_matches('"');
+        if field_pid != pid {
+            continue;
+        }
+        return if image.eq_ignore_ascii_case("node.exe") {
+            AdoptedProcState::Engine
+        } else {
+            AdoptedProcState::Stranger
+        };
+    }
+    AdoptedProcState::Gone
+}
+
+#[cfg(windows)]
+async fn adopted_proc_state(pid: u32) -> AdoptedProcState {
+    match Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .await
+    {
+        Ok(o) => parse_tasklist_state(&String::from_utf8_lossy(&o.stdout), pid),
+        // 查询失败无从校验：不杀
+        Err(_) => AdoptedProcState::Gone,
+    }
+}
+
+/// 温和终止（Unix SIGTERM / Windows taskkill /T）
+#[cfg(unix)]
+async fn terminate_pid(pid: u32) {
+    Command::new("kill")
+        .arg(pid.to_string())
+        .output()
+        .await
+        .ok();
+}
+
+#[cfg(windows)]
+async fn terminate_pid(pid: u32) {
+    Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .output()
+        .await
+        .ok();
+}
+
+/// 强杀升级（Unix SIGKILL / Windows taskkill /F）
+#[cfg(unix)]
+async fn force_kill_pid(pid: u32) {
+    Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output()
+        .await
+        .ok();
+}
+
+#[cfg(windows)]
+async fn force_kill_pid(pid: u32) {
+    Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output()
+        .await
+        .ok();
+}
+
+/// 击杀收编的 engine（H9：child=None 时恢复闭环的关键，此前 shutdown 对
+/// 收编进程是空操作，收编 engine 挂死占住 8848 后 restart 永远 port_conflict）。
+///
+/// 先校验进程身份（防 pid 复用误杀）：Unix 读 /proc/<pid>/cmdline 须含
+/// bootstrap.js；Windows 用 tasklist 校验映像名 node.exe。校验不过或进程
+/// 已死只记日志绝不杀。两段式终止：先温和终止，3s 未退升级强杀（与现有
+/// Windows child 路径 taskkill /T → /F 同构）。
+///
+/// 进程交互部分无法单测的部分（真实信号投递/等待语义）需手工验证：
+/// 桌面端启动后 kill -9 sidecar 再重启（触发收编），随后 kill -STOP engine
+/// 制造假死，观察 supervisor 先 SIGTERM 后 SIGKILL 并重新拉起 engine。
+async fn kill_adopted_engine(pid: u32) {
+    match adopted_proc_state(pid).await {
+        AdoptedProcState::Gone => {
+            info!("adopted engine pid {} already exited; nothing to kill", pid);
+            return;
+        }
+        AdoptedProcState::Stranger => {
+            warn!(
+                "adopted engine pid {} failed identity check (not node bootstrap.js; pid likely reused): refusing to kill",
+                pid
+            );
+            return;
+        }
+        AdoptedProcState::Engine => {}
+    }
+
+    terminate_pid(pid).await;
+
+    // 等待退出（与 child 路径同款 3s 轮询）；等待窗口内 pid 被复用成无关
+    // 进程时状态不再是 Engine，强杀升级自然被挡下
+    let mut waited = 0u32;
+    while waited < 3000 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        waited += 200;
+        if adopted_proc_state(pid).await != AdoptedProcState::Engine {
+            info!("adopted node engine (pid {}) stopped", pid);
+            return;
+        }
+    }
+
+    if adopted_proc_state(pid).await == AdoptedProcState::Engine {
+        warn!(
+            "adopted engine pid {} ignored graceful termination; force killing",
+            pid
+        );
+        force_kill_pid(pid).await;
+        info!("adopted node engine (pid {}) force killed", pid);
+    }
+}
+
 impl Supervisor {
     async fn restart(&self) {
         self.shutdown().await;
@@ -362,6 +582,17 @@ impl Supervisor {
 
             child.wait().await.ok();
             info!("node engine stopped");
+            return;
+        }
+        // H9：收编路径（child=None）凭 pidfile 记录的 pid 击杀——此前这里是
+        // 空操作，收编 engine 挂死占住 8848 后 restart 永远撞 port_conflict，
+        // 恢复闭环断裂。取走即清空：同一 pid 绝不重复触碰（pid 复用防护）
+        let adopted_pid = {
+            let mut guard = self.adopted_pid.lock().await;
+            guard.take()
+        };
+        if let Some(pid) = adopted_pid {
+            kill_adopted_engine(pid).await;
         }
     }
 }
@@ -385,5 +616,178 @@ mod tests {
             Some(data_dir().as_os_str()),
             "CLOUDMIND_DATA_DIR must be injected with sidecar's resolved data_dir"
         );
+    }
+
+    #[test]
+    fn parse_pid_file_accepts_only_decimal_pid() {
+        assert_eq!(parse_pid_file("12345"), Some(12345));
+        assert_eq!(parse_pid_file("  42\n"), Some(42));
+        assert_eq!(parse_pid_file(""), None);
+        assert_eq!(parse_pid_file("abc"), None);
+        assert_eq!(parse_pid_file("0"), None);
+        assert_eq!(parse_pid_file("-1"), None);
+        assert_eq!(parse_pid_file("12 34"), None);
+    }
+
+    /// H9：pidfile 缺失/损坏按无 pid 处理，合法内容解析出 pid
+    #[test]
+    fn read_engine_pid_missing_corrupt_then_valid() {
+        let tmp =
+            std::env::temp_dir().join(format!("zome-sidecar-pidfile-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        crate::set_data_dir_override(&tmp);
+
+        assert_eq!(read_engine_pid(), None, "缺失 → 无 pid");
+        std::fs::write(tmp.join("engine.pid"), "not-a-pid").unwrap();
+        assert_eq!(read_engine_pid(), None, "损坏 → 无 pid");
+        std::fs::write(tmp.join("engine.pid"), "12345\n").unwrap();
+        assert_eq!(read_engine_pid(), Some(12345));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cmdline_identity_check() {
+        assert!(cmdline_is_bootstrap_engine(
+            b"node\0/opt/engine/bootstrap.js\0"
+        ));
+        assert!(cmdline_is_bootstrap_engine(
+            b"/usr/bin/node\0bootstrap.js\0"
+        ));
+        assert!(!cmdline_is_bootstrap_engine(b"sleep\x0030\0"));
+        assert!(!cmdline_is_bootstrap_engine(b""));
+        assert!(!cmdline_is_bootstrap_engine(b"node\0server.js\0"));
+    }
+
+    #[test]
+    fn tasklist_state_parse() {
+        let node = "\"node.exe\",\"1234\",\"Console\",\"1\",\"50,000 K\"\r\n";
+        assert_eq!(parse_tasklist_state(node, 1234), AdoptedProcState::Engine);
+        // 映像名大小写不敏感
+        let upper = "\"NODE.EXE\",\"1234\",\"Console\",\"1\",\"50,000 K\"";
+        assert_eq!(parse_tasklist_state(upper, 1234), AdoptedProcState::Engine);
+        let chrome = "\"chrome.exe\",\"1234\",\"Console\",\"1\",\"50,000 K\"\r\n";
+        assert_eq!(
+            parse_tasklist_state(chrome, 1234),
+            AdoptedProcState::Stranger
+        );
+        assert_eq!(
+            parse_tasklist_state(
+                "INFO: No tasks are running which match the specified criteria.",
+                1234
+            ),
+            AdoptedProcState::Gone
+        );
+    }
+
+    /// 造一个 cmdline 含 bootstrap.js 的活进程（exec -a 伪装 argv0），
+    /// 供身份校验通过后的真实击杀路径测试
+    #[cfg(target_os = "linux")]
+    fn spawn_fake_engine() -> std::process::Child {
+        std::process::Command::new("bash")
+            .args(["-c", "exec -a 'node /tmp/bootstrap.js' sleep 30"])
+            .spawn()
+            .expect("spawn fake engine")
+    }
+
+    /// spawn 返回（fork）到 exec 完成之间有窗口期：/proc/<pid>/cmdline
+    /// 短暂为空，直接读会误判 Gone。轮询等它就绪
+    #[cfg(target_os = "linux")]
+    async fn wait_cmdline_ready(pid: u32) {
+        for _ in 0..100 {
+            let ready = std::fs::read(format!("/proc/{pid}/cmdline"))
+                .map(|c| !c.is_empty())
+                .unwrap_or(false);
+            if ready {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("process {pid} cmdline not visible in /proc");
+    }
+
+    /// 断言失败后兜底清理，不留 sleep 30 孤儿
+    #[cfg(target_os = "linux")]
+    fn cleanup_proc(proc: &mut std::process::Child) {
+        std::process::Command::new("kill")
+            .args(["-9", &proc.id().to_string()])
+            .output()
+            .ok();
+        proc.wait().ok();
+    }
+
+    /// H9：身份校验通过的收编进程会被击杀（SIGTERM 即死，无需升级 SIGKILL）
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn kill_adopted_engine_kills_verified_engine() {
+        let mut proc = spawn_fake_engine();
+        let pid = proc.id();
+        wait_cmdline_ready(pid).await;
+        // 前置断言：伪装生效，身份校验确实通过
+        assert_eq!(adopted_proc_state(pid).await, AdoptedProcState::Engine);
+
+        kill_adopted_engine(pid).await;
+        let state = adopted_proc_state(pid).await;
+        cleanup_proc(&mut proc);
+        // 已死（僵尸 cmdline 为空，按 Gone 处理）
+        assert_eq!(state, AdoptedProcState::Gone);
+    }
+
+    /// H9：身份不符（pid 复用成无关进程）只记 warn 绝不杀
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn kill_adopted_engine_refuses_stranger() {
+        let mut proc = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn stranger");
+        let pid = proc.id();
+        wait_cmdline_ready(pid).await;
+        // 前置断言：确实是无关进程
+        assert_eq!(adopted_proc_state(pid).await, AdoptedProcState::Stranger);
+
+        kill_adopted_engine(pid).await;
+        let state = adopted_proc_state(pid).await;
+        cleanup_proc(&mut proc);
+        assert_eq!(
+            state,
+            AdoptedProcState::Stranger,
+            "stranger must NOT be killed"
+        );
+    }
+
+    /// H9：pid 已死是快速 no-op（若退化成盲杀+3s 轮询，此断言会因超时暴露）
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn kill_adopted_engine_dead_pid_noop() {
+        let mut proc = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        proc.wait().ok();
+        let pid = proc.id();
+        tokio::time::timeout(Duration::from_secs(5), kill_adopted_engine(pid))
+            .await
+            .expect("dead pid must be a fast no-op");
+    }
+
+    /// H9：Supervisor::shutdown 在 child=None 时凭 adopted_pid 击杀收编进程，
+    /// 且 pid 取走后重复 shutdown 是 no-op
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_kills_adopted_engine_once() {
+        let mut proc = spawn_fake_engine();
+        let pid = proc.id();
+        wait_cmdline_ready(pid).await;
+        let sup = Supervisor {
+            child: Arc::new(Mutex::new(None)),
+            adopted_pid: Arc::new(Mutex::new(Some(pid))),
+        };
+        sup.shutdown().await;
+        let state = adopted_proc_state(pid).await;
+        sup.shutdown().await; // adopted_pid 已取走：no-op，不 panic 不挂起
+        cleanup_proc(&mut proc);
+        assert_eq!(state, AdoptedProcState::Gone);
     }
 }

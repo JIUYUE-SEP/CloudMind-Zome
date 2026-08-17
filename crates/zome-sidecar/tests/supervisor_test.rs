@@ -39,6 +39,13 @@ async fn stub_health_server() -> tokio::task::JoinHandle<()> {
 #[tokio::test]
 async fn adopted_engine_is_registered_for_monitoring() {
     let _lock = PORT_LOCK.lock().await;
+    // 数据目录隔离（H9 起收编会读 engine.pid）：防止开发机真实 pidfile
+    // 指向活 engine 时被本测试击杀
+    let tmp = std::env::temp_dir().join(format!("zome-sidecar-adopt-test-{}", std::process::id()));
+    std::fs::remove_dir_all(&tmp).ok();
+    std::fs::create_dir_all(&tmp).unwrap();
+    zome_sidecar::set_data_dir_override(&tmp);
+
     // 清理可能的前置状态，保证断言只反映本次收编
     supervisor::shutdown().await;
     assert!(!supervisor::has_supervised_engine().await);
@@ -58,9 +65,61 @@ async fn adopted_engine_is_registered_for_monitoring() {
         "adopted engine must be registered into SUPERVISOR"
     );
 
-    // 收编的 engine 不是我们的 child：shutdown 不得误杀，stub 应仍在响应
+    // 无 pidfile 时收编维持旧语义：shutdown 不杀任何进程，stub 应仍在响应
     supervisor::shutdown().await;
     assert!(supervisor::is_node_healthy().await);
 
     stub.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// H9 恢复闭环：收编时从 engine.pid 读到 pid 后，shutdown 能校验身份并击杀
+/// 收编的 engine（此前对 child=None 空操作，挂死的 engine 永远占住 8848）。
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn adopted_engine_with_pidfile_is_killed_on_shutdown() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = std::env::temp_dir().join(format!(
+        "zome-sidecar-adopt-kill-test-{}",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&tmp).ok();
+    std::fs::create_dir_all(&tmp).unwrap();
+    zome_sidecar::set_data_dir_override(&tmp);
+
+    // 伪装 engine：argv0 含 bootstrap.js（/proc cmdline 身份校验通过）
+    let mut fake = std::process::Command::new("bash")
+        .args(["-c", "exec -a 'node /tmp/bootstrap.js' sleep 30"])
+        .spawn()
+        .expect("spawn fake engine");
+    // spawn（fork）到 exec 完成有窗口期：/proc cmdline 短暂为空，等它就绪
+    for _ in 0..100 {
+        let ready = std::fs::read(format!("/proc/{}/cmdline", fake.id()))
+            .map(|c| !c.is_empty())
+            .unwrap_or(false);
+        if ready {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(tmp.join("engine.pid"), fake.id().to_string()).unwrap();
+
+    supervisor::shutdown().await;
+    let stub = stub_health_server().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    supervisor::spawn_node_engine()
+        .await
+        .expect("adopt healthy engine");
+
+    supervisor::shutdown().await;
+    // 收编进程已被击杀（僵尸 cmdline 为空：读不到或为空都算死）
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", fake.id())).unwrap_or_default();
+    assert!(cmdline.is_empty(), "adopted engine must be killed");
+    // pid 已取走：再次 shutdown 不会重复触碰同一 pid
+    supervisor::shutdown().await;
+    fake.wait().ok(); // 回收僵尸
+
+    stub.abort();
+    std::fs::remove_dir_all(&tmp).ok();
 }

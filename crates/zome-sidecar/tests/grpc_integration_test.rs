@@ -172,3 +172,117 @@ async fn test_grpc_delete_agent_clears_vectors() {
     server.abort();
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// H10b：空 embedding 直接 invalid_argument（原实现会把 0 维写进索引，
+/// 维度永远钉不住且距离求值 panic）
+#[tokio::test]
+async fn test_grpc_upsert_rejects_empty_embedding() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let (server, mut client) = spawn_server_ready().await;
+    let status = client
+        .upsert(UpsertRequest {
+            agent_id: "grpc-dim-empty-agent".to_string(),
+            doc_id: "d1".to_string(),
+            embedding: vec![],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// H10b：首个非空写入钉住索引维度，此后异维写入 invalid_argument
+/// （含期望/实际维度），不再静默吞掉
+#[tokio::test]
+async fn test_grpc_upsert_rejects_mismatched_dim_after_first_pins() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let (server, mut client) = spawn_server_ready().await;
+    // 首插钉维 3
+    client
+        .upsert(UpsertRequest {
+            agent_id: "grpc-dim-pin-agent".to_string(),
+            doc_id: "ok".to_string(),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("first upsert pins dim");
+    // 异维写入被拒，消息含期望/实际维度
+    let status = client
+        .upsert(UpsertRequest {
+            agent_id: "grpc-dim-pin-agent".to_string(),
+            doc_id: "bad".to_string(),
+            embedding: vec![1.0, 0.0],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("index dim is 3") && status.message().contains("got 2"),
+        "unexpected message: {}",
+        status.message()
+    );
+    // 被拒的异维向量不可检索（未入索引）
+    let res = client
+        .search(SearchRequest {
+            agent_id: "grpc-dim-pin-agent".to_string(),
+            query: vec![1.0, 0.0, 0.0],
+            top_k: 10,
+        })
+        .await
+        .expect("search")
+        .into_inner();
+    assert_eq!(res.results.len(), 1);
+    assert_eq!(res.results[0].doc_id, "ok");
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// H10b：查询维度与索引维度不一致 → invalid_argument（不 panic、不出错结果）
+#[tokio::test]
+async fn test_grpc_search_rejects_mismatched_dim() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let (server, mut client) = spawn_server_ready().await;
+    client
+        .upsert(UpsertRequest {
+            agent_id: "grpc-dim-search-agent".to_string(),
+            doc_id: "d1".to_string(),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("upsert");
+
+    let status = client
+        .search(SearchRequest {
+            agent_id: "grpc-dim-search-agent".to_string(),
+            query: vec![1.0, 0.0],
+            top_k: 10,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("index dim is 3") && status.message().contains("got 2"),
+        "unexpected message: {}",
+        status.message()
+    );
+    // 同维查询正常
+    let res = client
+        .search(SearchRequest {
+            agent_id: "grpc-dim-search-agent".to_string(),
+            query: vec![1.0, 0.0, 0.0],
+            top_k: 10,
+        })
+        .await
+        .expect("search")
+        .into_inner();
+    assert_eq!(res.results.len(), 1);
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}

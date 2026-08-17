@@ -160,4 +160,27 @@ describe("plugins/http（P9）", () => {
     await httpFiber.dispose();
     await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
   });
+
+  it("H9：listen 后 engine.pid 落盘（内容=进程 pid，0o600），dispose 后删除", async () => {
+    const port = await getFreePort();
+    process.env.PORT = String(port);
+    const ctx = new Context();
+    await mountDeps(ctx);
+    const httpFiber = await ctx.plugin(httpPlugin);
+
+    await ctx.http.listen();
+
+    const pidFile = path.join(tempDir, "engine.pid");
+    const content = (await fs.readFile(pidFile, "utf-8")).trim();
+    expect(content).toBe(String(process.pid));
+    // 权限收紧（同 auth-token 口径）；Windows 忽略 mode 不断言
+    if (process.platform !== "win32") {
+      const stat = await fs.stat(pidFile);
+      expect(stat.mode & 0o777).toBe(0o600);
+    }
+
+    // dispose 子 fiber：disposer best-effort 删除 pidfile
+    await httpFiber.dispose();
+    await expect(fs.access(pidFile)).rejects.toThrow();
+  });
 });
