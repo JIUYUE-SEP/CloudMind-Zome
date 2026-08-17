@@ -139,6 +139,29 @@ export async function listCompressedTopicMeta(
 }
 
 /**
+ * 解析 "## Messages Archived" 段的 msgIds（review M11）：
+ * 取最后一个独立成行的标题——真实分节由 writeCompressedTopic 恒写在文末，
+ * 摘要/关键结论正文混入的同名字样（即使顶格成行）都在它之前，不会污染解析；
+ * 旧实现按首个正则命中抠到文末，正文里的同名字样会把伪 id 带进结果
+ * （L4 归档排除失效、recall 取错档）。
+ */
+function parseArchivedMsgIds(raw: string): string[] {
+  const lines = raw.split("\n");
+  const heading = lines.lastIndexOf("## Messages Archived");
+  if (heading < 0) return [];
+  const section = lines
+    .slice(heading + 1)
+    .join("\n")
+    .trim();
+  return section
+    ? section
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+}
+
+/**
  * 读压缩档的 msgIds（recall read by topicId 用）；档不存在或 topicId 非法返回 null。
  */
 export async function readCompressedTopicMsgIds(
@@ -150,13 +173,7 @@ export async function readCompressedTopicMsgIds(
     const filePath = path.join(compressedDir(agentId), `${topicId}.md`);
     const raw = await fs.readFile(filePath, "utf-8");
     assertCompressedVersion(raw, filePath);
-    const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
-    return section
-      ? section
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [];
+    return parseArchivedMsgIds(raw);
   } catch (err) {
     if (err instanceof UnsupportedSchemaVersionError) throw err;
     return null;
@@ -201,10 +218,7 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
       const raw = await fs.readFile(filePath, "utf-8");
       // 版本门禁（P1-1）：高版本档显式报错，而不是按旧格式正则静默抠字段
       assertCompressedVersion(raw, filePath);
-      const section = raw.match(/## Messages Archived\n\n([\s\S]*?)$/)?.[1]?.trim();
-      const fileIds = section
-        ? section.split(",").map((s) => s.trim()).filter(Boolean)
-        : [];
+      const fileIds = parseArchivedMsgIds(raw);
       archivedIdsCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, ids: fileIds });
       for (const id of fileIds) ids.add(id);
     } catch (err) {

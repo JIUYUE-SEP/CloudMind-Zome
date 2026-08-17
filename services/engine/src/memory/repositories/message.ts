@@ -25,7 +25,10 @@ export class MessageRepository implements IMessageRepository {
     let filtered = all.filter((m) => m.sessionId === sessionId);
     if (options?.before) {
       const beforeIndex = filtered.findIndex((m) => m.id === options.before);
-      if (beforeIndex > 0) filtered = filtered.slice(0, beforeIndex);
+      // 游标命中首条（beforeIndex === 0）也要切出空页——原先按 > 0 判断，
+      // 首条游标会落回全量窗口（review M37）；未命中（-1）按无游标处理，
+      // 与 listBySessionWithArchived 的未知游标口径一致
+      if (beforeIndex >= 0) filtered = filtered.slice(0, beforeIndex);
     }
     const limit = options?.limit ?? 100;
     return filtered.slice(-limit);
@@ -124,8 +127,10 @@ export class MessageRepository implements IMessageRepository {
   async getByIds(ids: string[]): Promise<ChatMessageRecord[]> {
     if (ids.length === 0) return [];
     const wanted = new Set(ids);
-    const all = await this.store().readLines();
-    return all.filter((m) => wanted.has(m.id));
+    // 读缓存过滤读（review M9）：L4 每轮都按 id 取消息，全量 readLines 的
+    // 整表深拷贝随历史线性放大；缓存命中时只深拷贝命中的少数记录。
+    // 语义不变：按文件序返回、缺失 id 跳过、返回值不与缓存共享引用。
+    return this.store().readLinesCachedWhere((m) => wanted.has(m.id));
   }
 
   async archiveAndRemove(ids: string[]): Promise<void> {

@@ -255,4 +255,27 @@ export class DocumentStore<T extends object> {
       await handle?.close();
     }
   }
+
+  /**
+   * 读缓存过滤读（review M9）：readLinesWhere 的读缓存对应版——复用 readLines 的
+   * (mtimeMs, size) 指纹缓存，命中时只深拷贝谓词命中的记录，不再为整表克隆付 O(N)
+   * （L4 getByIds 这类"每轮少量 id、文件远大于命中集"的热路径）；未命中回退
+   * readLines（全量解析并回填缓存，行为与原先一致）。
+   * 与 readLinesWhere 的分工不变：本方法走缓存、继承 readLines 的 100MB 上限
+   * （热存储有界）；归档恢复路径继续用无缓存流式版（必须绕开上限）。
+   */
+  async readLinesCachedWhere(predicate: (record: T) => boolean): Promise<T[]> {
+    const stat = await fs.stat(this.filePath).catch(() => null);
+    if (stat && stat.size > 100 * 1024 * 1024) {
+      throw new Error(`File too large: ${this.filePath}`);
+    }
+    const cached = stat ? readCache.get(this.filePath) : undefined;
+    if (stat && cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      // 与 readLines 同一口径：缓存对象绝不外泄，命中项逐条深拷贝
+      return (cached.records as T[]).filter(predicate).map((r) => structuredClone(r));
+    }
+    // 未命中/文件不存在：走 readLines 既有路径（ENOENT→[]、超限报错、回填缓存）
+    const all = await this.readLines();
+    return all.filter(predicate);
+  }
 }
