@@ -6,6 +6,8 @@ import {
   MAX_STEPS_FALLBACK_REPLY,
   CONTEXT_WATERMARK_SUMMARY_HINT,
   CONTEXT_WATERMARK_FALLBACK_REPLY,
+  EMPTY_STOP_SUMMARY_HINT,
+  TOOL_STEP_OVERFLOW_PLACEHOLDER,
   HANDOFF_WRITING_GUIDANCE,
 } from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
@@ -761,43 +763,44 @@ describe("runTurn", () => {
     }
   });
 
-  it("A1：兜底总结透传 signal——abort 后快速降级为兜底回复，总结流早终止", async () => {
+  it("A1+M3：兜底总结透传 signal——abort 后总结流早终止，且 abort 不被吞（回合中止）", async () => {
     const controller = new AbortController();
     const provider = new AbortDuringSummaryProvider(controller);
     const events: LLMEvent[] = [];
-    const result = await runTurn(
-      {
-        provider,
-        model: "tool-loop-summary",
-        messages: [userMessage("查资料")],
-        tools: [
-          { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
-        ],
-        toolCtx: {
-          agentId: "a",
-          workspaceDir: "/tmp",
-          tools: new Map([["dummy", dummyTool]]),
-          approve: async () => true,
-          emit: (e) => events.push(e),
+    await expect(
+      runTurn(
+        {
+          provider,
+          model: "tool-loop-summary",
+          messages: [userMessage("查资料")],
+          tools: [
+            { type: "function", function: { name: "dummy", description: "dummy", parameters: {} } },
+          ],
+          toolCtx: {
+            agentId: "a",
+            workspaceDir: "/tmp",
+            tools: new Map([["dummy", dummyTool]]),
+            approve: async () => true,
+            emit: (e) => events.push(e),
+          },
+          maxSteps: 2,
+          signal: controller.signal,
         },
-        maxSteps: 2,
-        signal: controller.signal,
-      },
-      (e) => events.push(e),
-    );
+        (e) => events.push(e),
+      ),
+    ).rejects.toThrow("aborted");
 
     // 2 次工具步 + 1 次兜底总结调用
     expect(provider.calls).toHaveLength(3);
     expect(controller.signal.aborted).toBe(true);
-    // abort 后总结流只产出一帧即被事件边界中止（不会拖完整个总结调用）
+    // abort 后总结流一帧都不再产出（事件边界立即中止）
     expect(provider.postAbortYields).toBe(0);
-    // 快速降级：产出兜底回复，半截总结文本不上屏，回合正常收尾
-    expect(assistantText(result.assistantMessage)).toBe(MAX_STEPS_FALLBACK_REPLY);
-    expect(
-      events.some((e) => e.type === "text.delta" && e.delta === MAX_STEPS_FALLBACK_REPLY),
-    ).toBe(true);
+    // M3：取消即中止——不再降级为兜底回复，兜底文案与半截总结都不上屏，runTurn 无 turn.end
+    expect(events.some((e) => e.type === "text.delta" && e.delta === MAX_STEPS_FALLBACK_REPLY)).toBe(
+      false,
+    );
     expect(events.some((e) => e.type === "text.delta" && e.delta === "总结半截")).toBe(false);
-    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
+    expect(events.some((e) => e.type === "turn.end")).toBe(false);
   });
 
   it("未撞顶时行为不变：正常工具循环不触发兜底总结", async () => {
@@ -1418,7 +1421,7 @@ describe("P1-2 空 assistant 不落盘", () => {
     }
   }
 
-  it("空 content 的 assistant 消息不落盘不入历史（下轮不 400）", async () => {
+  it("空 content 的 assistant 消息不落盘不入历史（下轮不 400）；M5：回合不静默，产出兜底回复", async () => {
     const persisted: ChatMessage[][] = [];
     const events: LLMEvent[] = [];
     const result = await runTurn(
@@ -1441,8 +1444,21 @@ describe("P1-2 空 assistant 不落盘", () => {
       (e) => events.push(e),
     );
 
-    expect(persisted).toEqual([]);
-    expect(result.appended).toEqual([]);
+    // M5：空内容 stop 视同异常收尾——兜底总结仍空则产出兜底回复，回合绝不静默
+    expect(assistantText(result.assistantMessage)).toBe(MAX_STEPS_FALLBACK_REPLY);
+    expect(result.appended).toHaveLength(1);
+    expect(
+      result.appended[0]!.content.some(
+        (c) => c.type === "text" && c.text === MAX_STEPS_FALLBACK_REPLY,
+      ),
+    ).toBe(true);
+    // P1-2 guard 不变：空 content 的 assistant 消息本身不落盘（persisted 只有兜底回复一条）
+    expect(persisted.flat()).toHaveLength(1);
+    expect(
+      persisted.flat()[0]!.content.some(
+        (c) => c.type === "text" && c.text === MAX_STEPS_FALLBACK_REPLY,
+      ),
+    ).toBe(true);
     expect(events.some((e) => e.type === "turn.end")).toBe(true);
 
     // 再跑一轮（模拟下一轮）：历史没有被空 assistant 污染，消息数保持原样
@@ -1462,6 +1478,179 @@ describe("P1-2 空 assistant 不落盘", () => {
       },
       () => {},
     );
-    expect(again.appended).toEqual([]);
+    expect(assistantText(again.assistantMessage)).toBe(MAX_STEPS_FALLBACK_REPLY);
+    expect(again.appended).toHaveLength(1);
+  });
+});
+
+
+describe("M4 单步工具结果合计上限", () => {
+  it("单步 5 条工具结果合计超 40% 预算：超额部分逐条二次截断（保头尾），末位留占位", async () => {
+    // 单条 ≈700 tokens（单条上限 800 之下，不触发单条截断）；5 条合计 ≈3500 > 1600 总量阀
+    const counter = getTokenCounter();
+    let chunk = "";
+    while (counter.countText(chunk) < 700) chunk += "lorem ipsum dolor sit amet ";
+    const bigTool: Tool = {
+      name: "big",
+      description: "returns ~700 tokens",
+      parameters: z.object({}),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute(): Promise<ToolResult> {
+        return { success: true, output: chunk };
+      },
+    };
+    class FiveToolProvider implements LLMProvider {
+      name = "five-tool";
+      private step = 0;
+      captured: LLMChatParams | undefined;
+      supportsModel() {
+        return true;
+      }
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        if (this.step++ === 0) {
+          for (let i = 1; i <= 5; i++) {
+            yield { type: "tool.call", toolCallId: `tc_${i}`, name: "big", arguments: {} };
+          }
+        } else {
+          this.captured = params;
+          yield { type: "text.delta", delta: "done" };
+        }
+        yield { type: "step.end" };
+      }
+    }
+
+    const provider = new FiveToolProvider();
+    // budget = 4000 → 单条上限 800（20%）、单步合计上限 1600（40%）
+    const pipeline = new ContextPipeline({ maxContextTokens: 4000, reserveRatio: 0 });
+    const result = await runTurn(
+      {
+        provider,
+        model: "mock",
+        messages: [userMessage("call big")],
+        tools: [
+          { type: "function", function: { name: "big", description: "big", parameters: {} } },
+        ],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map([["big", bigTool]]),
+          approve: async () => true,
+          emit: () => {},
+        },
+        contextPipeline: {
+          pipeline,
+          input: { agentId: "a", mindContext: "", sourceId: "s1" },
+        },
+      },
+      () => {},
+    );
+
+    expect(assistantText(result.assistantMessage)).toBe("done");
+    const toolMsgs = provider.captured!.messages.filter((m) => m.role === "tool");
+    expect(toolMsgs).toHaveLength(5);
+    const texts = toolMsgs.map((m) => (m.content[0] as { type: "text"; text: string }).text);
+    const serialized = JSON.stringify({ success: true, output: chunk });
+    // 前两条完整保留（合计 ≈1430 ≤ 1600），未触发任何截断
+    expect(texts[0]).toBe(serialized);
+    expect(texts[1]).toBe(serialized);
+    // 第三条起被总量阀截小：逐条二次截断（保头尾 + 省略标记）或末位占位
+    expect(texts.slice(2).every((t) => counter.countText(t) < counter.countText(serialized))).toBe(
+      true,
+    );
+    expect(
+      texts.slice(2).some((t) => t.includes("省略") || t === TOOL_STEP_OVERFLOW_PLACEHOLDER),
+    ).toBe(true);
+    // 总量阀生效：5 条合计 ≤ 1600 + 占位容差（占位文本自身 tokens），远低于原始 ≈3500
+    const total = texts.reduce((sum, t) => sum + counter.countText(t), 0);
+    expect(total).toBeLessThanOrEqual(1600 + 2 * counter.countText(TOOL_STEP_OVERFLOW_PLACEHOLDER));
+  });
+});
+
+describe("M5 空内容 stop 兜底", () => {
+  /** 正常调用只发 step.end（空内容 stop）；带 M5 兜底提示的总结调用按行为产文本/空 */
+  class EmptyStopProvider implements LLMProvider {
+    name = "empty-stop";
+    calls: LLMChatParams[] = [];
+    constructor(private summaryBehavior: "text" | "empty" = "text") {}
+    supportsModel() {
+      return true;
+    }
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      this.calls.push(params);
+      const hasHint = params.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(EMPTY_STOP_SUMMARY_HINT)),
+      );
+      if (hasHint && this.summaryBehavior === "text") {
+        yield { type: "text.delta", delta: "补发的最终回复" };
+      }
+      yield { type: "step.end" };
+    }
+  }
+
+  function runEmptyStopTurn(provider: EmptyStopProvider) {
+    const events: LLMEvent[] = [];
+    const done = runTurn(
+      {
+        provider,
+        model: "empty-stop",
+        messages: [userMessage("hi")],
+        tools: [],
+        toolCtx: {
+          agentId: "a",
+          workspaceDir: "/tmp",
+          tools: new Map(),
+          approve: async () => true,
+          emit: (e) => events.push(e),
+        },
+      },
+      (e) => events.push(e),
+    );
+    return { events, done };
+  }
+
+  it("空内容 stop 视同异常收尾：追加无工具总结调用，回合不静默", async () => {
+    const provider = new EmptyStopProvider();
+    const { events, done } = runEmptyStopTurn(provider);
+    const result = await done;
+
+    // 空 stop 步 + 1 次兜底总结调用
+    expect(provider.calls).toHaveLength(2);
+    const summaryParams = provider.calls[1]!;
+    expect(summaryParams.tools).toBeUndefined();
+    expect(
+      summaryParams.messages.some(
+        (m) =>
+          m.role === "system" &&
+          m.content.some((c) => c.type === "text" && c.text.includes(EMPTY_STOP_SUMMARY_HINT)),
+      ),
+    ).toBe(true);
+    // 回合产出 assistant 文本，绝不静默
+    expect(assistantText(result.assistantMessage)).toBe("补发的最终回复");
+    expect(
+      result.appended
+        .at(-1)!
+        .content.some((c) => c.type === "text" && c.text === "补发的最终回复"),
+    ).toBe(true);
+    expect(events.some((e) => e.type === "text.delta" && e.delta === "补发的最终回复")).toBe(true);
+    expect(events.filter((e) => e.type === "turn.end")).toHaveLength(1);
+  });
+
+  it("兜底总结仍空：产出兜底回复（绝不静默）", async () => {
+    const provider = new EmptyStopProvider("empty");
+    const { events, done } = runEmptyStopTurn(provider);
+    const result = await done;
+
+    expect(provider.calls).toHaveLength(2);
+    expect(assistantText(result.assistantMessage)).toBe(MAX_STEPS_FALLBACK_REPLY);
+    expect(
+      result.appended
+        .at(-1)!
+        .content.some((c) => c.type === "text" && c.text === MAX_STEPS_FALLBACK_REPLY),
+    ).toBe(true);
+    expect(events.some((e) => e.type === "text.delta" && e.delta === MAX_STEPS_FALLBACK_REPLY)).toBe(
+      true,
+    );
   });
 });

@@ -78,6 +78,8 @@ class HandoffWatermarkProvider implements LLMProvider {
       toolArgs?: Array<Record<string, unknown>>;
       hitUsage?: { promptTokens: number; completionTokens: number };
       normalUsage?: { promptTokens: number; completionTokens: number };
+      /** M1 夹具：非工具收尾步（长文本/max_tokens 形状）——直接产文本，usage 撞顶 */
+      nonToolStop?: { text: string };
     } = {},
   ) {}
   supportsModel() {
@@ -118,6 +120,15 @@ class HandoffWatermarkProvider implements LLMProvider {
       }
       yield { type: "text.delta", delta: this.opts.summaryText ?? "进展X；下一步Y" };
       yield { type: "step.end" };
+      return;
+    }
+    // M1 夹具：非工具收尾步——直接产文本（stop），usage 撞顶
+    if (this.opts.nonToolStop !== undefined) {
+      yield { type: "text.delta", delta: this.opts.nonToolStop.text };
+      yield {
+        type: "step.end",
+        usage: this.opts.hitUsage ?? { promptTokens: 850, completionTokens: 100 },
+      };
       return;
     }
     const stepIdx = this.toolStepsDone++;
@@ -336,21 +347,53 @@ describe("水位撞顶换班移交（交接书消息载体）", () => {
     expect(prevSection.length).toBe(3000);
   });
 
-  it("写作调用 abort（K2）：快速失败降级为兜底总结，交接书仍随 turn 产出", async () => {
+  it("写作调用 abort（K2+M3）：取消即中止——runTurn 上抛 abort，换班链不再推进", async () => {
     const controller = new AbortController();
     const provider = new HandoffWatermarkProvider({
       writeBehavior: "abort",
       abortController: controller,
     });
-    const result = await runWatermarkHandoff(provider, { signal: controller.signal });
+    await expect(runWatermarkHandoff(provider, { signal: controller.signal })).rejects.toThrow(
+      "aborted",
+    );
 
     expect(controller.signal.aborted).toBe(true);
     // abort 后写作流只多产出一帧即被中止（在途写作快速失败）
     expect(provider.postAbortYields).toBe(1);
+    // 兜底总结已正常产出，但 abort 不被吞：写作间 error 原样上抛，回合中止、不产交接书
+    expect(provider.summaryParams).toHaveLength(1);
+    expect(provider.writeParams).toHaveLength(1);
+  });
+
+  it("M1：非工具收尾步超窗也过一次撞顶判定——按既有撞顶路径产交接书", async () => {
+    const persisted: ChatMessage[][] = [];
+    const provider = new HandoffWatermarkProvider({
+      nonToolStop: { text: "被截断的长回答" },
+    });
+    const result = await runWatermarkHandoff(provider, {
+      onStepAppended: async (msgs) => {
+        persisted.push(msgs);
+      },
+    });
+
+    // 非工具收尾步 usage 950/1000 ≥ 0.9：视同水位撞顶，走兜底产交接书
+    expect(result.watermarkStopped).toBe(true);
     expect(result.handoffBook).toBeDefined();
+    // 非工具步 + 兜底总结 + 瘦身写作 = 3 次 LLM 调用
+    expect(provider.calls).toBe(3);
+    expect(provider.summaryParams).toHaveLength(1);
+    expect(provider.writeParams).toHaveLength(1);
     const bookText = textOf(result.handoffBook!);
-    expect(bookText).toContain("进展X；下一步Y");
-    expect(bookText).not.toContain("写作半截文本");
+    expect(bookText.startsWith(HANDOFF_BOOK_PREFIX)).toBe(true);
+    expect(bookText).toContain("第 1/5 棒");
+    expect(bookText).toContain("950/1000");
+    // 本回合无工具调用 → 足迹行省略
+    expect(bookText).not.toContain("本棒足迹：");
+    // 原回答不丢：留在历史，兜底回复与交接书依次尾随（撞顶路径复用）
+    expect(result.messages.some((m) => textOf(m) === "被截断的长回答")).toBe(true);
+    expect(textOf(result.assistantMessage)).toBe("进展X；下一步Y");
+    // 交接书经落盘钩子持久化
+    expect(persisted.flat().some((m) => textOf(m) === bookText)).toBe(true);
   });
 
   it("机械上限（K3）：本棒回顾素材截 2000、写作产出内容截 3000", async () => {

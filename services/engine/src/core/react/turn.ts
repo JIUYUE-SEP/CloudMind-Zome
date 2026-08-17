@@ -9,7 +9,11 @@ import {
   type AssembleInput,
   type ContextPipeline,
 } from "../../context/pipeline.js";
-import { TOOL_RESULT_BUDGET_RATIO } from "../../context/truncate.js";
+import {
+  DEFAULT_MAX_TOOL_RESULT_TOKENS,
+  TOOL_RESULT_BUDGET_RATIO,
+  truncateToolResultText,
+} from "../../context/truncate.js";
 import { getTokenCounter } from "../../context/token-counter.js";
 import { stripUnansweredToolCalls } from "../../context/history-sanitize.js";
 import { logger } from "../../logger.js";
@@ -26,6 +30,9 @@ export const MAX_STEPS_FALLBACK_REPLY = "我查了很多资料但没能整理好
 /** 水位撞顶兜底也失败/空文本时的最终兜底回复（与保险丝文案可区分） */
 export const CONTEXT_WATERMARK_FALLBACK_REPLY =
   "本轮上下文已接近窗口上限，未能整理好答案，请再问我一次";
+/** 空内容收尾兜底（M5）：空内容 stop 视同异常收尾时，追加无工具总结调用的 system 提示 */
+export const EMPTY_STOP_SUMMARY_HINT =
+  "本轮输出异常中断（空内容收尾），请根据已获得的信息直接给出最终回复，不要再调用工具";
 
 /** 交接书消息载体前缀（水位撞顶=换班移交：换班不死） */
 export const HANDOFF_BOOK_PREFIX = "[交接书]";
@@ -60,7 +67,15 @@ const routerModelMismatchWarned = new Set<string>();
 const CONTEXT_WARN_RATIO = 0.7;
 const CONTEXT_STOP_RATIO = 0.9;
 
-type SummaryReason = "max_steps" | "watermark";
+/**
+ * M4：单步工具结果合计占上下文预算的上限——单条 20%（TOOL_RESULT_BUDGET_RATIO）
+ * 之外加总量阀，防一步多工具叠加注入击穿窗口（5 条 × 20% = 100%）。
+ */
+const TOOL_STEP_TOTAL_BUDGET_RATIO = 0.4;
+/** M4：合计预算耗尽时末位工具结果的占位文本（绝不静默吞掉整条结果） */
+export const TOOL_STEP_OVERFLOW_PLACEHOLDER = "[工具结果超出单步合计预算，已省略]";
+
+type SummaryReason = "max_steps" | "watermark" | "empty_stop";
 
 export interface TurnInput {
   provider: LLMProvider;
@@ -214,9 +229,22 @@ function makeFallbackReply(
 }
 
 /**
- * 撞顶兜底总结调用：maxSteps 全部消耗在工具循环或水位撞顶（最后一次仍是
- * tool_use）时，在 messages 尾部追加 system 提示、tools 传空，强制模型产出最终文本。
- * 调用失败/违规工具调用/空文本 → 产出兜底回复文本（绝不静默）。
+ * M3：abort 判定——signal 已中止 / AbortError / step 层抛出的 "aborted" 错误
+ * （流式循环内的 abort 会被 StepStreamError 包裹，原始错误挂在 cause 上）。
+ */
+function isAbortError(err: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal?.aborted) return true;
+  if (err instanceof Error && (err.name === "AbortError" || err.message === "aborted")) return true;
+  const cause = err instanceof Error ? err.cause : undefined;
+  return cause instanceof Error && cause.message === "aborted";
+}
+
+/**
+ * 撞顶兜底总结调用：maxSteps 全部消耗在工具循环、水位撞顶（最后一次仍是
+ * tool_use）或空内容 stop 收尾（M5）时，在 messages 尾部追加 system 提示、
+ * tools 传空，强制模型产出最终文本。
+ * 调用失败/违规工具调用/空文本 → 产出兜底回复文本（绝不静默）；
+ * abort 除外——取消即中止，原样上抛（M3），不再降级兜底。
  */
 async function runMaxStepsSummary(
   input: TurnInput,
@@ -226,7 +254,11 @@ async function runMaxStepsSummary(
   reason: SummaryReason,
 ): Promise<ChatMessage> {
   const hintText =
-    reason === "watermark" ? CONTEXT_WATERMARK_SUMMARY_HINT : MAX_STEPS_SUMMARY_HINT;
+    reason === "watermark"
+      ? CONTEXT_WATERMARK_SUMMARY_HINT
+      : reason === "empty_stop"
+        ? EMPTY_STOP_SUMMARY_HINT
+        : MAX_STEPS_SUMMARY_HINT;
   const hint: ChatMessage = {
     id: `msg_${randomUUID()}`,
     role: "system",
@@ -253,7 +285,9 @@ async function runMaxStepsSummary(
       },
       emit,
     );
-  } catch {
+  } catch (err) {
+    // M3：abort 不吞——取消即中止（原样上抛，换班链不再推进）；其他错误维持兜底语义
+    if (isAbortError(err, input.signal)) throw err;
     return makeFallbackReply(emit, reason);
   }
   if (result.stopReason === "tool_use" || assistantText(result.assistantMessage).length === 0) {
@@ -297,7 +331,8 @@ function lastHandoffBookText(messages: ChatMessage[]): string | undefined {
  * 上一棒交接书优先 handoff.bookText（控制面权威），窗口扫描仅作兜底。
  * K3：上一棒交接书截 3000、本棒回顾素材截 2000、写作产出截 3000（省略号标注）。
  * 单步（maxSteps=1 语义）、无工具；内部调用不向用户流式转发（no-op emit）。
- * 失败/空文本/违规工具调用/abort → undefined（调用方降级为兜底总结文本直接装入）。
+ * 失败/空文本/违规工具调用 → undefined（调用方降级为兜底总结文本直接装入）；
+ * abort 除外——取消即中止，原样上抛（M3），换班链不再推进。
  */
 async function writeHandoffBookContent(
   input: TurnInput,
@@ -353,7 +388,9 @@ async function writeHandoffBookContent(
     const text = assistantText(result.assistantMessage);
     if (result.stopReason === "tool_use" || text.length === 0) return undefined;
     return truncateHandoffText(text, HANDOFF_WRITTEN_MAX);
-  } catch {
+  } catch (err) {
+    // M3：abort 不吞——取消即中止（原样上抛）；其他错误维持降级语义
+    if (isAbortError(err, input.signal)) throw err;
     return undefined;
   }
 }
@@ -384,6 +421,29 @@ function contextUsedTokens(
       : result.usage.promptTokens + result.usage.completionTokens;
   if (measured === undefined) return estimated;
   return Math.max(estimated, measured);
+}
+
+/**
+ * M4：单步工具结果合计上限的二次截断——按序消耗合计预算，超额结果沿用
+ * 单条截断策略（truncateToolResultText：保头尾 + 省略标记）截到剩余预算；
+ * 预算耗尽的末位结果留占位文本，绝不静默吞掉整条（模型需感知该结果存在过）。
+ */
+function enforceStepToolResultTotal(toolMessages: ChatMessage[], totalBudget: number): void {
+  const counter = getTokenCounter();
+  let used = 0;
+  for (const message of toolMessages) {
+    const part = message.content[0];
+    if (!part || part.type !== "text") continue;
+    const remaining = totalBudget - used;
+    const tokens = counter.countText(part.text);
+    if (tokens <= remaining) {
+      used += tokens;
+      continue;
+    }
+    const truncated = truncateToolResultText(part.text, Math.max(remaining, 0), counter);
+    part.text = truncated === "" ? TOOL_STEP_OVERFLOW_PLACEHOLDER : truncated;
+    used += counter.countText(part.text);
+  }
 }
 
 /** 70% 提醒 system 消息（每回合至多一条，文案含已用/窗口与收敛指引） */
@@ -446,6 +506,7 @@ export async function runTurn(
 
   // ContextPipeline v2：每轮统一组装（超预算自动降级）
   let maxToolResultTokens: number | undefined;
+  let maxToolStepTotalTokens: number | undefined;
   if (input.contextPipeline) {
     const assembled = await input.contextPipeline.pipeline.assemble({
       ...input.contextPipeline.input,
@@ -459,7 +520,14 @@ export async function runTurn(
       1,
       Math.floor(input.contextPipeline.pipeline.budgetTokens * TOOL_RESULT_BUDGET_RATIO),
     );
+    // M4：同预算的单步合计上限（40%）——单条 20% × 多工具可叠加至 100%，总量阀兜底
+    maxToolStepTotalTokens = Math.max(
+      1,
+      Math.floor(input.contextPipeline.pipeline.budgetTokens * TOOL_STEP_TOTAL_BUDGET_RATIO),
+    );
   }
+  // M4 生效口径：无 pipeline 时按单条缺省上限（≈预算 20%，16000）同比例放大 = 32000
+  const stepToolTotalCap = maxToolStepTotalTokens ?? 2 * DEFAULT_MAX_TOOL_RESULT_TOKENS;
 
   const maxSteps = input.maxSteps ?? 100;
   let assistantMessage: ChatMessage | undefined;
@@ -470,6 +538,7 @@ export async function runTurn(
   let step = 0;
   let watermarked = false; // 本回合已发过 70% 提醒（每回合最多一次）
   let watermarkStop = false; // 本回合已撞 90% 顶（跳出循环走兜底）
+  let emptyStop = false; // 本回合以空内容 stop 收尾（M5：视同异常收尾走兜底，绝不静默）
   // 最近一次水位检查的 U/W（撞顶兜底时用于交接书元信息；预检/步后都写）
   let watermarkUsed: number | undefined;
   let watermarkWindow: number | undefined;
@@ -593,6 +662,8 @@ export async function runTurn(
 
       const stepMessages: ChatMessage[] = [result.assistantMessage];
       if (result.toolMessages) {
+        // M4：单步多工具合计阀——合计超 40% 预算的部分逐条二次截断（保头尾）
+        enforceStepToolResultTotal(result.toolMessages, stepToolTotalCap);
         messages.push(...result.toolMessages);
         toolMessages.push(...result.toolMessages);
         appended.push(...result.toolMessages);
@@ -607,7 +678,8 @@ export async function runTurn(
     }
 
     // 水位判据（改动一）：每步结束后（工具结果已追加、下一步发起前）算 r = U / W。
-    // 只作用于还会继续的 tool_use 步：撞顶即收（走兜底绝不静默），提醒则继续。
+    // tool_use 步：撞顶即收（走兜底绝不静默），提醒则继续；
+    // 非工具收尾步（M1）：break 前也判一次撞顶，超窗按既有撞顶路径产交接书。
     if (result.stopReason === "tool_use") {
       const used = contextUsedTokens(result, messages, tools);
       const window = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
@@ -678,32 +750,66 @@ export async function runTurn(
     }
 
     if (result.stopReason !== "tool_use") {
+      // M1（水位判定盲区）：非工具收尾步（长文本/max_tokens 等）break 前也过一次
+      // 撞顶判定——超窗视同水位撞顶，按既有撞顶路径走兜底产交接书；
+      // 提醒带不处理（回合本就要结束，提醒无意义）。
+      const used = contextUsedTokens(result, messages, tools);
+      const window = input.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      watermarkUsed = used;
+      watermarkWindow = window;
+      const ratio = used / window;
+      if (ratio >= CONTEXT_STOP_RATIO) {
+        logger.info(
+          {
+            agentId: input.toolCtx.agentId,
+            phase: "step",
+            step,
+            used,
+            window,
+            ratio: Number(ratio.toFixed(4)),
+          },
+          "[watermark] 非工具收尾步撞顶：跳出循环走水位兜底",
+        );
+        watermarkStop = true;
+      }
+      // M5：空内容 stop 视同异常收尾——走兜底回复路径（无工具总结/兜底文案），绝不静默
+      if (!hasAssistantContent(result.assistantMessage)) {
+        emptyStop = true;
+      }
       break;
     }
   }
 
   // 撞顶兜底（真机实锤）：保险丝（循环耗尽）或水位撞顶且最后一次仍是工具调用——
   // 直接退出会让回合静默结束（无 assistant 回复）。追加一次无工具总结调用，绝不静默。
-  if (step >= maxSteps || watermarkStop) {
-    // H4（日志补全）：兜底决策留痕，区分水位撞顶与保险丝耗尽
+  // M5：空内容 stop 收尾视同异常收尾，同走此兜底（与撞顶兜底同哲学）。
+  if (step >= maxSteps || watermarkStop || emptyStop) {
+    const summaryReason: SummaryReason = watermarkStop
+      ? "watermark"
+      : emptyStop
+        ? "empty_stop"
+        : "max_steps";
+    // H4（日志补全）：兜底决策留痕，区分水位撞顶/保险丝耗尽/空内容收尾
     logger.info(
       {
         agentId: input.toolCtx.agentId,
         phase: "fallback",
-        reason: watermarkStop ? "watermark" : "max_steps",
+        reason: summaryReason,
         step,
         maxSteps,
       },
       watermarkStop
         ? "[watermark] 水位撞顶兜底：追加无工具总结"
-        : "[watermark] 保险丝耗尽兜底：追加无工具总结",
+        : emptyStop
+          ? "[react] 空内容收尾兜底（M5）：追加无工具总结"
+          : "[watermark] 保险丝耗尽兜底：追加无工具总结",
     );
     const summary = await runMaxStepsSummary(
       input,
       messages,
       maxToolResultTokens,
       emit,
-      watermarkStop ? "watermark" : "max_steps",
+      summaryReason,
     );
     messages.push(summary);
     appended.push(summary);
