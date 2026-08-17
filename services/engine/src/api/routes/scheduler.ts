@@ -4,7 +4,6 @@ import { SchedulerRepository } from "../../scheduler/repository.js";
 import { computeNextRun } from "../../scheduler/engine.js";
 import { isValidAgentId } from "@mindcloud/shared";
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function registerSchedulerRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/scheduler/:agentId", {
     schema: { summary: "List scheduled tasks for an agent", tags: ["scheduler"] },
@@ -24,6 +23,10 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     if (!isValidAgentId(agentId)) {
       return reply.status(400).send({ error: "Invalid agent id" });
     }
+    // M27：拒绝幽灵任务——agent 不存在时创建的任务永远不会被 tick 扫到执行
+    // （tick 只遍历 agentRepository.list()），与 agents/plans 路由同口径 404
+    const agent = await context.agentRepository.get(agentId);
+    if (!agent) return reply.status(404).send({ error: "Agent not found" });
     // M28：无 body/无 content-type 时 request.body 为 undefined，?? {} 兜底避免 TypeError 500（同 plans.ts 口径）
     const body = (request.body ?? {}) as { description: string; prompt: string; cron: string; enabled?: boolean };
     if (!body.description || !body.prompt || !body.cron) {
@@ -52,6 +55,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     if (!isValidAgentId(agentId)) {
       return reply.status(400).send({ error: "Invalid agent id" });
     }
+    // M27：同 POST——幽灵 agent 不允许更新任务
+    const agent = await context.agentRepository.get(agentId);
+    if (!agent) return reply.status(404).send({ error: "Agent not found" });
     const body = (request.body ?? {}) as Partial<{ description: string; prompt: string; cron: string; enabled: boolean }>;
     const repo = new SchedulerRepository(agentId);
     const task = await repo.get(taskId);

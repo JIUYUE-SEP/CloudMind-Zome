@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Scheduler, type SchedulerDeps } from "../../src/scheduler/scheduler.js";
+import { computeNextRun } from "../../src/scheduler/engine.js";
 import { ErrorThrottle } from "../../src/plugins/log/error-throttle.js";
 import { logger } from "../../src/logger.js";
 import { SchedulerRepository } from "../../src/scheduler/repository.js";
@@ -234,6 +235,86 @@ describe("Scheduler", () => {
 
     errorSpy.mockRestore();
     infoSpy.mockRestore();
+    scheduler.stop();
+  });
+
+  it("M27：任务失败一次性重试——nextRunAt 改到 60s 后补偿，任务保持启用", async () => {
+    const worker = makeWorker();
+    (worker.runScheduledTask as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
+    const scheduler = new Scheduler(makeDeps(worker));
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await (scheduler as unknown as SchedulerInternals).runTask(task, "agent-1");
+
+    const updated = await repo.get(task.id);
+    expect(updated?.enabled).toBe(true);
+    // 补偿语义：nextRunAt 落在 ~60s 后补跑一次，而非干等下个 cron 周期（明早 9 点）
+    const retryAt = new Date(updated!.nextRunAt!).getTime();
+    expect(retryAt).toBeGreaterThan(Date.now() + 50_000);
+    expect(retryAt).toBeLessThanOrEqual(Date.now() + 70_000);
+    scheduler.stop();
+  });
+
+  it("M27：重试仍失败不再重试——落到下个 cron 周期，不无限重试", async () => {
+    const worker = makeWorker();
+    (worker.runScheduledTask as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
+    const scheduler = new Scheduler(makeDeps(worker));
+    const internals = scheduler as unknown as SchedulerInternals;
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await internals.runTask(task, "agent-1"); // 首次失败 → 排一次性重试
+    const retryTask = (await repo.get(task.id))!;
+    await internals.runTask(retryTask, "agent-1"); // 重试仍失败 → 不再重试
+
+    const updated = await repo.get(task.id);
+    // nextRunAt 是本轮执行前推进的下个 cron 周期，而不是又一个 60s 重试
+    expect(updated?.nextRunAt).toBe(computeNextRun("0 9 * * *"));
+    scheduler.stop();
+  });
+
+  it("M27：跑通后重置重试额度——下个周期失败仍可补跑一次", async () => {
+    const worker = makeWorker();
+    const runMock = worker.runScheduledTask as ReturnType<typeof vi.fn>;
+    const scheduler = new Scheduler(makeDeps(worker));
+    const internals = scheduler as unknown as SchedulerInternals;
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    runMock.mockRejectedValueOnce(new Error("boom"));
+    await internals.runTask(task, "agent-1"); // 失败 → 排重试
+    const retryTask = (await repo.get(task.id))!;
+    await internals.runTask(retryTask, "agent-1"); // 重试成功 → 额度重置
+    const okTask = (await repo.get(task.id))!;
+    runMock.mockRejectedValueOnce(new Error("boom"));
+    await internals.runTask(okTask, "agent-1"); // 再次失败 → 仍获得一次重试
+
+    const updated = await repo.get(task.id);
+    const retryAt = new Date(updated!.nextRunAt!).getTime();
+    expect(retryAt).toBeGreaterThan(Date.now() + 50_000);
+    expect(retryAt).toBeLessThanOrEqual(Date.now() + 70_000);
     scheduler.stop();
   });
 });

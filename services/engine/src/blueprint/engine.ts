@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { logger } from "../logger.js";
 import type { ApiContext } from "../api/context.js";
 import { getBuiltinTools } from "../tools/builtin/index.js";
 import { getDataDir } from "../config/paths.js";
@@ -29,6 +30,10 @@ export async function executeBlueprint(
   };
 
   try {
+    // M25：执行前结构校验——悬空边/分支边此前被 getNextNode 静默截断，
+    // 现在明确报错不执行（status=failed，原因写入 logs）
+    validateBlueprint(blueprint);
+
     const startNode = blueprint.nodes.find((n) => n.type === "start");
     if (!startNode) throw new Error("blueprint missing start node");
 
@@ -45,9 +50,42 @@ export async function executeBlueprint(
     execution.logs.push(`error: ${String(err)}`);
   } finally {
     execution.completedAt = new Date().toISOString();
+    // M25：本次执行的工具工作区（blueprint-workspace/<executionId>）用后即焚；
+    // 清理失败只记 warn，不炸主流程（执行结果已定型）
+    try {
+      await fs.rm(path.join(getDataDir(), "blueprint-workspace", execution.id), {
+        recursive: true,
+        force: true,
+      });
+    } catch (err) {
+      logger.warn({ err, executionId: execution.id }, "blueprint workspace cleanup failed");
+    }
   }
 
   return execution;
+}
+
+/**
+ * M25 结构校验：本引擎只支持线性链（getNextNode 只取首条出边），
+ * 因此悬空边（source/target 指向不存在节点）与分支边（同一 source 多条出边）
+ * 都视为非法蓝图，直接抛错而不是静默丢弃。
+ */
+function validateBlueprint(blueprint: Blueprint): void {
+  const nodeIds = new Set(blueprint.nodes.map((n) => n.id));
+  const sources = new Set<string>();
+  for (const edge of blueprint.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      throw new Error(
+        `blueprint edge ${edge.source} -> ${edge.target} references a missing node`
+      );
+    }
+    if (sources.has(edge.source)) {
+      throw new Error(
+        `blueprint node ${edge.source} has multiple outgoing edges (branching is not supported)`
+      );
+    }
+    sources.add(edge.source);
+  }
 }
 
 async function executeNode(
@@ -114,9 +152,15 @@ async function executeLlmNode(
     let fullText = "";
     let stepHasToolCall = false;
     let finished = false;
+    // M26：超时通道——resolve 占位文本的同时中止在途/排队 job，否则蓝图已
+    // 拿 "(timeout)" 走人，orphan 回合仍在后台烧 token。signal 语义对齐
+    // agent-worker：排队 job 直接跳过，运行中 job 在步骤边界中止。
+    const abort = new AbortController();
     const timeout = setTimeout(() => {
       if (!finished) {
         finished = true;
+        abort.abort();
+        execution.logs.push(`llm node ${node.id} timed out after ${LLM_TIMEOUT_MS}ms, job aborted`);
         resolve(stepText || fullText || "(timeout)");
       }
     }, LLM_TIMEOUT_MS);
@@ -156,6 +200,8 @@ async function executeLlmNode(
       // 压缩/向量索引（worker 侧 ephemeral 标记，人格历史零污染）
       ephemeral: true,
       messages: [message],
+      // M26：超时中止通道（见上方 timeout）
+      signal: abort.signal,
       onEvent,
     });
   });

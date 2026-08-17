@@ -28,11 +28,16 @@ function errKey(err: unknown): string {
   return String(err).slice(0, 120);
 }
 
+/** M27：任务失败后一次性重试的延迟（与 cron 周期解耦，分钟级补偿即可） */
+const RETRY_DELAY_MS = 60_000;
+
 export class Scheduler {
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
   private runningTick = false;
   private runningTasks = new Set<string>();
+  /** M27：已用掉一次性重试额度的任务（内存态；进程重启视为新一轮，重新获得一次额度） */
+  private retriedTasks = new Set<string>();
   /** P4-4：tick/任务错误节流（同 key 退避记录+计数+恢复，不每秒刷屏） */
   private readonly errors: ErrorThrottle;
 
@@ -99,8 +104,9 @@ export class Scheduler {
   private async runTask(task: ScheduledTask, agentId: string): Promise<void> {
     if (this.runningTasks.has(task.id)) return;
     this.runningTasks.add(task.id);
+    // repo 提升到 try 外：catch 里的失败补偿（M27 重试排程）也要用它落盘
+    const repo = new SchedulerRepository(agentId);
     try {
-      const repo = new SchedulerRepository(agentId);
       // Advance schedule before execution so a long-running job does not pile
       // up duplicate triggers while it is still in progress.
       task.lastRunAt = new Date().toISOString();
@@ -132,8 +138,28 @@ export class Scheduler {
       for (const { key, hit } of this.errors.recoverPrefix(`task:${task.id}:`)) {
         logger.info({ key, count: hit.count, suppressed: hit.suppressed }, `scheduled task ${task.id} 已恢复`);
       }
+      // M27：跑通即重置一次性重试额度（下个周期失败仍可补跑一次）
+      this.retriedTasks.delete(task.id);
     } catch (err) {
       this.logThrottled("error", `task:${task.id}:${errKey(err)}`, { err }, `failed to run scheduled task ${task.id}`);
+      // M27 失败补偿：nextRunAt 已在执行前推进，失败会让本次触发静默丢失。
+      // 兜底语义 = 一次性重试：把 nextRunAt 改到 RETRY_DELAY_MS 后补跑一次；
+      // 仍失败则放弃本次触发、等下个 cron 周期，不无限重试。enabled=false
+      // （cron 已失效被禁用）的任务不重试。
+      if (task.enabled && !this.retriedTasks.has(task.id)) {
+        this.retriedTasks.add(task.id);
+        try {
+          task.nextRunAt = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+          await repo.update(task);
+          logger.warn({ taskId: task.id, nextRunAt: task.nextRunAt }, `scheduled task ${task.id} failed, retrying once at ${task.nextRunAt}`);
+        } catch (updateErr) {
+          // 重试排程落盘失败只记 warn——主错误已记录，不掩盖
+          logger.warn({ err: updateErr, taskId: task.id }, `scheduled task ${task.id} retry schedule persist failed`);
+        }
+      } else if (this.retriedTasks.has(task.id)) {
+        // 重试也失败：清掉额度标记，下次 cron 周期失败可再获一次重试
+        this.retriedTasks.delete(task.id);
+      }
     } finally {
       this.runningTasks.delete(task.id);
     }

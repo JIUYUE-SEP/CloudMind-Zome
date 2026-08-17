@@ -111,4 +111,26 @@ describe("Scheduler API", () => {
     expect(res.body.error).toBe("Task not found");
     await app.close();
   });
+
+  it("M27：POST 幽灵 agent 返回 404（拒绝幽灵任务）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/scheduler/ghost").send({
+      description: "task",
+      prompt: "do it",
+      cron: "0 9 * * *",
+    });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    await app.close();
+  });
+
+  it("M27：PUT 幽灵 agent 返回 404（拒绝幽灵任务）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server)
+      .put("/scheduler/ghost/whatever")
+      .send({ prompt: "x" });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    await app.close();
+  });
 });

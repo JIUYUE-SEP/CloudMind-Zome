@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -234,6 +234,122 @@ describe("executeBlueprint", () => {
       await expect(fs.readFile(path.join(agentDir, "topic-state.json"), "utf-8")).rejects.toThrow();
     } finally {
       await cleanup();
+    }
+  });
+
+  it("M25：边 target 指向不存在节点 → 明确报错不执行（不再静默截断）", async () => {
+    const blueprint: Blueprint = {
+      id: "b1",
+      name: "Test",
+      nodes: [
+        { id: "start", type: "start", x: 0, y: 0 },
+        { id: "end", type: "end", x: 200, y: 0 },
+      ],
+      edges: [{ source: "start", target: "ghost" }],
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const result = await executeBlueprint(blueprint, mockContext);
+    expect(result.status).toBe("failed");
+    expect(result.logs.join("\n")).toContain("missing node");
+  });
+
+  it("M25：边 source 指向不存在节点 → 明确报错不执行", async () => {
+    const blueprint: Blueprint = {
+      id: "b1",
+      name: "Test",
+      nodes: [
+        { id: "start", type: "start", x: 0, y: 0 },
+        { id: "end", type: "end", x: 200, y: 0 },
+      ],
+      edges: [{ source: "ghost", target: "end" }],
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const result = await executeBlueprint(blueprint, mockContext);
+    expect(result.status).toBe("failed");
+    expect(result.logs.join("\n")).toContain("missing node");
+  });
+
+  it("M25：分支边（同一 source 多条出边）→ 明确报错不执行", async () => {
+    const blueprint: Blueprint = {
+      id: "b1",
+      name: "Test",
+      nodes: [
+        { id: "start", type: "start", x: 0, y: 0 },
+        { id: "end-a", type: "end", x: 200, y: 0 },
+        { id: "end-b", type: "end", x: 200, y: 100 },
+      ],
+      edges: [
+        { source: "start", target: "end-a" },
+        { source: "start", target: "end-b" },
+      ],
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const result = await executeBlueprint(blueprint, mockContext);
+    expect(result.status).toBe("failed");
+    expect(result.logs.join("\n")).toContain("multiple outgoing edges");
+  });
+
+  it("M25：执行后清理 blueprint-workspace/<executionId>（不泄漏磁盘）", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "blueprint-workspace-test-"));
+    const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+    try {
+      const blueprint: Blueprint = {
+        id: "b1",
+        name: "Test",
+        nodes: [
+          { id: "start", type: "start", x: 0, y: 0 },
+          {
+            id: "tool",
+            type: "tool",
+            x: 200,
+            y: 0,
+            config: { toolName: "list_files", arguments: { path: "." } },
+          },
+          { id: "end", type: "end", x: 400, y: 0 },
+        ],
+        edges: [
+          { source: "start", target: "tool" },
+          { source: "tool", target: "end" },
+        ],
+        createdAt: "2024-01-01",
+        updatedAt: "2024-01-01",
+      };
+      const result = await executeBlueprint(blueprint, mockContext);
+      expect(result.status).toBe("completed");
+      // 工具节点确实跑过，且本次执行的工作区已随收尾删除
+      expect(result.outputs["tool"]).toBeTruthy();
+      await expect(
+        fs.stat(path.join(tmpDir, "blueprint-workspace", result.id))
+      ).rejects.toThrow();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      restoreDataDir(originalDataDir);
+    }
+  });
+
+  it("M26：LLM 节点超时中止在途 job（signal aborted，orphan 回合不再烧 token）", async () => {
+    vi.useFakeTimers();
+    try {
+      const enqueued: Job[] = [];
+      // worker 永不出事件：只能靠 30s 超时兜底
+      const context = {
+        getAgentWorker: async () => ({ enqueue: (job: Job) => { enqueued.push(job); } }),
+      } as unknown as ApiContext;
+      const promise = executeBlueprint(llmBlueprint(), context);
+      await vi.advanceTimersByTimeAsync(30000);
+      const result = await promise;
+      expect(result.status).toBe("completed");
+      expect(result.outputs["end"]).toBe("(timeout)");
+      expect(enqueued).toHaveLength(1);
+      // 超时同时 abort 入队 job：排队跳过 / 运行中步骤边界中止（agent-worker 语义）
+      expect(enqueued[0]!.signal?.aborted).toBe(true);
+      expect(result.logs.join("\n")).toContain("job aborted");
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
