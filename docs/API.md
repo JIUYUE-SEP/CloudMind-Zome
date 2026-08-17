@@ -2,6 +2,14 @@
 
 Engine 默认监听 `http://127.0.0.1:8848`（可用 `PORT` 环境变量修改）。所有端点**无前缀**（直接挂在根路径下）。
 
+## 鉴权
+
+除 `GET /health` 与 `/ws/*`（WebSocket 握手经 `Sec-WebSocket-Protocol` 携带 token）外，**所有 REST 端点（含 `/docs`）**都要求 `Authorization: Bearer <token>`：
+
+- token 为 32 字节随机值，自动生成并落盘 `DATA_DIR/auth-token`（权限 0600）；可用环境变量 `CLOUDMIND_AUTH_TOKEN` 覆盖。文件读取失败或内容损坏会显式报错，绝不静默重建覆盖
+- 未携带或错误 token 返回 `401`；比较为常量时间
+- 浏览器直开 Swagger UI 会因缺 token 得到 401——前端 dev 模式下 Nuxt dev server 经 `/api/engine-token` 自动下发 token，无需手动配置
+
 ## OpenAPI / Swagger
 
 启动 engine 后访问：
@@ -61,7 +69,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Compute
 
 - `GET /compute/providers` — 列出 Provider
-- `POST /compute/providers` — 创建 Provider（`models` 数组逐型号走白名单校验，重复 id 返回 400）
+- `POST /compute/providers` — 创建 Provider（`models` 数组逐型号走白名单校验；provider id 当前**无重复校验**，同 id 会落两条配置——已知缺陷，创建方需自行保证唯一）
 - `PUT /compute/providers/:id` — 更新 Provider（改 baseUrl/apiKey/apiMode/超时后，引用它的 worker 会被退役重建，下一次调用即生效）
 - `DELETE /compute/providers/:id` — 删除 Provider（引用它的 worker 一并退役；删除后相关 agent 报"Provider 不存在"明确错误，不会回落旧快照）
 - `POST /compute/providers/:id/test` — 测试 Provider 连接
@@ -69,6 +77,8 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `POST /compute/providers/:id/models` — 为 Provider 添加模型（字段同 `buildModelFromBody` 白名单校验；型号 id 已存在返回 409）
 - `PUT /compute/providers/:id/models/:modelId` — 更新模型（`id` 不可改；`apiMode` 接受三族值，传 `null` 表示显式清除型号级覆盖、回退 provider 级）
 - `DELETE /compute/providers/:id/models/:modelId` — 删除模型
+
+> 三个型号端点（POST/PUT/DELETE）在配置保存成功后同样退役引用该 provider 的全部 worker（与 provider 级 PUT/DELETE 同语义），首个型号级 `apiMode` 覆盖保存后下一次调用即生效，无需重启。
 
 **Provider 配置字段（`ProviderConfig`）**：
 

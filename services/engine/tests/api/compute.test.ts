@@ -297,6 +297,133 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  // H6：型号端点（POST/PUT/DELETE models）变更后同样退役引用该 provider 的 worker——
+  // hasModelApiModeOverride 只在 worker 创建时判定，退役后下一次 getOrCreate 才按活配置重建
+  it("H6：POST 新增型号（首个型号级 apiMode 覆盖）退役引用该 provider 的 worker", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-m-add",
+      displayName: "Model Add",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "key",
+      models: [],
+    });
+    await context.agentRepository.save("a-m-add", {
+      id: "a-m-add",
+      name: "Model Add",
+      persona: "",
+      model: "mock",
+      providerId: "p-m-add",
+      skills: [],
+      tools: [],
+    });
+
+    let creates = 0;
+    const retired = new Set<string>();
+    context.retireAgentWorker = (agentId: string) => {
+      retired.add(agentId);
+    };
+    context.getAgentWorker = async () => {
+      creates++;
+      return { workerTag: creates } as unknown as AgentWorker;
+    };
+
+    await context.getAgentWorker("a-m-add");
+    const res = await authedRequest(app.server)
+      .post("/compute/providers/p-m-add/models")
+      .send({ id: "m-1", modelType: "llm", apiMode: "responses" });
+    expect(res.status).toBe(200);
+    expect(res.body.apiMode).toBe("responses");
+    // worker 被退役：下一次 getAgentWorker 重建（hasModelApiModeOverride 按活配置重判）
+    expect(retired.has("a-m-add")).toBe(true);
+    await context.getAgentWorker("a-m-add");
+    expect(creates).toBe(2);
+    await app.close();
+  });
+
+  it("H6：PUT 型号级 apiMode 覆盖退役引用该 provider 的 worker", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-m-put",
+      displayName: "Model Put",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "key",
+      models: [{ id: "m-1", displayName: "M1", modelType: "llm" }],
+    });
+    await context.agentRepository.save("a-m-put", {
+      id: "a-m-put",
+      name: "Model Put",
+      persona: "",
+      model: "mock",
+      providerId: "p-m-put",
+      skills: [],
+      tools: [],
+    });
+
+    let creates = 0;
+    const retired = new Set<string>();
+    context.retireAgentWorker = (agentId: string) => {
+      retired.add(agentId);
+    };
+    context.getAgentWorker = async () => {
+      creates++;
+      return { workerTag: creates } as unknown as AgentWorker;
+    };
+
+    const before = await context.getAgentWorker("a-m-put");
+    const res = await authedRequest(app.server)
+      .put("/compute/providers/p-m-put/models/m-1")
+      .send({ apiMode: "anthropic" });
+    expect(res.status).toBe(200);
+    expect(res.body.apiMode).toBe("anthropic");
+    expect(retired.has("a-m-put")).toBe(true);
+    const after = await context.getAgentWorker("a-m-put");
+    expect(after).not.toBe(before);
+    expect(creates).toBe(2);
+    await app.close();
+  });
+
+  it("H6：DELETE 型号退役引用该 provider 的 worker", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-m-del",
+      displayName: "Model Del",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "key",
+      models: [{ id: "m-1", displayName: "M1", modelType: "llm", apiMode: "responses" }],
+    });
+    await context.agentRepository.save("a-m-del", {
+      id: "a-m-del",
+      name: "Model Del",
+      persona: "",
+      model: "mock",
+      providerId: "p-m-del",
+      skills: [],
+      tools: [],
+    });
+
+    let creates = 0;
+    const retired = new Set<string>();
+    context.retireAgentWorker = (agentId: string) => {
+      retired.add(agentId);
+    };
+    context.getAgentWorker = async () => {
+      creates++;
+      return { workerTag: creates } as unknown as AgentWorker;
+    };
+
+    await context.getAgentWorker("a-m-del");
+    const res = await authedRequest(app.server).delete("/compute/providers/p-m-del/models/m-1");
+    expect(res.status).toBe(204);
+    expect(retired.has("a-m-del")).toBe(true);
+    await context.getAgentWorker("a-m-del");
+    expect(creates).toBe(2);
+    await app.close();
+  });
+
   it("keeps the existing apiKey when update sends an empty string", async () => {
     const app = await makeApp();
     const provider = {

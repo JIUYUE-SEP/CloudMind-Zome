@@ -1,5 +1,8 @@
 import type { Tool, ToolContext } from "../../tools/types.js";
 import type { LLMEvent } from "../../provider/types.js";
+import type { ActionRecord } from "../../memory/repositories/types.js";
+import { logger } from "../../logger.js";
+import { summarizeArgs } from "../../plugins/approval-audit/index.js";
 import { ToolScheduler } from "./tool-scheduler.js";
 
 export interface ToolCallRequest {
@@ -24,7 +27,55 @@ export interface ToolExecutionContext {
   intermindRide?: boolean;
   approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   emit: (event: LLMEvent) => void;
+  /**
+   * 工具调用落档回调（H1：actions.jsonl 唯一写入方）：每条调用完成后
+   * （成功/失败/审批拒绝均算）记一条 ActionRecord。可选——傀儡/蓝图路径不接。
+   */
+  recordAction?: (record: ActionRecord) => void;
   services?: ToolContext["services"];
+}
+
+/** 落档状态判定（H1）：execute 抛错/审批拒绝（内部 { error } 形状）或工具自报失败均计 failed */
+function isFailedOutput(output: unknown): boolean {
+  if (output && typeof output === "object") {
+    const o = output as Record<string, unknown>;
+    if (typeof o.error === "string") return true;
+    if (o.success === false) return true;
+  }
+  return false;
+}
+
+/**
+ * ActionRecord 构造（H1）：id 用 toolCallId（与 tool.result 帧/消息同键，可对账）；
+ * description = 工具名 + 参数摘要——summarizeArgs 与审批审计同口径脱敏截断，
+ * 大段参数原文不落盘。
+ */
+function buildActionRecord(
+  call: { tool: Tool; toolCallId: string; args: unknown },
+  result: ToolCallResult,
+): ActionRecord {
+  const now = new Date().toISOString();
+  return {
+    id: call.toolCallId,
+    status: isFailedOutput(result.output) ? "failed" : "completed",
+    description: `${call.tool.name}(${summarizeArgs(call.tool.name, call.args)})`,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** H1：落档是旁路——回调抛错只 warn，绝不击穿本条工具结果与单 call 隔离 */
+function recordActionSafe(
+  ctx: ToolExecutionContext,
+  call: { tool: Tool; toolCallId: string; args: unknown },
+  result: ToolCallResult,
+): void {
+  if (!ctx.recordAction) return;
+  try {
+    ctx.recordAction(buildActionRecord(call, result));
+  } catch (err) {
+    logger.warn({ err: err }, "[action] 工具调用落档回调失败（已忽略）");
+  }
 }
 
 export async function runToolCallBatch(
@@ -72,6 +123,7 @@ export async function runToolCallBatch(
           if (!approved) {
             const result = { toolCallId: call.toolCallId, output: { error: "Approval denied" } };
             ctx.emit({ type: "tool.result", ...result });
+            recordActionSafe(ctx, call, result);
             return result;
           }
 
@@ -87,10 +139,12 @@ export async function runToolCallBatch(
           const output = await call.tool.execute(toolCtx, call.args);
           const result = { toolCallId: call.toolCallId, output };
           ctx.emit({ type: "tool.result", ...result });
+          recordActionSafe(ctx, call, result);
           return result;
         } catch (err) {
           const result = { toolCallId: call.toolCallId, output: { error: String(err) } };
           ctx.emit({ type: "tool.result", ...result });
+          recordActionSafe(ctx, call, result);
           return result;
         }
       })

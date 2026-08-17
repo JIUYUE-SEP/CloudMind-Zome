@@ -311,3 +311,78 @@ describe("executeLoopStep 流式中断半截消息（P3-3）", () => {
     ).rejects.toMatchObject({ name: "StepStreamError", partialMessage: undefined });
   });
 });
+
+describe("H7 工具结果序列化兜底（循环引用/BigInt 不击穿回合）", () => {
+  // 循环引用：JSON.stringify 抛 TypeError
+  const circularTool: Tool = {
+    name: "circular",
+    description: "returns circular output",
+    parameters: z.object({ value: z.string() }),
+    accesses: [],
+    async execute(): Promise<ToolResult> {
+      const obj: Record<string, unknown> = { note: "环" };
+      obj.self = obj;
+      return { success: true, output: obj };
+    },
+  };
+  // BigInt（嵌套在 ToolResult 里）：JSON.stringify 抛 TypeError
+  const bigintTool: Tool = {
+    name: "bigint",
+    description: "returns bigint output",
+    parameters: z.object({ value: z.string() }),
+    accesses: [],
+    async execute(): Promise<ToolResult> {
+      return { success: true, output: { n: 42n } };
+    },
+  };
+
+  class BadOutputProvider implements LLMProvider {
+    name = "bad-output";
+    supportsModel() {
+      return true;
+    }
+    async *chat(): AsyncIterable<LLMEvent> {
+      yield { type: "tool.call", toolCallId: "tc_circular", name: "circular", arguments: { value: "a" } };
+      yield { type: "tool.call", toolCallId: "tc_bigint", name: "bigint", arguments: { value: "b" } };
+      yield { type: "tool.call", toolCallId: "tc_ok", name: "dummy", arguments: { value: "c" } };
+      yield { type: "step.end" };
+    }
+  }
+
+  it("序列化失败落兜底文本、回合正常结束、其他工具结果不丢", async () => {
+    const toolCtx = {
+      ...makeToolCtx(),
+      tools: new Map<string, Tool>([
+        [circularTool.name, circularTool],
+        [bigintTool.name, bigintTool],
+        [dummyTool.name, dummyTool],
+      ]),
+    };
+
+    const result = await executeLoopStep(
+      {
+        provider: new BadOutputProvider(),
+        model: "bad-output",
+        messages: [userMessage("call tools")],
+        tools: [],
+        toolCtx,
+      },
+      () => {},
+    );
+
+    // 回合正常结束（不抛错），assistant 消息带齐三个 toolCalls
+    expect(result.stopReason).toBe("tool_use");
+    expect(result.assistantMessage.toolCalls).toHaveLength(3);
+    expect(result.toolMessages).toHaveLength(3);
+
+    const textByToolCallId = new Map(
+      result.toolMessages!.map((m) => [m.toolCallId, (m.content[0] as { type: "text"; text: string }).text]),
+    );
+    // 循环引用 / BigInt → 可读占位文本（失败说明 + 类型信息）
+    expect(textByToolCallId.get("tc_circular")).toContain("无法序列化");
+    expect(textByToolCallId.get("tc_circular")).toContain("type: object");
+    expect(textByToolCallId.get("tc_bigint")).toContain("无法序列化");
+    // 其他工具结果原样保留（不丢、不被兜底污染）
+    expect(textByToolCallId.get("tc_ok")).toBe(JSON.stringify({ success: true, output: "got c" }));
+  });
+});

@@ -10,7 +10,7 @@ import type { Tool } from "../types.js";
 import { resolveCommandShim } from "./shim.js";
 import { sanitizeMcpNamePart } from "./naming.js";
 import { wrapMcpTools, type McpToolCaller } from "./wrapper.js";
-import { McpServersFileSchema, type McpServerConfig } from "./types.js";
+import { McpServerConfigSchema, type McpServerConfig } from "./types.js";
 
 const CONNECT_TIMEOUT_MS = 15_000;
 
@@ -122,17 +122,41 @@ export class McpClientManager {
     }
   }
 
-  /** 加载 DATA_DIR/mcp-servers.json；文件不存在或解析失败均按空配置处理 */
+  /**
+   * 加载 DATA_DIR/mcp-servers.json；文件不存在或整体 JSON 语法损坏按空配置处理。
+   * servers 逐条 safeParse：非法条目跳过并 warn（带下标/name 与校验摘要，不落 env 等
+   * 敏感值），单条坏配置不拖垮整体；servers 缺失/非数组按空数组处理。
+   */
   static loadDefault(): McpClientManager {
     const file = path.join(getDataDir(), "mcp-servers.json");
     if (!fs.existsSync(file)) return new McpClientManager([]);
+    let raw: unknown;
     try {
-      const parsed = McpServersFileSchema.parse(JSON.parse(fs.readFileSync(file, "utf-8")));
-      return new McpClientManager(parsed.servers);
+      raw = JSON.parse(fs.readFileSync(file, "utf-8"));
     } catch (err) {
       logger.warn({ err }, `[mcp] ${file} 解析失败，按空配置处理`);
       return new McpClientManager([]);
     }
+    const rawServers = (raw as { servers?: unknown })?.servers;
+    const list = Array.isArray(rawServers) ? rawServers : [];
+    const configs: McpServerConfig[] = [];
+    list.forEach((item, index) => {
+      const result = McpServerConfigSchema.safeParse(item);
+      if (result.success) {
+        configs.push(result.data);
+        return;
+      }
+      const name = (item as { name?: unknown })?.name;
+      const summary = result.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ");
+      logger.warn(
+        `[mcp] ${file} 第 ${index} 条 server 配置非法，已跳过${
+          typeof name === "string" && name !== "" ? `（name=${name}）` : ""
+        }：${summary}`,
+      );
+    });
+    return new McpClientManager(configs);
   }
 
   /** 连接全部 server；单个失败降级为 unavailable，不抛出 */
@@ -271,9 +295,13 @@ export class McpClientManager {
     }
   }
 
-  /** 全部可用 server 的包装后工具（与内置工具同管线注入；快照注入，断线不摘除） */
+  /**
+   * 全部 server 的包装后工具快照（与内置工具同管线注入；快照注入，断线不摘除）。
+   * 不按 status 过滤（断线保注册）：server 崩溃/未连通时快照仍在注入列表，
+   * 调用时经 caller 明确报「当前无可用连接」或由 wrapper 触发自愈重连（见 entry.caller）。
+   */
   getTools(): Tool[] {
-    return this.entries.filter((e) => e.status === "ok").flatMap((e) => e.tools);
+    return this.entries.flatMap((e) => e.tools);
   }
 
   /**

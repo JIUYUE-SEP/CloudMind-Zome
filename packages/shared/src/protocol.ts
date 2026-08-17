@@ -60,7 +60,7 @@ export interface WsErrorFrame {
 
 // ---- WS 控制帧：client → server ----
 
-/** 审批回执（remember 对 NO_REMEMBER_TOOLS 四工具无效，见 constants.ts） */
+/** 审批回执（remember 对 NO_REMEMBER_TOOLS 五工具无效，见 constants.ts） */
 export interface ApprovalResponseFrame {
   type: "tool.approval";
   approvalId: string;

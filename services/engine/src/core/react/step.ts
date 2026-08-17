@@ -48,6 +48,26 @@ export class StepStreamError extends Error {
   }
 }
 
+/**
+ * 工具结果序列化兜底（H7）：循环引用 / BigInt / toJSON 抛错会让 JSON.stringify
+ * 裸调抛异常，整轮随之异常终止、已执行工具的结果全丢——击穿「单 call 隔离」
+ * 承诺（见 tool-call.ts P3-2 注释）。失败回落为可读占位文本（失败说明 + 类型
+ * 信息），保证单条工具结果永远能落成消息。
+ */
+function safeSerializeToolOutput(output: unknown): string {
+  try {
+    // undefined / 函数等 JSON.stringify 返回 undefined（非字符串），回落 String
+    return JSON.stringify(output) ?? String(output);
+  } catch {
+    // String 对 null 原型对象/异常 toString 同样会抛，再兜一层只留类型信息
+    try {
+      return `[工具结果无法序列化] ${String(output)} (type: ${output === null ? "null" : typeof output})`;
+    } catch {
+      return `[工具结果无法序列化] (type: ${output === null ? "null" : typeof output})`;
+    }
+  }
+}
+
 export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) => void): Promise<StepResult> {
   if (input.signal?.aborted) throw new Error("aborted");
   const params: LLMChatParams = {
@@ -137,7 +157,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
         {
           type: "text",
           text: truncateToolResultText(
-            typeof r.output === "string" ? r.output : JSON.stringify(r.output),
+            typeof r.output === "string" ? r.output : safeSerializeToolOutput(r.output),
             maxToolResultTokens,
             counter,
           ),

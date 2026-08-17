@@ -26,6 +26,14 @@ export const INTERMIND_NOTICE_SESSION_ID = "default";
 // INTERMIND_SESSION_PREFIX 与 intermindSessionId 已迁至 @mindcloud/shared
 // （P3 切 tools→intermind 值边；会话 id 约定跨模块共享契约）
 
+/**
+ * intermind 会话热存储条数上限（H8）：intermind 会话不参与话题压缩，
+ * 不封顶 messages.jsonl 会无界增长，撞上 DocumentStore 100MB 读上限后私信整体不可用。
+ * 超出时最旧的溢出部分经 archiveAndRemove 移入归档（与话题压缩同语义，可恢复），
+ * 读取走 listBySessionWithArchived 跨存储归并，历史完整可读。
+ */
+export const INTERMIND_HOT_LIMIT = 200;
+
 export interface IntermindSessionSummary {
   peer: string;
   lastMessageAt: string;
@@ -122,6 +130,11 @@ export class IntermindService {
       throw err;
     }
 
+    // 热存储封顶（H8）：双写两侧各自检查，最旧溢出部分先归档后删热存储。
+    // 顺序 await 无浮空 promise；归档失败只 warn 不炸写信主流程（trimHotStorage 内部 catch）
+    await this.trimHotStorage(toAgentId, recipientSessionId);
+    await this.trimHotStorage(fromAgentId, intermindSessionId(toAgentId));
+
     auditPrivateMessage({
       fromAgentId,
       toAgentId,
@@ -163,6 +176,27 @@ export class IntermindService {
     return { messageId, recipientSessionId, woke };
   }
 
+  /**
+   * 热存储封顶（H8）：超出 INTERMIND_HOT_LIMIT 时把最旧的溢出部分经
+   * archiveAndRemove 移入归档（先写归档再删热存储，与话题压缩同原子序，可恢复）。
+   * 取全量计算真实溢出：listBySession 缺省只回最近 100 条窗口，已超帽的存量会话
+   * 靠窗口永远收敛不到上限以下。失败只记 warn——信已落盘，下封信再试，
+   * 不能让归档故障炸掉写信主流程。
+   */
+  private async trimHotStorage(agentId: string, sessionId: string): Promise<void> {
+    try {
+      const repo = this.deps.getMessageRepository(agentId);
+      const records = await repo.listBySession(sessionId, { limit: Number.MAX_SAFE_INTEGER });
+      const overflow = records.length - INTERMIND_HOT_LIMIT;
+      if (overflow <= 0) return;
+      await repo.archiveAndRemove(records.slice(0, overflow).map((m) => m.id));
+    } catch (err) {
+      logger.warn(
+        `[intermind] ${agentId} 的 ${sessionId} 热存储归档失败（信已落盘，下封信重试）: ${String(err)}`,
+      );
+    }
+  }
+
   /** 列出该 agent 的 intermind 会话（对端 + 最后消息时间 + 条数，最后时间倒序） */
   async listSessions(agentId: string): Promise<IntermindSessionSummary[]> {
     // 按消息前缀扫描推导会话：与 messages 端点同口径——
@@ -194,12 +228,18 @@ export class IntermindService {
     options?: { limit?: number; before?: string },
   ): Promise<ChatMessageRecord[]> {
     const repo = this.deps.getMessageRepository(agentId);
+    const sessionId = intermindSessionId(peerId);
     if (options?.before) {
-      const all = await repo.listBySession(intermindSessionId(peerId));
-      if (!all.some((m) => m.id === options.before)) {
+      // 游标校验跨热存储+归档（H8 后旧游标可能已归档，只看热存储会误拒向前翻页）
+      const found =
+        (await repo.getByIds([options.before])).some((m) => m.sessionId === sessionId) ||
+        (await repo.getArchivedByIds([options.before])).some((m) => m.sessionId === sessionId);
+      if (!found) {
         throw new Error(`Invalid before cursor: ${options.before}`);
       }
     }
-    return repo.listBySession(intermindSessionId(peerId), options);
+    // 跨存储读（H8）：热存储+归档按 createdAt 归并，归档后历史仍完整可读；
+    // limit/before 参数透传，语义与 listBySession 一致（最近 limit 条窗口）
+    return repo.listBySessionWithArchived(sessionId, options);
   }
 }

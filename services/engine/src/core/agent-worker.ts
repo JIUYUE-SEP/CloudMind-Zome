@@ -13,7 +13,7 @@ import {
   HANDOFF_MAX_SHIFTS_MIN,
   HANDOFF_MAX_SHIFTS_MAX,
 } from "../handoff/types.js";
-import type { IMessageRepository } from "../memory/repositories/types.js";
+import type { ActionRecord, IActionRepository, IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import { ContextPipeline } from "../context/pipeline.js";
 import { SECURITY_GUIDELINE } from "../context/security-guideline.js";
@@ -115,6 +115,11 @@ export interface AgentWorkerConfig {
   tools: Tool[];
   workspaceDir: string;
   messageRepository: IMessageRepository;
+  /**
+   * 工具调用落档仓库（H1：actions.jsonl 唯一写入方）。可选——缺省不落档；
+   * 生产经 agents 插件从 ctx.memory.getActionRepository 注入，傀儡/蓝图不接。
+   */
+  actionRepository?: IActionRepository;
   approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   temperature?: number;
   topP?: number;
@@ -710,6 +715,8 @@ export class AgentWorker {
         );
       }
 
+      // H1：工具调用落档仓库（可选；缺省不注入 recordAction，actions.jsonl 不落档）
+      const actionRepository = this.config.actionRepository;
       const turnInput: TurnInput = {
         provider: this.config.provider,
         model: this.config.model,
@@ -758,6 +765,15 @@ export class AgentWorker {
             return job.onApprovalRequest({ id: randomUUID(), toolCallId, toolName: name, arguments: args });
           },
           emit: job.onEvent,
+          // H1：工具调用落档（actions.jsonl 写入方）。fire-and-forget 且必须
+          // .catch（浮空 promise 禁令）：落档失败只 warn，不落正文、不影响工具结果
+          recordAction: actionRepository
+            ? (record: ActionRecord) => {
+                actionRepository.append(record).catch((err) => {
+                  logger.warn({ err: err }, "[action] 工具调用落档失败（不影响工具结果）");
+                });
+              }
+            : undefined,
           services: this.config.services,
         },
         maxSteps: this.reactMaxSteps,

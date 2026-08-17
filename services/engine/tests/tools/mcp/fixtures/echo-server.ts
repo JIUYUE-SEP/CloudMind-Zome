@@ -1,7 +1,12 @@
 /** stdio e2e 用的本地测试 server：一个只读工具 + 一个写工具，均带 annotations */
+import fs from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+
+// argv[2] 可选：启动后写入自身 pid（崩溃模拟测试用，与 hang-server 约定一致）
+const pidfile = process.argv[2];
+if (pidfile) fs.writeFileSync(pidfile, String(process.pid));
 
 const server = new McpServer({ name: "fixture", version: "0.0.1" });
 

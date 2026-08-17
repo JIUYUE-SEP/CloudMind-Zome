@@ -185,6 +185,9 @@ function sanitizeProvider<T extends { apiKey?: string }>(provider: T): T {
  * 与 agent 配置 onChange 的 retire 路径同语义：下一次 getOrCreate 按活配置
  * 重建 provider 链（改 key/协议/超时即刻生效；删除后走 createLLMProvider 的
  * "provider 不存在" 明确报错，而不是 Router 回落创建时快照继续打旧端点）。
+ * H6：三个型号端点（POST/PUT/DELETE models）保存配置后同样调用——
+ * hasModelApiModeOverride 只在 worker/Provider 实例创建时判定一次，
+ * 型号级 apiMode 覆盖的新增/变更/删除必须退役重建才会即刻生效。
  */
 async function retireWorkersUsingProvider(context: ApiContext, providerId: string): Promise<void> {
   if (!context.retireAgentWorker) return;
@@ -468,6 +471,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     }
     provider.models.push(model);
     await context.configRepository.save(config);
+    // H6：新增型号同样可能引入首个型号级 apiMode 覆盖，退役重建即刻生效
+    await retireWorkersUsingProvider(context, id);
     return model;
   });
 
@@ -540,6 +545,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     }
     provider.models[idx] = updated;
     await context.configRepository.save(config);
+    // H6：型号级 apiMode 覆盖变更（含 null 清除）需退役重建 worker 即刻生效
+    await retireWorkersUsingProvider(context, id);
     return provider.models[idx];
   });
 
@@ -552,6 +559,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
     provider.models = provider.models.filter((m) => m.id !== modelId);
     await context.configRepository.save(config);
+    // H6：删除型号可能移除最后一个型号级 apiMode 覆盖，退役重建即刻生效
+    await retireWorkersUsingProvider(context, id);
     return reply.status(204).send();
   });
 }

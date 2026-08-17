@@ -136,6 +136,8 @@ export function apply(ctx: Context, config: Config): void {
         tools,
         workspaceDir,
         messageRepository: new MessageRepository(agentId),
+        // H1：工具调用落档（actions.jsonl 唯一写入方）——ctx.memory 工厂现造，与其他 repository 同语义
+        actionRepository: ctx.memory.getActionRepository(agentId),
         approve: () => true,
         temperature: agentConfig.temperature,
         topP: agentConfig.topP,
