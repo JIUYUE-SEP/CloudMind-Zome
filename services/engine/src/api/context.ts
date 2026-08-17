@@ -14,6 +14,7 @@ import type { SubagentDispatcher } from "../subagent/dispatcher.js";
 import type { BackgroundManager } from "../subagent/background.js";
 import type { HandoffManager } from "../handoff/manager.js";
 import type { HandoffLoopRegistry } from "../handoff/registry.js";
+import type { HandoffFace } from "../plugins/handoff/index.js";
 import type { SidecarClient } from "../sidecar/client.js";
 import type { McpClientManager } from "../tools/mcp/index.js";
 import type { SkillService } from "../skills/service.js";
@@ -44,6 +45,8 @@ export interface ApiContext {
   handoffManager?: HandoffManager;
   /** 活跃续跑循环注册表（P1-1）：REST 手动打断经它 abort 在途 job，与用户消息同语义 */
   handoffLoops?: HandoffLoopRegistry;
+  /** 换班移交插件面（P7b）：WS 私聊续跑循环连接桥（attachConnection）经此取 */
+  handoff?: HandoffFace;
   /** sidecar gRPC 客户端（P1-3：删除 agent 时级联清理向量索引；dev/测试可缺省） */
   sidecarClient?: SidecarClient;
   /** MCP 工具 remember 判定查询（toolOverrides.allowRemember 放行；缺省/无 override 一律禁） */

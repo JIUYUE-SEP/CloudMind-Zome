@@ -13,6 +13,7 @@ import * as computePlugin from "./plugins/compute/index.js";
 import * as agentsPlugin from "./plugins/agents/index.js";
 import * as conductorPlugin from "./plugins/conductor/index.js";
 import * as blueprintPlugin from "./plugins/blueprint/index.js";
+import * as handoffPlugin from "./plugins/handoff/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -39,9 +40,6 @@ import { createPuppetModelService } from "./subagent/puppet-models.js";
 import { IntermindService } from "./intermind/service.js";
 import { SubagentSwarm } from "./subagent/batch.js";
 import { createSubagentTerminalNotifier } from "./subagent/notify.js";
-import { HandoffManager } from "./handoff/manager.js";
-import { HandoffStateStore } from "./handoff/state.js";
-import { HandoffLoopRegistry } from "./handoff/registry.js";
 import { withLLMCallRecording } from "./plugins/llm/record-calls.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -76,6 +74,9 @@ async function main() {
   // （conductor 路由纯函数与 executeBlueprint 保持库级直 import，不进插件面）
   await root.plugin(conductorPlugin);
   await root.plugin(blueprintPlugin);
+  // handoff（P7b）：换班控制面三件套 + WS 续跑循环连接桥收编；manager.load()
+  // 启动对账在插件 apply 内完成（listen 前对账时序不变，P3 tools connectAll 同款先例）
+  await root.plugin(handoffPlugin);
   const configRepo = root.config;
   // agentRepository 实例改经 ctx.memory 取（P4 起；P6 起 agents 插件与
   // WorkerRegistry 合体收编进 ctx.agents，onChange→retire 接线在插件内部）
@@ -103,7 +104,7 @@ async function main() {
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
@@ -211,10 +212,8 @@ async function main() {
     },
     new SubagentTaskRepository(),
   );
-  // 换班移交控制面（水位撞顶=换班不死）：handoff-state.json 持久化 + 状态机
-  const handoffManager = new HandoffManager({ store: new HandoffStateStore() });
-  // 活跃续跑循环注册表（P1-1）：REST DELETE /handoff/:id 打断 running 期 job 的桥梁
-  const handoffLoopRegistry = new HandoffLoopRegistry();
+  // 换班移交控制面与续跑循环注册表已收编进 handoff 插件（P7b：
+  // plugins/handoff/index.ts）；下方引用改经 root.handoff 取。
   const subagentDispatcher = new SubagentDispatcher({
     getAgentConfig: (agentId) => agentRepository.get(agentId),
     runAgent: runAgentCollect,
@@ -267,8 +266,10 @@ async function main() {
     runAgentCollect,
     subagentDispatcher,
     backgroundManager,
-    handoffManager,
-    handoffLoops: handoffLoopRegistry,
+    // handoff 三件套实例改经插件面取（P7b 换源；连接桥工厂供 WS 私聊 handler attach）
+    handoffManager: root.handoff.manager,
+    handoffLoops: root.handoff.loops,
+    handoff: root.handoff,
     mcpManager: root.tools.manager,
     // P1-3：删除 agent 时经 sidecar DeleteAgent 级联清理向量索引
     sidecarClient,
@@ -293,8 +294,8 @@ async function main() {
   // subagent 后台任务启动对账：持久化记录回填内存索引，running 一律标 lost
   // （重启语义：现场已毁、不知死活≠已知失败，交人工决策而非自动续跑）
   await backgroundManager.load();
-  // 换班控制面启动对账：活跃续跑条目标 lost（重启后不自动续跑，交接书仍在历史）
-  await handoffManager.load();
+  // 换班控制面启动对账已收进 handoff 插件 apply（P7b）：活跃续跑条目标 lost
+  // 在插件挂载时完成，listen 前对账时序不变。
 
   // 启动对账（Phase 2 M3）：补归档"已有压缩档但仍留在热存储"的孤儿消息。
   // 在 scheduler/worker 产生新流量前完成；单 agent 失败只记 warn，不阻断启动。

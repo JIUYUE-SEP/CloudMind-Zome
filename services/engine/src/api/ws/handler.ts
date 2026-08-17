@@ -9,8 +9,6 @@ import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
 import { isMcpToolName } from "../../tools/mcp/index.js";
-import { HandoffResumeLoop } from "../../handoff/resume-loop.js";
-import type { HandoffBookInfo } from "../../handoff/types.js";
 import {
   auditAutoApproved,
   auditDecision,
@@ -94,110 +92,41 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         socket.close(4001, "Agent not found");
         return;
       }
-      // 换班续跑循环（水位撞顶=换班不死）：控制面在 context.handoffManager；
-      // 调度/打断只在私聊连接上生效（群聊多 Agent 槽位语义留边界外）
-      const handoffLoop = context.handoffManager
-        ? new HandoffResumeLoop({
-            manager: context.handoffManager,
-            onUpdate: (record) => {
-              safeSend(socket, {
-                type: "handoff.update",
-                agentId,
-                status: record.status,
-                shift: record.shift,
-                maxShifts: record.maxShifts,
-                ...(record.bookMessageId !== undefined
-                  ? { bookMessageId: record.bookMessageId }
-                  : {}),
-                ...(record.abortReason !== undefined ? { reason: record.abortReason } : {}),
-              });
-            },
-            enqueueResume: (record, signal, jobId, chainId) => {
-              void (async () => {
-                if (signal.aborted) return;
-                try {
-                  const repo = context.getMessageRepository(agentId);
-                  const history = await repo.listBySession(sessionId, { limit: 20 }).catch(() => []);
-                  if (signal.aborted) return;
-                  // P3-5 同范式：入队前重新解析 worker（配置变更后旧引用会被退役）
-                  const targetWorker =
-                    (await context.getAgentWorker(agentId).catch(() => undefined)) ?? worker;
-                  targetWorker.enqueue({
-                    id: jobId,
-                    messages: history.length > 0 ? history : [],
-                    sessionId,
-                    signal,
-                    handoffResume: {
-                      shift: record.shift + 1,
-                      maxShifts: record.maxShifts,
-                      bookText: record.bookText,
-                    },
-                    // F1：续跑 job 继承当前链代际，撞顶 book 带同一 chainId 供闩锁判定
-                    onEvent:
-                      chainId !== undefined
-                        ? (event) => tagHandoffChain(event, chainId)
-                        : emitJobEvent,
-                    onDone: (err) => {
-                      // 2026-08-10：onJobDone 内部已做代际复核 + markStatus 防御，
-                      // 这里再兜一层 catch，绝不浮空 Promise 炸进程
-                      void handoffLoop
-                        ?.onJobDone(record, agentId, sessionId, err)
-                        .catch((doneErr) => {
-                          logger.warn(
-                            { err: doneErr, agentId, sessionId },
-                            "[handoff] onJobDone 意外异常已被捕获（不浮空）",
-                          );
-                        });
-                    },
-                  });
-                } catch (err) {
-                  logger.error({ err }, "[handoff] 续跑历史加载失败（不自动续跑）");
-                  // R2（P3-1）：失败收尾同样走 registry 仲裁入口——该 agent+session
-                  // 维度下所有连接的 loop 一并取消 + 全局 record 标 aborted，
-                  // 不再直连本连接 loop.cancel 绕过仲裁面。
-                  if (context.handoffLoops) {
-                    void context.handoffLoops.cancel(agentId, sessionId, "resume_history_failed");
-                  } else {
-                    void handoffLoop?.cancel(agentId, sessionId, "resume_history_failed");
-                  }
-                }
-              })();
-            },
-          })
-        : undefined;
-      // P1-1：注册到全局 loop 注册表，REST DELETE /handoff/:id 才能在 running 期
-      // abort 在途 job；连接关闭时注销（断连 cancel 已由下方 close 处理器完成）
-      if (handoffLoop) context.handoffLoops?.register(agentId, sessionId, handoffLoop);
-
-      /** 单连接共享的 job 事件通道：拦截 handoff.book 交续跑循环，其余帧透传前端 */
-      const emitJobEvent = (event: LLMEvent): void => {
-        if (event.type === "handoff.book") {
-          const info: HandoffBookInfo = {
-            agentId,
-            sessionId,
-            reason: "watermark",
-            shift: event.shift,
-            maxShifts: event.maxShifts,
-            used: event.used,
-            window: event.window,
-            bookMessageId: event.bookMessageId,
-            bookText: event.bookText,
-            chainId: event.chainId,
-          };
-          handoffLoop?.onWatermarkBook(info);
-          return;
-        }
+      /** 非 book 的 job 事件帧透出：sanitizeDeltaEvent 留在本层（P2 层间纪律——
+       *  handoff 插件不 import api/*），经回调注入连接桥 */
+      const sendJobEvent = (event: LLMEvent): void => {
         const safeEvent = sanitizeDeltaEvent(event);
         if (safeEvent) safeSend(socket, safeEvent);
       };
 
-      /** F1：给 handoff.book 事件补链代际标记（入队时按 beginNewChain/当前链签发） */
-      const tagHandoffChain = (event: LLMEvent, chainId: string): void => {
-        if (event.type === "handoff.book") {
-          emitJobEvent({ ...event, chainId });
+      // 换班续跑连接桥（P7b：建 loop / 注册进 registry / book 拦截 / 断连收尾
+      // 收编进 handoff 插件）：控制面与注册表在 context.handoff 面；调度/打断
+      // 只在私聊连接上生效（群聊多 Agent 槽位语义留边界外）。连接特有物
+      // （发帧 / 历史加载 / worker 重新解析 / fallback worker）经回调注入。
+      const handoffBridge = context.handoff?.attachConnection({
+        agentId,
+        sessionId,
+        send: (frame) => safeSend(socket, frame),
+        sendJobEvent,
+        loadHistory: () =>
+          context
+            .getMessageRepository(agentId)
+            .listBySession(sessionId, { limit: 20 })
+            .catch(() => []),
+        resolveWorker: () => context.getAgentWorker(agentId).catch(() => undefined),
+        fallbackWorker: worker,
+      });
+
+      /** 单连接共享的 job 事件通道：有桥走桥（拦截 handoff.book 交续跑循环）；
+       *  无桥（context.handoff 缺位的测试直构造路径）与原 handoffLoop 缺位
+       *  同语义——book 帧吞掉不转发，其余帧 sanitize 后透出 */
+      const emitJobEvent = (event: LLMEvent): void => {
+        if (handoffBridge) {
+          handoffBridge.onEvent(event);
           return;
         }
-        emitJobEvent(event);
+        if (event.type === "handoff.book") return;
+        sendJobEvent(event);
       };
 
       // WS 连接生命周期（排查断连/1006 的关键路径日志）
@@ -206,11 +135,7 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         logger.info({ agentId, sessionId, code, reason: reason.toString() }, "[ws] 私聊连接关闭");
         // 断连统一走 registry 仲裁面（V3）：旧连接迟到 close 只取消本连接资源，
         // 只有无其他活跃连接时才落全局 record aborted（交接书仍在历史）
-        if (handoffLoop && context.handoffLoops) {
-          void context.handoffLoops.cancelConnection(agentId, sessionId, handoffLoop, "disconnect");
-        } else {
-          void handoffLoop?.cancel(agentId, sessionId, "disconnect");
-        }
+        handoffBridge?.detach();
       });
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持）
@@ -309,17 +234,12 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
-          // 用户消息 = abort 打断：统一走 registry 仲裁面——该 agent+session
-          // 维度下所有连接的 loop 一并取消（清定时器 + abort 在途 job）+ 全局
-          // record 标 aborted。不再存在「只扫本连接」的路径。
-          if (context.handoffLoops) {
-            await context.handoffLoops.cancel(agentId, sessionId, "user_message");
-          } else {
-            await handoffLoop?.cancel(agentId, sessionId, "user_message");
-          }
-          // F1：新用户消息 = 新链，签发新代际；只在打断了在途活跃链时轮换，
-          // 无活跃链时沿用当前代际（P1-4：连发两条消息不误杀第一条的 book）
-          const chainId = handoffLoop?.beginNewChain(agentId, sessionId);
+          // 用户消息 = abort 打断 + 新链签发：统一走 registry 仲裁面（桥内保持
+          // 先 cancel 再 beginNewChain 的原调用序）——该 agent+session 维度下
+          // 所有连接的 loop 一并取消（清定时器 + abort 在途 job）+ 全局 record
+          // 标 aborted。不再存在「只扫本连接」的路径。F1：只在打断了在途活跃链时
+          // 轮换代际，无活跃链沿用当前代际（P1-4：连发两条消息不误杀第一条的 book）
+          const chainId = await handoffBridge?.cancelUserMessage();
 
           const userMessage: ChatMessage = {
             id: randomUUID(),
@@ -356,8 +276,8 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             messages: history.length > 0 ? history : [userMessage],
             sessionId,
             onEvent:
-              chainId !== undefined
-                ? (event) => tagHandoffChain(event, chainId)
+              chainId !== undefined && handoffBridge
+                ? (event) => handoffBridge.onEventWithChain(event, chainId)
                 : emitJobEvent,
             onApprovalRequest: requestApproval,
           });
