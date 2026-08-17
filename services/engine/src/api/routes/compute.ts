@@ -270,7 +270,8 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
   app.post("/compute/providers", {
     schema: { summary: "Create a compute provider", tags: ["compute"] },
   }, async (request, reply) => {
-    const body = request.body as {
+    // M28：无 body/无 content-type 时 request.body 为 undefined，?? {} 兜底避免 TypeError 500（同 plans.ts 口径）
+    const body = (request.body ?? {}) as {
       id?: string;
       displayName: string;
       providerType?: string;
@@ -324,6 +325,11 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       }
     }
     const config = await context.configRepository.load();
+    // M33：显式 id 查重（对照 POST /agents 的 409 口径）——同 id 落两条配置会让
+    // agent.providerId 引用歧义。注：API.md 记载的「无重复校验」已过时，文档同步由主线处理
+    if (body.id && config.providers.some((p) => p.id === body.id)) {
+      return reply.status(409).send({ error: `Provider id already exists: ${body.id}` });
+    }
     const provider = {
       id: body.id || crypto.randomUUID(),
       displayName: body.displayName,
@@ -344,7 +350,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     schema: { summary: "Update a compute provider", tags: ["compute"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as Partial<{
+    const body = (request.body ?? {}) as Partial<{
       displayName: string;
       baseUrl: string;
       apiKey: string;
@@ -352,6 +358,13 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       requestTimeout: number;
       maxRetries: number;
     }>;
+    // M33：PUT 与 POST 同口径（F5）——?? 只挡 undefined，空串/纯空白 displayName 会覆盖落库
+    if (
+      body.displayName !== undefined &&
+      (typeof body.displayName !== "string" || body.displayName.trim() === "")
+    ) {
+      return reply.status(400).send({ error: "displayName must be a non-empty string" });
+    }
     if (body.baseUrl !== undefined && !isAllowedBaseUrl(body.baseUrl)) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
     }
@@ -405,6 +418,11 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     const config = await context.configRepository.load();
     const provider = config.providers.find((p) => p.id === id);
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
+    // M33：OpenAI 族无 apiKey 时 SDK 构造即抛错，会被下面 catch 误报 502 上游故障——
+    // 前置 400 明确文案（anthropic 路径走裸 fetch，无 key 由上游 401 正常归类，不拦截）
+    if (provider.apiMode !== "anthropic" && !provider.apiKey) {
+      return reply.status(400).send({ error: "apiKey required（该 provider 未配置密钥，无法测试连接）" });
+    }
     try {
       const discovered =
         provider.apiMode === "anthropic"
@@ -459,7 +477,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     schema: { summary: "Add a model to a provider", tags: ["compute"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as Record<string, unknown>;
+    const body = (request.body ?? {}) as Record<string, unknown>;
     const config = await context.configRepository.load();
     const provider = config.providers.find((p) => p.id === id);
     if (!provider) return reply.status(404).send({ error: "Provider not found" });
@@ -480,7 +498,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     schema: { summary: "Update a provider model", tags: ["compute"] },
   }, async (request, reply) => {
     const { id, modelId } = request.params as { id: string; modelId: string };
-    const body = request.body as Record<string, unknown>;
+    const body = (request.body ?? {}) as Record<string, unknown>;
     const config = await context.configRepository.load();
     const provider = config.providers.find((p) => p.id === id);
     if (!provider) return reply.status(404).send({ error: "Provider not found" });

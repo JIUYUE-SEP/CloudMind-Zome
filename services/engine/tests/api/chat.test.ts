@@ -153,4 +153,31 @@ describe("Chat API", () => {
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
   });
+
+  it("M28：limit 与 sessions 同口径 clamp——0/'abc'/-5 回落缺省 100，超上限封顶 500", async () => {
+    const app = await makeApp();
+    const repo = context.getMessageRepository("agent-1");
+    for (let i = 0; i < 520; i++) {
+      await repo.append({
+        id: `m${i}`,
+        sessionId: "s1",
+        role: "user",
+        content: [{ type: "text", text: `m${i}` }],
+        createdAt: new Date(1000 + i).toISOString(),
+      });
+    }
+    for (const bad of ["0", "abc", "-5"]) {
+      const res = await authedRequest(app.server).get(
+        `/chat/agent-1/messages?sessionId=s1&limit=${bad}`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(100);
+    }
+    const capped = await authedRequest(app.server).get(
+      "/chat/agent-1/messages?sessionId=s1&limit=99999",
+    );
+    expect(capped.status).toBe(200);
+    expect(capped.body).toHaveLength(500);
+    await app.close();
+  });
 });

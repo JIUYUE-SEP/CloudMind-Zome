@@ -17,7 +17,8 @@ export function routeMessage(text: string, session: Session, agents: AgentConfig
       .map((m) => resolveMention(m, agents))
       .filter((id): id is string => !!id)
       .filter((id) => session.agentIds.includes(id));
-    return { targetAgentIds, mentionAll: false };
+    // M30：同一 agent 被重复 @（或 id/name 混写命中同一人）去重，只入队回复一次
+    return { targetAgentIds: [...new Set(targetAgentIds)], mentionAll: false };
   }
   return { targetAgentIds: session.agentIds, mentionAll: true };
 }

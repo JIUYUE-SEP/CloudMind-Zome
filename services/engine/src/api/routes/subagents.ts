@@ -5,7 +5,7 @@ import type { BackgroundSubagent } from "../../subagent/background.js";
 /**
  * 序列化后台任务，避免泄露完整 agent 配置。
  * output 为 preview（超 ~4KB 截尾，outputTruncated 标记——行为变化，文档注明）；
- * 全量输出走 /subagents/background/:taskId/output。
+ * 全量输出走 /subagents/background/:taskId/output?agentId=<parentAgentId>（M35 owner 校验）。
  */
 function toSummary(bg: BackgroundSubagent) {
   return {
@@ -42,14 +42,24 @@ export async function registerSubagentRoutes(app: FastifyInstance, context: ApiC
   });
 
   app.get("/subagents/background/:taskId/output", {
-    schema: { summary: "Get full output of a background subagent task", tags: ["subagents"] },
+    schema: {
+      summary: "Get full output of a background subagent task",
+      tags: ["subagents"],
+      querystring: { type: "object", properties: { agentId: { type: "string" } } },
+    },
   }, async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
-    if (!context.backgroundManager?.get(taskId)) {
+    // M35：owner 维度校验（同 resume 端点口径）——任务 parentAgentId 必须等于
+    // query agentId，否则按不存在处理（不泄露归属）；持 token 不再能读任意任务输出
+    const { agentId } = request.query as { agentId?: string };
+    if (!agentId) return reply.status(400).send({ error: "agentId is required" });
+    const manager = context.backgroundManager;
+    const bg = manager?.get(taskId);
+    if (!manager || !bg || bg.parentAgentId !== agentId) {
       return reply.status(404).send({ error: "Task not found" });
     }
     try {
-      const output = await context.backgroundManager.readFullOutput(taskId);
+      const output = await manager.readFullOutput(taskId);
       if (output === undefined) return reply.status(404).send({ error: "Output not found" });
       return { taskId, output };
     } catch (err) {

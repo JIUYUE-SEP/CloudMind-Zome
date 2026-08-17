@@ -138,8 +138,10 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     // 合并语义（2026-08-01 起，真机验证踩坑修复）：未传字段保留原值，
     // 不再整体覆盖——部分更新的调用方曾把 persona/skills/tools 等字段静默洗掉。
     // 显式清空字段传空数组/空串；前端全量表单提交行为不受影响。
+    // M32：不再静默 upsert——PUT 只更新（创建走 POST，重复 id 409 同口径），不存在 404
     const existing = await context.agentRepository.get(id);
-    const merged = existing ? { ...existing, ...config, id } : config;
+    if (!existing) return reply.status(404).send({ error: "Agent not found" });
+    const merged = { ...existing, ...config, id };
     await context.agentRepository.save(id, merged);
     return merged;
   });
@@ -151,6 +153,9 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     if (!isValidAgentId(id)) {
       return reply.status(400).send({ error: "Invalid agent id" });
     }
+    // M32：删除不存在资源与 GET/PUT 同口径返回 404，不再恒 204（sidecar 级联同理跳过）
+    const existing = await context.agentRepository.get(id);
+    if (!existing) return reply.status(404).send({ error: "Agent not found" });
     await context.agentRepository.delete(id);
     // P1-3（review M3）：级联清理向量索引——sidecar 逐出 INDEX_CACHE 并删磁盘
     // indices 目录。sidecar 不可达时 warn 不阻断：目录统一后磁盘 embeddings 已随

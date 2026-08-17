@@ -118,4 +118,31 @@ describe("Blueprint API", () => {
     expect(execRes.body.outputs.end).toBe("hello");
     await app.close();
   });
+
+  it("M28：写端点缺 body 不 500（POST 400；PUT/execute 按空 body 处理）", async () => {
+    const app = await makeApp();
+    // 无 content-type 无 body：request.body 为 undefined，原先 TypeError 500
+    const createRes = await authedRequest(app.server).post("/blueprints");
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.error).toBe("name required");
+
+    const created = await authedRequest(app.server).post("/blueprints").send({ name: "Keep" });
+    const id = created.body.id;
+    // 空 body PUT = 无字段变更的 no-op，不再 500
+    const putRes = await authedRequest(app.server).put(`/blueprints/${id}`);
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.name).toBe("Keep");
+    // 空 body execute = initialInput 缺省
+    const execRes = await authedRequest(app.server).post(`/blueprints/${id}/execute`);
+    expect(execRes.status).toBe(200);
+    await app.close();
+  });
+
+  it("M32：DELETE 不存在 blueprint 返回 404（不再恒 204）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).delete("/blueprints/nope");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Blueprint not found");
+    await app.close();
+  });
 });

@@ -144,4 +144,13 @@ describe("Config API", () => {
     expect(loaded.settings.memory.keepRecent).toBe(7);
     await app.close();
   });
+
+  it("M28：PUT /config 缺 body 按无字段变更 no-op 处理（不 500）", async () => {
+    const app = await makeApp();
+    // 无 content-type 无 body：request.body 为 undefined，原先 TypeError 500
+    const res = await authedRequest(app.server).put("/config");
+    expect(res.status).toBe(200);
+    expect(res.body.memory).toBeDefined();
+    await app.close();
+  });
 });

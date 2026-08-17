@@ -523,4 +523,100 @@ describe("WebSocket API", () => {
     await app.close();
     await cleanup();
   });
+
+  it("M31：用户消息持久化失败即中止，不入队（不再答非所问）", async () => {
+    const { context, cleanup } = await buildWsContext("agent-ws");
+    // 持久化层整体失败
+    context.getMessageRepository = (id: string) => {
+      const repo = new MessageRepository(id);
+      repo.append = async () => {
+        throw new Error("disk full");
+      };
+      return repo;
+    };
+    const worker = (await context.getAgentWorker("agent-ws"))!;
+    let enqueued = 0;
+    const origEnqueue = worker.enqueue.bind(worker);
+    worker.enqueue = (job) => {
+      enqueued++;
+      origEnqueue(job);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+    const frames: Array<{ type?: string; error?: string }> = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "hello" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        frames.push(message);
+        if (message.type === "error") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    // 错误帧已发，但消息未入队、无 assistant 输出
+    expect(frames.some((f) => f.type === "error" && f.error === "Failed to persist message")).toBe(true);
+    expect(frames.some((f) => f.type === "text.delta")).toBe(false);
+    expect(enqueued).toBe(0);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("M30：ready 后待处理消息深度超限 → 报错断连（与 ready 前缓冲同口径）", async () => {
+    const { context, cleanup } = await buildWsContext("agent-ws");
+    // warmup 后 getAgentWorker 悬挂：消息处理永不完成，chain 深度只增不减
+    const origGet = context.getAgentWorker;
+    let hanging = false;
+    context.getAgentWorker = async (id: string) => {
+      if (hanging) return new Promise(() => {});
+      return origGet(id);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+    let sawOverflow = false;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "warmup" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "turn.end") {
+          // warmup 完成 = ready 且 chain 已排空；此后处理悬挂，深度累积
+          hanging = true;
+          for (let i = 0; i < 101; i++) {
+            client.send(JSON.stringify({ text: `flood ${i}` }));
+          }
+        }
+        if (message.type === "error" && message.error === "Too many pending messages") {
+          sawOverflow = true;
+        }
+      });
+      client.on("close", () => {
+        if (sawOverflow) resolve();
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    expect(sawOverflow).toBe(true);
+    hanging = false;
+
+    await app.close();
+    await cleanup();
+  });
 });

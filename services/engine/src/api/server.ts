@@ -41,7 +41,11 @@ export async function createServer(context: ApiContext) {
     // 不显式声明会导致浏览器对 PUT/DELETE 的预检失败（前端报 "Failed to fetch"）
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
-  await app.register(websocket);
+  await app.register(websocket, {
+    // M30：限制单帧体积（ws 默认 100MiB 过大）——聊天文本上限 10k 字符，
+    // 1MB 留足协议余量；超限帧由 ws 直接以 1009 断连
+    options: { maxPayload: 1024 * 1024 },
+  });
 
   await app.register(swagger, {
     openapi: {

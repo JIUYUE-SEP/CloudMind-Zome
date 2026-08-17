@@ -24,7 +24,8 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     if (!isValidAgentId(agentId)) {
       return reply.status(400).send({ error: "Invalid agent id" });
     }
-    const body = request.body as { description: string; prompt: string; cron: string; enabled?: boolean };
+    // M28：无 body/无 content-type 时 request.body 为 undefined，?? {} 兜底避免 TypeError 500（同 plans.ts 口径）
+    const body = (request.body ?? {}) as { description: string; prompt: string; cron: string; enabled?: boolean };
     if (!body.description || !body.prompt || !body.cron) {
       return reply.status(400).send({ error: "description, prompt, cron required" });
     }
@@ -51,7 +52,7 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
     if (!isValidAgentId(agentId)) {
       return reply.status(400).send({ error: "Invalid agent id" });
     }
-    const body = request.body as Partial<{ description: string; prompt: string; cron: string; enabled: boolean }>;
+    const body = (request.body ?? {}) as Partial<{ description: string; prompt: string; cron: string; enabled: boolean }>;
     const repo = new SchedulerRepository(agentId);
     const task = await repo.get(taskId);
     if (!task) return reply.status(404).send({ error: "Task not found" });
@@ -83,6 +84,9 @@ export async function registerSchedulerRoutes(app: FastifyInstance, context: Api
       return reply.status(400).send({ error: "Invalid agent id" });
     }
     const repo = new SchedulerRepository(agentId);
+    // M32：删除不存在资源与 GET/PUT 同口径返回 404，不再恒 204
+    const task = await repo.get(taskId);
+    if (!task) return reply.status(404).send({ error: "Task not found" });
     await repo.delete(taskId);
     return reply.status(204).send();
   });

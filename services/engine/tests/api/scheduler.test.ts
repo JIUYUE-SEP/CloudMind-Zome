@@ -79,4 +79,36 @@ describe("Scheduler API", () => {
     expect(res.body.error).toBe("Invalid agent id");
     await app.close();
   });
+
+  it("M28：POST /scheduler/:agentId 缺 body 返回 400 不 500", async () => {
+    const app = await makeApp();
+    // 无 content-type 无 body：request.body 为 undefined，原先 TypeError 500
+    const res = await authedRequest(app.server).post("/scheduler/a1");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("description, prompt, cron required");
+    await app.close();
+  });
+
+  it("M28：PUT /scheduler/:agentId/:taskId 缺 body 按无字段变更 no-op 处理（不 500）", async () => {
+    const app = await makeApp();
+    const createRes = await authedRequest(app.server).post("/scheduler/a1").send({
+      description: "task",
+      prompt: "do it",
+      cron: "0 9 * * *",
+    });
+    expect(createRes.status).toBe(200);
+
+    const res = await authedRequest(app.server).put(`/scheduler/a1/${createRes.body.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.description).toBe("task");
+    await app.close();
+  });
+
+  it("M32：DELETE 不存在 task 返回 404（不再恒 204）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).delete("/scheduler/a1/nope");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Task not found");
+    await app.close();
+  });
 });

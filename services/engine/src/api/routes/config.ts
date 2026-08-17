@@ -17,7 +17,8 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
   app.put("/config", {
     schema: { summary: "Update system configuration", tags: ["config"] },
   }, async (request) => {
-    const body = request.body as {
+    // M28：无 body/无 content-type 时 request.body 为 undefined，?? {} 兜底避免 TypeError 500（同 plans.ts 口径）
+    const body = (request.body ?? {}) as {
       memory?: Record<string, unknown>;
       tavilyApiKey?: string;
     };

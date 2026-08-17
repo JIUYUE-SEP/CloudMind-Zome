@@ -88,6 +88,37 @@ describe("Sessions API", () => {
     await app.close();
   });
 
+  it("M28：POST /sessions 缺 body 返回 400 不 500", async () => {
+    const app = await makeApp();
+    // 无 content-type 无 body：request.body 为 undefined，原先 TypeError 500
+    const res = await authedRequest(app.server).post("/sessions");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("name and agentIds required");
+    await app.close();
+  });
+
+  it("M28：PUT /sessions/:id 缺 body 按无字段变更 no-op 处理（不 500）", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1"],
+      type: "group",
+    });
+    const res = await authedRequest(app.server).put(`/sessions/${session.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("Team");
+    expect(res.body.agentIds).toEqual(["a1"]);
+    await app.close();
+  });
+
+  it("M32：DELETE 不存在 session 返回 404（不再恒 204）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).delete("/sessions/nope");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Session not found");
+    await app.close();
+  });
+
   it("rejects session creation with invalid agent id", async () => {
     const app = await makeApp();
     const res = await authedRequest(app.server).post("/sessions").send({ name: "Team", agentIds: ["a1", "bad id!"] });

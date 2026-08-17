@@ -483,12 +483,22 @@ describe("Agent API", () => {
     await app.close();
   });
 
-  it("PUT 对不存在 id 走 upsert 创建", async () => {
+  it("PUT 对不存在 id 返回 404（M32：不再静默 upsert，创建走 POST）", async () => {
     const app = await makeApp();
     const putRes = await authedRequest(app.server).put("/agents/newbie").send({ name: "Newbie", persona: "", model: "mock", skills: [], tools: [] });
-    expect(putRes.status).toBe(200);
+    expect(putRes.status).toBe(404);
+    expect(putRes.body.error).toBe("Agent not found");
+    // 未创建任何配置
     const getRes = await authedRequest(app.server).get("/agents/newbie");
-    expect(getRes.body.name).toBe("Newbie");
+    expect(getRes.status).toBe(404);
+    await app.close();
+  });
+
+  it("DELETE 对不存在 id 返回 404（M32：与 GET/PUT 同口径，不再恒 204）", async () => {
+    const app = await makeApp();
+    const delRes = await authedRequest(app.server).delete("/agents/ghost");
+    expect(delRes.status).toBe(404);
+    expect(delRes.body.error).toBe("Agent not found");
     await app.close();
   });
 });

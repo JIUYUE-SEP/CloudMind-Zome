@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import { isValidAgentId } from "@mindcloud/shared";
+import { clampPageLimit } from "./pagination.js";
 
 export async function registerChatRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/chat/:agentId/messages", {
@@ -30,8 +31,9 @@ export async function registerChatRoutes(app: FastifyInstance, context: ApiConte
       return reply.status(400).send({ error: "sessionId is required" });
     }
     // 用户可见完整历史：热存储 + 归档合并（话题压缩只收她的上下文，不动聊天记录）
+    // M28：limit 与 sessions 路由同口径 clamp（A5）——非法值回落缺省 100，超上限封顶 500
     const messages = await context.getMessageRepository(agentId).listBySessionWithArchived(sessionId, {
-      limit: limit ? Number(limit) : undefined,
+      limit: clampPageLimit(limit),
       ...(before !== undefined ? { before } : {}),
     });
     return messages;

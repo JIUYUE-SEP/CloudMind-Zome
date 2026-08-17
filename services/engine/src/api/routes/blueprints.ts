@@ -13,7 +13,8 @@ export async function registerBlueprintRoutes(app: FastifyInstance, context: Api
   app.post("/blueprints", {
     schema: { summary: "Create a blueprint", tags: ["blueprints"] },
   }, async (request, reply) => {
-    const body = request.body as { name: string; nodes: unknown[]; edges: unknown[] };
+    // M28：无 body/无 content-type 时 request.body 为 undefined，?? {} 兜底避免 TypeError 500（同 plans.ts 口径）
+    const body = (request.body ?? {}) as { name: string; nodes: unknown[]; edges: unknown[] };
     if (!body.name) return reply.status(400).send({ error: "name required" });
     return context.blueprintRepository.create({
       name: body.name,
@@ -35,7 +36,7 @@ export async function registerBlueprintRoutes(app: FastifyInstance, context: Api
     schema: { summary: "Update a blueprint", tags: ["blueprints"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { name?: string; nodes?: unknown[]; edges?: unknown[] };
+    const body = (request.body ?? {}) as { name?: string; nodes?: unknown[]; edges?: unknown[] };
     const blueprint = await context.blueprintRepository.get(id);
     if (!blueprint) return reply.status(404).send({ error: "Blueprint not found" });
     if (body.name !== undefined) blueprint.name = body.name;
@@ -49,6 +50,9 @@ export async function registerBlueprintRoutes(app: FastifyInstance, context: Api
     schema: { summary: "Delete a blueprint", tags: ["blueprints"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    // M32：删除不存在资源与 GET/PUT 同口径返回 404，不再恒 204
+    const blueprint = await context.blueprintRepository.get(id);
+    if (!blueprint) return reply.status(404).send({ error: "Blueprint not found" });
     await context.blueprintRepository.delete(id);
     return reply.status(204).send();
   });
@@ -57,7 +61,7 @@ export async function registerBlueprintRoutes(app: FastifyInstance, context: Api
     schema: { summary: "Execute a blueprint", tags: ["blueprints"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { initialInput?: string };
+    const body = (request.body ?? {}) as { initialInput?: string };
     const blueprint = await context.blueprintRepository.get(id);
     if (!blueprint) return reply.status(404).send({ error: "Blueprint not found" });
     const execution = await executeBlueprint(blueprint, context, { initialInput: body.initialInput });

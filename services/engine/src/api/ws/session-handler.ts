@@ -59,12 +59,20 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       // 串行处理消息（P1-8）：与私聊 handler.ts 同一 promise chain 模式——
       // 同 session 消息排队（含回放），避免 m2 撞 worker 创建 I/O 先跑
       let chain = Promise.resolve();
+      // M30：ready 后 chain 深度同样要有上限（与私聊 handler 同口径，超限报错断连）
+      let chainDepth = 0;
 
       function dispatch(raw: unknown): void {
-        chain = chain.then(() => handleMessage(raw)).catch((err) => {
-          logger.error({ err: err }, "failed to handle session websocket message");
-          safeSend(socket, { type: "error", error: "Internal error" });
-        });
+        chainDepth += 1;
+        chain = chain
+          .then(() => handleMessage(raw))
+          .catch((err) => {
+            logger.error({ err: err }, "failed to handle session websocket message");
+            safeSend(socket, { type: "error", error: "Internal error" });
+          })
+          .finally(() => {
+            chainDepth -= 1;
+          });
       }
 
       // 危险工具审批：pending 表 + 本会话免询问名单（按连接维持，维度 agent+工具）
@@ -126,6 +134,11 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             return;
           }
           pendingMessages.push(raw);
+          return;
+        }
+        if (chainDepth >= MAX_PENDING_MESSAGES) {
+          safeSend(socket, { type: "error", error: "Too many pending messages" });
+          socket.close();
           return;
         }
         dispatch(raw);
@@ -202,9 +215,14 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             createdAt: new Date().toISOString(),
           };
 
-          // Save user message to all agents in session (so each agent sees it in their context)
-          for (const agentId of session.agentIds) {
-            const repo = context.getMessageRepository(agentId);
+          // M30：先解析成员 Agent——持久化只写仍存在的成员；给已删 agent 的仓库
+          // append 会 mkdir 重建幽灵数据目录（持久化原先于 validAgents 过滤）
+          const agents = await Promise.all(session.agentIds.map((id) => context.agentRepository.get(id)));
+          const validAgents = agents.filter((a): a is NonNullable<typeof a> => !!a);
+
+          // Save user message to all live agents in session (so each agent sees it in their context)
+          for (const agent of validAgents) {
+            const repo = context.getMessageRepository(agent.id);
             try {
               await repo.append({ ...userMessage, sessionId });
             } catch (err) {
@@ -214,8 +232,6 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
           }
 
           // Determine routing
-          const agents = await Promise.all(session.agentIds.map((id) => context.agentRepository.get(id)));
-          const validAgents = agents.filter((a): a is NonNullable<typeof a> => !!a);
           const routing = routeMessage(input.text, session, validAgents);
 
           // 空目标（如 @了不存在的成员、会话内 Agent 均已删除）时明确告知，

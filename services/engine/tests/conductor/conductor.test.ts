@@ -50,4 +50,12 @@ describe("routeMessage", () => {
     expect(result.targetAgentIds).toEqual([]);
     expect(result.mentionAll).toBe(false);
   });
+
+  it("M30：重复 @mention 去重——同一 agent 只入队回复一次", () => {
+    expect(routeMessage("@a1 @a1 help", session, agents).targetAgentIds).toEqual(["a1"]);
+    // id 与 name 混写命中同一 agent 同样去重
+    expect(routeMessage("@Alice @a1 help", session, agents).targetAgentIds).toEqual(["a1"]);
+    // 多个不同 agent 的 mention 保持各自一次、顺序不变
+    expect(routeMessage("@a1 @Bob @a1 help", session, agents).targetAgentIds).toEqual(["a1", "a2"]);
+  });
 });

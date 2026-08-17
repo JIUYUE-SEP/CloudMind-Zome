@@ -214,12 +214,29 @@ describe("Subagents API", () => {
     expect(summary.body.output.length).toBe(4096);
     expect(summary.body.output.endsWith("END")).toBe(true);
 
-    const full = await authedRequest(app.server).get("/subagents/background/t-big/output");
+    const full = await authedRequest(app.server).get("/subagents/background/t-big/output?agentId=a1");
     expect(full.status).toBe(200);
     expect(full.body.output).toBe(big);
 
-    const missing = await authedRequest(app.server).get("/subagents/background/nope/output");
+    const missing = await authedRequest(app.server).get("/subagents/background/nope/output?agentId=a1");
     expect(missing.status).toBe(404);
+  });
+
+  it("M35：/output 端点 owner 校验——缺 agentId 400，非 owner 按不存在 404", async () => {
+    backgroundManager.register(makeTask("t-owner"), config, 60_000);
+    await vi.waitFor(() => expect(backgroundManager.get("t-owner")?.status).toBe("completed"));
+
+    const noAgent = await authedRequest(app.server).get("/subagents/background/t-owner/output");
+    expect(noAgent.status).toBe(400);
+    expect(noAgent.body.error).toContain("agentId");
+
+    // 非 owner 与不存在同口径 404，不泄露任务存在性
+    const notOwner = await authedRequest(app.server).get("/subagents/background/t-owner/output?agentId=other");
+    expect(notOwner.status).toBe(404);
+
+    const ok = await authedRequest(app.server).get("/subagents/background/t-owner/output?agentId=a1");
+    expect(ok.status).toBe(200);
+    expect(ok.body.output).toBe("bg result");
   });
 
   it("重启后 lost 状态经 REST 正确暴露", async () => {

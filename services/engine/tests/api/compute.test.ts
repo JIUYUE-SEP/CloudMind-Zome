@@ -129,6 +129,104 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("M33：POST providers 显式 id 重复 → 409，不落第二条（对照 POST /agents 口径）", async () => {
+    const app = await makeApp();
+    const provider = {
+      id: "p-dup",
+      displayName: "Original",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [],
+    };
+    const first = await authedRequest(app.server).post("/compute/providers").send(provider);
+    expect(first.status).toBe(200);
+
+    const dup = await authedRequest(app.server)
+      .post("/compute/providers")
+      .send({ ...provider, displayName: "Overwrite Attempt" });
+    expect(dup.status).toBe(409);
+    expect(dup.body.error).toContain("already exists");
+    expect(dup.body.error).toContain("p-dup");
+
+    // 原配置未被覆盖，也未落第二条
+    const listRes = await authedRequest(app.server).get("/compute/providers");
+    expect(listRes.body).toHaveLength(1);
+    expect(listRes.body[0].displayName).toBe("Original");
+    await app.close();
+  });
+
+  it("M33：PUT provider 拒绝空串/纯空白 displayName（400，原值保留）", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-name",
+      displayName: "Keep Name",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [],
+    });
+    for (const displayName of ["", "   "]) {
+      const res = await authedRequest(app.server)
+        .put("/compute/providers/p-name")
+        .send({ displayName });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("displayName");
+    }
+    const config = await context.configRepository.load();
+    expect(config.providers[0].displayName).toBe("Keep Name");
+    await app.close();
+  });
+
+  it("M33：test 端点无 apiKey → 400 明确文案（不再被误报 502）", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-no-key",
+      displayName: "No Key",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiMode: "chat_completions",
+      models: [],
+    });
+    const res = await authedRequest(app.server).post("/compute/providers/p-no-key/test");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("apiKey");
+    await app.close();
+  });
+
+  it("M28：compute 写端点缺 body 不 500（POST 400；PUT 按空 body no-op）", async () => {
+    const app = await makeApp();
+    // 无 content-type 无 body：request.body 为 undefined，原先 TypeError 500
+    const createRes = await authedRequest(app.server).post("/compute/providers");
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.error).toContain("displayName");
+
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-nobody",
+      displayName: "No Body",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+
+    // 空 body PUT provider = 无字段变更 no-op
+    const putRes = await authedRequest(app.server).put("/compute/providers/p-nobody");
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.displayName).toBe("No Body");
+
+    // 空 body POST models = 缺 id 400
+    const addRes = await authedRequest(app.server).post("/compute/providers/p-nobody/models");
+    expect(addRes.status).toBe(400);
+    expect(addRes.body.error).toContain("id");
+
+    // 空 body PUT models = 无字段变更 no-op
+    const putModelRes = await authedRequest(app.server).put("/compute/providers/p-nobody/models/gpt-4o");
+    expect(putModelRes.status).toBe(200);
+    expect(putModelRes.body.displayName).toBe("GPT-4o");
+    await app.close();
+  });
+
   it("updates and deletes a provider", async () => {
     const app = await makeApp();
     const provider = {

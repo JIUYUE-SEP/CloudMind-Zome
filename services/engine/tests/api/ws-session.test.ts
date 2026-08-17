@@ -17,6 +17,7 @@ import { mindService } from "../../src/plugins/mind/index.js";
 import { computeService } from "../../src/plugins/compute/index.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { LLMEvent, LLMProvider } from "../../src/provider/types.js";
+import { getAgentDir } from "../../src/config/paths.js";
 
 function mockOf(p: LLMProvider | undefined): MockLLMProvider {
   return p as MockLLMProvider;
@@ -405,6 +406,134 @@ describe("Session WebSocket API", () => {
 
     expect(jobTexts).toEqual(["m1", "m2"]);
     expect(calls).toBe(2);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("M30：持久化跳过已删 agent，不重建幽灵数据目录", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1", "ghost"]);
+    // 删除 ghost：session.agentIds 仍引用它（真实场景=删 agent 不会改写历史 session）
+    await context.agentRepository.delete("ghost");
+    const ghostDir = getAgentDir("ghost");
+    await expect(fs.access(ghostDir)).rejects.toThrow();
+    // 已删 agent 不再有 worker（与 bootstrap 注册表行为一致）
+    const origGet = context.getAgentWorker;
+    context.getAgentWorker = async (id: string) => (id === "ghost" ? undefined : origGet(id));
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "hello everyone" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "step.end" && message.agentId === "a1") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    // a1 仓库正常落库；已删 ghost 的目录未被 append 重建
+    const a1Messages = await context.getMessageRepository("a1").listBySession(sessionId);
+    expect(a1Messages.some((m) => m.role === "user")).toBe(true);
+    await expect(fs.access(ghostDir)).rejects.toThrow();
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("M30：重复 @mention 去重——同一 agent 只入队一次", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1", "a2"]);
+    const worker = (await context.getAgentWorker("a1"))!;
+    let enqueueCount = 0;
+    const origEnqueue = worker.enqueue.bind(worker);
+    worker.enqueue = (job: Job) => {
+      enqueueCount++;
+      origEnqueue(job);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    const repliedAgents: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "@a1 @a1 hello" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "step.end") {
+          repliedAgents.push(message.agentId);
+          // 等一拍再收尾：去重失效会再入队一次并产生第二个 turn
+          setTimeout(() => {
+            client.close();
+            resolve();
+          }, 300);
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    expect(enqueueCount).toBe(1);
+    expect(repliedAgents).toEqual(["a1"]);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("M30：ready 后待处理消息深度超限 → 报错断连（与 ready 前缓冲同口径）", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
+    // warmup 后 getAgentWorker 悬挂：消息处理永不完成，chain 深度只增不减
+    const origGet = context.getAgentWorker;
+    let hanging = false;
+    context.getAgentWorker = async (id: string) => {
+      if (hanging) return new Promise(() => {});
+      return origGet(id);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    let sawOverflow = false;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "warmup" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "turn.end") {
+          // warmup 完成 = ready 且 chain 已排空；此后处理悬挂，深度累积
+          hanging = true;
+          for (let i = 0; i < 101; i++) {
+            client.send(JSON.stringify({ text: `flood ${i}` }));
+          }
+        }
+        if (message.type === "error" && message.error === "Too many pending messages") {
+          sawOverflow = true;
+        }
+      });
+      client.on("close", () => {
+        if (sawOverflow) resolve();
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    expect(sawOverflow).toBe(true);
+    hanging = false;
 
     await app.close();
     await cleanup();

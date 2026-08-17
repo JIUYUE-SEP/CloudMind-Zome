@@ -66,12 +66,21 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
       let ready = false;
       // 串行处理消息，保证持久化与入队顺序
       let chain = Promise.resolve();
+      // M30：ready 后 chain 深度同样要有上限——处理慢于到达时 promise 链会无限增长
+      //（与 ready 前 pendingMessages 缓冲同口径，超限报错断连）
+      let chainDepth = 0;
 
       function dispatch(raw: unknown): void {
-        chain = chain.then(() => handleMessage(raw)).catch((err) => {
-          logger.error({ err: err }, "failed to handle websocket message");
-          safeSend(socket, { type: "error", error: "Internal error" });
-        });
+        chainDepth += 1;
+        chain = chain
+          .then(() => handleMessage(raw))
+          .catch((err) => {
+            logger.error({ err: err }, "failed to handle websocket message");
+            safeSend(socket, { type: "error", error: "Internal error" });
+          })
+          .finally(() => {
+            chainDepth -= 1;
+          });
       }
 
       socket.on("message", (raw: unknown) => {
@@ -82,6 +91,11 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
           pendingMessages.push(raw);
+          return;
+        }
+        if (chainDepth >= MAX_PENDING_MESSAGES) {
+          safeSend(socket, { type: "error", error: "Too many pending messages" });
+          socket.close();
           return;
         }
         dispatch(raw);
@@ -249,13 +263,16 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
           };
 
           // Persist user message
-          await context
-            .getMessageRepository(agentId)
-            .append({ ...userMessage, sessionId })
-            .catch((err) => {
-              logger.error({ err: err }, "failed to persist user message");
-              safeSend(socket, { type: "error", error: "Failed to persist message" });
-            });
+          // M31：持久化失败即中止，不入队——否则新消息不在 agent 上下文中（答非所问）
+          try {
+            await context
+              .getMessageRepository(agentId)
+              .append({ ...userMessage, sessionId });
+          } catch (err) {
+            logger.error({ err: err }, "failed to persist user message");
+            safeSend(socket, { type: "error", error: "Failed to persist message" });
+            return;
+          }
 
           // 加载最近历史作为上下文（含刚持久化的本条），与群聊行为一致
           const repo = context.getMessageRepository(agentId);

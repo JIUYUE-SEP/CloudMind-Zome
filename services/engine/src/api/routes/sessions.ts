@@ -13,7 +13,8 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
   app.post("/sessions", {
     schema: { summary: "Create a new session", tags: ["sessions"] },
   }, async (request, reply) => {
-    const body = request.body as { name: string; agentIds: string[]; type?: "group" | "intermind" };
+    // M28：无 body/无 content-type 时 request.body 为 undefined，?? {} 兜底避免 TypeError 500（同 plans.ts 口径）
+    const body = (request.body ?? {}) as { name: string; agentIds: string[]; type?: "group" | "intermind" };
     if (!body.name || !body.agentIds?.length) {
       return reply.status(400).send({ error: "name and agentIds required" });
     }
@@ -40,7 +41,7 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     schema: { summary: "Update a session", tags: ["sessions"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { name?: string; agentIds?: string[] };
+    const body = (request.body ?? {}) as { name?: string; agentIds?: string[] };
     const session = await context.sessionRepository.get(id);
     if (!session) return reply.status(404).send({ error: "Session not found" });
     if (body.agentIds && !body.agentIds.every(isValidAgentId)) {
@@ -56,6 +57,9 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     schema: { summary: "Delete a session", tags: ["sessions"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    // M32：删除不存在资源与 GET/PUT 同口径返回 404，不再恒 204
+    const session = await context.sessionRepository.get(id);
+    if (!session) return reply.status(404).send({ error: "Session not found" });
     await context.sessionRepository.delete(id);
     return reply.status(204).send();
   });
