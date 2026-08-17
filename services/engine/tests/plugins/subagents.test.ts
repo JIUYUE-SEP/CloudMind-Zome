@@ -17,6 +17,7 @@ import * as mindPlugin from "../../src/plugins/mind/index.js";
 import * as pipelinePlugin from "../../src/plugins/pipeline/index.js";
 import * as computePlugin from "../../src/plugins/compute/index.js";
 import * as agentsPlugin from "../../src/plugins/agents/index.js";
+import * as perceptionPlugin from "../../src/plugins/perception/index.js";
 import * as intermindPlugin from "../../src/plugins/intermind/index.js";
 import * as subagentsPlugin from "../../src/plugins/subagents/index.js";
 
@@ -50,6 +51,7 @@ describe("plugins/subagents（P7d）", () => {
     await ctx.plugin(computePlugin);
     await ctx.plugin(skillsPlugin, { getAgentConfig: async () => undefined });
     await ctx.plugin(agentsPlugin, agentsConfig);
+    await ctx.plugin(perceptionPlugin);
     await ctx.plugin(intermindPlugin);
   }
 
@@ -65,7 +67,7 @@ describe("plugins/subagents（P7d）", () => {
 
   it("插件元数据：name / inject 全阵容 / apply 四件套可读", () => {
     expect(subagentsPlugin.name).toBe("subagents");
-    expect(subagentsPlugin.inject).toEqual(["config", "llm", "tools", "compute", "agents", "memory", "intermind"]);
+    expect(subagentsPlugin.inject).toEqual(["config", "llm", "tools", "compute", "agents", "memory", "intermind", "perception"]);
     expect(typeof subagentsPlugin.apply).toBe("function");
   });
 

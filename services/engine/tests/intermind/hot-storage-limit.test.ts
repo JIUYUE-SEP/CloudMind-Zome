@@ -46,7 +46,7 @@ beforeEach(async () => {
   service = new IntermindService({
     getAgentConfig: (id) => agentRepository.get(id),
     getMessageRepository: (id) => new MessageRepository(id),
-    getAgentWorker: async () => undefined,
+    injectNotice: async () => true,
   });
 });
 
@@ -127,7 +127,7 @@ describe("Intermind 热存储封顶（H8）", () => {
     const broken = new IntermindService({
       getAgentConfig: (id) => agentRepository.get(id),
       getMessageRepository: (id) => (id === "a2" ? failingArchive : new MessageRepository(id)),
-      getAgentWorker: async () => undefined,
+      injectNotice: async () => true,
     });
 
     // 写信主流程不受归档故障影响：上限+1 封全部成功落盘

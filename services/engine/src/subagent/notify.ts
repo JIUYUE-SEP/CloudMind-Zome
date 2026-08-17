@@ -1,11 +1,11 @@
 import type { AgentConfig } from "@mindcloud/shared";
 import { logger } from "../logger.js";
-import type { AgentWorker } from "../core/agent-worker.js";
+import type { PerceptionInject } from "../plugins/perception/index.js";
 import type { BackgroundSubagent } from "./background.js";
 
 /**
  * subagent 任务终态通知（阶段 4）：文本组装 + 开关 + 注入接线。
- * 通知 = 主动唤起：经 AgentWorker 通用注入通道（enqueueSystemNotice）入队一轮感知。
+ * 通知 = 主动唤起：经 perception 单口（injectNotice，P8a 决策 3）入队一轮感知。
  * 幂等由 BackgroundManager 的 notified 标记保证，此处不重复防。
  */
 
@@ -31,24 +31,26 @@ export function buildTerminalNoticeText(bg: BackgroundSubagent): string {
 }
 
 /**
- * 组装 onTaskTerminal 回调（bootstrap 接线用）：开关判定 → owner worker 注入。
- * 通知失败（worker 不存在/已停/配置读取异常）记 warn，不炸任务收尾。
+ * 组装 onTaskTerminal 回调（subagents 插件接线用）：开关判定 → perception 单口注入。
+ * 注入失败（perception 侧异常/配置读取异常）记 warn，不炸任务收尾；
+ * 无可用 worker 的 warn 由 perception 侧承担（原「终态通知跳过」文案语义保留）。
+ * injectNotice 的返回值忽略：终态通知本是 fire-and-forget。
  */
 export function createSubagentTerminalNotifier(deps: {
   getAgentConfig(agentId: string): Promise<AgentConfig | undefined>;
-  getWorker(agentId: string): Promise<AgentWorker | undefined>;
+  injectNotice(payload: PerceptionInject): Promise<boolean>;
 }): (bg: BackgroundSubagent) => void {
   return (bg) => {
     void (async () => {
       try {
         const ownerConfig = await deps.getAgentConfig(bg.parentAgentId);
         if (!shouldNotifySubagentTerminal(ownerConfig)) return;
-        const worker = await deps.getWorker(bg.parentAgentId);
-        if (!worker) {
-          logger.warn(`[subagent] 任务 ${bg.taskId} 终态通知跳过：owner ${bg.parentAgentId} 无可用 worker`);
-          return;
-        }
-        worker.enqueueSystemNotice(buildTerminalNoticeText(bg), `notice_${bg.taskId}`);
+        await deps.injectNotice({
+          source: "subagents",
+          targetAgentId: bg.parentAgentId,
+          text: buildTerminalNoticeText(bg),
+          sourceId: `notice_${bg.taskId}`,
+        });
       } catch (err) {
         logger.warn({ err }, `[subagent] 任务 ${bg.taskId} 终态通知注入失败`);
       }

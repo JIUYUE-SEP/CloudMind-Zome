@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { INTERMIND_SESSION_PREFIX, intermindSessionId, type AgentConfig, type ChatMessageRecord } from "@mindcloud/shared";
 import { logger } from "../logger.js";
-import type { AgentWorker } from "../core/agent-worker.js";
+import type { PerceptionInject } from "../plugins/perception/index.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
 import {
   auditPrivateMessage,
@@ -15,8 +15,9 @@ import {
  * 会话空间：每个 agent 的 intermind 空间按对端一个会话，sessionId = `intermind:<peer>`；
  * 邮箱对称双写——A 给 B 写信时，消息同时写入 B 的空间（`intermind:A`，来信线程）
  * 和 A 自己的空间（`intermind:B`，来往线程留底），两侧各自可读全量往来。
- * 唤醒：写信后经 enqueueSystemNotice 触发接收方一轮感知回合（带 intermindRide 标记，
- * 感知回合内回信搭车不再次唤醒）。唤醒与搭车两条路径都经 buildPrivateMessageNotice
+ * 唤醒：写信后经 perception 单口（injectNotice，P8a 决策 3）触发接收方一轮
+ * 感知回合（带 intermindRide 标记，感知回合内回信搭车不再次唤醒）。唤醒与
+ * 搭车两条路径都经 buildPrivateMessageNotice
  * 注入同一格式的通知到接收方主会话（default，与前端私聊同口径）——唯一区别是
  * 搭车只落通知不触发感知回合。裸原文只进 intermind 来信线程，主会话只见通知。
  */
@@ -50,7 +51,8 @@ export interface IntermindSendResult {
 export interface IntermindServiceDeps {
   getAgentConfig(agentId: string): Promise<AgentConfig | undefined>;
   getMessageRepository(agentId: string): IMessageRepository;
-  getAgentWorker(agentId: string): Promise<AgentWorker | undefined>;
+  /** 感知注入单口（P8a perception 插件）：唤醒路径经此入队一轮感知回合；返回是否真实入队（无 worker = false） */
+  injectNotice(payload: PerceptionInject): Promise<boolean>;
 }
 
 /**
@@ -80,7 +82,7 @@ export class IntermindService {
   /**
    * 写信。默认唤醒接收方（wake:false = 搭车，只入队不唤醒）。
    * 失败语义：目标不存在/自邮明确抛错；落盘失败抛错不静默；接收方无 worker 时
-   * 信照常落盘、唤醒跳过并 warn。
+   * 信照常落盘、唤醒跳过并 warn（perception 侧承担，injectNotice 返回 false → woke=false）。
    */
   async send(
     fromAgentId: string,
@@ -148,19 +150,16 @@ export class IntermindService {
 
     let woke = false;
     if (opts.wake !== false) {
-      const worker = await this.deps.getAgentWorker(toAgentId);
-      if (!worker) {
-        logger.warn(
-          `[intermind] ${fromAgentId}→${toAgentId} 私信已落盘，接收方无可用 worker，唤醒跳过`,
-        );
-      } else {
-        worker.enqueueSystemNotice(
-          noticeText,
-          INTERMIND_NOTICE_SESSION_ID,
-          { intermindRide: true },
-        );
-        woke = true;
-      }
+      // 唤醒路径经 perception 单口注入（P8a 决策 3）：无可用 worker 的 warn/跳过
+      // 由 perception 侧承担并返回 false（原「私信已落盘，接收方无可用 worker，
+      // 唤醒跳过」语义），woke 语义不变
+      woke = await this.deps.injectNotice({
+        source: "intermind",
+        targetAgentId: toAgentId,
+        text: noticeText,
+        sourceId: INTERMIND_NOTICE_SESSION_ID,
+        opts: { intermindRide: true },
+      });
     } else {
       // 搭车（回信）：同一格式通知落接收方主会话，但不触发感知回合——
       // 真机 #9：此前注入的是裸信件原文，接收方分不清「对方回信」与「用户怪话」。

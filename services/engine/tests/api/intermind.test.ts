@@ -47,7 +47,7 @@ beforeEach(async () => {
   intermindService = new IntermindService({
     getAgentConfig: (id) => agentRepository.get(id),
     getMessageRepository: (id) => new MessageRepository(id),
-    getAgentWorker: async () => undefined,
+    injectNotice: async () => true,
   });
 
   const context: ApiContext = {

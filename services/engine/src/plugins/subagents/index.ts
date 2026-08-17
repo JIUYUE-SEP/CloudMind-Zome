@@ -22,7 +22,7 @@ import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
  *   puppetModelService → runAgentCollect（经 AgentWorker 队列，独立
  *   subagent_<uuid> 会话）→ puppetRunner（provider 包装链 resilient(record())，
  *   工具装配 ctx.tools.forAgent）→ backgroundManager（终态通知接
- *   getAgentConfig/getWorker）→ subagentDispatcher → subagentSwarm。
+ *   getAgentConfig/injectNotice——P8a 起经 perception 单口注入）→ subagentDispatcher → subagentSwarm。
  * - puppetRunner.getRuntime 的 services 字典里 subagentDispatcher 保持闭包
  *   延迟求值：同 apply 内构造，TDZ 安全由 lazy 闭包保证，不得急切捕获
  *   （方案 B4 风险 1 的既定缓解）。
@@ -35,8 +35,8 @@ import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
  */
 export const name = "subagents";
 
-/** 调度链路的全部 ctx 依赖（见头注；agents 面含 worker 创建链与合体仓库） */
-export const inject = ["config", "llm", "tools", "compute", "agents", "memory", "intermind"];
+/** 调度链路的全部 ctx 依赖（见头注；agents 面含 worker 创建链与合体仓库；perception 为 P8a 终态通知注入单口） */
+export const inject = ["config", "llm", "tools", "compute", "agents", "memory", "intermind", "perception"];
 
 /** ctx.subagents 上架面 */
 export interface SubagentsFace {
@@ -153,11 +153,11 @@ export async function apply(ctx: Context): Promise<void> {
           signal: opts?.signal,
           puppetModel: opts?.puppetModel,
         }),
-      // 终态通知（阶段 4）：任务 completed/failed → owner worker 注入感知回合
-      // （开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
+      // 终态通知（阶段 4）：任务 completed/failed → perception 单口注入 owner
+      // 感知回合（P8a；开关 AgentConfig.subagentNotify 缺省开；失败记 warn 不炸收尾）
       onTaskTerminal: createSubagentTerminalNotifier({
         getAgentConfig: (agentId) => agentRepository.get(agentId),
-        getWorker: ctx.agents.getOrCreateWorker,
+        injectNotice: (payload) => ctx.perception.injectNotice(payload),
       }),
     },
     new SubagentTaskRepository(),

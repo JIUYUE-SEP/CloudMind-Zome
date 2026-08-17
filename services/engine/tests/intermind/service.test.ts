@@ -63,7 +63,12 @@ beforeEach(async () => {
   service = new IntermindService({
     getAgentConfig: (id) => agentRepository.get(id),
     getMessageRepository: (id) => new MessageRepository(id),
-    getAgentWorker: async () => worker,
+    // P8a：唤醒改经 perception 单口；harness 直连 worker 通道并回报已入队，
+    // 白名单/无 worker 语义由 tests/plugins/perception.test.ts 覆盖
+    injectNotice: async (p) => {
+      worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+      return true;
+    },
   });
 });
 
@@ -199,7 +204,7 @@ describe("IntermindService.send", () => {
       getAgentConfig: (id) => agentRepository.get(id),
       getMessageRepository: (id) =>
         id === "a1" ? failingSender : new MessageRepository(id),
-      getAgentWorker: async () => undefined,
+      injectNotice: async () => true,
     });
 
     await expect(broken.send("a1", "a2", "hi")).rejects.toThrow("disk full");
@@ -218,19 +223,28 @@ describe("IntermindService.send", () => {
     warn.mockRestore();
   });
 
-  it("接收方无可用 worker：信照常落盘，唤醒跳过并 warn", async () => {
+  it("接收方无可用 worker：信照常落盘，唤醒跳过并 warn（perception 侧承担，woke=false）", async () => {
+    // P8a 起 service 不再解析 worker：「私信已落盘，接收方无可用 worker，唤醒跳过」
+    // 的 warn 由 perception 侧承担并返回 false（见 tests/plugins/perception.test.ts）；
+    // 本用例以 injectNotice 返回 false 模拟，恢复 woke=false 原语义断言
+    const injectNotice = vi.fn(async () => false);
     const workerless = new IntermindService({
       getAgentConfig: (id) => agentRepository.get(id),
       getMessageRepository: (id) => new MessageRepository(id),
-      getAgentWorker: async () => undefined,
+      injectNotice,
     });
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     const result = await workerless.send("a1", "a2", "hi");
     expect(result.woke).toBe(false);
     expect(await new MessageRepository("a2").listBySession("intermind:a1")).toHaveLength(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("唤醒跳过"));
-    warn.mockRestore();
+    // 唤醒请求仍经单口委托（source 归属 + 主会话 sourceId + ride 标记）
+    expect(injectNotice).toHaveBeenCalledWith({
+      source: "intermind",
+      targetAgentId: "a2",
+      text: buildPrivateMessageNotice("甲", "a1", "hi"),
+      sourceId: "default",
+      opts: { intermindRide: true },
+    });
   });
 
   it("收信后主会话只增一条通知消息：裸原文不进主会话，只在 intermind 线程（#8）", async () => {
@@ -249,7 +263,10 @@ describe("IntermindService.send", () => {
     const withRealWorker = new IntermindService({
       getAgentConfig: (id) => agentRepository.get(id),
       getMessageRepository: (id) => new MessageRepository(id),
-      getAgentWorker: async () => worker,
+      injectNotice: async (p) => {
+        worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+        return true;
+      },
     });
 
     await withRealWorker.send("a1", "a2", "你好，乙");

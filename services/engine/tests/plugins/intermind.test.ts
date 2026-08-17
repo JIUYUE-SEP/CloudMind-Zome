@@ -15,9 +15,10 @@ import * as mindPlugin from "../../src/plugins/mind/index.js";
 import * as pipelinePlugin from "../../src/plugins/pipeline/index.js";
 import * as computePlugin from "../../src/plugins/compute/index.js";
 import * as agentsPlugin from "../../src/plugins/agents/index.js";
+import * as perceptionPlugin from "../../src/plugins/perception/index.js";
 import * as intermindPlugin from "../../src/plugins/intermind/index.js";
 
-// P7d intermind 插件挂载测试：inject ['agents'] PENDING 语义 + ctx.intermind
+// P7d intermind 插件挂载测试：inject ['agents','perception'] PENDING 语义 + ctx.intermind
 // 上架 + 写信/会话检索行为冒烟（搭车路径不建 worker；agents 依赖链挂载形态
 // 同 tests/plugins/plans.test.ts）。
 describe("plugins/intermind（P7d）", () => {
@@ -46,6 +47,7 @@ describe("plugins/intermind（P7d）", () => {
     await ctx.plugin(computePlugin);
     await ctx.plugin(skillsPlugin, { getAgentConfig: async () => undefined });
     await ctx.plugin(agentsPlugin, agentsConfig);
+    await ctx.plugin(perceptionPlugin);
   }
 
   const agentsConfig = {
@@ -58,13 +60,13 @@ describe("plugins/intermind（P7d）", () => {
     getSidecar: () => ({} as never),
   };
 
-  it("插件元数据：name / inject ['agents'] / apply 四件套可读", () => {
+  it("插件元数据：name / inject ['agents','perception'] / apply 四件套可读", () => {
     expect(intermindPlugin.name).toBe("intermind");
-    expect(intermindPlugin.inject).toEqual(["agents"]);
+    expect(intermindPlugin.inject).toEqual(["agents", "perception"]);
     expect(typeof intermindPlugin.apply).toBe("function");
   });
 
-  it("inject ['agents'] 未就位时不激活（PENDING）", async () => {
+  it("inject ['agents','perception'] 未就位时不激活（PENDING）", async () => {
     const ctx = new Context();
     const fiber = ctx.plugin(intermindPlugin);
     // cordis rc.8：await fiber 对 PENDING 立即落定，激活与否看 fiber.state（PENDING=0）
@@ -97,7 +99,7 @@ describe("plugins/intermind（P7d）", () => {
       tools: [],
     });
 
-    // 搭车（wake:false）：只落盘不唤醒——不触发 getAgentWorker，无需真 worker
+    // 搭车（wake:false）：只落盘不唤醒——不触发 injectNotice，无需真 worker
     const result = await ctx.intermind.send("a1", "a2", "你好，乙", { wake: false });
     expect(result).toMatchObject({ recipientSessionId: "intermind:a1", woke: false });
 

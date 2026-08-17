@@ -18,6 +18,7 @@ import * as schedulerPlugin from "./plugins/scheduler/index.js";
 import * as plansPlugin from "./plugins/plans/index.js";
 import * as intermindPlugin from "./plugins/intermind/index.js";
 import * as subagentsPlugin from "./plugins/subagents/index.js";
+import * as perceptionPlugin from "./plugins/perception/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -97,6 +98,11 @@ async function main() {
   await root.plugin(schedulerPlugin);
   await root.plugin(plansPlugin);
 
+  // perception（P8a）：感知注入单口总线（决策 3）——inject agents，先于此处
+  // 之后的 intermind/subagents 挂载（两者 inject 它，PENDING 语义兜底）；
+  // enqueueSystemNotice 仍是落盘+入队机制本体，perception 是其唯一生产调用方
+  await root.plugin(perceptionPlugin);
+
   // intermind/subagents（P7d 收尾）：人形间私信与 subagent 调度链路（含傀儡
   // 执行路径、swarm、型号库）收编；intermind 先挂（subagents inject 它）。
   // backgroundManager.load() 启动对账收进 subagents 插件 apply（listen 前
@@ -108,7 +114,7 @@ async function main() {
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans", "intermind", "subagents"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans", "intermind", "subagents", "perception"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;

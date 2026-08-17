@@ -18,6 +18,7 @@ import {
   shouldNotifySubagentTerminal,
 } from "../../src/subagent/notify.js";
 import type { SubagentTask } from "../../src/subagent/types.js";
+import type { PerceptionInject } from "../../src/plugins/perception/index.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
 import { computeService } from "../../src/plugins/compute/index.js";
@@ -166,7 +167,12 @@ describe("④ 通知注入", () => {
         runPuppet: async () => "傀儡结论",
         onTaskTerminal: createSubagentTerminalNotifier({
           getAgentConfig: async () => ownerConfig,
-          getWorker: async () => worker,
+          // P8a：终态注入改经 perception 单口；harness 直连 worker 通道并回报
+          // 已入队，白名单/waterfall 语义由 tests/plugins/perception.test.ts 覆盖
+          injectNotice: async (p) => {
+            worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+            return true;
+          },
         }),
       },
       repository,
@@ -242,14 +248,17 @@ describe("⑤ 开关关闭时无注入", () => {
       resolveOwnerConfig = resolve;
     });
     const getAgentConfig = vi.fn(() => ownerConfigGate);
-    const getWorker = vi.fn(async () => worker);
+    const injectNotice = vi.fn(async (p: PerceptionInject) => {
+      worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+      return true;
+    });
     const manager = new BackgroundManager(
       {
         runAgent: async () => "delegate",
         runPuppet: async () => "傀儡结论",
         onTaskTerminal: createSubagentTerminalNotifier({
           getAgentConfig,
-          getWorker,
+          injectNotice,
         }),
       },
       repository,
@@ -264,7 +273,7 @@ describe("⑤ 开关关闭时无注入", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getWorker).not.toHaveBeenCalled();
+    expect(injectNotice).not.toHaveBeenCalled();
     expect(await messageRepository.listBySession("notice_t-off")).toHaveLength(0);
     expect(worker.status).toBe("idle");
   });
