@@ -7,7 +7,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { mcpToolToEngine, isMcpToolName } from "../../../src/tools/mcp/wrapper.js";
+import { mcpToolToEngine, wrapMcpTools, isMcpToolName } from "../../../src/tools/mcp/wrapper.js";
 import type { McpToolCaller } from "../../../src/tools/mcp/wrapper.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolContext } from "../../../src/tools/types.js";
@@ -135,5 +135,29 @@ describe("mcpToolToEngine（InMemoryTransport 集成）", () => {
     const wrapped = mcpToolToEngine("s", ping, clientCaller(client));
     expect(wrapped.parameters.safeParse({ msg: "x" }).success).toBe(true);
     expect(wrapped.parameters.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("wrapMcpTools 过滤（M20 task 化工具）", () => {
+  const noopCaller: McpToolCaller = {
+    callTool: () => Promise.resolve({ content: [] } as CallToolResult),
+    ping: () => Promise.resolve({}),
+  };
+  const wrap = (tools: Parameters<typeof wrapMcpTools>[1]) =>
+    wrapMcpTools("s", tools, noopCaller, () => ({}));
+
+  it("taskSupport=required 的工具不注册（不对 LLM 可见），其余保留", () => {
+    const wrapped = wrap([
+      { name: "normal", inputSchema: { type: "object" } },
+      { name: "tasky", inputSchema: { type: "object" }, execution: { taskSupport: "required" } },
+      { name: "maybe", inputSchema: { type: "object" }, execution: { taskSupport: "optional" } },
+      { name: "never", inputSchema: { type: "object" }, execution: { taskSupport: "forbidden" } },
+    ]);
+
+    const names = wrapped.map((t) => t.name);
+    expect(names).toContain("mcp__s__normal");
+    expect(names).toContain("mcp__s__maybe");
+    expect(names).toContain("mcp__s__never");
+    expect(names).not.toContain("mcp__s__tasky");
   });
 });

@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import { renameWithRetry } from "../../plugins/memory/document-store.js";
 import { resolveProjectPath } from "../project-paths.js";
+import { PROTECTED_FILES } from "./write.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const parameters = z.object({
@@ -41,6 +43,12 @@ export const editFileTool: Tool = {
 
       if (oldString === "") {
         return { success: false, error: "oldString must not be empty" };
+      }
+
+      // M17：引擎自管状态文件禁改（与 write.ts 同名单同语义，basename 小写比较）
+      const basename = path.basename(path.normalize(filePath)).toLowerCase();
+      if (PROTECTED_FILES.has(basename)) {
+        return { success: false, error: `cannot edit protected file: ${filePath}` };
       }
 
       const fullPath = await resolveProjectPath(projectRoot, filePath);

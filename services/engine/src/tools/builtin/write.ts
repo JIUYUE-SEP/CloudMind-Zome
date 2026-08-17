@@ -5,7 +5,8 @@ import { renameWithRetry } from "../../plugins/memory/document-store.js";
 import { resolveProjectPath } from "../project-paths.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
-const PROTECTED_FILES = new Set([
+/** 引擎自管状态文件名单，工具写/改一律拦截（与 edit_file.ts 共用，语义一致） */
+export const PROTECTED_FILES = new Set([
   "agent.json",
   "messages.jsonl",
   "scheduler.jsonl",
@@ -39,26 +40,9 @@ async function resolveAllowedWritePath(
   return { fullPath, relativePath: normalized };
 }
 
-async function resolveWritePath(
-  ctx: ToolContext,
-  filePath: string,
-): Promise<{ fullPath: string; relativePath: string }> {
-  if (ctx.projectRoot) {
-    const basename = path.basename(path.normalize(filePath)).toLowerCase();
-    if (PROTECTED_FILES.has(basename)) {
-      throw new Error(`cannot write protected file: ${filePath}`);
-    }
-    return {
-      fullPath: await resolveProjectPath(ctx.projectRoot, filePath),
-      relativePath: path.normalize(filePath),
-    };
-  }
-  return resolveAllowedWritePath(ctx.workspaceDir, filePath);
-}
-
 export const writeTool: Tool = {
   name: "write_file",
-  description: "Write content to a file in the workspace or project root",
+  description: "Write content to a file under the workspace files/ directory",
   parameters: z.object({
     path: z.string(),
     content: z.string(),
@@ -68,7 +52,9 @@ export const writeTool: Tool = {
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { path: filePath, content } = args as { path: string; content: string };
     try {
-      const { fullPath, relativePath } = await resolveWritePath(ctx, filePath);
+      // M16：写路径恒走 files/ 子目录限制（ToolContext.projectRoot 不再影响 write_file；
+      // 该字段保留给 read/edit/run/list 的 `?? workspaceDir` 兜底）
+      const { fullPath, relativePath } = await resolveAllowedWritePath(ctx.workspaceDir, filePath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       // 原子写：先写 tmp 再 rename，避免写一半崩溃留下半截文件
       const tmpPath = `${fullPath}.tmp`;

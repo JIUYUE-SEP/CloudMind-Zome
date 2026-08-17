@@ -223,6 +223,10 @@ export function mcpToolToEngine(
 /**
  * 整 server 的工具映射：同名冲突（限定名撞车）/空名工具跳过记 warn，
  * 不让单个坏工具拖垮整个 server 的注册。
+ * taskSupport==="required" 的 task 化工具同样跳过（M20）：SDK 的 callTool 会走
+ * task 结果形态，client-manager 的 caller 只收窄支持同步结果，注册了也必然调用失败；
+ * 按既有「坏工具跳过、warn 降级」风格不对 LLM 暴露，比每次调用报错好。
+ * task 化执行接入后删除此过滤即可恢复注册。
  */
 export function wrapMcpTools(
   serverName: string,
@@ -236,6 +240,12 @@ export function wrapMcpTools(
     const qualifiedName = mcpToolName(serverName, mcpTool.name);
     if (mcpTool.name.trim() === "") {
       logger.warn(`[mcp] server ${serverName} 暴露空名工具，跳过`);
+      continue;
+    }
+    if (mcpTool.execution?.taskSupport === "required") {
+      logger.warn(
+        `[mcp] server ${serverName} 工具 ${qualifiedName} 要求 task 化执行（taskSupport=required），暂不支持，跳过`,
+      );
       continue;
     }
     if (seen.has(qualifiedName)) {

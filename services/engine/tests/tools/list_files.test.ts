@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { z } from "zod";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -136,10 +137,16 @@ describe("listFilesTool", () => {
     expect(result.error).toMatch(/(ENOENT|no such file)/i);
   });
 
-  it("returns not implemented for recursive listings", async () => {
+  it("no longer exposes the recursive stub parameter (M17)", async () => {
+    // recursive 桩已从 schema 摘除，不再对 LLM 公开
+    const shape = (listFilesTool.parameters as z.ZodObject<Record<string, z.ZodTypeAny>>).shape;
+    expect("recursive" in shape).toBe(false);
+
+    // 旧调用方残留传 recursive 时按未知键剥离，行为等同普通单层列举
     const ctx = makeCtx(workspaceDir, projectRoot);
     const result = await listFilesTool.execute(ctx, { path: ".", recursive: true });
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/not implemented/i);
+    expect(result.success).toBe(true);
+    const entries = (result.output as { entries: Array<{ name: string; type: EntryType }> }).entries;
+    expect(entries.length).toBe(2);
   });
 });

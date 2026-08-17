@@ -40,25 +40,40 @@ function killProcessTree(pid: number): Promise<void> {
   });
 }
 
-/** tools/list 支持游标分页，聚齐全量 */
-async function listAllTools(client: Client): Promise<McpTool[]> {
+/** tools/list 分页封顶：防恶意/故障 server 无限翻页耗尽内存（页数与总条数双封顶，M18） */
+export const MAX_TOOLS_LIST_PAGES = 100;
+export const MAX_TOOLS_PER_SERVER = 1000;
+
+/** tools/list 支持游标分页，聚齐全量（页数/条数超限截断并 warn，不再继续翻页） */
+export async function listAllTools(client: Client): Promise<McpTool[]> {
   const out: McpTool[] = [];
   let cursor: string | undefined;
+  let pages = 0;
   do {
     const res = await client.listTools(cursor ? { cursor } : undefined);
     out.push(...res.tools);
     cursor = res.nextCursor;
+    pages += 1;
+    if (cursor && (pages >= MAX_TOOLS_LIST_PAGES || out.length >= MAX_TOOLS_PER_SERVER)) {
+      logger.warn(
+        `[mcp] tools/list 分页超限（${pages} 页 / ${out.length} 条），截断并丢弃剩余游标`,
+      );
+      break;
+    }
   } while (cursor);
   return out;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} 超时（${ms}ms）`)), ms).unref(),
-    ),
-  ]);
+/** 竞速结束后清掉输家定时器（unref 只是不拖住进程退出，定时器本身仍会驻留到触发——M18） */
+export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} 超时（${ms}ms）`)), ms);
+    timer.unref();
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 /**

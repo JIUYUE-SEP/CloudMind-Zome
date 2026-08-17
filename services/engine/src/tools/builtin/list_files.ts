@@ -6,7 +6,6 @@ import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const parameters = z.object({
   path: z.string().default("."),
-  recursive: z.boolean().default(false),
 });
 
 function getEntryType(dirent: Dirent): "directory" | "symlink" | "file" | "other" {
@@ -26,11 +25,7 @@ export const listFilesTool: Tool = {
     const projectRoot = ctx.projectRoot ?? ctx.workspaceDir;
 
     try {
-      const { path: relativePath, recursive } = parameters.parse(args);
-
-      if (recursive) {
-        return { success: false, error: "Recursive listing is not implemented" };
-      }
+      const { path: relativePath } = parameters.parse(args);
 
       const targetPath = await resolveProjectPath(projectRoot, relativePath);
       const dirents = await fs.readdir(targetPath, { withFileTypes: true });

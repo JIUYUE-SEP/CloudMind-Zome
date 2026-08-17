@@ -5,6 +5,7 @@ import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const ALLOWED_COMMANDS = new Set(["ls", "cat", "echo", "pwd", "mkdir", "touch"]);
 const MAX_OUTPUT_LENGTH = 1024 * 1024;
+const TIMEOUT_MS = 30_000;
 
 function isDangerousCommand(command: string): { dangerous: boolean; reason?: string } {
   if (/[\r\n]/.test(command)) return { dangerous: true, reason: "newlines are not allowed" };
@@ -49,23 +50,54 @@ export const bashTool: Tool = {
       return { success: false, error: `Command rejected: ${check.reason}` };
     }
     return new Promise((resolve) => {
-      const child = spawn(command, [], { shell: true, cwd: ctx.workspaceDir, timeout: 30000 });
+      // detached 建独立进程组，超时/截断时整组 SIGKILL（shell 派生的孙进程一并收掉，
+      // spawn 自带 timeout 只杀直接子进程会留孙进程残留——M15）。
+      // Windows 无 POSIX 进程组信号，负 pid 不可用，退化为只杀直接子进程；
+      // 完整进程树清理需 taskkill /T /F（见 mcp/client-manager.ts killProcessTree），
+      // 白名单命令不派生孙进程，此处从简。
+      const child = spawn(command, [], {
+        shell: true,
+        cwd: ctx.workspaceDir,
+        detached: process.platform !== "win32",
+      });
       let stdout = "";
       let stderr = "";
       let settled = false;
       const settle = (result: ToolResult) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         resolve(result);
       };
+      const killTree = () => {
+        try {
+          if (process.platform !== "win32" && child.pid !== undefined) {
+            // 负 pid = 整个进程组（POSIX）
+            process.kill(-child.pid, "SIGKILL");
+          } else {
+            child.kill("SIGKILL");
+          }
+        } catch {
+          // 进程可能已退出，忽略
+        }
+      };
+      const timer = setTimeout(() => {
+        killTree();
+        settle({
+          success: false,
+          output: stdout + stderr || undefined,
+          error: `command timed out after ${TIMEOUT_MS}ms, process group killed`,
+        });
+      }, TIMEOUT_MS);
       const onData = () => {
-        // 边收边查，超限立即杀进程，避免海量输出撑爆内存
+        // 边收边查，超限立即杀进程组，避免海量输出撑爆内存；
+        // 被截断/被杀属异常终止，按 success:false 返回（M15），截断内容留 output 供排查
         if (stdout.length + stderr.length > MAX_OUTPUT_LENGTH) {
-          child.kill("SIGKILL");
-          const combined = (stdout + stderr).slice(0, MAX_OUTPUT_LENGTH);
+          killTree();
           settle({
-            success: true,
-            output: combined + `\n\n[output truncated: exceeded ${MAX_OUTPUT_LENGTH} bytes]`,
+            success: false,
+            output: (stdout + stderr).slice(0, MAX_OUTPUT_LENGTH),
+            error: `output exceeded ${MAX_OUTPUT_LENGTH} bytes, process group killed and output truncated`,
           });
         }
       };
@@ -75,9 +107,11 @@ export const bashTool: Tool = {
       child.on("close", (code) => {
         const combined = stdout + stderr;
         if (combined.length > MAX_OUTPUT_LENGTH) {
+          // 兜底：onData 已拦过超限，正常到不了这里；万一到达同样按失败处理
           settle({
-            success: true,
-            output: combined.slice(0, MAX_OUTPUT_LENGTH) + `\n\n[output truncated: exceeded ${MAX_OUTPUT_LENGTH} bytes]`,
+            success: false,
+            output: combined.slice(0, MAX_OUTPUT_LENGTH),
+            error: `output exceeded ${MAX_OUTPUT_LENGTH} bytes, output truncated`,
           });
           return;
         }

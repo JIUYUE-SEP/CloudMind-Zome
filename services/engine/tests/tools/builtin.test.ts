@@ -113,10 +113,12 @@ describe("writeTool", () => {
     expect(fs.readFileSync(path.join(workspaceDir, "files", "files", "notes.md"), "utf-8")).toBe("hello");
   });
 
-  it("writes files inside the project root", async () => {
+  it("ignores projectRoot and still writes under workspace files/ (M16)", async () => {
+    // projectRoot 分支已删除：即便注入，写路径也恒走 workspaceDir/files/ 限制
     const result = await writeTool.execute(makeCtx(workspaceDir, projectRoot), { path: "src/main.ts", content: "export const x = 1;" });
     expect(result.success).toBe(true);
-    expect(fs.readFileSync(path.join(projectRoot, "src", "main.ts"), "utf-8")).toBe("export const x = 1;");
+    expect(fs.readFileSync(path.join(workspaceDir, "files", "src", "main.ts"), "utf-8")).toBe("export const x = 1;");
+    expect(fs.existsSync(path.join(projectRoot, "src", "main.ts"))).toBe(false);
   });
 
   it("rejects path traversal from the project root", async () => {

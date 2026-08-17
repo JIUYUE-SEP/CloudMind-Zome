@@ -168,4 +168,38 @@ describe("editFileTool", () => {
 
     fs.rmSync(outsideDir, { recursive: true, force: true });
   });
+
+  it("rejects editing protected files (M17, 与 write_file 同名单同语义)", async () => {
+    const filePath = path.join(projectRoot, "agent.json");
+    fs.writeFileSync(filePath, '{"name":"a"}');
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await editFileTool.execute(ctx, {
+      path: "agent.json",
+      oldString: '"a"',
+      newString: '"b"',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("cannot edit protected file: agent.json");
+    expect(fs.readFileSync(filePath, "utf-8")).toBe('{"name":"a"}');
+  });
+
+  it("rejects protected files by basename even under a subdirectory", async () => {
+    const sub = path.join(projectRoot, "sub");
+    fs.mkdirSync(sub);
+    const filePath = path.join(sub, "config.json");
+    fs.writeFileSync(filePath, "{}");
+
+    const ctx = makeCtx(workspaceDir, projectRoot);
+    const result = await editFileTool.execute(ctx, {
+      path: "sub/config.json",
+      oldString: "{}",
+      newString: '{"x":1}',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("cannot edit protected file: sub/config.json");
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("{}");
+  });
 });
