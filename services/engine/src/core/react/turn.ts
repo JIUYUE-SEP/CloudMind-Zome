@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@mindcloud/shared";
-import type { LLMProvider, LLMEvent } from "../../provider/types.js";
+import type { LLMProvider, LLMEvent, LLMChatParams } from "../../provider/types.js";
 import { randomUUID } from "node:crypto";
 import { executeLoopStep, StepStreamError, type StepInput, type StepResult } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";
@@ -106,6 +106,13 @@ export interface TurnInput {
    * 水位 70% 提醒（system 消息）在插入时以单条回调一次，保证历史留痕。
    */
   onStepAppended?: (messages: ChatMessage[]) => Promise<void>;
+  /**
+   * LLM 请求钩子（P8b 事件缝，全链路可选）：透传到本回合每一次
+   * executeLoopStep（主循环步 / 兜底总结 / 交接书写作间），step 层在
+   * provider.chat 前调用。bare runTurn 调用方（傀儡/测试/压缩）不接，
+   * 缺省零开销零行为变化。
+   */
+  onLLMRequest?: (params: LLMChatParams) => Promise<void>;
 }
 
 export interface TurnResult {
@@ -242,6 +249,7 @@ async function runMaxStepsSummary(
         topP: input.topP,
         maxToolResultTokens,
         signal: input.signal,
+        onLLMRequest: input.onLLMRequest,
       },
       emit,
     );
@@ -338,6 +346,7 @@ async function writeHandoffBookContent(
         temperature: input.temperature,
         topP: input.topP,
         signal: input.signal,
+        onLLMRequest: input.onLLMRequest,
       },
       () => {},
     );
@@ -548,6 +557,7 @@ export async function runTurn(
       temperature: input.temperature,
       topP: input.topP,
       maxToolResultTokens,
+      onLLMRequest: input.onLLMRequest,
     };
 
     let result: StepResult;

@@ -1,5 +1,6 @@
 import type { Context } from "cordis";
 import { randomUUID } from "node:crypto";
+import { logger } from "../../logger.js";
 import { SubagentDispatcher } from "../../subagent/dispatcher.js";
 import { BackgroundManager } from "../../subagent/background.js";
 import { SubagentTaskRepository } from "../../subagent/task-repository.js";
@@ -84,6 +85,26 @@ export async function apply(ctx: Context): Promise<void> {
     if (!worker) throw new Error(`Agent ${agentId} not found`);
     // 独立 sessionId，避免子 agent 任务污染私聊会话历史
     const taskId = `subagent_${randomUUID()}`;
+    // P8b（A4-2 缺口补齐）：先落盘后入队——subagent 前台/后台与 plans 执行
+    // 的构造输入消息此前不入存储（模型可见不可重建：turn/end 的 A4-2③
+    // 运行时断言会判违例；向量索引引用的消息 id 也无存储本体）。与
+    // runScheduledTask 同一序补齐：保留原消息 id（话题压缩归档按 id 匹配
+    // 热存储），落盘失败记档仍入队（任务执行语义不变）
+    const messageRepository = ctx.memory.getMessageRepository(agentId);
+    for (const msg of messages) {
+      if (msg.role !== "user") continue;
+      await messageRepository
+        .append({
+          id: msg.id || randomUUID(),
+          sessionId: taskId,
+          role: "user",
+          content: msg.content,
+          createdAt: msg.createdAt,
+        })
+        .catch((err) => {
+          logger.error({ err: err }, "failed to persist subagent user message");
+        });
+    }
     return new Promise<string>((resolve, reject) => {
       let text = "";
       worker.enqueue({

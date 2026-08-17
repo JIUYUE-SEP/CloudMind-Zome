@@ -1,6 +1,12 @@
 import type { Context } from "cordis";
 import { logger } from "../../logger.js";
 import { AgentWorker } from "../../core/agent-worker.js";
+import type {
+  LLMRequestEvent,
+  TurnStepEvent,
+  TurnEndEvent,
+  ToolApprovalEvent,
+} from "../../core/agent-worker.js";
 import { WorkerRegistry } from "../../core/worker-registry.js";
 import { withLLMCallRecording } from "../llm/record-calls.js";
 import { LLMCallRepository } from "../../memory/repositories/llm-call.js";
@@ -67,6 +73,38 @@ declare module "cordis" {
   interface Context {
     /** agents 服务面（见 AgentsFace） */
     agents: AgentsFace;
+  }
+  interface Events {
+    /**
+     * @mode waterfall —— LLM 请求缝（P8b）：worker 回合内每次 provider.chat
+     * 发起前经 agents 装配层派发；payload.messages 即请求本体引用（不落副本）。
+     * 中间件 throw 或不调 next() 即否决本次请求（invariants A4-2 以
+     * { prepend: true, global: true } 挂首棒，dsh invariant.ts 同款）；
+     * 返回值不消费，改写通道 = 就地改 payload.messages。
+     */
+    "llm/request": (
+      payload: LLMRequestEvent,
+      next: () => LLMRequestEvent | Promise<LLMRequestEvent>,
+    ) => LLMRequestEvent | Promise<LLMRequestEvent>;
+    /**
+     * @mode serial —— step 落盘 + 话题快照成功（P8b；worker onStepAppended
+     * 包装内发）。v1 事件地图记 emit，落地改 serial：cordis emit 同步派发
+     * 不等待异步监听（cordis lib 实证），invariants 的存储 read-back 是异步
+     * 的，enforce 抛错要传回发射点必须按序等待——serial 按序 settle、错误
+     * 原样上传；无监听时与 emit 等价空转（摘除断言插件即回结构性保证）。
+     * 观察型消费者请保持轻量：监听耗时计入回合热路径。
+     */
+    "turn/step": (payload: TurnStepEvent) => void | Promise<void>;
+    /**
+     * @mode serial —— 回合终止（含异常终止，与既有 turn.end 终帧语义一致；
+     * worker processQueue finally 内发）。serial 理由同 turn/step。
+     */
+    "turn/end": (payload: TurnEndEvent) => void | Promise<void>;
+    /**
+     * @mode serial —— 审批门每次决策后（P8b；worker approve 包装内发，
+     * 决策逻辑本体不受事件影响）。serial 理由同 turn/step。
+     */
+    "tool/approval": (payload: ToolApprovalEvent) => void | Promise<void>;
   }
 }
 
@@ -151,6 +189,21 @@ export function apply(ctx: Context, config: Config): void {
         mind: ctx.mind,
         // P5：W 查找链消费改经 ctx.compute（装配层透传）
         compute: ctx.compute,
+        // P8b 事件缝：turn 三事件接事件总线（serial 派发——@mode 理由见上方
+        // Events 声明）；无监听时零开销空转，摘除 invariants 即回结构性保证
+        emitTurnEvent: async (type, payload) => {
+          if (type === "turn/step") await ctx.serial("turn/step", payload as TurnStepEvent);
+          else if (type === "turn/end") await ctx.serial("turn/end", payload as TurnEndEvent);
+          else await ctx.serial("tool/approval", payload as ToolApprovalEvent);
+        },
+        // P8b 事件缝：llm/request waterfall（返回值不消费，payload.messages 即请求本体引用）
+        onLLMRequest: async (payload) => {
+          await ctx.waterfall("llm/request", payload, () => payload);
+        },
+        // P8b 事件缝：memory/archived 通道经 memory 插件 config 回调进场（过渡形态）
+        onMemoryArchived: ctx.memory.onTopicArchived
+          ? (ids) => ctx.memory.onTopicArchived!(agentId, ids)
+          : undefined,
         // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
         skillCatalog: (await ctx.skills.list(agentId)).map((s) => `- ${s.name}：${s.description}`),
         memoryIndexer,

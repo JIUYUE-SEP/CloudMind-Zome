@@ -27,6 +27,24 @@ export const name = "memory";
 /** 无 ctx 服务依赖（repositories/recall 自给自足，路径经 config/paths 模块函数） */
 export const inject: string[] = [];
 
+/**
+ * memory/archived 事件载荷（P8b）：话题压缩归档成功（先归档后移除热存储
+ * 完成）后发；只带 id，read-back 由消费者自行做（invariants A4-3）。
+ */
+export interface MemoryArchivedEvent {
+  agentId: string;
+  ids: string[];
+}
+
+/**
+ * 插件 config（P8b 过渡形态，skills/agents 先例）：memory/archived 事件的
+ * ctx 通道经 config 回调进场——bootstrap 以闭包接事件总线（serial 派发）；
+ * 缺省不提供则归档路径零事件、零行为变化。
+ */
+export interface Config {
+  onTopicArchived?: (agentId: string, ids: string[]) => void | Promise<void>;
+}
+
 /** ctx.memory 上架面 */
 export interface MemoryFace {
   /** agent 配置仓库（单例；P6 合体进 agents 插件，见头注） */
@@ -41,6 +59,8 @@ export interface MemoryFace {
   reconcileHotStorage: typeof reconcileHotStorage;
   reconcileOrphanedTopic: typeof reconcileOrphanedTopic;
   reconcilePendingSegments: typeof reconcilePendingSegments;
+  /** P8b：memory/archived 事件通道（来自插件 config 回调；缺省 undefined 不发事件） */
+  onTopicArchived?: (agentId: string, ids: string[]) => void | Promise<void>;
 }
 
 declare module "cordis" {
@@ -48,9 +68,19 @@ declare module "cordis" {
     /** 存储基座面（见 MemoryFace） */
     memory: MemoryFace;
   }
+  interface Events {
+    /**
+     * @mode serial —— 话题压缩归档成功（P8b；archiveAndRemove 完成后由压缩
+     * 任务发）。v1 事件地图同族事件记 emit；落地 serial 的理由与 turn/step
+     * 相同（见 plugins/agents 的 Events 声明注）：cordis emit 不等待异步
+     * 监听，invariants 的归档 read-back 是异步的，enforce 抛错要传回发射点
+     * （压缩任务 → 队列告警 + pending 段保留）必须按序等待。
+     */
+    "memory/archived": (payload: MemoryArchivedEvent) => void | Promise<void>;
+  }
 }
 
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config?: Config): void {
   const getMessageRepository = (agentId: string) => new MessageRepository(agentId);
   ctx.provide("memory", {
     agentRepository: new AgentRepository(),
@@ -63,5 +93,7 @@ export function apply(ctx: Context): void {
     reconcileHotStorage,
     reconcileOrphanedTopic,
     reconcilePendingSegments,
+    // P8b：事件通道透传（缺省不上架该字段，agents 装配层按 undefined 处理）
+    ...(config?.onTopicArchived ? { onTopicArchived: config.onTopicArchived } : {}),
   } satisfies MemoryFace);
 }

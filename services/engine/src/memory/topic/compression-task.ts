@@ -24,6 +24,12 @@ export interface CompressionTaskDeps {
   messageRepository: IMessageRepository;
   /** mind 能力注入（P4）：经验沉淀 + 注入检测；类型复用 MindService（与源函数逐字一致），type-only 不算值边 */
   mind: Pick<MindService, "appendMindExperiences" | "isInjectionSuspect">;
+  /**
+   * 归档成功事件缝（P8b，memory/archived）：每次 archiveAndRemove 成功后
+   * 调用（含仅归档降级路径）；可选——缺省不发事件。监听者抛错（invariants
+   * enforce）按压缩任务失败上传（队列捕获告警、pending 段保留待对账）。
+   */
+  onArchived?: (ids: string[]) => void | Promise<void>;
 }
 
 export async function runCompressionTask(
@@ -32,7 +38,10 @@ export async function runCompressionTask(
 ): Promise<void> {
   if (segment.archiveOnly) {
     // 短话题：不调用 LLM，仅归档，保证热存储有界
-    await deps.messageRepository.archiveAndRemove(segment.messages.map((m) => m.id));
+    const ids = segment.messages.map((m) => m.id);
+    await deps.messageRepository.archiveAndRemove(ids);
+    // P8b 事件缝（memory/archived）：归档成功后发
+    await deps.onArchived?.(ids);
     return;
   }
   // 压缩前复核（方案 C 六点定案 4，内嵌）：判单话题/多话题——多则拆成子段
@@ -67,6 +76,8 @@ async function compressAndArchiveSegment(
   if (deps.mind.isInjectionSuspect(summaryText)) {
     logger.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${enriched.topicId}`);
     await deps.messageRepository.archiveAndRemove(enriched.msgIds);
+    // P8b 事件缝（memory/archived）：仅归档降级同样是归档成功
+    await deps.onArchived?.(enriched.msgIds);
     return;
   }
   await writeCompressedTopic(deps.agentId, enriched);
@@ -94,4 +105,8 @@ async function compressAndArchiveSegment(
     await removeCompressedTopic(deps.agentId, compressed.topicId);
     throw err;
   }
+  // P8b 事件缝（memory/archived）：放在归档 try/catch 之外——归档已成功，
+  // 事件监听抛错（invariants enforce）不按"归档失败"隔离压缩档，按压缩
+  // 任务失败上传（队列告警、pending 段保留待对账）
+  await deps.onArchived?.(compressed.msgIds);
 }

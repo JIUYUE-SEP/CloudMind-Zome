@@ -2,7 +2,7 @@ import { logger } from "../logger.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import type { LLMProvider, LLMEvent } from "../provider/types.js";
+import type { LLMProvider, LLMEvent, LLMChatParams } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import type { ConfigRepository } from "../config/repository.js";
@@ -162,6 +162,23 @@ export interface AgentWorkerConfig {
   mind: MindService;
   /** 算力解析面（P5 inject 化：W 查找链改经 ctx.compute，bootstrap 装配层透传） */
   compute: ComputeFace;
+  /**
+   * P8b 事件缝（全链路可选，缺省零开销零行为变化）：turn/step | turn/end |
+   * tool/approval 三事件的发射回调，agents 插件接事件总线（serial 派发）。
+   * 返回 promise 时 worker 等待其 settle——监听者抛错传入该回合失败路径
+   * （invariants enforce 语义，视同本回合失败）。
+   */
+  emitTurnEvent?: (
+    type: "turn/step" | "turn/end" | "tool/approval",
+    payload: TurnStepEvent | TurnEndEvent | ToolApprovalEvent,
+  ) => void | Promise<void>;
+  /** P8b 事件缝：llm/request waterfall 钩子（agents 插件接事件总线）；傀儡/bare runTurn 路径不接 */
+  onLLMRequest?: (payload: LLMRequestEvent) => Promise<void>;
+  /**
+   * P8b 事件缝：话题压缩归档成功回调（memory/archived），透传进压缩任务
+   * deps；通道经 memory 插件 config 回调进场（过渡形态），缺省不发。
+   */
+  onMemoryArchived?: (ids: string[]) => void | Promise<void>;
 }
 
 export interface Job {
@@ -196,6 +213,45 @@ export interface ApprovalRequest {
   toolCallId: string;
   toolName: string;
   arguments: unknown;
+}
+
+/**
+ * P8b 事件缝载荷（事件契约见 plugins/agents 的 Events 声明）：
+ * 只带 id/计数等元信息，不带消息正文——断言/观察消费者自行 read-back，
+ * 事件面不复制敏感内容。
+ */
+/** llm/request：worker 回合内每次 provider.chat 发起前（waterfall） */
+export interface LLMRequestEvent {
+  agentId: string;
+  sessionId?: string;
+  model: string;
+  /** 即 provider.chat 请求本体 messages 引用（不落副本；中间件就地断言/改写） */
+  messages: ChatMessage[];
+  source: "turn";
+}
+/** turn/step：一个 ReAct step 落盘 + 话题快照成功后（serial） */
+export interface TurnStepEvent {
+  agentId: string;
+  sessionId: string;
+  messageIds: string[];
+}
+/** turn/end：回合终止（含异常终止，与既有 turn.end 终帧语义一致；serial） */
+export interface TurnEndEvent {
+  agentId: string;
+  sessionId: string;
+  jobId: string;
+  /** 本回合输入消息 id（job.messages）；非瞬态回合应可先落盘后入队查证 */
+  inputMessageIds: string[];
+  /** 瞬态回合（蓝图等）：设计不落盘，read-back 断言豁免 */
+  ephemeral: boolean;
+}
+/** tool/approval：审批门每次决策后（serial）；决策逻辑本体不受事件影响 */
+export interface ToolApprovalEvent {
+  agentId: string;
+  toolName: string;
+  requiresApproval: boolean;
+  hasApprovalChannel: boolean;
+  approved: boolean;
 }
 
 export class AgentWorker {
@@ -239,6 +295,8 @@ export class AgentWorker {
         boundaryModel: this.boundaryModel,
         messageRepository: this.config.messageRepository,
         mind: this.config.mind,
+        // P8b：归档成功事件缝（memory/archived）——缺省 undefined，压缩任务不发事件
+        onArchived: this.config.onMemoryArchived,
       });
       // M-b：任务成功完成才清 pending；失败由队列捕获告警，pending 保留待对账
       await removePendingSegment(this.config.agentId, segment.topicId);
@@ -741,30 +799,44 @@ export class AgentWorker {
           tools: toolsMap,
           intermindRide: job.intermindRide,
           approve: async (name, args, toolCallId) => {
-            // 全局策略门（当前生产环境放行）
-            if (!(await this.config.approve(name, args, toolCallId))) return false;
-            // 危险工具：必须走人工审批通道（交互式 WS 会话提供），无通道一律拒绝
-            const tool = toolsMap.get(name);
-            if (!tool?.requiresApproval) return true;
-            if (!job.onApprovalRequest) {
-              // P4-3：fail-closed 也入审计（scheduler/subagent/blueprint 路径的拒绝可见）
-              auditFailClosed({ agentId: this.config.agentId, toolName: name, toolCallId });
-              return false;
-            }
-            // trustAllTools（用户主权最终体现）：有审批通道时自动批准，不再询问前端；
-            // 仍然审计留痕（事件 trusted-auto-approve：工具名 + 参数摘要）。
-            // 无审批通道路径不受影响——上面已 fail-closed，开关不静默越权。
-            if (this.config.trustAllTools === true) {
-              auditTrustedAutoApprove({
-                agentId: this.config.agentId,
-                sessionId: job.sessionId ?? "",
-                toolName: name,
-                toolCallId,
-                args,
-              });
-              return true;
-            }
-            return job.onApprovalRequest({ id: randomUUID(), toolCallId, toolName: name, arguments: args });
+            // P8b 事件缝（tool/approval）：决策本体收进 decide 一字不动，
+            // 决策后补发事件；事件监听抛错（invariants enforce）经单 call
+            // 隔离转为该工具的错误结果（tool-call.ts P3-2），fail-closed 不被击穿
+            const decide = async (): Promise<boolean> => {
+              // 全局策略门（当前生产环境放行）
+              if (!(await this.config.approve(name, args, toolCallId))) return false;
+              // 危险工具：必须走人工审批通道（交互式 WS 会话提供），无通道一律拒绝
+              const tool = toolsMap.get(name);
+              if (!tool?.requiresApproval) return true;
+              if (!job.onApprovalRequest) {
+                // P4-3：fail-closed 也入审计（scheduler/subagent/blueprint 路径的拒绝可见）
+                auditFailClosed({ agentId: this.config.agentId, toolName: name, toolCallId });
+                return false;
+              }
+              // trustAllTools（用户主权最终体现）：有审批通道时自动批准，不再询问前端；
+              // 仍然审计留痕（事件 trusted-auto-approve：工具名 + 参数摘要）。
+              // 无审批通道路径不受影响——上面已 fail-closed，开关不静默越权。
+              if (this.config.trustAllTools === true) {
+                auditTrustedAutoApprove({
+                  agentId: this.config.agentId,
+                  sessionId: job.sessionId ?? "",
+                  toolName: name,
+                  toolCallId,
+                  args,
+                });
+                return true;
+              }
+              return job.onApprovalRequest({ id: randomUUID(), toolCallId, toolName: name, arguments: args });
+            };
+            const approved = await decide();
+            await this.config.emitTurnEvent?.("tool/approval", {
+              agentId: this.config.agentId,
+              toolName: name,
+              requiresApproval: toolsMap.get(name)?.requiresApproval === true,
+              hasApprovalChannel: job.onApprovalRequest !== undefined,
+              approved,
+            });
+            return approved;
           },
           emit: job.onEvent,
           // H1：工具调用落档（actions.jsonl 写入方）。fire-and-forget 且必须
@@ -783,12 +855,25 @@ export class AgentWorker {
         temperature: this.config.temperature,
         topP: this.config.topP,
         signal: job.signal,
+        // P8b 事件缝（llm/request）：sessionId 从 job 取；messages 即 step 层
+        // provider.chat 请求本体引用（透传不复制）。钩子全链路可选，缺省不接
+        onLLMRequest: this.config.onLLMRequest
+          ? (params: LLMChatParams) =>
+              this.config.onLLMRequest!({
+                agentId: this.config.agentId,
+                sessionId,
+                model: params.model,
+                messages: params.messages,
+                source: "turn",
+              })
+          : undefined,
         // step 级落盘（P1-6，review M8）：每完成一个 ReAct step 立即持久化，
         // 崩溃最多丢当前执行中的 step，不再丢整轮（秒~分钟窗口收窄到单步）。
         // appended 顺序与 turn 内真实顺序一致（assistant 先于其 tool 结果），
         // 且天然不含 system prompt / pipeline 注入内容
         onStepAppended: async (msgs) => {
           // 瞬态回合（蓝图）：不走热存储与话题状态，调用方自行收集产出
+          //（瞬态不发 turn/step——载荷语义是"已落盘"，瞬态设计不落盘）
           if (job.ephemeral) return;
           for (const msg of msgs) {
             await this.config.messageRepository.append({ ...msg, sessionId });
@@ -797,6 +882,14 @@ export class AgentWorker {
           // onTurnAppended 之间时（P1-6 尾巴），已落盘 step 也在对账视野内
           stepPersisted.push(...msgs);
           await this.persistTopicState(stepPersisted, sessionId);
+          // P8b 事件缝（turn/step）：落盘 + 话题快照成功后才发；监听者抛错
+          // （invariants enforce 读回失败）即中止本轮——与落盘失败同一失败
+          // 路径（P1-6：热存储只含完整 step）
+          await this.config.emitTurnEvent?.("turn/step", {
+            agentId: this.config.agentId,
+            sessionId,
+            messageIds: msgs.map((m) => m.id),
+          });
         },
         contextPipeline: {
           pipeline: this.pipeline,
@@ -891,6 +984,26 @@ export class AgentWorker {
       job.onEvent({ type: "turn.end" });
     } finally {
       this.runningJob = null;
+      // P8b 事件缝（turn/end）：成功与异常路径都发——与既有终帧语义一致
+      // （turn.end = 本轮生成终止，含异常终止，见 catch 块 P3-1 注）。
+      // 监听者抛错（invariants enforce）视同该回合失败：兑现为 onDone 错误，
+      // 但不再补发任何帧——成功路径 runTurn 已发 turn.end、catch 路径已补帧，
+      // 再补会破坏"turn.end 不存在双发"不变量（P3-1）
+      try {
+        await this.config.emitTurnEvent?.("turn/end", {
+          agentId: this.config.agentId,
+          sessionId,
+          jobId: job.id,
+          inputMessageIds: job.messages.map((m) => m.id),
+          ephemeral: job.ephemeral === true,
+        });
+      } catch (err) {
+        if (jobError === undefined) {
+          jobError = err;
+        } else {
+          logger.error({ err: err }, "[agent-worker] turn/end 事件监听抛错（回合已有错误，记档不覆盖）");
+        }
+      }
       try {
         job.onDone?.(jobError);
       } catch (err) {

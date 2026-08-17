@@ -21,6 +21,12 @@ export interface StepInput {
   signal?: AbortSignal;
   /** 单条工具结果的 token 上限（review M1）；缺省 DEFAULT_MAX_TOOL_RESULT_TOKENS */
   maxToolResultTokens?: number;
+  /**
+   * LLM 请求钩子（P8b 事件缝，全链路可选）：provider.chat 发起前调用，
+   * params 即请求本体引用（messages 同一数组，不落副本）；缺省零开销零行为
+   * 变化。钩子抛错（invariants enforce 否决）原样上抛、本步不发起。
+   */
+  onLLMRequest?: (params: LLMChatParams) => Promise<void>;
 }
 
 export interface StepResult {
@@ -84,6 +90,10 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
   const toolCalls = new Map<string, ToolCallRequest>();
   let finishReason: string | undefined;
   let usage: { promptTokens: number; completionTokens: number } | undefined;
+
+  // P8b 事件缝（llm/request）：钩子放在流式 try 之外——抛错原样上传，
+  // 不被包成 StepStreamError 误标为流式中断（否决 ≠ 流中断）
+  await input.onLLMRequest?.(params);
 
   try {
     for await (const event of input.provider.chat(params)) {

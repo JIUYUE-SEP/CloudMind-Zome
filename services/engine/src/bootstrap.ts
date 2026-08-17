@@ -19,6 +19,7 @@ import * as plansPlugin from "./plugins/plans/index.js";
 import * as intermindPlugin from "./plugins/intermind/index.js";
 import * as subagentsPlugin from "./plugins/subagents/index.js";
 import * as perceptionPlugin from "./plugins/perception/index.js";
+import * as invariantsPlugin from "./plugins/invariants/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
@@ -54,7 +55,11 @@ async function main() {
   const toolsFiber = await root.plugin(toolsPlugin);
   // memory/mind（P4）：mind 的领域数据落在 document-store（memory 插件内部实现），
   // 概念基座先行；两者 inject 皆空（document-store 为库级直 import，不经 ctx）
-  await root.plugin(memoryPlugin);
+  // P8b：memory/archived 事件通道经 memory 插件 config 回调进场（过渡形态，
+  // serial 派发——@mode 理由见 plugins/memory 的 Events 声明；无监听时空转）
+  await root.plugin(memoryPlugin, {
+    onTopicArchived: (agentId, ids) => root.serial("memory/archived", { agentId, ids }),
+  });
   await root.plugin(mindPlugin);
   // pipeline/compute（P5）：均不依赖 memory/mind（pipeline 无依赖；compute 只
   // inject config 已就位）——worker 创建链的两个工厂面，挂在使用点之前即可
@@ -103,6 +108,10 @@ async function main() {
   // enqueueSystemNotice 仍是落盘+入队机制本体，perception 是其唯一生产调用方
   await root.plugin(perceptionPlugin);
 
+  // invariants（P8b）：灵魂断言（决策 2）——A4-1/2/3/5 结构保证升级为运行时
+  // 断言；Config 缺省 enforce。摘除本插件即回结构性保证（P8 回退路径）
+  await root.plugin(invariantsPlugin);
+
   // intermind/subagents（P7d 收尾）：人形间私信与 subagent 调度链路（含傀儡
   // 执行路径、swarm、型号库）收编；intermind 先挂（subagents inject 它）。
   // backgroundManager.load() 启动对账收进 subagents 插件 apply（listen 前
@@ -114,7 +123,7 @@ async function main() {
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans", "intermind", "subagents", "perception"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint", "handoff", "scheduler", "plans", "intermind", "subagents", "perception", "invariants"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
