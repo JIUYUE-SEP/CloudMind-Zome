@@ -11,20 +11,20 @@ import * as mindPlugin from "./plugins/mind/index.js";
 import * as pipelinePlugin from "./plugins/pipeline/index.js";
 import * as computePlugin from "./plugins/compute/index.js";
 import * as agentsPlugin from "./plugins/agents/index.js";
+import * as conductorPlugin from "./plugins/conductor/index.js";
+import * as blueprintPlugin from "./plugins/blueprint/index.js";
 import { findBuiltinSkillsDir } from "./plugins/skills/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { MessageRepository } from "./memory/repositories/message.js";
 import { MemoryRepository } from "./memory/repositories/memory.js";
 import { ActionRepository } from "./memory/repositories/action.js";
 import { LLMCallRepository } from "./memory/repositories/llm-call.js";
-import { SessionRepository } from "./conductor/repository.js";
 import { ResilientLLMProvider } from "./provider/resilient.js";
 import type { LLMProvider } from "./provider/types.js";
 import type { ApiContext } from "./api/context.js";
 import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
 import { getAgentDir, getDataDir } from "./config/paths.js";
 import { Scheduler } from "./scheduler/scheduler.js";
-import { BlueprintRepository } from "./blueprint/repository.js";
 import { loadSkills } from "./skills/loader.js";
 import { SidecarClient } from "./sidecar/client.js";
 import { loadTopicState } from "./memory/topic/state.js";
@@ -72,6 +72,10 @@ async function main() {
   // inject config 已就位）——worker 创建链的两个工厂面，挂在使用点之前即可
   await root.plugin(pipelinePlugin);
   await root.plugin(computePlugin);
+  // conductor/blueprint（P7a）：两个仓库单例换源上架；inject 皆空
+  // （conductor 路由纯函数与 executeBlueprint 保持库级直 import，不进插件面）
+  await root.plugin(conductorPlugin);
+  await root.plugin(blueprintPlugin);
   const configRepo = root.config;
   // agentRepository 实例改经 ctx.memory 取（P4 起；P6 起 agents 插件与
   // WorkerRegistry 合体收编进 ctx.agents，onChange→retire 接线在插件内部）
@@ -99,7 +103,7 @@ async function main() {
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
   // （promise 兑现 ≠ 激活）——挂载完成即断言就位，缺失启动即炸，不带病进运行时。
   // 维护责任：每期插件化新服务后，把自己那行加进下面列表。
-  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents"]);
+  assertServices(root, ["log", "config", "llm", "tools", "skills", "memory", "mind", "pipeline", "compute", "agents", "conductor", "blueprint"]);
 
   // 技能服务实例来自 ctx.skills 插件（P3）；下游引用面（worker services/ApiContext）不变
   const skillService = root.skills;
@@ -256,8 +260,8 @@ async function main() {
     getActionRepository: (agentId: string) => new ActionRepository(agentId),
     getLLMCallRepository: (agentId: string) => new LLMCallRepository(agentId),
     configRepository: configRepo,
-    sessionRepository: new SessionRepository(),
-    blueprintRepository: new BlueprintRepository(),
+    sessionRepository: root.conductor.sessionRepository,
+    blueprintRepository: root.blueprint.blueprintRepository,
     getAgentWorker: root.agents.getOrCreateWorker,
     getPlanManager,
     runAgentCollect,
