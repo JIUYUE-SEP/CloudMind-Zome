@@ -93,16 +93,20 @@ declare module "cordis" {
      * 的，enforce 抛错要传回发射点必须按序等待——serial 按序 settle、错误
      * 原样上传；无监听时与 emit 等价空转（摘除断言插件即回结构性保证）。
      * 观察型消费者请保持轻量：监听耗时计入回合热路径。
+     * 监听必须返回 undefined（或 resolve undefined 的 Promise）：cordis
+     * serial 语义下任一监听返回真值即截断后续监听，本事件要求全部监听执行。
      */
     "turn/step": (payload: TurnStepEvent) => void | Promise<void>;
     /**
      * @mode serial —— 回合终止（含异常终止，与既有 turn.end 终帧语义一致；
      * worker processQueue finally 内发）。serial 理由同 turn/step。
+     * 监听必须返回 undefined：返回真值即截断后续监听（同 turn/step）。
      */
     "turn/end": (payload: TurnEndEvent) => void | Promise<void>;
     /**
      * @mode serial —— 审批门每次决策后（P8b；worker approve 包装内发，
      * 决策逻辑本体不受事件影响）。serial 理由同 turn/step。
+     * 监听必须返回 undefined：返回真值即截断后续监听（同 turn/step）。
      */
     "tool/approval": (payload: ToolApprovalEvent) => void | Promise<void>;
   }
@@ -120,7 +124,12 @@ export function apply(ctx: Context, config: Config): void {
   const agentRepository = ctx.memory.agentRepository;
   const configRepo = ctx.config;
 
-  // 配置变更退役接线（P3-6）：收进插件内部，不再跨 bootstrap
+  // 配置变更退役接线（P3-6）：收进插件内部，不再跨 bootstrap。
+  // 可逆纪律例外自陈：这里是直接赋值而非 on/off 订阅——AgentRepository.onChange
+  // 是单槽位属性（见 memory/repositories/agent.ts），本插件是其唯一接线方，
+  // 覆盖赋值即完整替换，无残留监听需在 dispose 摘除，故不走「挂载可逆」的
+  // 通用纪律。若未来出现第二接线方，须先把 onChange 改成多监听事件面，
+  // 再改回订阅式接线
   agentRepository.onChange = (agentId: string, _config: AgentConfig | null) => {
     void _config;
     workerRegistry.retire(agentId);

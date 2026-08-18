@@ -11,8 +11,17 @@ import { resolveCommandShim } from "./shim.js";
 import { sanitizeMcpNamePart } from "./naming.js";
 import { wrapMcpTools, type McpToolCaller } from "./wrapper.js";
 import { McpServerConfigSchema, type McpServerConfig } from "./types.js";
+import { ErrorThrottle } from "../../plugins/log/error-throttle.js";
 
 const CONNECT_TIMEOUT_MS = 15_000;
+
+/**
+ * F4：启动期连接失败的低频退避重试——30s 起步 ×2 封顶 5min，连上即停。
+ * 既有自愈只在工具调用失败时触发；启动即败的 server 工具列表为空、
+ * 永不触发调用，不重试即永久失声。
+ */
+const STARTUP_RETRY_INITIAL_MS = 30_000;
+const STARTUP_RETRY_MAX_MS = 300_000;
 
 type ServerStatus = "ok" | "unavailable";
 
@@ -29,6 +38,10 @@ interface ServerEntry {
    * 重连换 client 后，既有工具快照（断线保注册）的后续调用自动落到新连接上
    */
   caller: McpToolCaller;
+  /** F4 启动重试定时器（连上/关停即清；unref 不拖住进程退出） */
+  startupRetryTimer?: ReturnType<typeof setTimeout>;
+  /** F4 当前重试退避间隔（每次失败 ×2，封顶 STARTUP_RETRY_MAX_MS） */
+  startupRetryBackoffMs?: number;
 }
 
 /** Windows 无进程组信号，杀整棵子进程树只能 taskkill /T /F（SDK close 只杀直接子进程） */
@@ -84,13 +97,32 @@ export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promis
  * 自愈（kimi「封顶一次」哲学）：工具调用失败由 wrapper 侧分类（探活/原地重试/
  * 重连后重试），重连经 reconnect() single-flight 合并同名并发；engine close() 后
  * disposed，不再发起任何重连。
+ *
+ * 启动期自愈（F4）：connectAll 失败的 server 挂低频退避重试（30s 起步 ×2 封顶
+ * 5min，连上即停），重试走 reconnect() 既有 single-flight/代际戳语义；重复失败
+ * 经 ErrorThrottle 折叠告警（窗口 5min），close() 清全部重试定时器。
  */
 export class McpClientManager {
   private readonly entries: ServerEntry[];
   private readonly inFlightReconnects = new Map<string, Promise<boolean>>();
+  /**
+   * F4：启动重试重复失败的告警节流。窗口固定取生产封顶值（5min）——重试节奏
+   * 可由构造 options 注入（测试加速），告警口径不随之调噪
+   */
+  private readonly startupRetryErrors = new ErrorThrottle({
+    initialBackoffMs: STARTUP_RETRY_MAX_MS,
+    maxBackoffMs: STARTUP_RETRY_MAX_MS,
+  });
+  private readonly startupRetryInitialMs: number;
+  private readonly startupRetryMaxMs: number;
   private disposed = false;
 
-  constructor(configs: McpServerConfig[]) {
+  constructor(
+    configs: McpServerConfig[],
+    options?: { startupRetryInitialMs?: number; startupRetryMaxMs?: number },
+  ) {
+    this.startupRetryInitialMs = options?.startupRetryInitialMs ?? STARTUP_RETRY_INITIAL_MS;
+    this.startupRetryMaxMs = options?.startupRetryMaxMs ?? STARTUP_RETRY_MAX_MS;
     const seen = new Set<string>();
     this.entries = [];
     for (const config of configs) {
@@ -174,22 +206,33 @@ export class McpClientManager {
     return new McpClientManager(configs);
   }
 
-  /** 连接全部 server；单个失败降级为 unavailable，不抛出 */
+  /**
+   * 连接全部 server；单个失败降级为 unavailable，不抛出。
+   * F4：失败条目挂低频退避重试——工具列表为空的 server 永不触发调用侧
+   * 自愈，不重试即永久失声；连上即停，close() 清定时器。
+   */
   async connectAll(): Promise<void> {
     await Promise.allSettled(this.entries.map((entry) => this.connect(entry, ++entry.attemptId)));
+    for (const entry of this.entries) {
+      if (!entry.client && entry.status === "unavailable") {
+        this.scheduleStartupRetry(entry, this.startupRetryInitialMs);
+      }
+    }
   }
 
   /**
    * 重连指定 server（single-flight：同名并发合并为同一次；attemptId 代际戳
    * 防旧尝试迟到覆盖；disposed 后一律拒绝）。成功 true，失败/不可重连 false。
+   * opts.quiet（F4 启动退避重试用）：失败不在此 warn（由重试调度侧节流告警），
+   * 避免退避期每个间隔刷一条相同错误；成功 info 不静默（恢复应可见）。
    */
-  async reconnect(serverName: string): Promise<boolean> {
+  async reconnect(serverName: string, opts?: { quiet?: boolean }): Promise<boolean> {
     if (this.disposed) return false;
     const entry = this.entries.find((e) => e.config.name === serverName);
     if (!entry) return false;
     const existing = this.inFlightReconnects.get(serverName);
     if (existing) return existing;
-    const work = this.reconnectEntry(entry).finally(() => {
+    const work = this.reconnectEntry(entry, opts).finally(() => {
       if (this.inFlightReconnects.get(serverName) === work) {
         this.inFlightReconnects.delete(serverName);
       }
@@ -198,7 +241,7 @@ export class McpClientManager {
     return work;
   }
 
-  private async reconnectEntry(entry: ServerEntry): Promise<boolean> {
+  private async reconnectEntry(entry: ServerEntry, opts?: { quiet?: boolean }): Promise<boolean> {
     const attemptId = ++entry.attemptId;
     // 先置 unavailable 并摘掉引用：旧 client close 触发的 onclose 不误记"意外断开"
     entry.status = "unavailable";
@@ -210,16 +253,71 @@ export class McpClientManager {
     if (!this.isCurrent(entry, attemptId)) return false;
     // 工具注册保留（断线保注册）：重连失败时旧 tools 快照仍在，
     // 后续调用降级为自愈/失败而非 tool not found
-    await this.connect(entry, attemptId);
+    await this.connect(entry, attemptId, opts);
     // connect() 内的赋值对调用点收窄不可见，断言还原联合类型再比较
     return this.isCurrent(entry, attemptId) && (entry.status as ServerStatus) === "ok";
+  }
+
+  /**
+   * F4：启动期失败 server 的低频退避重试——起步/封顶见构造 options（默认
+   * 30s ×2 封顶 5min），连上即停。定时器 unref：重试循环不得拖住 engine 退出。
+   */
+  private scheduleStartupRetry(entry: ServerEntry, backoffMs: number): void {
+    // 关停/已连上（含工具调用侧自愈抢先恢复）即停
+    if (this.disposed || entry.status === "ok") return;
+    entry.startupRetryBackoffMs = backoffMs;
+    entry.startupRetryTimer = setTimeout(() => {
+      entry.startupRetryTimer = undefined;
+      void this.runStartupRetry(entry);
+    }, backoffMs);
+    if (typeof entry.startupRetryTimer === "object" && "unref" in entry.startupRetryTimer) {
+      entry.startupRetryTimer.unref();
+    }
+  }
+
+  private async runStartupRetry(entry: ServerEntry): Promise<void> {
+    const { name } = entry.config;
+    // 连上即停：到点时可能已被工具调用侧自愈恢复——reconnectEntry 会先拆旧
+    // 连接，此处守卫避免把健康连接空转一轮
+    if (this.disposed || entry.status === "ok") return;
+    const throttleKey = `mcp-startup-retry:${name}`;
+    // 走 reconnect() 既有 single-flight/代际戳语义；quiet 避免退避期逐次刷 warn
+    const ok = await this.reconnect(name, { quiet: true });
+    if (this.disposed) return;
+    if (ok) {
+      // 连上即停（不再排下一次）；有折叠记录时补一条恢复口径
+      const recovered = this.startupRetryErrors.recover(throttleKey);
+      if (recovered) {
+        logger.info(`[mcp] server ${name} 启动重试后恢复（此前累计失败 ${recovered.count} 次）`);
+      }
+      return;
+    }
+    // 重复失败：节流告警（窗口 5min，折叠期内只计数不刷屏）
+    const hit = this.startupRetryErrors.hit(throttleKey);
+    if (hit) {
+      logger.warn(
+        `[mcp] server ${name} 启动后重试仍未连上（累计 ${hit.count} 次` +
+          `${hit.suppressed > 0 ? `，折叠 ${hit.suppressed} 条` : ""}），继续退避重试`,
+      );
+    }
+    this.scheduleStartupRetry(
+      entry,
+      Math.min(
+        (entry.startupRetryBackoffMs ?? this.startupRetryInitialMs) * 2,
+        this.startupRetryMaxMs,
+      ),
+    );
   }
 
   private isCurrent(entry: ServerEntry, attemptId: number): boolean {
     return !this.disposed && entry.attemptId === attemptId;
   }
 
-  private async connect(entry: ServerEntry, attemptId: number): Promise<void> {
+  private async connect(
+    entry: ServerEntry,
+    attemptId: number,
+    opts?: { quiet?: boolean },
+  ): Promise<void> {
     const { name } = entry.config;
     // transport/client 声明在 try 外：StdioClientTransport 构造即 spawn 子进程，
     // 失败/迟到路径需要拿到它们做清理，否则会泄漏子进程
@@ -274,7 +372,8 @@ export class McpClientManager {
       await this.disposeConnection(client, transport);
       if (!this.isCurrent(entry, attemptId)) return;
       entry.status = "unavailable";
-      logger.warn({ err }, `[mcp] server ${name} 连接失败，按不可用降级`);
+      // quiet（F4 启动退避重试）：失败告警由调度侧 ErrorThrottle 折叠，此处不刷屏
+      if (!opts?.quiet) logger.warn({ err }, `[mcp] server ${name} 连接失败，按不可用降级`);
     }
   }
 
@@ -333,6 +432,11 @@ export class McpClientManager {
   async close(): Promise<void> {
     this.disposed = true;
     for (const entry of this.entries) {
+      // F4：清启动重试定时器——关停后不再发起任何重连
+      if (entry.startupRetryTimer !== undefined) {
+        clearTimeout(entry.startupRetryTimer);
+        entry.startupRetryTimer = undefined;
+      }
       // 代际戳 +1：在飞的 connect/reconnect 立即失效，迟到完成不覆写关停状态
       entry.attemptId += 1;
       // 先置 unavailable：client.close() 会触发 transport.onclose，

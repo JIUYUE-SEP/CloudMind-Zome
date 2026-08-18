@@ -81,6 +81,8 @@ declare module "cordis" {
      * 相同（见 plugins/agents 的 Events 声明注）：cordis emit 不等待异步
      * 监听，invariants 的归档 read-back 是异步的，enforce 抛错要传回发射点
      * （压缩任务 → 队列告警 + pending 段保留）必须按序等待。
+     * 监听必须返回 undefined：cordis serial 语义下返回真值即截断后续监听
+     * （同 turn/step，见 plugins/agents 的 Events 声明注）。
      */
     "memory/archived": (payload: MemoryArchivedEvent) => void | Promise<void>;
     /**
@@ -90,6 +92,7 @@ declare module "cordis" {
      * scheduler），保证启动对账完成才起 scheduler 轮询（原 bootstrap
      * 「对账 → scheduler.start() → createServer」先后序的事件化表达；
      * 顺序依赖同见 plugins/scheduler 头注）。
+     * 监听必须返回 undefined：返回真值即截断后续监听（同 memory/archived）。
      */
     "engine/ready": () => void | Promise<void>;
   }

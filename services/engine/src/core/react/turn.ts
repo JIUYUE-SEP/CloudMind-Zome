@@ -102,8 +102,9 @@ export interface TurnInput {
   /**
    * LLM 请求钩子（P8b 事件缝，全链路可选）：透传到本回合每一次
    * executeLoopStep（主循环步 / 兜底总结 / 交接书写作间），step 层在
-   * provider.chat 前调用。bare runTurn 调用方（傀儡/测试/压缩）不接，
-   * 缺省零开销零行为变化。
+   * provider.chat 前调用。bare runTurn 调用方（傀儡/测试）不接，
+   * 缺省零开销零行为变化。压缩不经 runTurn（compressor 直连
+   * provider.chat，见 memory/topic/compressor.ts），天然不在本钩子覆盖面。
    */
   onLLMRequest?: (params: LLMChatParams) => Promise<void>;
 }

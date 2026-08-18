@@ -11,6 +11,14 @@ import { logger } from "../logger.js";
  * - getOrCreate：被替换 worker 的在途 turn 排空前不创建新 worker——
  *   两个 turn 不并发交错（FIFO 串行不变量）；
  * - 等待期间的新消息在 WS handler 的串行 chain 里排队，顺序不破。
+ *
+ * 已知风险（设计取舍，登记不做）：retire 对在途 turn 无超时、无 abort——
+ * waitForIdle 只等自然排空，若 provider 流永久挂起（HTTP 层无超时/流不
+ * 结束），新 worker 永不创建，该 agent 全通道静默等待直到重启。不强杀的
+ * 理由：热存储/话题不变量靠「只含完整 step」维持，半截 turn 的取消需要
+ * 全链路 abort 语义（落盘、话题 tracker、终帧都要定义），代价大于收益；
+ * 现状由运维重启兜底。若未来引入 turn 级 watchdog，需先定义 abort 的
+ * 落盘与终帧语义再动这里。
  */
 export class WorkerRegistry {
   private workers = new Map<string, AgentWorker>();

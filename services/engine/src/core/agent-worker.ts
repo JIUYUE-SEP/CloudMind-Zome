@@ -1016,7 +1016,11 @@ export class AgentWorker {
       }
       if ((this.status as AgentWorkerStatus) !== "paused") {
         this.status = "idle";
-        this.processQueue();
+        // 自续链调用与 enqueue 入口（idle 触发分支）同口径：浮空 promise 必须
+        // 挂 catch，否则队列续跑异常升级为 unhandledRejection 掉进程
+        this.processQueue().catch((err) => {
+          logger.error({ err: err }, "[agent-worker] processQueue failed:");
+        });
       }
     }
   }

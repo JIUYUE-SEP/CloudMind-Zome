@@ -24,6 +24,7 @@ import * as httpPlugin from "./plugins/http/index.js";
 import * as externalPlugin from "./plugins/external/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { registerShutdownHandlers } from "./shutdown.js";
+import { flushStdout } from "./flush-stdout.js";
 
 // P9 终态：bootstrap 退役为薄组合根——cordis 树挂载（含三个 config 回调
 // 过渡形态：skills.getAgentConfig、agents.getSubagentServices/getSidecar、
@@ -142,7 +143,10 @@ async function main() {
   });
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   logger.error(err);
+  // exit(1) 前冲刷 stdout 既有缓冲（M51 范式，见 flush-stdout.ts）：否则 POSIX
+  // 管道下上面这条启动失败日志可能被截断——恰是排障最需要的证据
+  await flushStdout();
   process.exit(1);
 });

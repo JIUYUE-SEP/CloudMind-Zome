@@ -36,6 +36,11 @@ import { getAgentDir, getDataDir } from "../../config/paths.js";
  *   全局与多个 agent 启用（各自独立挂载、config 不同，属预期）。
  * - fail-closed 不阻断启动：无 index.mjs / 缺 apply / name 非字符串 /
  *   name 与目录名不符 / import 或 apply 抛错 → warn + 跳过，其余照常。
+ * - 「不阻断」仅限加载/挂载期，运行期事件面不豁免：外部插件监听的
+ *   serial/waterfall 事件抛错会原样传回发射点（serial 按序 settle、错误
+ *   上传发射点；waterfall throw 即否决本次请求——口径见 plugins/agents
+ *   的 Events 声明注）。外部插件写监听须自行兜底非致命错误，别把
+ *   「加载期不阻断」误读为「运行期抛错被吞」。
  * - inject 声明了不存在的服务 → fiber 停 PENDING（cordis 原生语义），
  *   全部挂载完成后统一 warn 列出未激活插件名。PENDING 判据是
  *   fiber.state（实证见 tests/plugins/llm.test.ts 钉死的注释：cordis

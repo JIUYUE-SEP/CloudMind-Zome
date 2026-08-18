@@ -43,10 +43,16 @@ export async function gracefulShutdown(deps: ShutdownDeps): Promise<void> {
     // 与 drain/close 一致：任何关停步骤失败都不阻断退出
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // drain 失败与超时区分文案（Low 群修复）：失败带原因，超时才提时间窗——
+  // 两者都不阻断退出，但排障口径不同
+  let drainError: unknown;
   const drained = await Promise.race([
     deps.drain().then(
       () => true,
-      () => false, // drain 自身失败视同超时：不阻断退出
+      (err: unknown) => {
+        drainError = err;
+        return false; // drain 自身失败视同失败路径：不阻断退出
+      },
     ),
     new Promise<false>((resolve) => {
       timer = setTimeout(() => resolve(false), timeoutMs);
@@ -58,13 +64,21 @@ export async function gracefulShutdown(deps: ShutdownDeps): Promise<void> {
   if (!drained) {
     // M-b 后属实：队列丢弃的段在 topic-state.json 留有 pending 记录，
     // 下次启动由 reconcilePendingSegments 补压缩/补归档
-    log(`[shutdown] drain 未在 ${timeoutMs}ms 内完成，直接退出（遗留压缩段有 pending 记录，由启动对账兜底）`);
+    if (drainError !== undefined) {
+      log(`[shutdown] drain 自身失败（非超时），直接退出（遗留压缩段有 pending 记录，由启动对账兜底）：${drainError instanceof Error ? drainError.message : String(drainError)}`);
+    } else {
+      log(`[shutdown] drain 未在 ${timeoutMs}ms 内完成，直接退出（遗留压缩段有 pending 记录，由启动对账兜底）`);
+    }
   }
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  let closeError: unknown;
   const closed = await Promise.race([
     deps.close().then(
       () => true,
-      () => false, // close 自身失败视同超时：不阻断退出
+      (err: unknown) => {
+        closeError = err;
+        return false; // close 自身失败视同失败路径：不阻断退出
+      },
     ),
     new Promise<false>((resolve) => {
       closeTimer = setTimeout(() => resolve(false), closeTimeoutMs);
@@ -74,8 +88,12 @@ export async function gracefulShutdown(deps: ShutdownDeps): Promise<void> {
   ]);
   if (closeTimer) clearTimeout(closeTimer);
   if (!closed) {
-    // app.close() 会等长生命周期 WebSocket 连接，可能永不返回
-    log(`[shutdown] close 未在 ${closeTimeoutMs}ms 内完成，强制退出`);
+    if (closeError !== undefined) {
+      log(`[shutdown] close 自身失败（非超时），强制退出：${closeError instanceof Error ? closeError.message : String(closeError)}`);
+    } else {
+      // app.close() 会等长生命周期 WebSocket 连接，可能永不返回
+      log(`[shutdown] close 未在 ${closeTimeoutMs}ms 内完成，强制退出`);
+    }
   }
   exit(0);
 }

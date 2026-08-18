@@ -141,8 +141,9 @@ describe("gracefulShutdown 优雅关停（P1-2）", () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it("drain 自身失败不阻断退出", async () => {
+  it("drain 自身失败不阻断退出，且文案与超时区分（失败 ≠ 超时）", async () => {
     const exit = vi.fn();
+    const logs: string[] = [];
     await gracefulShutdown({
       drain: async () => {
         throw new Error("drain boom");
@@ -150,9 +151,29 @@ describe("gracefulShutdown 优雅关停（P1-2）", () => {
       close: async () => {},
       timeoutMs: 5000,
       exit,
-      log: () => {},
+      log: (msg) => logs.push(msg),
     });
     expect(exit).toHaveBeenCalledWith(0);
+    // 失败路径：带原因、不提时间窗
+    expect(logs.some((m) => m.includes("drain 自身失败（非超时）") && m.includes("drain boom"))).toBe(true);
+    expect(logs.some((m) => m.includes("drain 未在"))).toBe(false);
+  });
+
+  it("close 自身失败不阻断退出，且文案与超时区分（失败 ≠ 超时）", async () => {
+    const exit = vi.fn();
+    const logs: string[] = [];
+    await gracefulShutdown({
+      drain: async () => {},
+      close: async () => {
+        throw new Error("close boom");
+      },
+      closeTimeoutMs: 5000,
+      exit,
+      log: (msg) => logs.push(msg),
+    });
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(logs.some((m) => m.includes("close 自身失败（非超时）") && m.includes("close boom"))).toBe(true);
+    expect(logs.some((m) => m.includes("close 未在"))).toBe(false);
   });
 });
 
