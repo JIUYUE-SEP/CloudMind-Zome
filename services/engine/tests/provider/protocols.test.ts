@@ -330,6 +330,34 @@ describe("OpenAIResponsesProvider（mock server）", () => {
       usage: { promptTokens: 3, completionTokens: 2 },
     });
   });
+
+  it("output_item.done 无 added（buffer 缺失）→ 用 done 事件本体兜底组装 tool.call，不静默丢弃", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`
+{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_9","call_id":"call_9","name":"get_weather","arguments":"{\\"location\\":\\"NYC\\"}"}}
+{"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}
+`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("sk-test", server.url);
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events[0]).toEqual({
+      type: "tool.call",
+      toolCallId: "call_9",
+      name: "get_weather",
+      arguments: { location: "NYC" },
+    });
+    expect(events.at(-1)).toMatchObject({ type: "step.end" });
+  });
 });
 
 describe("AnthropicMessagesProvider（mock server）", () => {
@@ -422,6 +450,92 @@ describe("AnthropicMessagesProvider（mock server）", () => {
     });
     expect(error).toBeUndefined();
     expect(server.requests[0].url).toBe("/anthropic/v1/messages");
+  });
+
+  it("F8：原生 Anthropic 端点形态——message_delta 仅 output_tokens 即更新 usage（合并语义）", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`
+{"type":"message_start","message":{"usage":{"input_tokens":8,"output_tokens":1}}}
+{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+{"type":"content_block_stop","index":0}
+{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}
+{"type":"message_stop"}
+`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new AnthropicMessagesProvider("sk-test", server.url);
+    const { events, error } = await collect(provider, {
+      model: "claude-3-5",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    // output 覆盖为 message_delta 权威值 6；input 保留 message_start 的 8
+    // （修复前守卫要求双 number，completionTokens 会停在 message_start 初值 1）
+    expect(events.at(-1)).toEqual({
+      type: "step.end",
+      finishReason: "stop",
+      usage: { promptTokens: 8, completionTokens: 6 },
+    });
+  });
+
+  it("F8：input 无来源（message_start 缺 usage）时不虚构 promptTokens——step.end 不带 usage", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`
+{"type":"message_start","message":{}}
+{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+{"type":"content_block_stop","index":0}
+{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}
+{"type":"message_stop"}
+`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new AnthropicMessagesProvider("sk-test", server.url);
+    const { events, error } = await collect(provider, {
+      model: "claude-3-5",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events.at(-1)).toEqual({ type: "step.end", finishReason: "stop" });
+    expect(events.at(-1)).not.toHaveProperty("usage");
+  });
+
+  it("孤立 content_block_stop（缺 start，协议违约）→ 丢弃不虚构 tool.call，流正常收尾", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(`
+{"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"content_block_stop","index":0}
+{"type":"message_stop"}
+`),
+      );
+    });
+    servers.push(server);
+
+    const provider = new AnthropicMessagesProvider("sk-test", server.url);
+    const { events, error } = await collect(provider, {
+      model: "claude-3-5",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events.some((e) => e.type === "tool.call")).toBe(false);
+    expect(events.at(-1)).toEqual({
+      type: "step.end",
+      usage: { promptTokens: 1, completionTokens: 1 },
+    });
   });
 });
 

@@ -174,6 +174,32 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("providerType 白名单：非法值 400 不落库；缺省维持既有口径落 openai", async () => {
+    const app = await makeApp();
+    const bad = await authedRequest(app.server).post("/compute/providers").send({
+      displayName: "Bad Type",
+      providerType: "grpc",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [],
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toContain("providerType");
+
+    // 缺省 providerType 维持既有口径落 "openai"（对齐 shared ProviderConfig 枚举，当前仅此值）
+    const ok = await authedRequest(app.server).post("/compute/providers").send({
+      displayName: "Default Type",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [],
+    });
+    expect(ok.status).toBe(200);
+    const config = await context.configRepository.load();
+    expect(config.providers).toHaveLength(1);
+    expect(config.providers[0].providerType).toBe("openai");
+    await app.close();
+  });
+
   it("M33：PUT provider 拒绝空串/纯空白 displayName（400，原值保留）", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/compute/providers").send({

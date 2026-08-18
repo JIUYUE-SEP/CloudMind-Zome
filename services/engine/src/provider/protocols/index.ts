@@ -157,7 +157,9 @@ export class ModelApiModeRouter implements LLMProvider {
 
   /** 型号无覆盖 → provider 级 apiMode；再缺省 chat_completions（与 createProtocolProvider 同归） */
   private effectiveApiMode(provider: LiveProvider, model: string): string {
-    const override = provider.models.find((m) => m.id === model)?.apiMode;
+    // R3 同款守卫（对照 hasModelApiModeOverride）：手写/旧版 config.json 的活配置
+    // 可能缺 models 字段，?? [] 避免 .find TypeError
+    const override = (provider.models ?? []).find((m) => m.id === model)?.apiMode;
     return override ?? provider.apiMode ?? "chat_completions";
   }
 

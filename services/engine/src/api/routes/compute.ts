@@ -342,6 +342,12 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     if (typeof body.displayName !== "string" || body.displayName.trim() === "") {
       return reply.status(400).send({ error: "displayName must be a non-empty string" });
     }
+    // providerType 白名单（对齐 shared ProviderConfig.providerType 枚举，当前仅
+    // "openai"）——非法值 400，不再带脏值落库（类型上是 "openai" 字面量，落库
+    // 后消费方按枚举处理）；缺省/空串维持既有口径落 "openai"
+    if (body.providerType !== undefined && body.providerType !== "" && body.providerType !== "openai") {
+      return reply.status(400).send({ error: "Invalid providerType（只允许 openai）" });
+    }
     if (!(await isAllowedBaseUrl(body.baseUrl))) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
     }

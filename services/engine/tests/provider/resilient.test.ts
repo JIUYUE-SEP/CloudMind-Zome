@@ -173,6 +173,26 @@ describe("ResilientLLMProvider", () => {
     expect(message).toContain("backup");
   });
 
+  it("降级工厂抛错：尝试链只记一条「创建失败」，不再与「不可用」重复记账", async () => {
+    const primary = scriptedProvider("primary", [serverError()]);
+    const resilient = new ResilientLLMProvider(primary.provider, {
+      maxRetries: 0,
+      sleep: noSleep,
+      fallbackProviderIds: ["bad-id", "gone-id"],
+      fallbackFactory: async (id) => {
+        if (id === "bad-id") throw new Error("boom");
+        return undefined; // gone-id：工厂正常返回 undefined
+      },
+    });
+
+    const { error } = await collect(resilient);
+    expect(error).toBeInstanceOf(ProviderError);
+    const message = String(error);
+    expect(message).toContain("fallback bad-id: 创建失败");
+    expect(message.match(/fallback bad-id/g)).toHaveLength(1);
+    expect(message).toContain("fallback gone-id: 不可用");
+  });
+
   it("S2：降级当次调用链内 protocol 跟随当前活跃 provider（预检口径跟着换）", async () => {
     const primary = scriptedProvider("primary", [serverError()]);
     const backup = scriptedProvider("backup", [okEvents]);

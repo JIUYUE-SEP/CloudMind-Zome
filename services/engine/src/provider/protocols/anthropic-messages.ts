@@ -268,6 +268,10 @@ export class AnthropicMessagesProvider implements LLMProvider {
           case "content_block_stop": {
             if (event.index === undefined) break;
             const buf = toolBuffers.get(event.index);
+            // 取舍：stop 事件本体只携带 index（无 id/name/input），无法像
+            // openai-responses 的 output_item.done 那样用事件本体兜底组装——
+            // 缺 content_block_start 的孤立 stop 属协议违约（DeepSeek/原生
+            // Anthropic 均先 start 后 stop），只能丢弃，不虚构 tool.call
             if (buf) {
               emittedContent = true;
               yield {
@@ -284,8 +288,17 @@ export class AnthropicMessagesProvider implements LLMProvider {
           case "message_delta": {
             if (event.delta?.stop_reason) finishReason = mapFinishReason(event.delta.stop_reason);
             const u = event.usage;
-            if (u && typeof u.input_tokens === "number" && typeof u.output_tokens === "number") {
-              usage = { promptTokens: u.input_tokens, completionTokens: u.output_tokens };
+            // F8：双端点形态差异——DeepSeek 端点 message_delta 带 input+output 双
+            // 字段，原生 Anthropic 端点只带 output_tokens（input 已在 message_start
+            // 给出）。守卫放宽为 output_tokens 单 number 即更新，合并语义：output
+            // 覆盖、input 保留 message_start 值；否则原生端点 completionTokens 会
+            // 停在 message_start 初值（≈1）失真。input 无来源（message_start 也缺）
+            // 时不虚构 promptTokens，usage 整体不落账
+            if (u && typeof u.output_tokens === "number") {
+              const prompt = typeof u.input_tokens === "number" ? u.input_tokens : usage?.promptTokens;
+              if (prompt !== undefined) {
+                usage = { promptTokens: prompt, completionTokens: u.output_tokens };
+              }
             }
             break;
           }
@@ -311,10 +324,15 @@ export class AnthropicMessagesProvider implements LLMProvider {
         }
       }
 
-      // 流结束但未收到 message_stop（网关截断，P1-2）：
-      // - 累积内容为空 → 空流判死，抛错走重试分类（与 openai-responses 同口径
-      //   显式报错；首事件前失败，resilient 可重试/降级，不留空 assistant 落盘）；
-      // - 非空半截 → 容错收尾保留（内容已上屏，不丢）。
+      // 流结束但未收到 message_stop（网关截断，P1-2）。三族空流/截断口径
+      // 各不相同（既定取舍，不对齐行为，仅如实记录）：
+      // - 本族（anthropic）：空流判死抛「可重试」错误（首事件前失败，
+      //   resilient 可重试/降级，不留空 assistant 落盘）；非空半截容错收尾
+      //   step.end（内容已上屏，不丢）；
+      // - openai-responses：无论是否已有产出，缺终态事件一律抛「不可重试」
+      //   错误（response.completed/incomplete 为唯一权威收尾，半截不重试
+      //   防重复上屏）——retryable 分类与本族相反；
+      // - chat_completions：无终态事件概念，流干净结束即收尾，不判死。
       if (!stepEnded) {
         if (!emittedContent) {
           throw new ProviderError(

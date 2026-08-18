@@ -141,8 +141,10 @@ export class ResilientLLMProvider implements LLMProvider {
           try {
             current = await this.options.fallbackFactory?.(id);
           } catch (err) {
+            // 创建失败只记一条（含原因）——不再与「不可用」重复记账
             attempts.push(`fallback ${id}: 创建失败 ${String(err)}`);
             logger.warn(`[resilient] 备用 provider ${id} 创建失败，跳过：${String(err)}`);
+            continue;
           }
           if (!current) attempts.push(`fallback ${id}: 不可用`);
         }

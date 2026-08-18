@@ -227,6 +227,32 @@ describe("ModelApiModeRouter（型号级 apiMode 覆盖）", () => {
     expect(hasModelApiModeOverride({} as never)).toBe(false);
   });
 
+  it("R3 活配置守卫：resolveProvider 返回缺 models 字段的活配置 → refresh/chat 不 TypeError，回落 provider 级 apiMode", async () => {
+    const created: Array<{ apiMode: string | undefined }> = [];
+    const router = new ModelApiModeRouter({
+      providerId: "ds-live-no-models",
+      provider: {
+        apiMode: "anthropic",
+        baseUrl: "https://api.example.com",
+        models: [{ id: "m", displayName: "M", modelType: "llm" }],
+      },
+      defaultModel: "m",
+      // 手写/旧版 config.json：活配置缺 models 字段（类型上必填，运行时可能缺）
+      resolveProvider: async () =>
+        ({ apiMode: "anthropic", baseUrl: "https://api.example.com" }) as never,
+      createAdapter: (_providerId, apiMode) => {
+        created.push({ apiMode });
+        return stubAdapter(apiMode ?? "chat_completions");
+      },
+    });
+
+    await router.refresh();
+    expect(router.protocol).toBe("anthropic");
+    const events = await collect(router, messagesFor("m"));
+    expect(events.at(-1)).toMatchObject({ type: "step.end" });
+    expect(created).toEqual([{ apiMode: "anthropic" }]);
+  });
+
   it("R1 热更新：型号表加 apiMode 后 Router 下一次 chat 即走 responses（活配置解析，无需重建/重启）", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "router-hot-update-"));
     const originalDataDir = process.env.CLOUDMIND_DATA_DIR;

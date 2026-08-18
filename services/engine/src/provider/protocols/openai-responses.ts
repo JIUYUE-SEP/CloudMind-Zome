@@ -260,20 +260,22 @@ export class OpenAIResponsesProvider implements LLMProvider {
             const item = event.item;
             if (item?.type === "function_call" && typeof item.id === "string") {
               const buf = toolBuffers.get(item.id);
-              if (buf) {
+              // buffer 缺失（上游省略 output_item.added）时用 done 事件本体兜底
+              // 组装——done 携带完整 name/arguments/call_id，不再静默丢弃 tool.call
+              const name =
+                typeof item.name === "string" && item.name ? item.name : (buf?.name ?? "");
+              if (name) {
                 const finalArgs =
-                  typeof item.arguments === "string" ? item.arguments : (buf.arguments ?? "");
-                const name = typeof item.name === "string" && item.name ? item.name : buf.name;
-                if (name) {
-                  yield {
-                    type: "tool.call",
-                    toolCallId: typeof item.call_id === "string" ? item.call_id : buf.call_id ?? item.id,
-                    name,
-                    arguments: parseToolArgs(name, finalArgs),
-                  };
-                }
-                toolBuffers.delete(item.id);
+                  typeof item.arguments === "string" ? item.arguments : (buf?.arguments ?? "");
+                yield {
+                  type: "tool.call",
+                  toolCallId:
+                    typeof item.call_id === "string" ? item.call_id : buf?.call_id ?? item.id,
+                  name,
+                  arguments: parseToolArgs(name, finalArgs),
+                };
               }
+              toolBuffers.delete(item.id);
             }
             break;
           }
