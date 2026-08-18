@@ -170,7 +170,7 @@ describe("④ 通知注入", () => {
           // P8a：终态注入改经 perception 单口；harness 直连 worker 通道并回报
           // 已入队，白名单/waterfall 语义由 tests/plugins/perception.test.ts 覆盖
           injectNotice: async (p) => {
-            worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+            await worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
             return true;
           },
         }),
@@ -249,7 +249,7 @@ describe("⑤ 开关关闭时无注入", () => {
     });
     const getAgentConfig = vi.fn(() => ownerConfigGate);
     const injectNotice = vi.fn(async (p: PerceptionInject) => {
-      worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+      await worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
       return true;
     });
     const manager = new BackgroundManager(

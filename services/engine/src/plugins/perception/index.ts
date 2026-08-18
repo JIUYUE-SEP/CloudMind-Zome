@@ -13,7 +13,7 @@ import { logger } from "../../logger.js";
  *   原样透传）；③ 解析 worker（ctx.agents.getOrCreateWorker），无 worker 时
  *   warn（沿用各生产者原「无可用 worker」文案语义）并跳过（返回 false）；
  *   ④ 入队感知回合（返回 true；落盘失败不影响返回，与 enqueueSystemNotice
- *   自身语义一致）。
+ *   自身语义一致——落盘 await 完成才入队，失败 warn 后仍入队）。
  * - enqueueSystemNotice（core/agent-worker.ts）仍是「先落热存储再入队」的
  *   机制本体，perception 是其唯一生产调用方；直调绕过白名单（结构约定，
  *   P8b 断言兜底）。
@@ -50,7 +50,7 @@ export interface PerceptionFace {
   /**
    * 感知注入单口：白名单校验 → waterfall 改写链 → 解析 worker → 入队感知回合。
    * 返回是否真实入队：白名单丢弃 / 无可用 worker 跳过 = false，已入队 = true
-   * （fire-and-forget 落盘失败不影响返回，与 enqueueSystemNotice 自身语义一致）。
+   * （落盘失败不影响返回，与 enqueueSystemNotice 自身语义一致）。
    */
   injectNotice(payload: PerceptionInject): Promise<boolean>;
 }
@@ -94,8 +94,9 @@ export function apply(ctx: Context): void {
         );
         return false;
       }
-      // ④ 入队感知回合（先落热存储再入队的机制本体在 enqueueSystemNotice）
-      worker.enqueueSystemNotice(resolved.text, resolved.sourceId, resolved.opts);
+      // ④ 入队感知回合（先落热存储再入队的机制本体在 enqueueSystemNotice；
+      //    await 完成 = 落盘窗口已关闭，turn/end 溯源检查不会抢在落盘前）
+      await worker.enqueueSystemNotice(resolved.text, resolved.sourceId, resolved.opts);
       return true;
     },
   } satisfies PerceptionFace);

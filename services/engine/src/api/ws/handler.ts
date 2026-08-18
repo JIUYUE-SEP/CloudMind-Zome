@@ -123,10 +123,10 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         sessionId,
         send: (frame) => safeSend(socket, frame),
         sendJobEvent,
-        loadHistory: () =>
+        loadHistory: (limit) =>
           context
             .getMessageRepository(agentId)
-            .listBySession(sessionId, { limit: 20 })
+            .listBySession(sessionId, { limit })
             .catch(() => []),
         resolveWorker: () => context.getAgentWorker(agentId).catch(() => undefined),
         fallbackWorker: worker,

@@ -293,7 +293,7 @@ describe("IntermindService.send", () => {
       getAgentConfig: (id) => agentRepository.get(id),
       getMessageRepository: (id) => new MessageRepository(id),
       injectNotice: async (p) => {
-        worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+        await worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
         return true;
       },
     });

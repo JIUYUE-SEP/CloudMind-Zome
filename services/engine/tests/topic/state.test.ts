@@ -64,6 +64,27 @@ describe("topic-state 落盘（P1-2）", () => {
   it("无状态文件时 load 返回 undefined", async () => {
     expect(await loadTopicState("ghost")).toBeUndefined();
   });
+
+  it("损坏文件隔离为 .corrupt-* 并空态启动，不覆盖坏数据（D1，照 handoff A3 同模式）", async () => {
+    const agentDir = path.join(tmpDir, "agents", "a1");
+    const filePath = path.join(agentDir, "topic-state.json");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(filePath, "{ this is not json", "utf-8");
+
+    // 损坏不再上抛：按空态处理（undefined）
+    expect(await loadTopicState("a1")).toBeUndefined();
+
+    // 隔离文件生成且损坏内容原样保留；原路径不再占位
+    const files = await fs.readdir(agentDir);
+    const corrupt = files.find((f) => f.startsWith("topic-state.json.corrupt-"));
+    expect(corrupt).toBeDefined();
+    expect(await fs.readFile(path.join(agentDir, corrupt!), "utf-8")).toBe("{ this is not json");
+    await expect(fs.access(filePath)).rejects.toThrow();
+
+    // 空态启动后可继续 save/load（重建干净文件）
+    await saveTopicState("a1", { messageIds: ["m1"], startedAt: at(0), sourceId: "s1" });
+    expect((await loadTopicState("a1"))?.open?.messageIds).toEqual(["m1"]);
+  });
 });
 
 describe("TopicTracker 开放话题快照（P1-2）", () => {

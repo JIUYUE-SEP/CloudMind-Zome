@@ -1,7 +1,9 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { DocumentStore } from "../../plugins/memory/document-store.js";
+import { randomUUID } from "node:crypto";
+import { DocumentStore, renameWithRetry } from "../../plugins/memory/document-store.js";
 import { getAgentDir, sanitizeAgentId } from "../../config/paths.js";
+import { logger } from "../../logger.js";
 
 /**
  * 话题跟踪器状态落盘（P1-2，数据 review M6；P1.5 M-b 扩展 pending 段）。
@@ -93,7 +95,35 @@ async function updateTopicState(
 
 /** 读取 tracker 落盘状态；文件不存在返回 undefined（无状态可对账） */
 export async function loadTopicState(agentId: string): Promise<TopicStateFile | undefined> {
-  return stateStore(agentId).readJson();
+  const store = stateStore(agentId);
+  try {
+    return await store.readJson();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    // 损坏隔离（D1 欠账修复，照 handoff/state.ts A3 同模式）：重命名 .corrupt-
+    // {timestamp}-{随机后缀} 备份后以空态启动 + warn——绝不静默覆盖损坏数据
+    // （后续 save 会重建干净文件），也不让坏文件炸掉 turn 主流程/启动对账。
+    // 随机后缀防同一毫秒内多次 load 撞同名；rename 失败不静默吞——单独 warn
+    // 带失败原因，外层 warn 如实区分「已隔离」与「隔离失败」。
+    const quarantinePath = `${store.filePath}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    let quarantined = false;
+    try {
+      await renameWithRetry(store.filePath, quarantinePath);
+      quarantined = true;
+    } catch (renameErr) {
+      logger.warn(
+        { err: renameErr, quarantinePath },
+        "[topic] topic-state.json 隔离失败（损坏文件仍在原路径，后续 save 可能覆盖它）",
+      );
+    }
+    logger.warn(
+      { err: err, quarantinePath, quarantined },
+      quarantined
+        ? "[topic] topic-state.json 损坏，已隔离并以空态启动（不覆盖损坏数据）"
+        : "[topic] topic-state.json 损坏且隔离失败：以空态启动，原路径损坏文件未被覆盖",
+    );
+    return undefined;
+  }
 }
 
 /** 更新开放话题快照（保留 pending；调用方 await——agent-worker persistTopicState） */

@@ -352,19 +352,21 @@ export class AgentWorker {
    * 任务通知是瞬时事件，语义上是"外部环境传来的一则消息"（与 kimi steer 注入同范式）。
    * 通知文本先落热存储（感知回合的产出写历史——她"记得"这件事发生过），
    * 再入队触发一轮正常感知（感知回合无审批通道：写类工具一律 fail-closed，含嵌套 dispatch——防环因此平凡成立）。
+   * D1 欠账修复：落盘改 await 再入队——原 fire-and-forget 存在 turn/end 溯源
+   * 检查抢在落盘前的理论窗口；落盘失败仍 warn 后入队感知（语义不变）。
    */
-  enqueueSystemNotice(
+  async enqueueSystemNotice(
     text: string,
     sourceId: string,
     opts?: { intermindRide?: boolean },
-  ): void {
+  ): Promise<void> {
     const message: ChatMessage = {
       id: randomUUID(),
       role: "user",
       content: [{ type: "text", text }],
       createdAt: new Date().toISOString(),
     };
-    this.config.messageRepository
+    await this.config.messageRepository
       .append({ ...message, sessionId: sourceId })
       .catch((err) => {
         logger.warn({ err: err }, "[agent-worker] 系统通知落盘失败（仍入队感知）");
@@ -590,10 +592,13 @@ export class AgentWorker {
       logger.debug(`[agent-worker] processQueue start, messages: ${job.messages.length}`);
       // 阶段 5 二期：包装 skill 工具收集本话题活跃技能（usedSkills 写入压缩摘要）。
       // 选工具包装而非 step 扫描的理由：success 语义精确（拿截断前的原始 ToolResult，
-      // tool 消息文本可能被 token 截断无法可靠解析），且非 Skill 调用零开销
+      // tool 消息文本可能被 token 截断无法可靠解析），且非 Skill 调用零开销。
+      // D1 欠账修复：瞬态回合（蓝图等 ephemeral）不包收集器——收集桶只由真实话题
+      // 的 drain 消费（drainTopicSkills 全部调用点都在非 ephemeral 路径），瞬态
+      // 残留会混入下一真实话题的 used_skills
       const toolsMap = new Map(
         this.config.tools.map((t) => {
-          if (t.name !== "skill") return [t.name, t];
+          if (t.name !== "skill" || job.ephemeral) return [t.name, t];
           const wrapped: Tool = {
             ...t,
             execute: async (ctx, args) => {

@@ -24,14 +24,34 @@ function toSummary(record: HandoffRecord) {
 }
 
 /**
+ * 列表摘要的 bookText 截断长度（D1 欠账修复：list 不再携带交接书全文，
+ * 全文按需经 GET /handoff/:id/book 取）。500 字符足够前端横幅/列表预览。
+ */
+const BOOK_TEXT_SUMMARY_MAX = 500;
+
+/** 列表项：bookText 截断摘要化（超长截 500 字符 + bookTextTruncated 标记） */
+function toListItem(record: HandoffRecord) {
+  if (record.bookText.length <= BOOK_TEXT_SUMMARY_MAX) {
+    return { ...toSummary(record), bookTextTruncated: false };
+  }
+  return {
+    ...toSummary(record),
+    bookText: record.bookText.slice(0, BOOK_TEXT_SUMMARY_MAX),
+    bookTextTruncated: true,
+  };
+}
+
+/**
  * 换班移交控制面 REST（水位撞顶=换班不死）：
- * - GET /handoff?agentId=&sessionId= 查活跃/历史条目（前端重连对账用）；
+ * - GET /handoff?agentId=&sessionId= 查活跃/历史条目（前端重连对账用；
+ *   bookText 截断摘要化，全文走 /handoff/:id/book）；
+ * - GET /handoff/:id/book 交接书全文（按需端点）；
  * - DELETE /handoff/:id 手动打断（与用户消息打断同语义，reason=manual）。
  */
 export async function registerHandoffRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/handoff", {
     schema: {
-      summary: "List handoff records（水位撞顶换班移交控制面）",
+      summary: "List handoff records（水位撞顶换班移交控制面；bookText 摘要化）",
       tags: ["handoff"],
       querystring: {
         type: "object",
@@ -43,7 +63,16 @@ export async function registerHandoffRoutes(app: FastifyInstance, context: ApiCo
     },
   }, async (request) => {
     const { agentId, sessionId } = request.query as { agentId?: string; sessionId?: string };
-    return (context.handoffManager?.list({ agentId, sessionId }) ?? []).map(toSummary);
+    return (context.handoffManager?.list({ agentId, sessionId }) ?? []).map(toListItem);
+  });
+
+  app.get("/handoff/:id/book", {
+    schema: { summary: "交接书全文（list 已摘要化，全文按需经本端点取）", tags: ["handoff"] },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const record = context.handoffManager?.get(id);
+    if (!record) return reply.status(404).send({ error: "Handoff not found" });
+    return { id: record.id, bookText: record.bookText };
   });
 
   app.delete("/handoff/:id", {

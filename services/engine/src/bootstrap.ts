@@ -121,7 +121,8 @@ async function main() {
   // banner）收在 http 插件 listen() 面内，逐字保留
   await root.http.listen();
 
-  // 优雅关停（P1-2）：SIGTERM/SIGINT 时先 drain 全部 worker 的压缩队列再退出
+  // 优雅关停（P1-2）：SIGTERM/SIGINT 时先走 stop 钩子停收新任务（scheduler.stop
+  // 不再触发新压缩段），再 drain 全部 worker 的压缩队列，存量清零后退出
   // （超时 10s 兜底，不卡死关停）。Windows desktop 的 taskkill /F 强杀不会触发
   // 本 handler——那条路径的重启孤儿由启动对账兜底（P9 起在 memory 插件，
   // engine/ready 驱动）。

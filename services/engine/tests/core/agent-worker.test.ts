@@ -29,7 +29,7 @@ import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/rep
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { reconcileOrphanedTopic, reconcilePendingSegments } from "../../src/memory/reconcile.js";
 import { loadTopicState, saveTopicState } from "../../src/memory/topic/state.js";
-import { archivedMessageIds, writeCompressedTopic } from "../../src/memory/topic/store.js";
+import { archivedMessageIds, latestSummaries, writeCompressedTopic } from "../../src/memory/topic/store.js";
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -1398,7 +1398,7 @@ ${SECURITY_GUIDELINE}` },
       const worker = new AgentWorker(
         makeConfig(new RideProbeProvider(), {}, [makeRideProbe(record)]),
       );
-      worker.enqueueSystemNotice("notice", "s1", { intermindRide: true });
+      await worker.enqueueSystemNotice("notice", "s1", { intermindRide: true });
       await vi.waitFor(() => expect(worker.status).toBe("idle"));
       expect(record.ride).toBe(true);
     });
@@ -1408,9 +1408,67 @@ ${SECURITY_GUIDELINE}` },
       const worker = new AgentWorker(
         makeConfig(new RideProbeProvider(), {}, [makeRideProbe(record)]),
       );
-      worker.enqueueSystemNotice("notice", "s1");
+      await worker.enqueueSystemNotice("notice", "s1");
       await vi.waitFor(() => expect(worker.status).toBe("idle"));
       expect(record.ride).toBeUndefined();
+    });
+  });
+
+  describe("enqueueSystemNotice 落盘顺序（D1：先落盘后入队）", () => {
+    it("落盘未完成时不入队；await 返回 = 已落盘且已入队", async () => {
+      // 受控落盘闸：append 挂起直到放行——溯源检查抢在落盘前的窗口由此可观测
+      let releaseAppend!: () => void;
+      const appendGate = new Promise<void>((resolve) => {
+        releaseAppend = resolve;
+      });
+      const appended: ChatMessage[] = [];
+      const provider = new CapturingProvider();
+      const worker = new AgentWorker(
+        makeConfig(provider, {
+          append: async (m) => {
+            await appendGate;
+            appended.push(m);
+          },
+        }),
+      );
+
+      // 落盘闸关闭：通知 append 挂起——不入队、不触发感知回合
+      const noticeDone = worker.enqueueSystemNotice("系统通知文本", "s1");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(appended).toHaveLength(0);
+      expect(provider.capturedParams).toBeUndefined();
+      expect(worker.status).toBe("idle");
+
+      // 放行落盘：await 返回时通知已落盘（第一条就是通知本体）且已入队
+      releaseAppend();
+      await noticeDone;
+      expect(appended.length).toBeGreaterThanOrEqual(1);
+      expect(appended[0]!.content).toEqual([{ type: "text", text: "系统通知文本" }]);
+
+      // 落盘之后感知回合才跑（provider 收到请求）
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+      expect(provider.capturedParams).toBeDefined();
+    });
+
+    it("落盘失败：warn 后仍入队感知（catch 语义不变）", async () => {
+      const provider = new CapturingProvider();
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+      const worker = new AgentWorker(
+        makeConfig(provider, {
+          append: async () => {
+            throw new Error("disk full");
+          },
+        }),
+      );
+
+      await worker.enqueueSystemNotice("系统通知文本", "s1");
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+      expect(provider.capturedParams).toBeDefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        expect.stringContaining("系统通知落盘失败"),
+      );
+      warn.mockRestore();
     });
   });
 });
@@ -1438,6 +1496,74 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       createdAt: new Date(Date.parse("2026-07-21T10:00:00.000Z") + min * 60_000).toISOString(),
     };
   }
+
+  /** D1 ephemeral 隔离测试用：首个非压缩 chat 调 skill 工具（bp-skill），压缩调用给格式回复 */
+  class EphemeralSkillProvider implements LLMProvider {
+    name = "ephemeral-skill";
+    private skillRequested = false;
+    supportsModel() {
+      return true;
+    }
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      const prompt = params.messages
+        .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+        .join("\n");
+      if (prompt.includes("对话归档助手")) {
+        yield { type: "text.delta", delta: "话题主题：测试话题\n关键结论：\n- x\n经验：\n" };
+      } else if (!this.skillRequested) {
+        this.skillRequested = true;
+        yield { type: "tool.call", toolCallId: "tc_bp", name: "skill", arguments: { name: "bp-skill" } };
+      } else {
+        yield { type: "text.delta", delta: "ok" };
+      }
+      yield { type: "step.end" };
+    }
+  }
+
+  it("瞬态回合（蓝图）skill 调用不残留进真实话题 used_skills（D1 ephemeral 隔离）", async () => {
+    const provider = new EphemeralSkillProvider();
+    const repo = new MessageRepository("agent-1");
+    let skillExecuted = false;
+    const bpSkillTool: Tool = {
+      name: "skill",
+      description: "取技能正文",
+      parameters: z.object({ name: z.string() }),
+      accesses: [{ resource: "file", action: "read" }],
+      async execute(): Promise<ToolResult> {
+        skillExecuted = true;
+        return { success: true, output: "规程正文" };
+      },
+    };
+    const worker = new AgentWorker({
+      ...makeConfig(provider, {}, [bpSkillTool]),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 4 },
+    });
+
+    // 瞬态回合（蓝图同构）：skill 调用真实发生，但不落盘、不进话题、不应被收集
+    worker.enqueue({
+      id: "j_bp",
+      sessionId: "bp",
+      ephemeral: true,
+      messages: [seqMessage("u_bp", "蓝图瞬态回合", 0)],
+      onEvent: () => {},
+    });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(skillExecuted).toBe(true); // 工具确实被调用（否则隔离断言空转）
+
+    // 真实话题：两棒消息攒到阈值关闭 → 压缩送后台
+    await repo.append({ ...seqMessage("u1", "第一个问题", 1), sessionId: "agent-1" });
+    await repo.append({ ...seqMessage("u2", "第二个问题", 2), sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "第一个问题", 1)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "第二个问题", 2)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    await worker.drainCompression();
+
+    // 瞬态 skill 不残留：摘要无 used_skills（修复前会混入 bp-skill）
+    const summaries = await latestSummaries("agent-1", 1);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(summaries[0]!.usedSkills).toBeUndefined();
+  }, 15_000);
 
   it("达到消息阈值后关闭话题：压缩档落盘、热存储归档、后续 assemble 注入 L5", async () => {
     const provider = new CapturingProvider();

@@ -20,12 +20,23 @@ export interface HandoffConnectionDeps {
   send(frame: object): void;
   /** 非 handoff.book 的 job 事件帧透出（handler 侧 sanitizeDeltaEvent + safeSend 注入） */
   sendJobEvent(event: LLMEvent): void;
-  /** 加载本会话最近历史（limit 20；失败回 []——原 .catch(() => []) 语义） */
-  loadHistory(): Promise<ChatMessage[]>;
+  /** 加载本会话最近历史（limit 由 handoffHistoryLimit 随棒递减；失败回 []——原 .catch(() => []) 语义） */
+  loadHistory(limit: number): Promise<ChatMessage[]>;
   /** 入队前重新解析 worker（P3-5；失败回 undefined——原 .catch(() => undefined) 语义） */
   resolveWorker(): Promise<AgentWorker | undefined>;
   /** 连接建立时解析到的 worker（重新解析失败时的回退引用） */
   fallbackWorker: AgentWorker;
+}
+
+/**
+ * 续跑历史窗口随棒递减（路线图 §五 D1 欠账：原固定 limit 20，后棒上下文
+ * 越攒越大）：第 N 棒续跑窗口 = max(5, 20 - (N-1)*5)——首棒 20 条语义不变，
+ * 每换一班减 5 条、5 条兜底。依据：交接书本体（bookText 置顶注入）已承载
+ * 跨棒长期上下文，热历史只需补最近衔接；递减窗口迫使后棒更多依靠交接书，
+ * 与「换班 = 压缩继续」的设计同向。
+ */
+export function handoffHistoryLimit(nextShift: number): number {
+  return Math.max(5, 20 - (nextShift - 1) * 5);
 }
 
 /**
@@ -65,7 +76,9 @@ export class HandoffConnectionBridge {
         void (async () => {
           if (signal.aborted) return;
           try {
-            const history = await deps.loadHistory();
+            // 窗口随棒递减（handoffHistoryLimit）：record.shift 是刚写完交接书
+            // 的一棒，续跑的是第 record.shift+1 棒
+            const history = await deps.loadHistory(handoffHistoryLimit(record.shift + 1));
             if (signal.aborted) return;
             // P3-5 同范式：入队前重新解析 worker（配置变更后旧引用会被退役）
             const targetWorker = (await deps.resolveWorker()) ?? deps.fallbackWorker;

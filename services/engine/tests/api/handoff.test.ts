@@ -124,4 +124,31 @@ describe("Handoff API", () => {
     expect(cancel).toHaveBeenCalledWith("a1", "s1", "manual", { global: true });
     expect(res.body).toMatchObject({ status: "aborted", abortReason: "manual" });
   });
+
+  it("GET /handoff：bookText 摘要化（>500 截断 + truncated 标记）；GET /handoff/:id/book 全文", async () => {
+    const longBook = `[交接书] ${"长".repeat(600)}`;
+    const record = await manager.record(bookInfo({ bookText: longBook }));
+    await manager.record(bookInfo({ agentId: "a2", sessionId: "s2" }));
+
+    // 长交接书：list 只带 500 字符摘要 + 截断标记
+    const list = await authedRequest(app.server).get("/handoff?agentId=a1&sessionId=s1");
+    expect(list.status).toBe(200);
+    expect(list.body).toHaveLength(1);
+    expect(list.body[0].bookText).toHaveLength(500);
+    expect(list.body[0].bookTextTruncated).toBe(true);
+    expect(longBook.startsWith(list.body[0].bookText)).toBe(true);
+
+    // 短交接书：不截断、原文返回
+    const short = await authedRequest(app.server).get("/handoff?agentId=a2&sessionId=s2");
+    expect(short.body[0].bookText).toBe("[交接书] 换班移交（第 1/3 棒）");
+    expect(short.body[0].bookTextTruncated).toBe(false);
+
+    // 全文端点：完整 bookText 原样返回；未知 id 404
+    const full = await authedRequest(app.server).get(`/handoff/${record.id}/book`);
+    expect(full.status).toBe(200);
+    expect(full.body).toEqual({ id: record.id, bookText: longBook });
+
+    const missing = await authedRequest(app.server).get("/handoff/ho_ghost/book");
+    expect(missing.status).toBe(404);
+  });
 });
