@@ -119,7 +119,12 @@ export class Scheduler {
       await repo.update(task);
 
       const worker = await this.deps.getAgentWorker(agentId);
-      if (!worker) return;
+      if (!worker) {
+        // agent 在 tick 的 list→get 窗口内被删（窄窗口）：本次触发落空。
+        // 原本静默 return 无任何痕迹，补 warn 便于排查"任务到点没跑"类问题
+        logger.warn({ taskId: task.id, agentId }, `scheduled task ${task.id} dropped: agent ${agentId} worker not found`);
+        return;
+      }
 
       await worker.runScheduledTask({
         id: task.id,
@@ -133,35 +138,64 @@ export class Scheduler {
         ],
         sessionId: task.id,
         onEvent: () => {},
+        // F5：执行期结果回调——runScheduledTask 落盘后入队即返回，LLM/provider
+        // 等执行期失败只经此回调暴露。失败走与入队期 catch 同一套 M27 补偿
+        // （一次性 60s 重试额度），执行成功才重置额度。
+        // 防环：补偿只是内存态一次性额度（retriedTasks）。onDone 失败排程的补跑
+        // 若再失败，额度已耗尽，不再派生新补偿——链式重试天然有界（≤1 次）。
+        // 额度绝不能在入队成功时重置：补跑自身的入队成功会提前归还额度，
+        // 持续失败的任务将每 60s 自我续期一次，变相无限重试。
+        onDone: (err) => {
+          if (err) {
+            this.logThrottled("error", `task:${task.id}:${errKey(err)}`, { err }, `scheduled task ${task.id} execution failed`);
+            // scheduleRetryOnce 内部已兜住落盘错误（只记 warn），不会 reject
+            void this.scheduleRetryOnce(task, repo);
+          } else {
+            this.handleTaskSuccess(task);
+          }
+        },
       });
-      // 任务跑通：此前该任务的错误视为恢复
-      for (const { key, hit } of this.errors.recoverPrefix(`task:${task.id}:`)) {
-        logger.info({ key, count: hit.count, suppressed: hit.suppressed }, `scheduled task ${task.id} 已恢复`);
-      }
-      // M27：跑通即重置一次性重试额度（下个周期失败仍可补跑一次）
-      this.retriedTasks.delete(task.id);
     } catch (err) {
       this.logThrottled("error", `task:${task.id}:${errKey(err)}`, { err }, `failed to run scheduled task ${task.id}`);
-      // M27 失败补偿：nextRunAt 已在执行前推进，失败会让本次触发静默丢失。
-      // 兜底语义 = 一次性重试：把 nextRunAt 改到 RETRY_DELAY_MS 后补跑一次；
-      // 仍失败则放弃本次触发、等下个 cron 周期，不无限重试。enabled=false
-      // （cron 已失效被禁用）的任务不重试。
-      if (task.enabled && !this.retriedTasks.has(task.id)) {
-        this.retriedTasks.add(task.id);
-        try {
-          task.nextRunAt = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
-          await repo.update(task);
-          logger.warn({ taskId: task.id, nextRunAt: task.nextRunAt }, `scheduled task ${task.id} failed, retrying once at ${task.nextRunAt}`);
-        } catch (updateErr) {
-          // 重试排程落盘失败只记 warn——主错误已记录，不掩盖
-          logger.warn({ err: updateErr, taskId: task.id }, `scheduled task ${task.id} retry schedule persist failed`);
-        }
-      } else if (this.retriedTasks.has(task.id)) {
-        // 重试也失败：清掉额度标记，下次 cron 周期失败可再获一次重试
-        this.retriedTasks.delete(task.id);
-      }
+      // 入队期失败补偿（M27），与执行期 onDone 失败共用同一套一次性重试
+      await this.scheduleRetryOnce(task, repo);
     } finally {
       this.runningTasks.delete(task.id);
+    }
+  }
+
+  /**
+   * 任务真正跑通（入队且执行成功）：该任务的节流错误视为恢复（节流不吞信息），
+   * 并重置 M27 一次性重试额度（下个周期失败仍可补跑一次）。
+   * 注意调用时机只能是 onDone 成功路径，不能是入队成功（防环论证见上方 onDone 注）。
+   */
+  private handleTaskSuccess(task: ScheduledTask): void {
+    for (const { key, hit } of this.errors.recoverPrefix(`task:${task.id}:`)) {
+      logger.info({ key, count: hit.count, suppressed: hit.suppressed }, `scheduled task ${task.id} 已恢复`);
+    }
+    this.retriedTasks.delete(task.id);
+  }
+
+  /**
+   * M27 失败补偿（入队期 catch 与执行期 onDone 共用）：nextRunAt 已在执行前
+   * 推进，失败会让本次触发静默丢失。兜底语义 = 一次性重试：把 nextRunAt 改到
+   * RETRY_DELAY_MS 后补跑一次；仍失败则放弃本次触发、等下个 cron 周期，不无限
+   * 重试。enabled=false（cron 已失效被禁用）的任务不重试。
+   * 重试排程落盘失败只记 warn——主错误已记录，不掩盖；本方法不向外抛错。
+   */
+  private async scheduleRetryOnce(task: ScheduledTask, repo: SchedulerRepository): Promise<void> {
+    if (task.enabled && !this.retriedTasks.has(task.id)) {
+      this.retriedTasks.add(task.id);
+      try {
+        task.nextRunAt = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+        await repo.update(task);
+        logger.warn({ taskId: task.id, nextRunAt: task.nextRunAt }, `scheduled task ${task.id} failed, retrying once at ${task.nextRunAt}`);
+      } catch (updateErr) {
+        logger.warn({ err: updateErr, taskId: task.id }, `scheduled task ${task.id} retry schedule persist failed`);
+      }
+    } else if (this.retriedTasks.has(task.id)) {
+      // 重试也失败：清掉额度标记，下次 cron 周期失败可再获一次重试
+      this.retriedTasks.delete(task.id);
     }
   }
 }

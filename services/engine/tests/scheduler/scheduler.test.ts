@@ -304,9 +304,13 @@ describe("Scheduler", () => {
     });
 
     runMock.mockRejectedValueOnce(new Error("boom"));
-    await internals.runTask(task, "agent-1"); // 失败 → 排重试
+    await internals.runTask(task, "agent-1"); // 入队期失败 → 排重试
     const retryTask = (await repo.get(task.id))!;
-    await internals.runTask(retryTask, "agent-1"); // 重试成功 → 额度重置
+    // F5 起额度重置以"执行成功"为准：模拟重试 job 真正跑完（onDone 无 err）
+    runMock.mockImplementationOnce(async (job: { onDone?: (err?: unknown) => void }) => {
+      job.onDone?.();
+    });
+    await internals.runTask(retryTask, "agent-1"); // 重试执行成功 → 额度重置
     const okTask = (await repo.get(task.id))!;
     runMock.mockRejectedValueOnce(new Error("boom"));
     await internals.runTask(okTask, "agent-1"); // 再次失败 → 仍获得一次重试
@@ -315,6 +319,152 @@ describe("Scheduler", () => {
     const retryAt = new Date(updated!.nextRunAt!).getTime();
     expect(retryAt).toBeGreaterThan(Date.now() + 50_000);
     expect(retryAt).toBeLessThanOrEqual(Date.now() + 70_000);
+    scheduler.stop();
+  });
+
+  it("F5：执行期失败（onDone 带 err）触发一次性重试——nextRunAt 改到 60s 后补偿", async () => {
+    const worker = makeWorker();
+    // 入队成功但执行期失败（LLM/provider 故障）：mock 在入队回调里同步兑现 onDone(err)
+    (worker.runScheduledTask as ReturnType<typeof vi.fn>).mockImplementation(
+      async (job: { onDone?: (err?: unknown) => void }) => {
+        job.onDone?.(new Error("llm boom"));
+      },
+    );
+    const scheduler = new Scheduler(makeDeps(worker));
+    const internals = scheduler as unknown as SchedulerInternals;
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await internals.runTask(task, "agent-1");
+
+    // 补偿落盘发生在 onDone 的异步续体里（void scheduleRetryOnce），轮询等它写完；
+    // 上限 70s 同时排除"还是执行前推进的下个 cron 周期"（明早 9 点）的未补偿态
+    await vi.waitFor(
+      async () => {
+        const updated = await repo.get(task.id);
+        expect(updated?.enabled).toBe(true);
+        const retryAt = new Date(updated!.nextRunAt!).getTime();
+        expect(retryAt).toBeGreaterThan(Date.now() + 50_000);
+        expect(retryAt).toBeLessThanOrEqual(Date.now() + 70_000);
+      },
+      { timeout: 2000, interval: 5 },
+    );
+    scheduler.stop();
+  });
+
+  it("F5：执行期重试仍失败不再重试——落到下个 cron 周期，不无限重试", async () => {
+    const worker = makeWorker();
+    (worker.runScheduledTask as ReturnType<typeof vi.fn>).mockImplementation(
+      async (job: { onDone?: (err?: unknown) => void }) => {
+        job.onDone?.(new Error("llm boom"));
+      },
+    );
+    const scheduler = new Scheduler(makeDeps(worker));
+    const internals = scheduler as unknown as SchedulerInternals;
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await internals.runTask(task, "agent-1"); // 执行期失败 → 排一次性重试
+    // 等首次补偿落盘后再读，避免拿到执行前推进的 cron 态
+    await vi.waitFor(
+      async () => {
+        const t = await repo.get(task.id);
+        const retryAt = new Date(t!.nextRunAt!).getTime();
+        expect(retryAt).toBeLessThanOrEqual(Date.now() + 70_000);
+      },
+      { timeout: 2000, interval: 5 },
+    );
+    const retryTask = (await repo.get(task.id))!;
+    await internals.runTask(retryTask, "agent-1"); // 重试执行期仍失败 → 不再重试
+
+    const updated = await repo.get(task.id);
+    // nextRunAt 是本轮执行前推进的下个 cron 周期，而不是又一个 60s 重试
+    expect(updated?.nextRunAt).toBe(computeNextRun("0 9 * * *"));
+    scheduler.stop();
+  });
+
+  it("F5：执行期成功重置重试额度——纯执行路径的失败-成功-失败仍各获一次补偿", async () => {
+    const worker = makeWorker();
+    const runMock = worker.runScheduledTask as ReturnType<typeof vi.fn>;
+    const succeed = async (job: { onDone?: (err?: unknown) => void }) => {
+      job.onDone?.();
+    };
+    const fail = async (job: { onDone?: (err?: unknown) => void }) => {
+      job.onDone?.(new Error("llm boom"));
+    };
+    const scheduler = new Scheduler(makeDeps(worker));
+    const internals = scheduler as unknown as SchedulerInternals;
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    // 等待一次性重试补偿落盘的公共断言（60s 窗口）
+    const waitRetryScheduled = () =>
+      vi.waitFor(
+        async () => {
+          const t = await repo.get(task.id);
+          const retryAt = new Date(t!.nextRunAt!).getTime();
+          expect(retryAt).toBeGreaterThan(Date.now() + 50_000);
+          expect(retryAt).toBeLessThanOrEqual(Date.now() + 70_000);
+        },
+        { timeout: 2000, interval: 5 },
+      );
+
+    runMock.mockImplementationOnce(fail);
+    await internals.runTask(task, "agent-1"); // 执行期失败 → 排重试
+    await waitRetryScheduled();
+
+    runMock.mockImplementationOnce(succeed);
+    await internals.runTask((await repo.get(task.id))!, "agent-1"); // 执行成功 → 额度重置
+
+    runMock.mockImplementationOnce(fail);
+    await internals.runTask((await repo.get(task.id))!, "agent-1"); // 再失败 → 仍获一次补偿
+    await waitRetryScheduled();
+    scheduler.stop();
+  });
+
+  it("worker 缺失（agent 在 list→get 间被删的窄窗口）：记 warn 而非静默丢触发", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const deps = makeDeps(undefined as unknown as AgentWorker);
+    deps.getAgentWorker = async () => undefined;
+    const scheduler = new Scheduler(deps);
+    const repo = new SchedulerRepository("agent-1");
+    const task = await repo.create({
+      agentId: "agent-1",
+      description: "t1",
+      prompt: "hello",
+      cron: "0 9 * * *",
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await (scheduler as unknown as SchedulerInternals).runTask(task, "agent-1");
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: task.id, agentId: "agent-1" }),
+      expect.stringContaining("worker not found"),
+    );
+    warnSpy.mockRestore();
     scheduler.stop();
   });
 });
