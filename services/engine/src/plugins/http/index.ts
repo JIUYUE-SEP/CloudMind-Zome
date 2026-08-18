@@ -135,6 +135,24 @@ export function apply(ctx: Context): void {
       const classified = classifyListenError(err, port, gitCommit);
       if (classified) {
         logger.error(classified.message);
+        // M51：exit 前等 stdout 已缓冲日志冲刷完毕——POSIX 管道下
+        // process.stdout.write 异步缓冲，立即 exit 会截断本条端口冲突日志
+        // （supervisor 排障关键证据）。pino multistream 无 flush 面
+        // （logger.flush() 对它是空调用），借一次空写回调等既有缓冲写出；
+        // 回调在缓冲 flush 后触发（写失败同样回调）。500ms 超时兜底：
+        // 冲刷异常也不能把退出路径挂死
+        try {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 500);
+            if (typeof timer === "object" && "unref" in timer) timer.unref();
+            process.stdout.write("", () => {
+              clearTimeout(timer);
+              resolve();
+            });
+          });
+        } catch {
+          /* best-effort：冲刷失败照退 */
+        }
         process.exit(classified.exitCode);
       }
       throw err;

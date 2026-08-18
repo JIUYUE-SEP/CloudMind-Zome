@@ -81,8 +81,20 @@ async function compressAndArchiveSegment(
     return;
   }
   await writeCompressedTopic(deps.agentId, enriched);
-  // Phase 7：压缩落档成功后顺手沉淀经验到 MIND.md（append-only）。
-  // 失败仅 warn 跳过，不影响压缩主流程
+  try {
+    await deps.messageRepository.archiveAndRemove(compressed.msgIds);
+  } catch (err) {
+    // 归档失败而压缩档已生效会导致"摘要 + 原文"重复注入：
+    // 隔离压缩档（消息留在热存储，由调用方告警记录），保证上下文不重复。
+    // 此时经验尚未沉淀（M12：沉淀挪到归档成功之后），回滚后无孤儿经验残留
+    await removeCompressedTopic(deps.agentId, compressed.topicId);
+    throw err;
+  }
+  // Phase 7：归档成功后顺手沉淀经验到 MIND.md（append-only）。
+  // M12：必须在归档成功之后——先沉淀再归档时，归档失败的回滚只隔离压缩档，
+  // MIND.md 会留下孤儿经验，重启对账重压缩又沉淀一份（重复）。置于
+  // onArchived 之前：事件监听抛错按任务失败上传时对账只见压缩档、只补归档，
+  // 不会重压缩，经验不会重复沉淀。失败仅 warn 跳过，不影响压缩主流程
   if (compressed.experiences && compressed.experiences.length > 0) {
     try {
       await deps.mind.appendMindExperiences(
@@ -96,14 +108,6 @@ async function compressAndArchiveSegment(
     } catch (err) {
       logger.warn({ err: err }, `[mind] 经验沉淀失败（已跳过）：${compressed.topicId}`);
     }
-  }
-  try {
-    await deps.messageRepository.archiveAndRemove(compressed.msgIds);
-  } catch (err) {
-    // 归档失败而压缩档已生效会导致"摘要 + 原文"重复注入：
-    // 隔离压缩档（消息留在热存储，由调用方告警记录），保证上下文不重复
-    await removeCompressedTopic(deps.agentId, compressed.topicId);
-    throw err;
   }
   // P8b 事件缝（memory/archived）：放在归档 try/catch 之外——归档已成功，
   // 事件监听抛错（invariants enforce）不按"归档失败"隔离压缩档，按压缩

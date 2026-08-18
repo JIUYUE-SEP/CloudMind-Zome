@@ -39,10 +39,10 @@ describe("config/crypto", () => {
   async function decryptWithFileKey(cipherText: string): Promise<string> {
     const key = Buffer.from((await fs.readFile(keyFilePath(), "utf-8")).trim(), "base64");
     const combined = Buffer.from(cipherText, "base64");
-    // 密文布局同 crypto.ts：salt(16) + iv(16) + authTag(16) + encrypted
-    const iv = combined.subarray(16, 32);
-    const authTag = combined.subarray(32, 48);
-    const encrypted = combined.subarray(48);
+    // 密文布局同 crypto.ts（M49 起新布局）：iv(16) + authTag(16) + encrypted
+    const iv = combined.subarray(0, 16);
+    const authTag = combined.subarray(16, 32);
+    const encrypted = combined.subarray(32);
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
     decipher.setAuthTag(authTag);
     return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf-8");
@@ -114,5 +114,50 @@ describe("config/crypto", () => {
     const cipher = await encrypt("x");
     expect(await decrypt(cipher)).toBe("x");
     expect(Buffer.from((await fs.readFile(keyFilePath(), "utf-8")).trim(), "base64").length).toBe(32);
+  });
+
+  it("M49：encrypt 只产新布局（iv+tag+data，无 16 字节 salt 前缀）", async () => {
+    const plain = "sk-new-layout-check";
+    const cipher = await encrypt(plain);
+    const combined = Buffer.from(cipher, "base64");
+    // 新布局总长 = iv(16) + authTag(16) + 明文字节数；旧布局会多 16 字节 salt
+    expect(combined.length).toBe(16 + 16 + Buffer.byteLength(plain, "utf-8"));
+    expect(await decrypt(cipher)).toBe(plain);
+  });
+
+  it("M49：旧布局固化工件（salt+iv+tag+data）仍可解密", async () => {
+    // 工件由 M49 修复前的 encrypt 真实产物固化（旧布局 salt(16)+iv(16)+tag(16)+data，
+    // 总长 81 = 48 + 33 字节明文）；存量密文（provider apiKey 等）即此布局，必须可解
+    const legacyKeyB64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="; // 字节 0..31
+    const legacyCipher =
+      "rszb6cuXpuduJ0ZsnEdvINlFWWl1oimmZF5Q2LnWEGgm81zdWvzU/0F61I+SnF4qnrWE+6hBt/unqb0g8V7deU32kP5RrbGI8yisuQfxFCUY";
+    await fs.writeFile(keyFilePath(), legacyKeyB64, "utf-8");
+
+    expect(Buffer.from(legacyCipher, "base64").length).toBe(81);
+    await expect(decrypt(legacyCipher)).resolves.toBe("sk-legacy-provider-key-0123456789");
+  });
+
+  it("M49：测试内构造的旧布局密文（随机 salt）同样可解，且新密文不受影响", async () => {
+    const fileContent = crypto.randomBytes(32).toString("base64");
+    await fs.writeFile(keyFilePath(), fileContent, "utf-8");
+    const key = Buffer.from(fileContent, "base64");
+    // 按旧布局手工加密：salt(16) + iv(16) + authTag(16) + data（复刻修复前 encrypt）
+    const salt = crypto.randomBytes(16);
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const encrypted = Buffer.concat([cipher.update("sk-legacy-in-test", "utf-8"), cipher.final()]);
+    const legacyCombined = Buffer.concat([salt, iv, cipher.getAuthTag(), encrypted]);
+
+    await expect(decrypt(legacyCombined.toString("base64"))).resolves.toBe("sk-legacy-in-test");
+    // 新旧混用：同一密钥下新布局密文照常 round-trip（先试新布局不会被旧布局误判）
+    const newCipher = await encrypt("sk-new-after-legacy");
+    await expect(decrypt(newCipher)).resolves.toBe("sk-new-after-legacy");
+  });
+
+  it("M49：篡改密文两种布局都解不开（authTag 防误解，不静默出错误明文）", async () => {
+    const cipher = await encrypt("sk-tamper-check");
+    const combined = Buffer.from(cipher, "base64");
+    combined[combined.length - 1]! ^= 0xff; // 翻转末字节
+    await expect(decrypt(combined.toString("base64"))).rejects.toThrow();
   });
 });

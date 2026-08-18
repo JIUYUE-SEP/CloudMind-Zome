@@ -8,7 +8,9 @@ const ALGORITHM = "aes-256-gcm";
 const KEY_LEN = 32;
 const IV_LEN = 16;
 const AUTH_TAG_LEN = 16;
-const SALT_LEN = 16;
+// M49 前旧密文布局的 salt 前缀长度：该 salt 生成后从未参与 KDF（解密端直接
+// 跳过），是纯死数据，已停止生成；保留常量仅供旧布局密文的解密偏移
+const LEGACY_SALT_LEN = 16;
 
 // 按密钥文件路径缓存"读取或创建"的 Promise：
 // 1) 避免并发首次调用各自生成不同密钥互相覆盖，导致已加密数据无法解密；
@@ -73,20 +75,35 @@ async function getOrCreateMasterKey(): Promise<Buffer> {
 export async function encrypt(plainText: string): Promise<string> {
   const key = await getOrCreateMasterKey();
   const iv = crypto.randomBytes(IV_LEN);
-  const salt = crypto.randomBytes(SALT_LEN);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
   const encrypted = Buffer.concat([cipher.update(plainText, "utf-8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  const combined = Buffer.concat([salt, iv, authTag, encrypted]);
+  // 密文布局（M49 起只产新布局）：iv(16) + authTag(16) + data。
+  // 旧布局另有 16 字节 salt 前缀（未参与 KDF 的死数据），不再生成
+  const combined = Buffer.concat([iv, authTag, encrypted]);
   return combined.toString("base64");
 }
 
 export async function decrypt(cipherText: string): Promise<string> {
   const key = await getOrCreateMasterKey();
   const combined = Buffer.from(cipherText, "base64");
-  const iv = combined.subarray(SALT_LEN, SALT_LEN + IV_LEN);
-  const authTag = combined.subarray(SALT_LEN + IV_LEN, SALT_LEN + IV_LEN + AUTH_TAG_LEN);
-  const encrypted = combined.subarray(SALT_LEN + IV_LEN + AUTH_TAG_LEN);
+  // M49 双布局兼容：先按新布局解，GCM authTag 校验失败再按旧布局（跳过
+  // 16 字节 salt 前缀）解——authTag 校验天然防误解：布局判错必然 auth
+  // 失败（误通过概率 2^-128），不会静默解出错误明文。长度启发式不可行
+  // （两布局仅差定长 16 字节前缀，plaintext 长度任意），故用显式两次试解。
+  // 存量密文（provider apiKey 等）均为旧布局，必须保持可解
+  try {
+    return decryptWithLayout(key, combined, 0);
+  } catch {
+    return decryptWithLayout(key, combined, LEGACY_SALT_LEN);
+  }
+}
+
+/** 按 saltPrefixLen 前缀偏移解密（0=新布局 iv+tag+data；LEGACY_SALT_LEN=旧布局 salt+iv+tag+data） */
+function decryptWithLayout(key: Buffer, combined: Buffer, saltPrefixLen: number): string {
+  const iv = combined.subarray(saltPrefixLen, saltPrefixLen + IV_LEN);
+  const authTag = combined.subarray(saltPrefixLen + IV_LEN, saltPrefixLen + IV_LEN + AUTH_TAG_LEN);
+  const encrypted = combined.subarray(saltPrefixLen + IV_LEN + AUTH_TAG_LEN);
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf-8");

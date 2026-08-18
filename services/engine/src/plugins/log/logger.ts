@@ -19,7 +19,18 @@ const streams = pino.multistream([{ stream: process.stdout }, { stream: createLo
  * P1 修复（F5）：pino 单例本体自 src/logger.ts 迁进插件目录（物理搬家，
  * 语义一字未改）；src/logger.ts 退为纯 re-export shim，全仓消费方面零改动。
  */
-export const logger = pino({ level: process.env.ZOME_LOG_LEVEL ?? "info" }, streams);
+// M51：ZOME_LOG_LEVEL 白名单校验——pino 对未知 level 在构造（模块 import）
+// 时直接抛错致启动失败；非法值回落 info，构造完成后 warn 一次（配置错误
+// 必须可见，但不能阻断启动）
+const VALID_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
+const envLevel = process.env.ZOME_LOG_LEVEL;
+const invalidLevel = envLevel !== undefined && !VALID_LEVELS.has(envLevel);
+export const logger = pino({ level: invalidLevel ? "info" : (envLevel ?? "info") }, streams);
+if (invalidLevel) {
+  logger.warn(
+    `[log] ZOME_LOG_LEVEL="${envLevel}" 非法，已回落 info（合法值：fatal/error/warn/info/debug/trace/silent）`,
+  );
+}
 
 /** server.ts 的 Fastify logger 复用同一流（与业务日志同缓冲） */
 export const loggerStreams = streams;

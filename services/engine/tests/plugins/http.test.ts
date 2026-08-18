@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Context } from "cordis";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -182,5 +182,49 @@ describe("plugins/http（P9）", () => {
     // dispose 子 fiber：disposer best-effort 删除 pidfile
     await httpFiber.dispose();
     await expect(fs.access(pidFile)).rejects.toThrow();
+  });
+
+  it("M51：EADDRINUSE exit(2) 前先等 stdout 冲刷，端口冲突日志不截断", async () => {
+    // 占住端口制造 EADDRINUSE
+    const port = await getFreePort();
+    const occupier = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupier.once("error", reject);
+      occupier.listen(port, "127.0.0.1", () => resolve());
+    });
+    process.env.PORT = String(port);
+    // exit 拦截为抛错（防杀测试进程）；stdout 拦截为捕获（验证冲刷次序，且必须
+    // 调回调——生产代码借空写回调等冲刷，不调会挂住）
+    const written: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array,
+      cb?: () => void,
+    ) => {
+      written.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      if (typeof cb === "function") cb();
+      return true;
+    }) as typeof process.stdout.write);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code}`);
+    }) as typeof process.exit);
+    const ctx = new Context();
+    let httpFiber: Awaited<ReturnType<typeof ctx.plugin>> | undefined;
+    try {
+      await mountDeps(ctx);
+      httpFiber = await ctx.plugin(httpPlugin);
+
+      await expect(ctx.http.listen()).rejects.toThrow("exit:2");
+
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      // 次序：端口冲突日志先写出，空写冲刷探针在其后、exit 之前
+      const logIdx = written.findIndex((l) => l.includes("EADDRINUSE"));
+      expect(logIdx).toBeGreaterThanOrEqual(0);
+      const flushIdx = written.findIndex((l, i) => i > logIdx && l === "");
+      expect(flushIdx).toBeGreaterThan(logIdx);
+    } finally {
+      vi.restoreAllMocks();
+      occupier.close();
+      await httpFiber?.dispose();
+    }
   });
 });
