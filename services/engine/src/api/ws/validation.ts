@@ -17,15 +17,40 @@ export function getAllowedOrigins(): string[] {
 }
 
 /**
+ * Tauri webview 起源特判（F9：CORS 与 WS 握手共用，收敛到本文件一处）。
+ * 安全论证：tauri:// 自定义协议只有本机 Tauri webview 可持有（浏览器网页无法
+ * 构造该协议的页面上下文）；tauri.localhost 是 Tauri 保留域名（无公网解析，
+ * 打包端 webview 以 http(s)://tauri.localhost 为起源）；且 REST/WS 第一道均有
+ * Bearer token 鉴权（server.ts onRequest 钩子 / 握手 subprotocol），Origin 校验
+ * 只承担浏览器误伤面，不是鉴权边界。
+ */
+function isTauriOrigin(origin: string): boolean {
+  if (origin.startsWith("tauri://")) return true;
+  return /^https?:\/\/([a-z0-9-]+\.)?tauri\.localhost$/.test(origin);
+}
+
+/**
  * WebSocket 握手的 Origin 校验（防 CSWSH：浏览器里任意网页都能连本机 WS）。
  * 浏览器必然携带 Origin；不带 Origin 的客户端（curl、Node、Tauri 后端）放行。
  */
 export function isAllowedWsOrigin(origin: string | undefined): boolean {
   if (!origin) return true;
   if (process.env.NODE_ENV === "e2e") return true;
-  // Tauri webview 使用自定义协议或 tauri.localhost 域
-  if (origin.startsWith("tauri://")) return true;
-  if (/^https?:\/\/([a-z0-9-]+\.)?tauri\.localhost$/.test(origin)) return true;
+  // Tauri webview 使用自定义协议或 tauri.localhost 域（安全论证见 isTauriOrigin）
+  if (isTauriOrigin(origin)) return true;
+  return getAllowedOrigins().includes(origin);
+}
+
+/**
+ * REST CORS origin 判定（F9）：与 WS 握手同源——白名单之外并入 Tauri webview
+ * 起源。打包桌面端带 Bearer 头的 REST 预检原先被仅含 localhost 系的白名单
+ * 拦死（dev 走 localhost:3000 感知不到）。非浏览器客户端（curl、Node）不携带
+ * Origin，放行与否都不影响其请求（server.ts 的 Bearer 钩子仍在）。
+ */
+export function isAllowedCorsOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (process.env.NODE_ENV === "e2e") return true;
+  if (isTauriOrigin(origin)) return true;
   return getAllowedOrigins().includes(origin);
 }
 

@@ -44,23 +44,10 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         return;
       }
 
-      // 握手鉴权：无凭证直接拒连（同机非浏览器进程的敞口由这里闭合）
-      if (!isTokenValid(extractWsToken(req), await getAuthToken())) {
-        socket.close(4401, "Unauthorized");
-        return;
-      }
-
-      if (!isValidId(agentId)) {
-        socket.close(4003, "Invalid agent id");
-        return;
-      }
-      if (!isValidId(sessionId)) {
-        socket.close(4004, "Invalid session id");
-        return;
-      }
-
-      // message 监听必须在首个 await 之前同步注册：客户端在 onopen 后立即发送，
-      // 若等 getAgentWorker 完成才注册，这期间到达的消息会被 ws 静默丢弃。
+      // message 监听必须在首个 await（getAuthToken）之前同步注册：客户端在
+      // onopen 后立即发送，握手鉴权/冷 worker 创建的 await 窗口内到达的消息
+      // 若无人接收会被 ws 静默丢弃（F11：原实现把 getAuthToken 排在注册之前，
+      // 注释自述与代码矛盾——缓冲与监听前移到所有 await 之前，让注释变真）。
       // 与 session-handler.ts 同一模式（P1-8 起群聊同样串行化）：初始化期间
       // 先缓冲，ready 后按同一 chain 串行回放。
       const pendingMessages: unknown[] = [];
@@ -102,9 +89,33 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         dispatch(raw);
       });
 
+      // 握手鉴权：无凭证直接拒连（同机非浏览器进程的敞口由这里闭合）。
+      // 4401 拒连时已缓冲的消息随关闭一并丢弃、不回放（语义不变）
+      if (!isTokenValid(extractWsToken(req), await getAuthToken())) {
+        socket.close(4401, "Unauthorized");
+        return;
+      }
+
+      if (!isValidId(agentId)) {
+        socket.close(4003, "Invalid agent id");
+        return;
+      }
+      if (!isValidId(sessionId)) {
+        socket.close(4004, "Invalid session id");
+        return;
+      }
+
       const worker = await context.getAgentWorker(agentId);
       if (!worker) {
         socket.close(4001, "Agent not found");
+        return;
+      }
+
+      // F11 断连竞态收口：await 窗口（鉴权/冷 worker 创建）内断连，close 事件
+      // 早于下方监听注册、无从捕获——以 readyState 判定收口：已关闭则不 attach
+      // 连接桥（僵尸 loop 不进注册表）、不回放缓冲消息（入队到死 socket 白烧 token）
+      if (socket.readyState !== socket.OPEN) {
+        logger.info({ agentId, sessionId }, "[ws] 私聊连接在初始化窗口内已关闭（不 attach 不回放）");
         return;
       }
       /** 非 book 的 job 事件帧透出：sanitizeDeltaEvent 留在本层（P2 层间纪律——
@@ -199,6 +210,14 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
         }
       });
 
+      // F11 第二道闸（防御性：attach 到回放之间若将来插入 await，仍能收口）——
+      // 已关闭则不回放；已 attach 的桥立即 detach（走 registry cancelConnection
+      // 仲裁面，僵尸 loop 不留）
+      if (socket.readyState !== socket.OPEN) {
+        handoffBridge?.detach();
+        return;
+      }
+
       ready = true;
       for (const raw of pendingMessages) dispatch(raw);
       pendingMessages.length = 0;
@@ -277,7 +296,8 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
-          // 加载最近历史作为上下文（含刚持久化的本条），与群聊行为一致
+          // 加载最近历史作为上下文（含刚持久化的本条）；读失败降级为空历史——
+          // 与群聊 session-handler 同口径（此前注释自称一致，群聊侧实际无降级，已对齐）
           const repo = context.getMessageRepository(agentId);
           const history = await repo.listBySession(sessionId, { limit: 20 }).catch(() => []);
 

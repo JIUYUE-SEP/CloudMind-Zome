@@ -160,6 +160,8 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       for (const raw of pendingMessages) {
         dispatch(raw);
       }
+      // 与私聊 handler 同步：回放后清空缓冲，已入 chain 的消息不再滞留数组
+      pendingMessages.length = 0;
 
       async function handleMessage(raw: unknown) {
         try {
@@ -253,14 +255,20 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             if (!worker) continue;
 
             // Load this agent's recent session messages as context
+            // 读失败降级为空历史（与私聊 handler.ts / 连接桥 loadHistory 同口径）：
+            // 单 agent 读失败只影响自身上下文，不饿死后续 target 入队
             const repo = context.getMessageRepository(agentId);
-            const history = await repo.listBySession(sessionId, { limit: 20 });
+            const history = await repo.listBySession(sessionId, { limit: 20 }).catch(() => []);
 
             worker.enqueue({
               id: randomUUID(),
               messages: history,
               sessionId,
               onEvent: (event) => {
+                // handoff.book 帧吞掉不透传（与私聊连接桥拦截同口径）：群聊
+                // 不续跑——多 Agent 槽位语义在换班边界外，撞顶只落交接书进历史，
+                // 不调度下一棒，前端也无须消费该帧
+                if (event.type === "handoff.book") return;
                 // 与私聊 handler 同一校验：delta 帧只放行 string，脏帧丢弃
                 const safeEvent = sanitizeDeltaEvent(event);
                 if (safeEvent) safeSend(socket, { agentId, ...safeEvent });

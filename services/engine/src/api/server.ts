@@ -25,17 +25,21 @@ import { registerLogRoutes } from "./routes/logs.js";
 import { registerHandoffRoutes } from "./routes/handoff.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 import { registerSessionWebSocket } from "./ws/session-handler.js";
-import { getAllowedOrigins } from "./ws/validation.js";
+import { isAllowedCorsOrigin } from "./ws/validation.js";
 
 export async function createServer(context: ApiContext) {
   // Fastify 请求日志与业务日志共用同一流（P4-1）：stdout + /logs 环形缓冲
   const app = Fastify({
     logger: { stream: loggerStreams },
   });
-  const allowedOrigins = getAllowedOrigins();
 
   await app.register(cors, {
-    origin: process.env.NODE_ENV === "e2e" ? true : allowedOrigins,
+    // origin 判定收敛到 ws/validation.ts（F9：与 WS 握手同源）——白名单之外
+    // 并入 Tauri webview 起源（tauri://、http(s)://tauri.localhost），打包桌面端
+    // 带 Bearer 的 REST 预检不再被拦（dev 走 localhost:3000 感知不到）。
+    // 拒绝时回 false：CORS 头整体不下发（原数组未命中时 204 但无 ACAO，
+    // 浏览器同判拦截，阻断语义等价）
+    origin: (origin, cb) => cb(null, isAllowedCorsOrigin(origin)),
     credentials: true,
     // @fastify/cors v11 默认只放行 CORS 安全方法（GET/HEAD/POST），
     // 不显式声明会导致浏览器对 PUT/DELETE 的预检失败（前端报 "Failed to fetch"）

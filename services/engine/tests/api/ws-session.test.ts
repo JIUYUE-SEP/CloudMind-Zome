@@ -539,4 +539,165 @@ describe("Session WebSocket API", () => {
     await cleanup();
   });
 
+  it("群聊历史读失败降级为空：单 agent 读失败不饿死后续 target（与私聊/桥同口径）", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1", "a2"]);
+    // a1 的历史读取整体失败（用户消息持久化 append 不受影响）
+    const origGetRepo = context.getMessageRepository;
+    context.getMessageRepository = (id: string) => {
+      const repo = origGetRepo(id);
+      if (id === "a1") {
+        repo.listBySession = async () => {
+          throw new Error("disk error");
+        };
+      }
+      return repo;
+    };
+    const enqueued: string[] = [];
+    for (const id of ["a1", "a2"]) {
+      const worker = (await context.getAgentWorker(id))!;
+      const origEnqueue = worker.enqueue.bind(worker);
+      worker.enqueue = (job: Job) => {
+        enqueued.push(id);
+        origEnqueue(job);
+      };
+    }
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    const frames: Array<{ type: string; agentId?: string }> = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "hello everyone" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        frames.push(message);
+        // a1 降级为空历史仍入队（mock 照常收尾）；a2 不被 a1 的读失败饿死
+        const turnEnds = frames.filter((m) => m.type === "turn.end").map((m) => m.agentId);
+        if (turnEnds.includes("a1") && turnEnds.includes("a2")) {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    // 读失败前会整帧报错且 a2 永不入队；修复后两 agent 均入队、无会话级错误帧
+    expect(enqueued).toEqual(["a1", "a2"]);
+    expect(frames.some((f) => f.type === "error")).toBe(false);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("群聊不透传 handoff.book 帧（与私聊桥拦截同口径：吞掉，群聊不续跑）", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
+    const worker = (await context.getAgentWorker("a1"))!;
+    let capturedJob: Job | undefined;
+    const origEnqueue = worker.enqueue.bind(worker);
+    worker.enqueue = (job: Job) => {
+      capturedJob = job;
+      origEnqueue(job);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    const frames: Array<{ type: string }> = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "hi" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        frames.push(message);
+        if (message.type === "step.end") {
+          // 模拟撞顶时 worker 在 job.onEvent 上的补发路径（agent-worker.ts 撞顶兜底），
+          // 群聊 onEvent 应吞掉不透传
+          capturedJob?.onEvent({
+            type: "handoff.book",
+            shift: 1,
+            maxShifts: 3,
+            used: 950,
+            window: 1000,
+            bookMessageId: "msg_book",
+            bookText: "[交接书] 换班移交",
+          });
+          // 等一拍再收尾：若透传，book 帧会在此窗口内到达客户端
+          setTimeout(() => {
+            client.close();
+            resolve();
+          }, 200);
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    expect(frames.some((f) => f.type === "handoff.book")).toBe(false);
+    expect(frames.some((f) => f.type === "text.delta")).toBe(true);
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("session 加载窗口内到达的消息先缓冲、ready 后按序回放且只回放一次", async () => {
+    const { context, cleanup, sessionId } = await buildSessionWsContext(["a1"]);
+    // 拖慢 session 加载：onopen 后立即发送的消息必然落在 ready 前缓冲里
+    const origGetSession = context.sessionRepository.get.bind(context.sessionRepository);
+    context.sessionRepository.get = async (id: string) => {
+      await new Promise((r) => setTimeout(r, 150));
+      return origGetSession(id);
+    };
+
+    const jobTexts: string[] = [];
+    const worker = (await context.getAgentWorker("a1"))!;
+    const origEnqueue = worker.enqueue.bind(worker);
+    worker.enqueue = (job: Job) => {
+      // 只取触发本条 job 的最后一条用户消息（历史里含先前消息）
+      const trigger = [...job.messages].reverse().find((m) => m.role === "user");
+      jobTexts.push(
+        trigger?.content.filter((c) => c.type === "text").map((c) => c.text).join("") ?? "",
+      );
+      origEnqueue(job);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, TEST_AUTH_TOKEN);
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "early-1" }));
+        client.send(JSON.stringify({ text: "early-2" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "turn.end") {
+          turnEnds++;
+          if (turnEnds === 2) {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 10000);
+    });
+
+    // 两条缓冲消息各回放一次、按序入队（回放后缓冲已清空，无滞留无重复）
+    expect(jobTexts).toEqual(["early-1", "early-2"]);
+
+    await app.close();
+    await cleanup();
+  });
+
 });

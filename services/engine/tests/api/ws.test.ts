@@ -13,6 +13,10 @@ import { ConfigRepository } from "../../src/config/repository.js";
 import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { AgentWorker } from "../../src/core/agent-worker.js";
+import { HandoffManager } from "../../src/handoff/manager.js";
+import { HandoffStateStore } from "../../src/handoff/state.js";
+import { HandoffLoopRegistry } from "../../src/handoff/registry.js";
+import { HandoffConnectionBridge } from "../../src/plugins/handoff/connection-bridge.js";
 import { mindService } from "../../src/plugins/mind/index.js";
 import { computeService } from "../../src/plugins/compute/index.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
@@ -681,6 +685,72 @@ describe("WebSocket API", () => {
 
     expect(sawOverflow).toBe(true);
     hanging = false;
+
+    await app.close();
+    await cleanup();
+  });
+
+  it("F11：冷 worker 创建窗口内断连——不 attach 连接桥、不回放缓冲消息", async () => {
+    const { context, cleanup } = await buildWsContext("agent-ws");
+    const worker = (await context.getAgentWorker("agent-ws"))!;
+    let enqueued = 0;
+    const origEnqueue = worker.enqueue.bind(worker);
+    worker.enqueue = (job) => {
+      enqueued++;
+      origEnqueue(job);
+    };
+
+    // handoff 控制面 + 连接桥（生产同款装配）；spy attachConnection 判僵尸 loop
+    //（attach 即 register 进注册表——未 attach 则注册表必然无残留）
+    const handoffManager = new HandoffManager({ store: new HandoffStateStore() });
+    const handoffLoops = new HandoffLoopRegistry();
+    let attachCount = 0;
+    context.handoff = {
+      manager: handoffManager,
+      loops: handoffLoops,
+      attachConnection: (deps) => {
+        attachCount++;
+        return new HandoffConnectionBridge(deps, { manager: handoffManager, loops: handoffLoops });
+      },
+    };
+
+    // 冷 worker 创建窗口：首个 getAgentWorker 悬挂，直到测试放行
+    const origGet = context.getAgentWorker;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstCall = true;
+    context.getAgentWorker = async (id: string) => {
+      if (firstCall) {
+        firstCall = false;
+        await gate; // 模拟冷 worker 创建 I/O 窗口
+      }
+      return origGet(id);
+    };
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", resolve);
+      client.on("error", reject);
+    });
+    // 窗口内：发消息（进 ready 前缓冲）→ 立即断连
+    client.send(JSON.stringify({ text: "buffered during cold start" }));
+    client.close();
+    // 客户端 close 事件落定 = 服务端已收完 Close 帧（TCP 有序），此时服务端
+    // socket.readyState 必为 CLOSED——放行 worker 创建后命中 readyState 闸
+    await new Promise<void>((resolve) => client.on("close", () => resolve()));
+    await new Promise((r) => setTimeout(r, 100));
+    release();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // 不 attach：僵尸 loop 不进注册表；不回放：缓冲消息不入队到死 socket
+    expect(attachCount).toBe(0);
+    expect(enqueued).toBe(0);
 
     await app.close();
     await cleanup();
