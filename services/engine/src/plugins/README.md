@@ -5,8 +5,8 @@
 ## 目录定位
 
 - 迁移 P0–P9 期已完成（2026-08-17）：bootstrap.ts 各模块的构造与接线已全部收口为本目录下的插件（每期范围见迁移方案 B3 表）。
-- **bootstrap.ts 已退役为薄组合根**（约 136 行）：21 个插件挂载 → assertServices → `serial("engine/ready")`（启动对账/scheduler start 挂此事件）→ `http.listen()` → 关停钩。
-- 器官清单（`DATA_DIR/agents/<id>/plugins.yml`、全局 `DATA_DIR/plugins.json`）驱动的外部插件发现属迁移第二阶段，不在本目录。
+- **bootstrap.ts 已退役为薄组合根**（约 145 行）：22 个插件挂载 → assertServices → `serial("engine/ready")`（启动对账/scheduler start 挂此事件）→ `http.listen()` → 关停钩。
+- 迁移第二阶段（外部插件发现，E1–E3 已完成 2026-08-18）：`plugins/external/` 是本目录第 22 个插件——器官清单（全局 `DATA_DIR/plugins.json`、per-agent `DATA_DIR/agents/<id>/plugins.yml`）驱动的外部插件加载器；外部插件本体不住本目录，住 `DATA_DIR/plugins/<name>/index.mjs`（纯 JS ESM）。开发指南见「开发外部插件（器官）」节。
 
 ## 插件解剖（四件套）
 
