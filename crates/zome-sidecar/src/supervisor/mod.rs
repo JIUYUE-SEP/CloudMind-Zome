@@ -366,23 +366,23 @@ enum AdoptedProcState {
     Engine,
     /// 进程存活但身份不符（疑似 pid 复用）——只记 warn，绝不杀
     Stranger,
-    /// 进程已退出（含僵尸），或平台无从校验（如非 Linux unix 无 /proc）——不杀
+    /// 进程已退出（含僵尸/无命令行），或查询失败无从校验——不杀
     Gone,
 }
 
 /// /proc/<pid>/cmdline（NUL 分隔）是否指向 node engine 入口 bootstrap.js
 /// （纯函数，供单测）
-#[cfg(unix)]
+#[cfg(all(unix, any(target_os = "linux", test)))]
 fn cmdline_is_bootstrap_engine(cmdline: &[u8]) -> bool {
     String::from_utf8_lossy(cmdline)
         .split('\0')
         .any(|arg| arg.contains("bootstrap.js"))
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 async fn adopted_proc_state(pid: u32) -> AdoptedProcState {
-    // /proc 仅 Linux 有；其他 unix（macOS）读不到 → Gone（无从校验则绝不杀）。
-    // 僵尸进程 cmdline 为空，等同已死
+    // /proc 直连是 Linux 优先路径（不起子进程）。僵尸进程 cmdline 为空，
+    // 等同已死；读不到（进程已退出/权限）无从校验 → Gone 绝不杀
     match std::fs::read(format!("/proc/{pid}/cmdline")) {
         Ok(cmdline) if cmdline.is_empty() => AdoptedProcState::Gone,
         Ok(cmdline) => {
@@ -393,6 +393,59 @@ async fn adopted_proc_state(pid: u32) -> AdoptedProcState {
             }
         }
         Err(_) => AdoptedProcState::Gone,
+    }
+}
+
+/// 无 /proc 平台（macOS 等 unix）的收编进程核验：ps -p <pid> -o args= 读
+/// 命令行，与 /proc 路径同一判定（argv 含 bootstrap.js）。任何校验不到的
+/// 形态（进程不存在/ps 失败）都按 Gone 安全退化——绝不误杀
+#[cfg(all(unix, not(target_os = "linux")))]
+async fn adopted_proc_state(pid: u32) -> AdoptedProcState {
+    adopted_proc_state_ps(pid).await
+}
+
+/// ps 核验实现（独立成函数：Linux 测试可直接对真进程实测该路径——procps
+/// 与 macOS BSD ps 的 -o args= 输出形态一致，见 parse_ps_args_state 注释）
+#[cfg(all(unix, any(not(target_os = "linux"), test)))]
+async fn adopted_proc_state_ps(pid: u32) -> AdoptedProcState {
+    match Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+        .await
+    {
+        // 进程不存在：ps 无输出且退出码非零 → Gone
+        Ok(o) if !o.status.success() => AdoptedProcState::Gone,
+        Ok(o) => parse_ps_args_state(&String::from_utf8_lossy(&o.stdout)),
+        // ps 调用失败无从校验：不杀
+        Err(_) => AdoptedProcState::Gone,
+    }
+}
+
+/// ps -p <pid> -o args= 输出解析（纯函数，供单测）：-o args= 的空列名压掉
+/// 表头，输出即完整 argv 的空格拼接单行。与 /proc 路径同判定：任一空格
+/// 切分 token 含 bootstrap.js → Engine，否则 Stranger；空白输出 → Gone。
+/// token 切分与 /proc 的 per-arg contains 判定证据门槛相同（含空格的路径
+/// 如 "Application Support/.../bootstrap.js" 末段 token 仍命中），不改变
+/// 判定方向。
+///
+/// 平台差异（Linux procps 实测，macOS 为 BSD ps 文档口径）：
+/// 两者对 -p/-o args= 的输出形态一致（无表头单行命令行）；差别在僵尸——
+/// Linux 输出 "[cmd] <defunct>"（判 Stranger，安全退化不杀，kill 等待
+/// 循环视其为已退出），macOS 僵尸 args 为空（判 Gone）；进程不存在时
+/// 两者均无输出且退出码非零（调用方先按退出码判 Gone）
+#[cfg(all(unix, any(not(target_os = "linux"), test)))]
+fn parse_ps_args_state(output: &str) -> AdoptedProcState {
+    let args = output.trim();
+    if args.is_empty() {
+        return AdoptedProcState::Gone;
+    }
+    if args
+        .split_whitespace()
+        .any(|arg| arg.contains("bootstrap.js"))
+    {
+        AdoptedProcState::Engine
+    } else {
+        AdoptedProcState::Stranger
     }
 }
 
@@ -472,10 +525,11 @@ async fn force_kill_pid(pid: u32) {
 /// 击杀收编的 engine（H9：child=None 时恢复闭环的关键，此前 shutdown 对
 /// 收编进程是空操作，收编 engine 挂死占住 8848 后 restart 永远 port_conflict）。
 ///
-/// 先校验进程身份（防 pid 复用误杀）：Unix 读 /proc/<pid>/cmdline 须含
-/// bootstrap.js；Windows 用 tasklist 校验映像名 node.exe。校验不过或进程
-/// 已死只记日志绝不杀。两段式终止：先温和终止，3s 未退升级强杀（与现有
-/// Windows child 路径 taskkill /T → /F 同构）。
+/// 先校验进程身份（防 pid 复用误杀）：Linux 读 /proc/<pid>/cmdline，
+/// macOS 等无 /proc unix 用 ps -p <pid> -o args=，均须含 bootstrap.js；
+/// Windows 用 tasklist 校验映像名 node.exe。校验不过或进程已死只记日志
+/// 绝不杀。两段式终止：先温和终止，3s 未退升级强杀（与现有 Windows child
+/// 路径 taskkill /T → /F 同构）。
 ///
 /// 进程交互部分无法单测的部分（真实信号投递/等待语义）需手工验证：
 /// 桌面端启动后 kill -9 sidecar 再重启（触发收编），随后 kill -STOP engine
@@ -682,6 +736,38 @@ mod tests {
         );
     }
 
+    /// H9（D4 macOS 收编核验）：ps -p <pid> -o args= 输出解析——fixture 为
+    /// 真实输出形态：macOS 行取自 BSD ps 文档口径（-o args= 无表头单行完整
+    /// 命令行），Linux 行为本机 procps 实测；两平台的格式差异（僵尸输出
+    /// "[cmd] <defunct>" vs 空）见 parse_ps_args_state 注释
+    #[cfg(unix)]
+    #[test]
+    fn ps_args_state_parse() {
+        // macOS 形态：内嵌/用户态 node + 含空格路径（末段 token 仍命中）
+        let macos = "/Users/jane/.nvm/versions/node/v22.11.0/bin/node \
+             /Users/jane/Library/Application Support/cloudmind-zome/engine/bootstrap.js";
+        assert_eq!(parse_ps_args_state(macos), AdoptedProcState::Engine);
+        // Linux 形态：exec -a 伪装 argv0（本文件真进程 harness 实测输出）
+        assert_eq!(
+            parse_ps_args_state("node /tmp/bootstrap.js 30"),
+            AdoptedProcState::Engine
+        );
+        assert_eq!(
+            parse_ps_args_state("node services/engine/dist/src/bootstrap.js"),
+            AdoptedProcState::Engine
+        );
+        // 无关进程（疑似 pid 复用）→ Stranger，绝不杀
+        assert_eq!(parse_ps_args_state("sleep 30"), AdoptedProcState::Stranger);
+        // Linux 僵尸实测形态 → Stranger（安全退化不杀，kill 等待循环视为已退出）
+        assert_eq!(
+            parse_ps_args_state("[sleep] <defunct>"),
+            AdoptedProcState::Stranger
+        );
+        // 空白输出（macOS 僵尸/异常形态）→ Gone
+        assert_eq!(parse_ps_args_state(""), AdoptedProcState::Gone);
+        assert_eq!(parse_ps_args_state("  \n"), AdoptedProcState::Gone);
+    }
+
     /// 造一个 cmdline 含 bootstrap.js 的活进程（exec -a 伪装 argv0），
     /// 供身份校验通过后的真实击杀路径测试
     #[cfg(target_os = "linux")]
@@ -789,5 +875,47 @@ mod tests {
         sup.shutdown().await; // adopted_pid 已取走：no-op，不 panic 不挂起
         cleanup_proc(&mut proc);
         assert_eq!(state, AdoptedProcState::Gone);
+    }
+
+    /// H9（D4）：macOS 收编核验走的 ps 路径在 Linux 上对真进程实测——
+    /// 伪装 engine 判 Engine（与 /proc 路径判定一致）、无关进程判 Stranger、
+    /// 已死 pid 判 Gone（ps 无输出且退出码非零）。procps 与 macOS BSD ps 的
+    /// -o args= 输出形态一致（差异见 parse_ps_args_state 注释）；真实 macOS
+    /// 上的杀/拒杀行为沿用批次 3 的手工验证口径
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn ps_path_state_matches_proc_on_real_processes() {
+        // 伪装 engine：ps 与 /proc 两条核验路径判定必须一致
+        let mut engine = spawn_fake_engine();
+        let pid = engine.id();
+        wait_cmdline_ready(pid).await;
+        assert_eq!(adopted_proc_state_ps(pid).await, AdoptedProcState::Engine);
+        assert_eq!(adopted_proc_state(pid).await, AdoptedProcState::Engine);
+        cleanup_proc(&mut engine);
+        // 击杀+回收后 pid 不存在：ps 退出码非零 → Gone
+        assert_eq!(adopted_proc_state_ps(pid).await, AdoptedProcState::Gone);
+
+        // 无关进程：Stranger（两路径一致），绝不杀的安全退化成立
+        let mut stranger = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn stranger");
+        let spid = stranger.id();
+        wait_cmdline_ready(spid).await;
+        assert_eq!(
+            adopted_proc_state_ps(spid).await,
+            AdoptedProcState::Stranger
+        );
+        cleanup_proc(&mut stranger);
+
+        // 已死 pid：ps 无输出且退出码非零 → Gone
+        let mut dead = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        dead.wait().ok();
+        assert_eq!(
+            adopted_proc_state_ps(dead.id()).await,
+            AdoptedProcState::Gone
+        );
     }
 }

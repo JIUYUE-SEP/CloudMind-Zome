@@ -377,6 +377,10 @@ static INDEX_CACHE: std::sync::LazyLock<RwLock<HashMap<String, Arc<RwLock<Vector
 /// 构建完成入缓存前在缓存写锁内复比——不一致说明载入期间发生过删除，
 /// 构建结果（删除前读到的旧向量）必须丢弃重来，被删 agent 的向量不会在
 /// 内存复活。进程内单调递增即够用：磁盘目录已删，重启后天然从空索引开始
+///
+/// 锁序（C2 既定，R1 后不变）：INDEX_CACHE → DELETE_GENERATIONS——
+/// get_or_load 复比处持缓存写锁读代际；delete_agent 持缓存写锁写代际。
+/// 不存在持 DELETE_GENERATIONS 反取 INDEX_CACHE 的路径，无环
 static DELETE_GENERATIONS: std::sync::LazyLock<RwLock<HashMap<String, u64>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -409,7 +413,8 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
         }
         // 代际比对（M47）：快照后发生过 delete_agent，built 含删除前的旧
         // 向量——丢弃并重来（下一轮磁盘已删，载入为空索引）。锁序固定为
-        // INDEX_CACHE → DELETE_GENERATIONS，delete_agent 不嵌套持锁，无死锁
+        // INDEX_CACHE → DELETE_GENERATIONS，delete_agent 同向嵌套持锁
+        // （缓存写锁内写代际），无反向路径，无死锁
         if delete_generation(&agent_id).await != gen_snapshot {
             tracing::warn!(
                 "agent {} deleted during cold load; discarding stale index build",
@@ -434,33 +439,70 @@ pub async fn get_or_load(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorInde
 /// 2. 在飞 upsert 通道：持状态写锁置 retired 后再删目录——锁释放后经旧句柄
 ///    的迟到 upsert/delete_docs 在入口被拒，不重建已删的 embeddings.jsonl。
 ///
+/// R1 窄窗口根治：上述四步收进同一临界区（INDEX_CACHE.write 全程持有，
+/// DELETE_GENERATIONS.write 嵌套其中同样横跨删目录 IO）。R1 前四步不持同一
+/// 锁，冷载入的代际快照可落在"代际+1 之后、删目录完成之前"——快照与复比看到
+/// 相同代际（复比通过），载入却读到删除前的旧文件，旧向量以未置 retired 的
+/// 新状态重入缓存。get_or_load 相对本函数只有两个同步点：载入前经
+/// DELETE_GENERATIONS.read 取快照、载入后持 INDEX_CACHE.write 复比——两把
+/// 写锁横跨整个临界区后，快照要么在临界区之前（复比必然读到 +1 后的代际，
+/// 不一致，丢弃重来），要么被挡到临界区之后（目录已删，载入读到空目录），
+/// 窗口在时序上不复存在。
+///
+/// 代价评估：删目录 IO（单 agent 一个 jsonl 量级，毫秒）期间两把写锁持有，
+/// 阻塞其他 agent 的冷载入快照与缓存读。删除 agent 是单用户低频操作
+/// （engine 删除路由发 DeleteAgent RPC 前已停掉该 agent 流量），阻塞量级
+/// 可接受——换来复活窗口的确定性消除。
+///
 /// engine 删除路由在发 DeleteAgent RPC 前已停掉该 agent 流量（worker 随
 /// onChange 移除），两道防线覆盖的是"已拿到旧句柄但尚未进锁"的残余窗口。
 pub async fn delete_agent(agent_id: &str) -> anyhow::Result<()> {
     let agent_id = sanitize_agent_id(agent_id)?;
 
+    // 单临界区（R1）：锁序 INDEX_CACHE → DELETE_GENERATIONS → 状态写锁，
+    // 与 get_or_load 复比处同向，无环
+    let mut cache = INDEX_CACHE.write().await;
+    let mut gens = DELETE_GENERATIONS.write().await;
     // 代际 +1：挡住在飞冷载入把删除前旧向量重新入缓存（reload 通道）
-    {
-        let mut gens = DELETE_GENERATIONS.write().await;
-        *gens.entry(agent_id.clone()).or_insert(0) += 1;
-    }
+    *gens.entry(agent_id.clone()).or_insert(0) += 1;
 
-    let removed = {
-        let mut cache = INDEX_CACHE.write().await;
-        cache.remove(&agent_id)
-    };
-    if let Some(state) = removed {
-        // 持写锁置退役标记 + 删目录：等在飞 upsert/search 全部完成；锁释放后
-        // 经旧句柄的迟到 upsert 被 retired 挡在入口（upsert 首行检查），
+    if let Some(state) = cache.remove(&agent_id) {
+        // 持状态写锁置退役标记：等在飞 upsert/search 全部完成；锁释放后经
+        // 旧句柄的迟到 upsert 被 retired 挡在入口（upsert 首行检查），
         // 不会在目录删除后经 persist_append 重建文件
-        let mut guard = state.write().await;
-        guard.retired = true;
-        drop(guard);
-        return remove_index_dir(&agent_id).await;
+        state.write().await.retired = true;
     }
 
-    remove_index_dir(&agent_id).await
+    // 测试钩子（R1 复活窗口测试）：此刻代际已 +1、缓存已逐出、目录未删，
+    // 正是 R1 前复活窗口的张开位置——暂停于此让测试在窗口内发起冷载入
+    #[cfg(test)]
+    {
+        let hook = DELETE_WINDOW_HOOK.lock().await.take();
+        if let Some((entered, resume)) = hook {
+            let _ = entered.send(());
+            let _ = resume.await;
+        }
+    }
+
+    let result = remove_index_dir(&agent_id).await;
+    drop(gens);
+    drop(cache);
+    result
 }
+
+/// 窗口屏障两端（R1 测试）：entered 通知测试"窗口已张开"（两把写锁持有中、
+/// 目录未删），resume 等测试放行删目录
+#[cfg(test)]
+type DeleteWindowBarrier = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+/// 测试钩子（M47 R1 复活窗口测试专用）：delete_agent 在代际+1/逐出/置
+/// retired 之后、删目录之前暂停于屏障。仅 cfg(test) 编译，生产零开销
+#[cfg(test)]
+static DELETE_WINDOW_HOOK: std::sync::LazyLock<tokio::sync::Mutex<Option<DeleteWindowBarrier>>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 /// 删除 agents/{id}/indices 目录；不存在视为成功（幂等）
 async fn remove_index_dir(agent_id: &str) -> anyhow::Result<()> {
@@ -756,5 +798,78 @@ mod tests {
         assert!(!mem_log_is_warn(MEM_WARN_DOCS - 1));
         assert!(mem_log_is_warn(MEM_WARN_DOCS));
         assert!(mem_log_is_warn(MEM_WARN_DOCS + 1));
+    }
+
+    /// M47 R1：冷载入张开在 delete 窗口内（代际已 +1、缓存已逐出、目录未删）
+    /// 不再复活——单临界区后冷载入相对 delete_agent 的两个同步点（载入前的
+    /// 代际快照需 DELETE_GENERATIONS.read、入缓存前的复比需 INDEX_CACHE
+    /// .write）都被临界区的写锁挡在外面，放行后载入读到的一定是已删目录。
+    /// 用 DELETE_WINDOW_HOOK 屏障把 delete_agent 确定性停在窗口张开位置
+    #[tokio::test]
+    async fn cold_load_in_delete_window_does_not_resurrect() {
+        // 每测试唯一数据目录（thread-local 覆盖，与 tests/vector_test.rs 同方案）
+        let tmp = std::env::temp_dir().join(format!(
+            "zome-sidecar-r1-window-test-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&tmp).ok();
+        crate::set_data_dir_override(&tmp);
+
+        // 磁盘预置旧向量：R1 前窗口内的冷载入会读到这份删除前内容并复活它
+        let agent = "r1-window-agent";
+        let dir = tmp.join("agents").join(agent).join("indices").join("hnsw");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("embeddings.jsonl"),
+            concat!(
+                r#"{"doc_id":"old-1","embedding":[1.0,0.0],"schemaVersion":2}"#,
+                "\n",
+                r#"{"doc_id":"old-2","embedding":[0.0,1.0],"schemaVersion":2}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        // 安装窗口屏障：delete_agent 停在"代际+1 后、删目录前"（窗口张开位）
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel::<()>();
+        *DELETE_WINDOW_HOOK.lock().await = Some((entered_tx, resume_rx));
+
+        let delete = tokio::spawn(delete_agent(agent));
+        entered_rx
+            .await
+            .expect("delete_agent must enter the window");
+
+        // 窗口张开中发起冷载入：R1 前此刻快照与复比看到相同代际、载入读到
+        // 旧文件——旧向量以新状态复活入缓存；现在首个同步点（缓存读/代际
+        // 快照）即被写锁挡住，临界区解除前载入不可能完成
+        let mut load = tokio::spawn(get_or_load(agent));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut load)
+                .await
+                .is_err(),
+            "cold load must block on the delete critical section (both write locks held)"
+        );
+
+        // 放行删目录；delete 完成后冷载入读到的是已删目录（空索引）
+        let _ = resume_tx.send(());
+        delete.await.unwrap().unwrap();
+        let state = load.await.unwrap().unwrap();
+        assert!(
+            state.read().await.search(&[1.0, 0.0], 10).is_empty(),
+            "旧向量不得在删除后复活"
+        );
+        // 磁盘层面同样无复活：embeddings.jsonl 未被重建（load_state 的
+        // create_dir_all 会重建空目录，目录存在不代表数据复活——事实源是文件）
+        assert!(
+            !tmp.join("agents")
+                .join(agent)
+                .join("indices")
+                .join("hnsw")
+                .join("embeddings.jsonl")
+                .exists()
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
