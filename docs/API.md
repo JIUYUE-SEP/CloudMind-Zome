@@ -231,7 +231,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ## 通用约定
 
 - 所有 REST 响应均为 JSON。
-- 删除操作成功返回 `204 No Content`。
+- 删除操作成功返回 `204 No Content`（例外：`DELETE /handoff/:id` 返回 `200` + 记录摘要——它需要把打断后的状态回传给调用方）。
 - 资源不存在返回 `404 Not Found`。
 - 资源冲突（重复 id 等）返回 `409 Conflict`。
 - 参数校验失败返回 `400 Bad Request`。
