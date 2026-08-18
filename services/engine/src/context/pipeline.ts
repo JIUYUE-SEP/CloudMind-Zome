@@ -13,6 +13,7 @@ import {
   retrievalFailedMessage,
 } from "./recall.js";
 import { getTokenCounter, type TokenCounter } from "./token-counter.js";
+import { HANDOFF_BOOK_PREFIX } from "../core/react/handoff-book.js";
 
 export interface ContextPipelineConfig {
   /** 上下文窗口总预算，默认 80000 */
@@ -47,13 +48,12 @@ function isWatermarkReminder(m: ChatMessage): boolean {
 
 /**
  * M6：旧交接书（换班移交消息载体）的过滤特征——文本以该前缀开头。
- * 与 core/react/turn.ts 的 HANDOFF_BOOK_PREFIX 同值（turn.ts 依赖本模块，
- * context 反向 import core 会成环，故此处本地定义，两处修改须同步）。
+ * 单一来源（D5 拆分后）：core/react/handoff-book.ts（该模块不 import
+ * 本模块，不再成环；原「反向 import 成环故本地副本、两处同步」已消除）。
  * 交接书是"当棒"的任务快照：跨回合经 L3 原样回放会拿过期计划误导模型；
  * 续跑时最新交接书经 handoffPinned 置顶注入，历史副本无需再进上下文。
  * 盘上保留不删，仅组装 L3 时不带入新回合。
  */
-const HANDOFF_BOOK_PREFIX = "[交接书]";
 
 function isHandoffBook(m: ChatMessage): boolean {
   if (m.role !== "system") return false;
