@@ -34,8 +34,9 @@ export const inject: string[] = [];
  * registerExternal 的工具入参：与 Tool 同构，唯 parameters 放宽为 unknown——
  * 外部插件是纯 JS（DATA_DIR 下无 node_modules 解析链，拿不到 zod），允许给
  * JSON Schema 对象，收编时统一转 zod（见 registerExternal JSDoc）。
+ * parameters 可省略（F3）：省略/置 null 按 z.unknown() 收编（无约束）。
  */
-export type ExternalToolInput = Omit<Tool, "parameters"> & { parameters: unknown };
+export type ExternalToolInput = Omit<Tool, "parameters"> & { parameters?: unknown };
 
 /** ctx.tools 上架面 */
 export interface ToolsRegistry {
@@ -55,7 +56,8 @@ export interface ToolsRegistry {
    * 进程内全权限，类 Obsidian）。
    * parameters 接受两种形态：zod schema（带 safeParse 方法，原样保留）或 JSON
    * Schema 对象（经 mcpInputSchemaToZod 转换；oneOf/$ref 等边界形态按 MCP 既有
-   * 口径降级 z.unknown()——参数校验转由插件 execute 自守，不阻塞链路）。
+   * 口径降级 z.unknown()——参数校验转由插件 execute 自守，不阻塞链路）；
+   * 省略/置 null 同走转换分支降级 z.unknown()（F3，探测 null-safe 不带走插件）。
    */
   registerExternal(pluginName: string, tool: ExternalToolInput): boolean;
   /** agent 工具装配：白名单 filter（内置 + 外部）+ MCP 合并（worker/puppet 创建链同一份快照语义） */
@@ -104,9 +106,11 @@ export async function apply(ctx: Context): Promise<void> {
       // node_modules 解析链，拿不到 zod），原样收编会让 preflight 的
       // parameters.safeParse 崩（core/react/tool-call.ts）。边界形态
       // （oneOf/$ref 等）按 MCP 既有口径降级 z.unknown()，参数校验转由插件
-      // execute 自守
+      // execute 自守。F3：探测必须 null-safe——parameters 省略/置 null 时
+      // 裸取 .safeParse 抛 TypeError 会带走整个外部插件（apply-failed）；
+      // undefined/null 走转换分支，mcpInputSchemaToZod 本就降级 z.unknown()
       const parameters: Tool["parameters"] =
-        typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function"
+        typeof (tool.parameters as { safeParse?: unknown } | null | undefined)?.safeParse === "function"
           ? (tool.parameters as Tool["parameters"])
           : mcpInputSchemaToZod(tool.parameters);
       externalNames.add(qualified);

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { DocumentStore, renameWithRetry } from "../plugins/memory/document-store.js";
 import { getDataDir } from "../config/paths.js";
 import { logger } from "../logger.js";
+import { UnsupportedSchemaVersionError } from "../versioning.js";
 import { isActiveHandoff, type HandoffRecord, type HandoffStateFile } from "./types.js";
 
 /**
@@ -22,6 +23,10 @@ export class HandoffStateStore {
       file = await this.store.readJson();
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      // F2：高版本文件不是损坏——版本错误原样上抛（照 config/repository.ts 范式：
+      // 版本检查不进损坏隔离分支），不隔离、不回空态，文件不做任何改动
+      // （versioning.ts「高版本文件不做任何改动」契约）；仅真损坏才走下方隔离
+      if (err instanceof UnsupportedSchemaVersionError) throw err;
       // A3 损坏隔离（照抄 config/repository.ts 的隔离路径语义）：重命名 .corrupt-
       // {timestamp}-{随机后缀} 备份后以空态启动 + warn——绝不静默覆盖损坏数据
       // （后续 save 会重建干净文件），也不会因坏文件让整个启动崩溃。

@@ -9,6 +9,7 @@ import {
   saveTopicState,
 } from "../../src/memory/topic/state.js";
 import { TopicTracker } from "../../src/memory/topic/tracker.js";
+import { UnsupportedSchemaVersionError } from "../../src/versioning.js";
 import { restoreDataDir } from "../helpers/env.js";
 
 function msg(id: string, role: "user" | "assistant", createdAt: string): ChatMessage {
@@ -84,6 +85,23 @@ describe("topic-state 落盘（P1-2）", () => {
     // 空态启动后可继续 save/load（重建干净文件）
     await saveTopicState("a1", { messageIds: ["m1"], startedAt: at(0), sourceId: "s1" });
     expect((await loadTopicState("a1"))?.open?.messageIds).toEqual(["m1"]);
+  });
+
+  it("F2：高版本文件原样保留且上抛 UnsupportedSchemaVersionError（不隔离、不回空态）", async () => {
+    const agentDir = path.join(tmpDir, "agents", "a1");
+    const filePath = path.join(agentDir, "topic-state.json");
+    await fs.mkdir(agentDir, { recursive: true });
+    // v99：由更新版本程序写入——文件没坏，是代码太旧（versioning.ts 契约：不做任何改动）
+    const raw = JSON.stringify({ schemaVersion: 99, open: null });
+    await fs.writeFile(filePath, raw, "utf-8");
+
+    // 版本错误原样上抛，不被损坏隔离吞掉
+    await expect(loadTopicState("a1")).rejects.toThrow(UnsupportedSchemaVersionError);
+
+    // 文件原样保留在原路径，未生成 .corrupt-* 隔离文件
+    expect(await fs.readFile(filePath, "utf-8")).toBe(raw);
+    const files = await fs.readdir(agentDir);
+    expect(files.find((f) => f.startsWith("topic-state.json.corrupt-"))).toBeUndefined();
   });
 });
 

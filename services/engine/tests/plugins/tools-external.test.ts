@@ -160,6 +160,21 @@ describe("plugins/tools registerExternal（E3 外部工具注册）", () => {
     expect(registered.parameters.safeParse(42).success).toBe(true);
   });
 
+  it("parameters 兼容（F3）：省略/置 null 不抛 TypeError，降级 z.unknown() 注册成功", () => {
+    // 纯 JS 插件省略 parameters 是合法形态——null-safe 探测走转换分支，
+    // mcpInputSchemaToZod(undefined) 本就降级 z.unknown()（无约束）
+    const noParams = makeTool("noparams");
+    delete (noParams as { parameters?: unknown }).parameters; // 真正省略键（非显式 undefined）
+    expect(ctx.tools.registerExternal("demo", noParams)).toBe(true);
+    expect(
+      ctx.tools.registerExternal("demo", { ...makeTool("nullparams"), parameters: null }),
+    ).toBe(true);
+    const byName = new Map(ctx.tools.getExternal().map((t) => [t.name, t]));
+    // 两个工具都收编，schema 无约束（任意参数 safeParse 通过）
+    expect(byName.get("ext__demo__noparams")!.parameters.safeParse({ x: 1 }).success).toBe(true);
+    expect(byName.get("ext__demo__nullparams")!.parameters.safeParse(42).success).toBe(true);
+  });
+
   it("forAgent：外部工具纳入白名单过滤——白名单含限定名才启用，与内置同管线", () => {
     ctx.tools.registerExternal("demo", makeTool("greet"));
     // 白名单含限定名：与内置工具一起装配（内置在前、外部居中、MCP 殿后）
@@ -263,5 +278,42 @@ export function apply(ctx) {
     expect(picked[0].parameters.safeParse({ who: 1 }).success).toBe(false);
     const none = ctx.tools.forAgent({ id: "a2", tools: [] } as unknown as AgentConfig);
     expect(none).toEqual([]);
+  });
+
+  it("F3：fixture 插件注册省略 parameters 的工具——注册成功且插件不被带走（不记 apply-failed）", async () => {
+    // 回归：旧实现对 undefined parameters 裸取 .safeParse 抛 TypeError，整个插件
+    // 被记 apply-failed 带走；修复后省略 parameters 降级 z.unknown() 正常收编
+    const fixture = `
+export const name = "bare";
+export const inject = ["tools"];
+export function apply(ctx) {
+  const ok = ctx.tools.registerExternal("bare", {
+    name: "ping",
+    description: "fixture ping（省略 parameters）",
+    accesses: [],
+    async execute() { return { success: true, output: "pong" }; },
+  });
+  globalThis.__ext["bare"] = { ok };
+}
+`;
+    const pluginDir = path.join(tempDir, "plugins", "bare");
+    await fs.mkdir(pluginDir, { recursive: true });
+    await fs.writeFile(path.join(pluginDir, "index.mjs"), fixture);
+    await fs.writeFile(path.join(tempDir, "plugins.json"), JSON.stringify({ plugins: { bare: {} } }));
+
+    const ctx = new Context();
+    ctx.provide("agents", { agentRepository: { list: async () => [] } } as unknown as AgentsFace);
+    await ctx.plugin(toolsPlugin);
+    await ctx.plugin(externalPlugin);
+
+    // 插件正常激活（不被 TypeError 带走），注册成功
+    expect(ctx.external.loaded).toEqual(["bare"]);
+    expect(ctx.external.skipped).toEqual([]);
+    expect(g.__ext?.bare).toEqual({ ok: true });
+
+    // 省略 parameters 的工具收编为无约束 schema
+    const external = ctx.tools.getExternal();
+    expect(external.map((t) => t.name)).toEqual(["ext__bare__ping"]);
+    expect(external[0].parameters.safeParse({ anything: true }).success).toBe(true);
   });
 });

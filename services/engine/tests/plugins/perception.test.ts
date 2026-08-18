@@ -4,7 +4,7 @@ import { logger } from "../../src/logger.js";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import type { AgentsFace } from "../../src/plugins/agents/index.js";
 import * as perceptionPlugin from "../../src/plugins/perception/index.js";
-import { PERCEPTION_SOURCES } from "../../src/plugins/perception/index.js";
+import { PERCEPTION_SOURCES, type PerceptionInject } from "../../src/plugins/perception/index.js";
 
 // P8a perception 插件测试：感知注入单口（决策 3）——白名单校验、waterfall
 // 改写链、worker 解析与 enqueueSystemNotice 透传。agents 面用 mock
@@ -119,5 +119,42 @@ describe("plugins/perception（P8a）", () => {
     });
 
     expect(enqueueSpy(worker)).toHaveBeenCalledWith("原文（已改写）", "notice_t2", undefined);
+  });
+
+  it("F12：中间件吞掉注入（不调 next()）——不裸抛，warn 带归属并按未入队返回 false", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const worker = makeWorker();
+    const { ctx, getOrCreateWorker } = await mountPerception(worker);
+    // 吞掉注入的中间件：不调 next()、不返回载荷 → waterfall 落定 undefined。
+    // 运行时违例形态在事件签名之外（签名承诺返回载荷），需断言绕过类型
+    ctx.on(
+      "perception/inject",
+      (() => {
+        /* 吞掉：不调 next()、不返回载荷 */
+      }) as unknown as (
+        payload: PerceptionInject,
+        next: () => PerceptionInject | Promise<PerceptionInject>,
+      ) => PerceptionInject | Promise<PerceptionInject>,
+    );
+
+    // 不裸抛 TypeError：resolved.targetAgentId 由守卫拦下
+    const ok = await ctx.perception.injectNotice({
+      source: "intermind",
+      targetAgentId: "a2",
+      text: "【来自 甲 的私信】你好",
+      sourceId: "default",
+    });
+
+    // 按「未入队」处理：返回 false（与无可用 worker 同语义），不解析 worker、不入队
+    expect(ok).toBe(false);
+    expect(getOrCreateWorker).not.toHaveBeenCalled();
+    expect(enqueueSpy(worker)).not.toHaveBeenCalled();
+    // warn 带归属（source / targetAgentId / sourceId 俱全）
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("吞掉"));
+    const warnText = warn.mock.calls.map((args) => args.map(String).join(" ")).join("\n");
+    expect(warnText).toContain("intermind");
+    expect(warnText).toContain("a2");
+    expect(warnText).toContain("default");
+    warn.mockRestore();
   });
 });

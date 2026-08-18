@@ -13,6 +13,7 @@ import path from "node:path";
 import { HandoffManager } from "../../src/handoff/manager.js";
 import { HandoffStateStore } from "../../src/handoff/state.js";
 import type { HandoffBookInfo } from "../../src/handoff/types.js";
+import { UnsupportedSchemaVersionError } from "../../src/versioning.js";
 import { restoreDataDir } from "../helpers/env.js";
 
 function bookInfo(overrides: Partial<HandoffBookInfo> = {}): HandoffBookInfo {
@@ -150,6 +151,22 @@ describe("HandoffManager 控制面", () => {
     expect(restarted.list()).toEqual([]);
     const r = await restarted.record(bookInfo());
     expect(restarted.get(r.id)).toMatchObject({ status: "pending", shift: 1 });
+  });
+
+  it("F2：高版本 handoff-state.json 原样保留且上抛 UnsupportedSchemaVersionError（不隔离、不回空态）", async () => {
+    const filePath = path.join(tmpDir, "handoff-state.json");
+    // v99：由更新版本程序写入——文件没坏，是代码太旧（versioning.ts 契约：不做任何改动）
+    const raw = JSON.stringify({ schemaVersion: 99, handoffs: [] });
+    await fs.writeFile(filePath, raw, "utf-8");
+
+    const futureStore = new HandoffStateStore(filePath);
+    // 版本错误原样上抛，不被损坏隔离吞掉
+    await expect(futureStore.loadAll()).rejects.toThrow(UnsupportedSchemaVersionError);
+
+    // 文件原样保留在原路径，未生成 .corrupt-* 隔离文件
+    expect(await fs.readFile(filePath, "utf-8")).toBe(raw);
+    const files = await fs.readdir(tmpDir);
+    expect(files.find((f) => f.startsWith("handoff-state.json.corrupt-"))).toBeUndefined();
   });
 
   it("list/activeFor 查询", async () => {

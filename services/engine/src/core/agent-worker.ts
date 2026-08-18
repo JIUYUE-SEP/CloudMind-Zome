@@ -344,7 +344,7 @@ export class AgentWorker {
   /**
    * 通用系统通知注入通道（落盘 + 入队机制本体）。唯一生产调用方 = perception
    * 插件（P8a 单口总线：白名单校验 + perception/inject waterfall 之后才到这里）；
-   * 直调本方法绕过白名单——结构约定不许，P8b 断言兜底。
+   * 直调本方法绕过白名单——结构约定不许，入口白名单校验（perception injectNotice ①）即兜底。
    * 通知作为一个普通 job 入队——串行不插队，
    * 忙碌则排队，空闲即感知；防环靠队列串行 + 上游幂等标记。
    *

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { DocumentStore, renameWithRetry } from "../../plugins/memory/document-store.js";
 import { getAgentDir, sanitizeAgentId } from "../../config/paths.js";
+import { UnsupportedSchemaVersionError } from "../../versioning.js";
 import { logger } from "../../logger.js";
 
 /**
@@ -100,6 +101,10 @@ export async function loadTopicState(agentId: string): Promise<TopicStateFile | 
     return await store.readJson();
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    // F2：高版本文件不是损坏——版本错误原样上抛（照 config/repository.ts 范式：
+    // 版本检查不进损坏隔离分支），不隔离、不回空态，文件不做任何改动
+    // （versioning.ts「高版本文件不做任何改动」契约）；仅真损坏才走下方隔离
+    if (err instanceof UnsupportedSchemaVersionError) throw err;
     // 损坏隔离（D1 欠账修复，照 handoff/state.ts A3 同模式）：重命名 .corrupt-
     // {timestamp}-{随机后缀} 备份后以空态启动 + warn——绝不静默覆盖损坏数据
     // （后续 save 会重建干净文件），也不让坏文件炸掉 turn 主流程/启动对账。
