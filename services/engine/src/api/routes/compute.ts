@@ -1,3 +1,6 @@
+import { lookup } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
+import { isIP } from "node:net";
 import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
@@ -243,17 +246,70 @@ function isPrivateIp(ip: string): boolean {
   return normalized === "localhost";
 }
 
-// 已知限制：不做 DNS 解析，指向内网的域名可通过（本地单用户场景威胁有限）
-function isAllowedBaseUrl(url: string): boolean {
+const DNS_LOOKUP_TIMEOUT_MS = 3_000;
+
+/**
+ * 带请求级超时的 dns.lookup（all:true，A/AAAA 全记录；verbatim:false 交由系统
+ * 排序——此处逐条全量判定，不依赖返回顺序）。dns.promises.lookup 无超时选项，
+ * 用 Promise.race 兜底：超时按解析失败 reject，由调用方走统一失败语义。
+ * 计时器 unref 不拖住进程退出；race 不取消底层 lookup，悬挂结果随后被丢弃。
+ */
+function lookupAllWithTimeout(hostname: string): Promise<LookupAddress[]> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    lookup(hostname, { all: true, verbatim: false }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(Object.assign(new Error("DNS lookup timeout"), { code: "ETIMEOUT" })),
+        DNS_LOOKUP_TIMEOUT_MS,
+      );
+      timer.unref();
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * baseUrl SSRF 校验：协议白名单 + 内网地址判定。
+ * - IP 字面量：直接过 isPrivateIp（IPv6 归一化、::ffff: hex 形式等见该函数），
+ *   不触发 DNS 解析；
+ * - 主机名：DNS 解析全部 A/AAAA 记录，逐地址过同一份 isPrivateIp 判定，
+ *   任一记录落内网即拒绝（堵「域名指向内网」绕过）。
+ * 每次调用各解析一次、不做缓存：配置变更频率低，缓存反而引入陈旧记录风险。
+ *
+ * 失败语义（显式选择）：DNS 解析失败（NXDOMAIN / 超时 / 离线）→ 放行 + warn。
+ * 理由：本地单用户场景，离线环境下合法主机名（内网穿透域名、私有 DNS 记录）
+ * 不能被误杀；真正发起请求时连不上，自有 test-connection / 调用链报错兜底。
+ * 已知残余风险（如实写明）：
+ * - DNS rebinding 的 TOCTOU：校验时刻解析为公网、实际连接时记录已切换为内网
+ *   的情形不在防范围内——本校验只覆盖「配置时解析结果含内网地址」这一档；
+ * - 解析失败的放行窗口可被恶意域名利用（权衡后接受，理由见上）。
+ */
+async function isAllowedBaseUrl(url: string): Promise<boolean> {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return false;
     }
-    // new URL 的 hostname 对 IPv6 保留方括号（"[::1]"），先剥掉再比较
-    const hostname = parsed.hostname;
+    // new URL 的 hostname 对 IPv6 保留方括号（"[::1]"），先剥掉再判定
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
     if (isPrivateIp(hostname)) return false;
-    return true;
+    // IP 字面量（v4/v6）：上面的 isPrivateIp 已是完整判定，无需 DNS 解析
+    if (isIP(hostname) !== 0) return true;
+    try {
+      const addresses = await lookupAllWithTimeout(hostname);
+      // 逐地址与 IP 字面量走同一份内网判定，任一落内网即拒绝
+      for (const { address } of addresses) {
+        if (isPrivateIp(address)) return false;
+      }
+      return true;
+    } catch (err) {
+      // 解析失败 → 放行 + warn（选择与理由见函数头注释）
+      logger.warn(
+        { hostname, errCode: (err as NodeJS.ErrnoException).code },
+        "baseUrl DNS resolution failed, allowing anyway",
+      );
+      return true;
+    }
   } catch {
     return false;
   }
@@ -286,7 +342,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     if (typeof body.displayName !== "string" || body.displayName.trim() === "") {
       return reply.status(400).send({ error: "displayName must be a non-empty string" });
     }
-    if (!isAllowedBaseUrl(body.baseUrl)) {
+    if (!(await isAllowedBaseUrl(body.baseUrl))) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
     }
     if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {
@@ -365,7 +421,7 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     ) {
       return reply.status(400).send({ error: "displayName must be a non-empty string" });
     }
-    if (body.baseUrl !== undefined && !isAllowedBaseUrl(body.baseUrl)) {
+    if (body.baseUrl !== undefined && !(await isAllowedBaseUrl(body.baseUrl))) {
       return reply.status(400).send({ error: "Invalid baseUrl" });
     }
     if (body.apiMode !== undefined && !isApiMode(body.apiMode)) {

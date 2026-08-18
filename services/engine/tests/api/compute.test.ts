@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type MockedFunction } from "vitest";
 import { authedRequest } from "../helpers/auth.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { lookup } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
 import { createServer } from "../../src/api/server.js";
 import { AgentRepository } from "../../src/memory/repositories/agent.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
@@ -40,6 +42,18 @@ vi.mock("openai", () => {
   return { default: MockOpenAI };
 });
 
+// SSRF DNS 校验 mock：只覆盖 lookup，其余导出透传真实实现（避免误伤依赖图里
+// 其它消费 node:dns/promises 的模块）；各用例的默认解析结果在 beforeEach 重置
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns/promises")>();
+  return { ...actual, lookup: vi.fn() };
+});
+
+// lookup 重载较多，收窄到 all:true 的调用形态便于 mockResolvedValue 传数组
+const lookupMock = lookup as unknown as MockedFunction<
+  (hostname: string, options?: { all?: boolean; verbatim?: boolean }) => Promise<LookupAddress[]>
+>;
+
 async function buildContext(): Promise<{ context: ApiContext; cleanup: () => Promise<void> }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "compute-api-test-"));
   const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
@@ -72,6 +86,10 @@ describe("Compute API", () => {
   let cleanup: () => Promise<void>;
 
   beforeEach(async () => {
+    // 默认解析为公网地址：既有用例的合法外部域名走 DNS 路径后仍放行；
+    // SSRF DNS 用例按需覆盖此默认实现
+    lookupMock.mockReset();
+    lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const built = await buildContext();
     context = built.context;
     cleanup = built.cleanup;
@@ -691,6 +709,123 @@ describe("Compute API", () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.baseUrl).toBe("https://api.openai.com/v1");
+    await app.close();
+  });
+
+  it("rejects hostname resolving to private IPv4 (SSRF DNS 解析拦截)", async () => {
+    lookupMock.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "dns-internal",
+      displayName: "Dns Internal",
+      providerType: "openai",
+      baseUrl: "https://internal.example.com",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    expect(lookupMock).toHaveBeenCalledWith("internal.example.com", {
+      all: true,
+      verbatim: false,
+    });
+    await app.close();
+  });
+
+  it("rejects hostname with any private record (多记录任一内网即拒，AAAA 同判定)", async () => {
+    lookupMock.mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+      { address: "fd00::1", family: 6 },
+    ]);
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "dns-mixed",
+      displayName: "Dns Mixed",
+      providerType: "openai",
+      baseUrl: "https://mixed.example.com",
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
+  it("allows hostname resolving to public A + AAAA records only", async () => {
+    lookupMock.mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+    ]);
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "dns-public",
+      displayName: "Dns Public",
+      providerType: "openai",
+      baseUrl: "https://public.example.com",
+      models: [],
+    });
+    expect(res.status).toBe(200);
+    await app.close();
+  });
+
+  it("allows + warns when DNS resolution fails (失败语义：放行 + warn)", async () => {
+    lookupMock.mockRejectedValue(
+      Object.assign(new Error("getaddrinfo ENOTFOUND offline.example.com"), { code: "ENOTFOUND" }),
+    );
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const app = await makeApp();
+      const res = await authedRequest(app.server).post("/compute/providers").send({
+        id: "dns-fail",
+        displayName: "Dns Fail",
+        providerType: "openai",
+        baseUrl: "https://offline.example.com",
+        models: [],
+      });
+      expect(res.status).toBe(200);
+      const calls = warnSpy.mock.calls.filter((c) =>
+        String(c[1]).includes("baseUrl DNS resolution failed"),
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]![0]).toMatchObject({
+        hostname: "offline.example.com",
+        errCode: "ENOTFOUND",
+      });
+      await app.close();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("PUT baseUrl 同样走 DNS 解析校验（解析到内网 → 400，原值保留）", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "dns-put",
+      displayName: "Dns Put",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: [],
+    });
+    lookupMock.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    const res = await authedRequest(app.server)
+      .put("/compute/providers/dns-put")
+      .send({ baseUrl: "https://sneaky.example.com" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    const config = await context.configRepository.load();
+    expect(config.providers[0].baseUrl).toBe("https://api.openai.com/v1");
+    await app.close();
+  });
+
+  it("IP 字面量 baseUrl 不触发 DNS 解析（既有路径不受影响）", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "ip-literal",
+      displayName: "Ip Literal",
+      providerType: "openai",
+      baseUrl: "http://8.8.8.8:8080",
+      models: [],
+    });
+    expect(res.status).toBe(200);
+    expect(lookupMock).not.toHaveBeenCalled();
     await app.close();
   });
 
