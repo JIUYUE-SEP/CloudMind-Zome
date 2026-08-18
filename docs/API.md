@@ -114,7 +114,8 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 上下文水位撞顶（90%）时本轮不静默死亡，而是产出 `[交接书]` system 消息并进入**自动续跑**（换班移交，见架构文档 §4.3）。以下 REST 端点读写控制面 `handoff-state.json`：
 
-- `GET /handoff?agentId=xxx&sessionId=xxx` — 列出换班移交记录（过滤条件可选；按 updatedAt 升序）。每条返回：`{ id, agentId, sessionId, reason, status, shift, maxShifts, bookMessageId, bookText, used, window, createdAt, updatedAt, resumeJobId?, abortReason?, chainId? }`——`status` 为 `pending | scheduled | running | completed | aborted | fused | lost`；`chainId` 为链代际标记（随 record 持久化，重启后闩锁/对账仍可追溯）
+- `GET /handoff?agentId=xxx&sessionId=xxx` — 列出换班移交记录（过滤条件可选；按 updatedAt 升序）。每条返回：`{ id, agentId, sessionId, reason, status, shift, maxShifts, bookMessageId, bookText, used, window, createdAt, updatedAt, resumeJobId?, abortReason?, chainId? }`——`status` 为 `pending | scheduled | running | completed | aborted | fused | lost`；`chainId` 为链代际标记（随 record 持久化，重启后闩锁/对账仍可追溯）；`bookText` 在 list 端点为**摘要**（截 500 字符 + `bookTextTruncated` 标记），全文经 `GET /handoff/:id/book` 按需读取
+- `GET /handoff/:id/book` — 读取单条记录的交接书全文（未知 id 返回 404）
 - `DELETE /handoff/:id` — 手动打断自动续跑（与用户消息打断同语义，`abortReason=manual`）：先经 `HandoffLoopRegistry` 仲裁面取消该 agent+session 维度**全部连接的续跑 loop**（清定时器 + abort 在途 job，含 running 期），再落控制面 `aborted`；无活跃 loop 时由 `manager.abort` 兜底。记录不存在返回 404；终态条目原样返回（不转移状态）
 
 > 续跑状态变化同时通过 WS 帧 `handoff.update` 推送给私聊连接（见下）。
