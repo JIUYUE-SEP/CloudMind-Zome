@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";
 import { isValidId, isAllowedWsOrigin, isApprovalRememberable, sanitizeInput, sanitizeDeltaEvent, extractWsToken } from "./validation.js";
 import { isMcpToolName } from "../../tools/mcp/index.js";
+import { isExternalToolName } from "../../tools/external/naming.js";
 import {
   auditAutoApproved,
   auditDecision,
@@ -182,9 +183,11 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
               // 资格判定用裸 toolName（NO_REMEMBER_TOOLS 按工具名排除），
               // 入名单仍按 agent+工具 维度，不误放同会话其他 agent；
               // MCP 工具（mcp__ 前缀）名动态且第三方 annotations 不可信，默认禁 remember，
-              // 仅 server 配置 toolOverrides.allowRemember===true 放行（查询 McpClientManager）
+              // 仅 server 配置 toolOverrides.allowRemember===true 放行（查询 McpClientManager）；
+              // 外部插件工具（ext__ 前缀）同为动态第三方命名，默认禁 remember（无 override 通道，E3）
               const rememberable =
                 isApprovalRememberable(pending.toolName) &&
+                !isExternalToolName(pending.toolName) &&
                 (!isMcpToolName(pending.toolName) ||
                   (context.mcpManager?.isRememberAllowed(pending.toolName) ?? false));
               if (data.approved && data.remember && rememberable) {

@@ -299,6 +299,71 @@ describe("WebSocket API", () => {
     await cleanup();
   });
 
+  it("外部插件工具（ext__ 前缀）remember:true 被引擎拒绝：每次都批（E3）", async () => {
+    const executions: string[] = [];
+    const extTool: Tool = {
+      name: "ext__demo__danger_op",
+      description: "external plugin tool",
+      parameters: z.object({}),
+      accesses: [],
+      requiresApproval: true,
+      async execute(): Promise<ToolResult> {
+        executions.push("ext__demo__danger_op");
+        return { success: true, output: "ran" };
+      },
+    };
+
+    const { context, cleanup, provider } = await buildWsContext("agent-ws", [extTool]);
+    provider.setNextToolCalls([{ toolCallId: "tc1", name: "ext__demo__danger_op", arguments: {} }]);
+
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    const approvalRequests: { approvalId: string; toolName: string }[] = [];
+    let turnEnds = 0;
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "round 1" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data));
+        if (message.type === "tool.approval_request") {
+          approvalRequests.push({ approvalId: message.approvalId, toolName: message.toolName });
+          client.send(
+            JSON.stringify({ type: "tool.approval", approvalId: message.approvalId, approved: true, remember: true }),
+          );
+          return;
+        }
+        if (message.type === "turn.end") {
+          turnEnds++;
+          if (turnEnds === 1) {
+            provider.setNextToolCalls([{ toolCallId: "tc2", name: "ext__demo__danger_op", arguments: {} }]);
+            client.send(JSON.stringify({ text: "round 2" }));
+          } else {
+            client.close();
+            resolve();
+          }
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 15000);
+    });
+
+    // remember:true 不被记住（ext__ 前缀与 mcp__ 同待遇禁免问，且无 override 通道），
+    // 两轮都要审批，两次都真实执行
+    expect(approvalRequests.map((r) => r.toolName)).toEqual([
+      "ext__demo__danger_op",
+      "ext__demo__danger_op",
+    ]);
+    expect(executions).toEqual(["ext__demo__danger_op", "ext__demo__danger_op"]);
+
+    await app.close();
+    await cleanup();
+  });
+
   it("MCP 工具 toolOverrides.allowRemember:true 放行 remember：第二轮免问", async () => {
     const executions: string[] = [];
     const mcpTool: Tool = {
