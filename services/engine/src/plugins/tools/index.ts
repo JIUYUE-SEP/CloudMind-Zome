@@ -110,7 +110,15 @@ export async function apply(ctx: Context): Promise<void> {
           ? (tool.parameters as Tool["parameters"])
           : mcpInputSchemaToZod(tool.parameters);
       externalNames.add(qualified);
-      externalTools.push({ ...tool, name: qualified, parameters, requiresApproval: tool.requiresApproval ?? true });
+      // accesses 缺省归一 []：ToolScheduler.accessesConflict 对 undefined 直接
+      // for...of 会 TypeError（多工具调用回合必踩），收编时兜底
+      externalTools.push({
+        ...tool,
+        name: qualified,
+        parameters,
+        accesses: tool.accesses ?? [],
+        requiresApproval: tool.requiresApproval ?? true,
+      });
       return true;
     },
     forAgent: (agentConfig) => {

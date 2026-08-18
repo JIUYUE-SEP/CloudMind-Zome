@@ -11,8 +11,9 @@
 /** 插件名：必须与目录名一致（不符则不挂载） */
 export const name = "hello";
 
-/** inject：激活前必须就位的内部服务。声明了不存在的服务会停在 PENDING 永不激活（启动日志会 warn 列出） */
-export const inject = [];
+/** inject：激活前必须就位的内部服务。声明了不存在的服务会停在 PENDING 永不激活（启动日志会 warn 列出）。
+ *  注意：访问 ctx.<service> 前必须把它写进 inject——cordis 代理对未声明的服务在属性访问时即抛错 */
+export const inject = ["tools"];
 
 /**
  * apply：激活入口。只做可逆注册（ctx.on / ctx.effect 等），fiber 卸载时 cordis 自动回收。
@@ -48,6 +49,7 @@ export function apply(ctx, config) {
       properties: { who: { type: "string", description: "打招呼的对象" } },
       required: ["who"],
     },
+    accesses: [], // 资源访问声明（调度器并发分组用；本示例不访问文件/网络/进程）
     requiresApproval: false, // 只读示例，显式声明免审批
     async execute(ctx, args) {
       return { success: true, output: `${greeting}, ${args.who}!（来自 hello 插件）` };
