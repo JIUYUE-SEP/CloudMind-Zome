@@ -77,12 +77,6 @@ pub struct VectorIndexState {
     /// doc_id -> 最新内部点 id。hnsw_rs 不支持删除点：同 doc_id 重复 upsert
     /// 会插入新点、旧点成孤儿，search 只认该表登记的最新点
     doc_ids: HashMap<String, usize>,
-    /// 删除墓碑集合（M14）：delete_docs 已删但尚未经 compaction 物理剔除的
-    /// doc_id。docs/doc_ids 在删除时同步移除——search 两条路径（HNSW 只认
-    /// doc_ids 登记的最新点、线性扫描只遍历 docs）天然过滤墓碑点，本集合
-    /// 不参与检索，只服务于运行期 compaction 触发判定与删除幂等（重复删除
-    /// 不重复落墓碑行）
-    tombstones: HashSet<String>,
     /// 退役标记（M47 代际方案的内存半）：delete_agent 持本状态写锁置位后
     /// 才删目录。此后经旧句柄（删除窗口前已拿到 Arc 的在飞调用方）的迟到
     /// upsert/delete_docs 在入口被拒——不重建已删的 embeddings.jsonl，
@@ -164,7 +158,6 @@ impl VectorIndexState {
                 continue;
             }
             self.doc_ids.remove(doc_id);
-            self.tombstones.insert(doc_id.clone());
             deleted += 1;
             self.persist_tombstone(doc_id).await;
         }
@@ -176,8 +169,10 @@ impl VectorIndexState {
     }
 
     /// 运行期 compaction（M47）：孤儿点（重复 upsert 的旧点 + 已删文档的点）
-    /// 超过存活点且达下限才重建，触发口径与启动 compaction 一致，避免小索引
-    /// 无意义 IO。hnsw_rs 不支持删点，物理剔除 = 按 docs 全量重建内存索引 +
+    /// 达下限且总点数 ids 超过存活 docs 两倍才重建，避免小索引无意义 IO。
+    /// 与启动 compaction 同思不同口径：启动按文件行数（含墓碑行/异维行，
+    /// 分子是盘上 jsonl 行数）判定；运行期按内存孤儿点数（ids - docs）判定。
+    /// hnsw_rs 不支持删点，物理剔除 = 按 docs 全量重建内存索引 +
     /// 重写 embeddings.jsonl（复用启动 compaction 的 tmp+rename 原子写）。
     /// 调用方持本状态写锁（upsert/delete_docs 的 &mut self），与在飞
     /// persist_append 不并发，重写丢行窗口不存在
@@ -190,8 +185,6 @@ impl VectorIndexState {
         self.index = index;
         self.ids = ids;
         self.doc_ids = doc_ids;
-        // 墓碑随重写物理生效（文件中只剩存活文档），内存集合同步清空
-        self.tombstones.clear();
         compact_embeddings(&self.dir, &self.docs).await;
         tracing::info!(
             dir = %self.dir.display(),
@@ -596,8 +589,6 @@ async fn load_state(agent_id: &str) -> anyhow::Result<Arc<RwLock<VectorIndexStat
         index,
         ids,
         doc_ids,
-        // 载入即应用完历史墓碑，内存集合只跟踪本次会话的运行期删除
-        tombstones: HashSet::new(),
         retired: false,
     };
     // 冷载入内存观测（P1-5）：每次启动记录一次全量驻留估算（含文件体积）

@@ -5,7 +5,10 @@
  * 二进制新鲜度由 cargo 增量构建保证（源码未变时 build 秒级空转，变了必重编），
  * 不再依赖"人工记得先构建"（P0-4 Minor-3：过期 sidecar 静默打进包）。
  *
- * 用法：node scripts/prepare-sidecar.mjs [debug|release]（默认 debug；
+ * 用法：node scripts/prepare-sidecar.mjs [debug|release]（默认 debug——
+ * desktop dev 链经 tauri beforeDevCommand 走 debug（F16：binaries/ 不入库，
+ * 全新克隆首跑必须先产出 sidecar 二进制，否则 tauri-build 的 externalBin
+ * 拷贝直接失败；增量构建 fresh 时秒级空转，首跑稍慢属一次性成本）；
  * 打包链经 apps/desktop/scripts/prepare-sidecar.mjs 转发，显式传 release）
  */
 import fs from "node:fs";

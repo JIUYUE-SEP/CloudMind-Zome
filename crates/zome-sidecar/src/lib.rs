@@ -24,17 +24,31 @@ pub fn sanitize_agent_id(agent_id: &str) -> anyhow::Result<String> {
     }
 }
 
-pub fn project_root() -> anyhow::Result<PathBuf> {
-    let mut dir = std::env::current_dir()?;
+/// monorepo 根判定（纯函数，供单测）：pnpm-workspace.yaml 是唯一充分标志；
+/// package.json 必须搭配 services/engine 才算根——apps/desktop 等子包也自带
+/// package.json，一视同仁会让 cwd 落在 desktop 子树时（tauri dev 的 sidecar
+/// 继承 src-tauri 为 cwd）提前停住，dev 回退路径随之找不到 engine（终审 Low）
+fn is_project_root(dir: &Path) -> bool {
+    dir.join("pnpm-workspace.yaml").exists()
+        || (dir.join("package.json").exists() && dir.join("services").join("engine").is_dir())
+}
+
+/// 从 start 逐级向上找 monorepo 根；找不到返回 None（纯路径函数，供单测）
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
-        if dir.join("pnpm-workspace.yaml").exists() || dir.join("package.json").exists() {
-            return Ok(dir);
+        if is_project_root(&dir) {
+            return Some(dir);
         }
         if !dir.pop() {
-            break;
+            return None;
         }
     }
-    Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+pub fn project_root() -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    Ok(find_project_root(&cwd).unwrap_or(cwd))
 }
 
 thread_local! {
@@ -171,5 +185,39 @@ mod tests {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("cloudmind-zome")
         );
+    }
+
+    /// project_root 判定（终审 Low）：cwd 落在 apps/desktop 子树时不得停在
+    /// 子包的 package.json，必须继续向上到 pnpm-workspace.yaml 所在的根
+    #[test]
+    fn project_root_skips_subpackage_package_json() {
+        let tmp =
+            std::env::temp_dir().join(format!("zome-sidecar-proot-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        let nested = tmp.join("apps").join("desktop").join("src-tauri");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.join("pnpm-workspace.yaml"), "packages: []\n").unwrap();
+        std::fs::write(tmp.join("apps").join("desktop").join("package.json"), "{}").unwrap();
+
+        // 从 desktop 子树出发：越过 apps/desktop/package.json 直达 workspace 根
+        assert_eq!(find_project_root(&nested), Some(tmp.clone()));
+
+        // 非 pnpm 布局兜底：package.json + services/engine 同现才算根
+        let bare = tmp.join("bare");
+        std::fs::create_dir_all(bare.join("services").join("engine")).unwrap();
+        std::fs::write(bare.join("package.json"), "{}").unwrap();
+        assert_eq!(
+            find_project_root(&bare.join("services")),
+            Some(bare.clone())
+        );
+
+        // 只有 package.json（无 services/engine）的子包不得被判定为根
+        let subpkg = tmp.join("apps").join("desktop");
+        assert_ne!(
+            find_project_root(&subpkg).as_deref(),
+            Some(subpkg.as_path())
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

@@ -40,27 +40,80 @@ fn node_bin() -> String {
     if let Ok(p) = std::env::var("ZOME_NODE_PATH") {
         return p;
     }
-    // 打包布局：优先随包分发的内嵌 Node（P0-4，用户机器零依赖）；
-    // resources 在 Windows/NSIS 与 unix 安装布局下分别落在 exe 旁或 resources/ 子目录
+    // 打包布局：优先随包分发的内嵌 Node（P0-4，用户机器零依赖）
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let name = if cfg!(windows) { "node.exe" } else { "node" };
-            for candidate in [
-                dir.join("node").join(name),
-                dir.join("resources").join("node").join(name),
-            ] {
-                if candidate.exists() {
-                    return candidate.to_string_lossy().into_owned();
-                }
+            if let Some(node) = bundled_node(dir) {
+                return node.to_string_lossy().into_owned();
             }
         }
     }
     "node".to_string()
 }
 
+/// 打包布局下"资源根"候选目录（其下应含 engine/ 与 node/ 子树），按优先级序（F14）。
+///
+/// tauri.conf.json 的 bundle.resources 用数组形态（["resources/engine",
+/// "resources/node"]）：tauri-bundler 对该形态经 resource_relpath 保留源相对路径，
+/// 各平台资源根之下再嵌套一层 resources/。按 tauri-bundler 2.x copy_resources 语义
+/// 推导的各布局真实落点（macOS .app 与 deb 未经真机实测）：
+/// - Windows NSIS：exe 在 $INSTDIR，落点 $INSTDIR/resources/{engine,node}
+///   （候选 1/2；候选 1 同时兜底平铺部署与 resources_map 形态）
+/// - macOS .app：exe 在 Contents/MacOS/，资源根在 Contents/Resources/，
+///   落点 Contents/Resources/resources/{engine,node}（候选 3 覆盖 map 形态、
+///   候选 4 覆盖本项目数组形态的真实落点）
+/// - deb：bin 装到 /usr/bin/，资源根在 /usr/lib/<productName>/，落点
+///   /usr/lib/<productName>/resources/{engine,node}。productName 含空格
+///   （"MindCloud Zome"）不硬编码，扫 ../lib 一级子目录（rpm/AppImage 复用
+///   deb 数据布局时同口径命中）
+///
+/// 末尾的 exe 上级目录候选兜底手动部署（bin/ + engine/ 平铺）。
+fn resource_root_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![
+        exe_dir.to_path_buf(),
+        exe_dir.join("resources"),
+        exe_dir.join("..").join("Resources"),
+        exe_dir.join("..").join("Resources").join("resources"),
+    ];
+    let lib_dir = exe_dir.join("..").join("lib");
+    if let Ok(entries) = std::fs::read_dir(lib_dir) {
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        // 排序保证候选顺序确定（同一 lib 下多目录时结果可复现）
+        dirs.sort();
+        for dir in dirs {
+            roots.push(dir.join("resources"));
+            roots.push(dir);
+        }
+    }
+    roots.push(exe_dir.join(".."));
+    roots
+}
+
+/// 随包分发的内嵌 Node：各打包布局资源根下的 node/node(.exe)
+fn bundled_node(exe_dir: &Path) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "node.exe" } else { "node" };
+    resource_root_candidates(exe_dir)
+        .into_iter()
+        .map(|root| root.join("node").join(name))
+        .find(|p| p.exists())
+}
+
+/// 打包布局的 engine 入口：各资源根下的 engine/bootstrap.js
+fn bundled_engine_entry(exe_dir: &Path) -> Option<PathBuf> {
+    resource_root_candidates(exe_dir)
+        .into_iter()
+        .map(|root| root.join("engine").join("bootstrap.js"))
+        .find(|p| p.exists())
+}
+
 /// 解析 node engine 入口（bootstrap.js）与其工作目录：
 /// 1. `ZOME_ENGINE_ENTRY` 环境变量（部署时显式指定）
-/// 2. sidecar 可执行文件附近的 engine/bootstrap.js（打包布局）
+/// 2. sidecar 可执行文件附近的 engine/bootstrap.js（打包布局，见
+///    resource_root_candidates：NSIS / macOS .app / deb 各落点）
 /// 3. 开发环境 monorepo 路径
 ///
 /// 找不到时返回明确错误，而不是静默退回 cwd 再神秘超时。
@@ -81,18 +134,12 @@ fn engine_entry() -> anyhow::Result<(PathBuf, PathBuf)> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for candidate in [
-                dir.join("engine").join("bootstrap.js"),
-                dir.join("..").join("engine").join("bootstrap.js"),
-                dir.join("resources").join("engine").join("bootstrap.js"),
-            ] {
-                if candidate.exists() {
-                    let cwd = candidate
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| PathBuf::from("."));
-                    return Ok((cwd, candidate));
-                }
+            if let Some(candidate) = bundled_engine_entry(dir) {
+                let cwd = candidate
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                return Ok((cwd, candidate));
             }
         }
     }
@@ -631,7 +678,28 @@ impl Supervisor {
             }
             #[cfg(not(windows))]
             {
-                child.start_kill().ok();
+                // 两段式关停（与收编击杀、上方 Windows 分支 taskkill /T→/F 同构）：
+                // 先 SIGTERM 给 engine 优雅关停窗口（drain 会话/冲刷日志），3s
+                // 未退再升级 SIGKILL——此前 start_kill 直接 SIGKILL，engine 的
+                // 优雅关停逻辑永无机会执行（终审 Low）
+                if let Some(id) = child.id() {
+                    terminate_pid(id).await;
+
+                    let mut waited = 0u32;
+                    while waited < 3000 {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        waited += 200;
+                        if child.try_wait().unwrap_or(None).is_some() {
+                            break;
+                        }
+                    }
+
+                    if child.try_wait().unwrap_or(None).is_none() {
+                        force_kill_pid(id).await;
+                    }
+                } else {
+                    child.start_kill().ok();
+                }
             }
 
             child.wait().await.ok();
@@ -778,20 +846,27 @@ mod tests {
             .expect("spawn fake engine")
     }
 
-    /// spawn 返回（fork）到 exec 完成之间有窗口期：/proc/<pid>/cmdline
-    /// 短暂为空，直接读会误判 Gone。轮询等它就绪
+    /// spawn 返回（fork）到 exec 完成之间有窗口期：/proc/<pid>/cmdline 在
+    /// bash 阶段已非空（脚本文本自带 bootstrap.js 字样，会假就绪）；内核 exec
+    /// 时序是先换 exe 链接、后填 argv 页——单看 exe 指向 sleep 仍有 cmdline
+    /// 读空的窗口（误判 Gone）。两个条件都满足才算就绪：exe 匹配保证过了
+    /// bash 包装（本文件所有 fake/stranger 进程的 exec 目标都是 sleep）、
+    /// cmdline 非空保证 argv 页已填
     #[cfg(target_os = "linux")]
     async fn wait_cmdline_ready(pid: u32) {
         for _ in 0..100 {
-            let ready = std::fs::read(format!("/proc/{pid}/cmdline"))
+            let exe_ready = std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map(|p| p.ends_with("sleep"))
+                .unwrap_or(false);
+            let cmdline_ready = std::fs::read(format!("/proc/{pid}/cmdline"))
                 .map(|c| !c.is_empty())
                 .unwrap_or(false);
-            if ready {
+            if exe_ready && cmdline_ready {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("process {pid} cmdline not visible in /proc");
+        panic!("process {pid} exec not visible via /proc (exe link + cmdline)");
     }
 
     /// 断言失败后兜底清理，不留 sleep 30 孤儿
@@ -917,5 +992,218 @@ mod tests {
             adopted_proc_state_ps(dead.id()).await,
             AdoptedProcState::Gone
         );
+    }
+
+    /// F14：打包布局资源定位——NSIS（exe 旁 resources/）、macOS .app
+    /// （exe 在 Contents/MacOS/，数组形态落点 Contents/Resources/resources/）、
+    /// deb（exe 在 usr/bin/，数组形态落点 usr/lib/<productName>/resources/）
+    /// 都能定位 engine 入口与内嵌 node；全不命中返回 None（回退系统 node /
+    /// dev monorepo 路径）。macOS/deb 布局按 tauri-bundler copy_resources
+    /// （resource_relpath 保留源相对路径）语义推导，未在真机实测
+    #[cfg(unix)]
+    #[test]
+    fn bundled_resource_lookup_covers_packaging_layouts() {
+        let tmp =
+            std::env::temp_dir().join(format!("zome-sidecar-f14-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+
+        let stage = |engine: &Path, node: &Path| {
+            std::fs::create_dir_all(engine.parent().unwrap()).unwrap();
+            std::fs::write(engine, "").unwrap();
+            std::fs::create_dir_all(node.parent().unwrap()).unwrap();
+            std::fs::write(node, "").unwrap();
+        };
+        let canonical = |p: &Path| p.canonicalize().unwrap();
+
+        // NSIS：exe_dir/resources/{engine/bootstrap.js, node/node}
+        let nsis_dir = tmp.join("nsis");
+        let nsis_engine = nsis_dir
+            .join("resources")
+            .join("engine")
+            .join("bootstrap.js");
+        let nsis_node = nsis_dir.join("resources").join("node").join("node");
+        stage(&nsis_engine, &nsis_node);
+        assert_eq!(
+            bundled_engine_entry(&nsis_dir).map(|p| canonical(&p)),
+            Some(canonical(&nsis_engine)),
+            "NSIS 布局必须命中 exe 旁 resources/engine"
+        );
+        assert_eq!(
+            bundled_node(&nsis_dir).map(|p| canonical(&p)),
+            Some(canonical(&nsis_node))
+        );
+
+        // macOS .app：exe_dir = Contents/MacOS，数组形态落点
+        // Contents/Resources/resources/{engine,node}。exe_dir 本身也要建出来：
+        // 候选含 ../ 遍历，内核解析 MacOS/../Resources 要求 MacOS 真实存在
+        let macos_dir = tmp
+            .join("MindCloud Zome.app")
+            .join("Contents")
+            .join("MacOS");
+        std::fs::create_dir_all(&macos_dir).unwrap();
+        let macos_engine = tmp
+            .join("MindCloud Zome.app")
+            .join("Contents")
+            .join("Resources")
+            .join("resources")
+            .join("engine")
+            .join("bootstrap.js");
+        let macos_node = macos_engine
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("node")
+            .join("node");
+        stage(&macos_engine, &macos_node);
+        assert_eq!(
+            bundled_engine_entry(&macos_dir).map(|p| canonical(&p)),
+            Some(canonical(&macos_engine)),
+            "macOS .app 数组形态落点 Contents/Resources/resources/engine 必须命中"
+        );
+        assert_eq!(
+            bundled_node(&macos_dir).map(|p| canonical(&p)),
+            Some(canonical(&macos_node))
+        );
+
+        // deb：exe_dir = usr/bin，数组形态落点 usr/lib/MindCloud Zome/resources/...
+        // （productName 含空格，候选不得硬编码）
+        let deb_dir = tmp.join("deb").join("usr").join("bin");
+        std::fs::create_dir_all(&deb_dir).unwrap();
+        let deb_engine = tmp
+            .join("deb")
+            .join("usr")
+            .join("lib")
+            .join("MindCloud Zome")
+            .join("resources")
+            .join("engine")
+            .join("bootstrap.js");
+        let deb_node = deb_engine
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("node")
+            .join("node");
+        stage(&deb_engine, &deb_node);
+        assert_eq!(
+            bundled_engine_entry(&deb_dir).map(|p| canonical(&p)),
+            Some(canonical(&deb_engine)),
+            "deb 布局必须命中 usr/lib/<productName>/resources/engine"
+        );
+        assert_eq!(
+            bundled_node(&deb_dir).map(|p| canonical(&p)),
+            Some(canonical(&deb_node))
+        );
+
+        // 全不命中：返回 None（node_bin 回退系统 node、engine_entry 走 dev 回退）
+        let bare_dir = tmp.join("bare");
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        assert_eq!(bundled_engine_entry(&bare_dir), None);
+        assert_eq!(bundled_node(&bare_dir), None);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 纳管 child 两段式关停（终审 Low：原 SIGKILL-only）：SIGTERM 必须先行
+    /// 送达——trap 处理器落标记文件即"优雅关停逻辑被执行"的直接证据；
+    /// TERM 即退的进程不应吃满 3s 宽限
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_unix_child_sends_sigterm_first() {
+        let tmp =
+            std::env::temp_dir().join(format!("zome-sidecar-term-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let marker = tmp.join("terminated");
+        let ready = tmp.join("ready");
+
+        // trap 装好后才落 ready 文件：spawn 返回（fork）到 trap 安装之间有窗口期，
+        // 等 ready 再 shutdown，排除"TERM 先于 trap 送达"的启动竞态
+        let child = Command::new("bash")
+            .args([
+                "-c",
+                "trap 'touch \"$1\"; exit 0' TERM; touch \"$2\"; while :; do sleep 0.1; done",
+                "--",
+                marker.to_str().unwrap(),
+                ready.to_str().unwrap(),
+            ])
+            .spawn()
+            .expect("spawn sigterm-aware child");
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "child must install its TERM trap");
+        let sup = Supervisor {
+            child: Arc::new(Mutex::new(Some(child))),
+            adopted_pid: Arc::new(Mutex::new(None)),
+        };
+
+        let start = std::time::Instant::now();
+        sup.shutdown().await;
+        assert!(
+            marker.exists(),
+            "SIGTERM must be delivered before any SIGKILL (graceful shutdown ran)"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(3000),
+            "child exiting on SIGTERM must not burn the full grace period"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 两段式关停的升级半：无视 SIGTERM 的 child 须在 3s 宽限后被 SIGKILL
+    /// 收掉（shutdown 内 child.wait() 已收尸，/proc 条目消失）
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_unix_child_escalates_to_sigkill() {
+        let tmp =
+            std::env::temp_dir().join(format!("zome-sidecar-kill-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ready = tmp.join("ready");
+
+        // 同上：trap '' 装好后落 ready，排除启动竞态（TERM 先于 trap 送达会让
+        // bash 即死，3s 宽限断言假阳性失败）
+        let child = Command::new("bash")
+            .args([
+                "-c",
+                "trap '' TERM; touch \"$1\"; while :; do sleep 0.1; done",
+                "--",
+                ready.to_str().unwrap(),
+            ])
+            .spawn()
+            .expect("spawn sigterm-ignoring child");
+        let pid = child.id().unwrap();
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "child must install its TERM trap");
+        let sup = Supervisor {
+            child: Arc::new(Mutex::new(Some(child))),
+            adopted_pid: Arc::new(Mutex::new(None)),
+        };
+
+        let start = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), sup.shutdown())
+            .await
+            .expect("escalation must terminate the child");
+        assert!(
+            start.elapsed() >= Duration::from_millis(2800),
+            "grace period must elapse before SIGKILL escalation (~3s)"
+        );
+        let alive = std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|c| !c.is_empty())
+            .unwrap_or(false);
+        assert!(!alive, "SIGTERM-ignoring child must be force killed");
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
