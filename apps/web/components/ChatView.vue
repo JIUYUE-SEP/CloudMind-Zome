@@ -46,7 +46,6 @@ const messagesEl = ref<HTMLElement | null>(null);
 let connectSeq = 0;
 
 const statusText = computed(() => {
-  if (chat.engineTerminated) return "engine 进程已退出，请重启应用";
   if (chat.reconnectAttempts > 0) return `连接已断开，重连中（第 ${chat.reconnectAttempts} 次）…`;
   if (!chat.isConnected) return "未连接";
   if (chat.isStreaming) return "生成中...";

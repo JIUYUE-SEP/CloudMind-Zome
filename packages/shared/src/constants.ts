@@ -1,7 +1,7 @@
 /**
  * 跨端协议常量（P5-2，架构 review 技术债）：三端单一口径的唯一来源。
  * engine（Fastify/WS）与 web（Nuxt）必须从这里引用，不再各自手写；
- * desktop/sidecar 是 Rust，无法消费 TS 包，其同名硬编码以本文件为准人工对齐。
+ * sidecar 是 Rust，无法消费 TS 包，其同名硬编码以本文件为准人工对齐。
  */
 
 // ---- 资源 ID 规则（agent / session / project 等）----

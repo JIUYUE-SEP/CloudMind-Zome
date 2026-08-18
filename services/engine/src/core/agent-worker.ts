@@ -507,7 +507,7 @@ export class AgentWorker {
 
   /**
    * 压缩段入队（M-b）：入队即记状态——先落 pending 再入队；进程在任务执行前
-   * 退出（desktop taskkill /F 无优雅关停）时由启动对账（reconcilePendingSegments）
+   * 退出（taskkill /F 等强杀无优雅关停）时由启动对账（reconcilePendingSegments）
    * 补压缩/补归档。pending 落盘失败不阻断入队（退化为修复前行为，warn 留痕）。
    */
   private async enqueueCompression(segment: TopicSegment): Promise<void> {

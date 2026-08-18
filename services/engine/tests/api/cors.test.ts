@@ -69,26 +69,12 @@ describe("CORS", () => {
     expect(res.headers["access-control-allow-origin"]).not.toBe("http://evil.example.com");
   });
 
-  // F9：打包桌面端 webview 起源（tauri:// 自定义协议 / tauri.localhost 保留域）
-  // 与 WS 握手同源放行——带 Bearer 头的 REST 预检不再被白名单拦死
-  it("preflight allows Tauri webview origins (F9)", async () => {
-    for (const origin of ["tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"]) {
-      const res = await authedRequest(app.server)
-        .options("/agents/some-agent")
-        .set("Origin", origin)
-        .set("Access-Control-Request-Method", "PUT")
-        .set("Access-Control-Request-Headers", "authorization,content-type");
-      expect(res.status).toBe(204);
-      expect(res.headers["access-control-allow-origin"]).toBe(origin);
-      expect(res.headers["access-control-allow-methods"]).toContain("PUT");
-    }
-  });
-
-  it("simple request from Tauri origin carries allow-origin header (F9)", async () => {
+  // 纯 Web 形态下 tauri 系起源不再特赦：与白名单外起源同判拦截
+  it("preflight does not allow tauri scheme origin", async () => {
     const res = await authedRequest(app.server)
-      .get("/health")
-      .set("Origin", "tauri://localhost");
-    expect(res.status).toBe(200);
-    expect(res.headers["access-control-allow-origin"]).toBe("tauri://localhost");
+      .options("/agents/some-agent")
+      .set("Origin", "tauri://localhost")
+      .set("Access-Control-Request-Method", "PUT");
+    expect(res.headers["access-control-allow-origin"]).not.toBe("tauri://localhost");
   });
 });

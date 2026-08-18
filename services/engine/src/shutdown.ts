@@ -7,8 +7,8 @@ import { logger } from "./logger.js";
  * 启动对账兜底。close 同样带超时兜底（默认 5s）：生产上 app.close()
  * 会等长生命周期 WebSocket 连接，可能永久挂起，超时记日志后照常退出。
  *
- * 信号可达性（Windows desktop 场景）：desktop/sidecar 用 taskkill /F 杀
- * 进程树（TerminateProcess），任何 handler 都不会执行——该路径的孤儿由
+ * 信号可达性（Windows 场景）：sidecar supervisor 强杀用 taskkill /F
+ * （TerminateProcess），任何 handler 都不会执行——该路径的孤儿由
  * 启动对账（reconcile.ts + topic-state.json）兜底。本 handler 服务于
  * dev Ctrl+C、Unix 服务管理（systemd/Docker SIGTERM）等信号真实可达的场景。
  */

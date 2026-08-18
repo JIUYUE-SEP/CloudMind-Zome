@@ -1,66 +1,42 @@
 # 部署指南
 
-## 桌面应用（推荐）
+> 产品形态：纯 Web 应用（engine + Nuxt 前端）。桌面端（Tauri）已于 2026-08-19 移除
+> （git 历史可回溯）；sidecar 保留为可选性能组件（向量记忆）。
+
+## Web 模式（唯一形态）
 
 ### 环境要求
 
 - Node.js 22+
-- Rust（版本见 `rust-toolchain.toml`，当前 1.88）
-- protoc 27+
-- Windows: WebView2 Runtime
+- （可选）Rust（`rust-toolchain.toml`）+ protoc 27+ —— 仅当要运行 sidecar（向量记忆）时
 
-### 构建步骤
+### 构建与运行
 
 ```bash
 # 1. 安装依赖
 pnpm install
 
-# 2. 构建 engine 和 web（注意：根 `pnpm build` 会连带 desktop 的 tauri build，
-#    此时 sidecar 二进制未就位必失败，这里必须按包过滤）
+# 2. 构建 engine 和 web
 pnpm --filter @mindcloud/engine --filter @mindcloud/web build
 
-# 3. 准备 sidecar 二进制（脚本内先 cargo build --release 再拷贝，保证新鲜度）
-node scripts/prepare-sidecar.mjs release
-
-# 4. 准备 engine 分发产物 + 内嵌 Node（tauri build 的 beforeBuildCommand 会自动执行，此处可手动验证）
-node scripts/prepare-engine.mjs
-
-# 5. 构建桌面安装包（beforeBuildCommand 自动执行步骤 3-4 与 web 构建）
-pnpm --filter @mindcloud/desktop build
-```
-
-构建输出位于 `apps/desktop/src-tauri/target/release/bundle/`。
-
-### 安装包内容（P0-4）
-
-`tauri.conf.json` 的 `bundle.resources` 把 `apps/desktop/src-tauri/resources/` 打进安装包：
-
-- `resources/engine/`：`scripts/prepare-engine.mjs` 用 esbuild 把 engine 打成单文件 CJS bundle（`bootstrap.js`，约 4.5MB），并随附运行时资产——`tiktoken_bg.wasm`、`static/`（swagger-ui）、`packages/skills/`、`crates/zome-sidecar/proto/zome.proto`（后两个是 engine 向上查找约定的兼容布局）
-- `resources/node/`：内嵌 Node 运行时（默认 v22.14.0，`ZOME_EMBEDDED_NODE_VERSION` 可覆盖；构建机需联网下载，已 staging 则跳过）
-
-supervisor 启动 engine 时优先用 sidecar exe 旁的内嵌 Node（`node_bin()`），找不到才回退系统 PATH——**终端用户机器不需要装 Node**。`resources/` 是构建产物，已被 `.gitignore` 排除，重复执行 `prepare-engine.mjs` 可重建。
-
-## Web 模式
-
-```bash
-pnpm --filter @mindcloud/engine --filter @mindcloud/web build   # 根 pnpm build 会连带 desktop 的 tauri build
+# 3. 运行
 pnpm --filter @mindcloud/engine start    # node dist/src/bootstrap.js
 pnpm --filter @mindcloud/web preview     # 预览构建产物（web 无 start 脚本）
 ```
 
-访问 `http://localhost:3000`。
+访问 `http://localhost:3000`（engine API 在 `http://127.0.0.1:8848`，Swagger UI 在 `/docs`，
+REST 需 Bearer token——见 `docs/API.md` 鉴权章节；开发模式下前端经 nitro
+`/api/engine-token` 自动下发，无需手动配置）。
 
-> sidecar 在 Web 模式下可选：需要向量记忆时，先 `cargo build --release --manifest-path crates/zome-sidecar/Cargo.toml` 并运行 `zome-sidecar`（gRPC `127.0.0.1:50051`），engine 会自动连接。
+> sidecar 可选：需要向量记忆（跨会话语义检索）时，先
+> `cargo build --release --manifest-path crates/zome-sidecar/Cargo.toml` 并运行
+> `zome-sidecar`（gRPC `127.0.0.1:50051`），engine 会自动连接；不运行则静默降级。
 
 ## 数据目录
 
-桌面端数据目录由 sidecar 解析（唯一权威源），启动 engine 时经 `CLOUDMIND_DATA_DIR` 注入；旧默认目录 `~/.cloudmind-zome` 的数据由 sidecar 启动时一次性迁移。
-
-- Windows: `%LOCALAPPDATA%\cloudmind-zome`
-- macOS / Linux: 系统本地数据目录下的 `cloudmind-zome`
-- 独立运行 engine（Web 模式，不经 sidecar）：默认 `~/.cloudmind-zome`
-
-均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
+- 默认 `~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）
+- sidecar 若运行，由其解析统一目录并在 spawn engine 时经 `CLOUDMIND_DATA_DIR` 注入
+- 均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖
 
 ## Provider 配置
 

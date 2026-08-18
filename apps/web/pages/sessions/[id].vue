@@ -59,7 +59,6 @@ const notFound = ref(false);
 // 断线重连状态（P0-3）：>0 表示正在第 N 次重试
 const reconnectAttempts = ref(0);
 const statusHint = computed(() => {
-  if (client.sidecarTerminated.value) return "engine 进程已退出，请重启应用";
   if (reconnectAttempts.value > 0) return `连接已断开，重连中（第 ${reconnectAttempts.value} 次）…`;
   return "";
 });

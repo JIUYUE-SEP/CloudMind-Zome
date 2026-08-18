@@ -15,7 +15,7 @@ import { logger } from "../../logger.js";
  * turn 终点各写一次），重启后由启动对账（reconcile.ts）识别并补压缩/归档。
  *
  * M-b 扩展：压缩段"入队即记状态"——closeSegment 清空 open 后、压缩任务
- * 执行前进程退出（desktop taskkill /F 无优雅关停）会让整段消息两个对账方向
+ * 执行前进程退出（强杀无优雅关停）会让整段消息两个对账方向
  * 都够不着。段入队时先落一条 pending 记录（含 messageIds 与 archiveOnly），
  * 任务成功完成才清除；启动对账按 pending 补压缩/补归档。
  *

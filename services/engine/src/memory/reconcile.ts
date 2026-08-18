@@ -81,8 +81,8 @@ export async function reconcileOrphanedTopic(
 /**
  * 启动对账扩展（P1.5 M-b）：补"已关闭已入队未压缩"的话题段。
  *
- * closeSegment 清空 open、段入压缩队列后，进程在任务执行前退出（desktop
- * taskkill /F 主路径下 shutdown handler 根本不跑），该段两个对账方向都够不着：
+ * closeSegment 清空 open、段入压缩队列后，进程在任务执行前退出（强杀路径下
+ * shutdown handler 根本不跑），该段两个对账方向都够不着：
  * 无压缩档（reconcileHotStorage 不见）、open 已清（reconcileOrphanedTopic 不见）。
  * M-b 起段入队即记 pending（state.ts），此处按 pending 补漏：
  * - 压缩档已存在（崩溃在"写压缩档 → 归档"之间）：只补归档，不重复压缩；

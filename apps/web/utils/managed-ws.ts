@@ -217,7 +217,7 @@ export function createManagedWsConnection(
   };
 
   // 建连前必须等 token 就绪（真机 #12）：REST 与 WS 都不能带着空 token 抢跑
-  // /api/engine-token / Tauri IPC 的异步解析；就绪 Promise 模块级缓存，只等一次。
+  // /api/engine-token 的异步解析；就绪 Promise 模块级缓存，只等一次。
   // 重连仍直接 open()——首次建连成功时 token 必然已就绪
   void deps
     .ensureTokenReady()

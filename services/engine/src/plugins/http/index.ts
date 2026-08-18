@@ -120,8 +120,8 @@ export function apply(ctx: Context): void {
     }
     listenCalled = true;
     app = await createServer(context);
-    // 在 listen 前确保 token 已就绪/落盘：desktop Rust 侧等 /health 通过后
-    // 立即读 auth-token 文件下发给前端，晚于 listen 生成会引入竞态
+    // 在 listen 前确保 token 已就绪/落盘：web 开发通道（/api/engine-token）
+    // 在请求时读 auth-token 文件，晚于 listen 生成会引入竞态
     await getAuthToken();
     if (!process.env.CLOUDMIND_AUTH_TOKEN) {
       logger.info(

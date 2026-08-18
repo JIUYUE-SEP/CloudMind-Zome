@@ -50,13 +50,13 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **上下文水位与换班** — 上下文用量主裁 = 估算 + 实测双轨（协议感知估算，步后 usage 实测取大）：≥70% 注入提醒、≥90% 撞顶自动产出 `[交接书]` 并换班续跑（回合绝不静默）；交接书四件套 = 三分法内容 / 足迹机械附 / 瘦身写作间 / 开工指引，`handoffMaxShifts` 保险丝（缺省 5，clamp 1-10）封顶棒数；跨连接 cancel 统一走 registry 仲裁面 + chainId 代际防旧链复活；机制细节见 [`docs/架构文档.md`](docs/架构文档.md)
 - **长期记忆** — per-Agent JSON/JSONL 文档存储（原子写）；旧话题经 LLM 压缩为摘要归档（`_compressed/`），原始消息移入归档可恢复
 - **心智系统** — SOUL.md 人格核心注入 L1；MIND.md 动态经验档案（话题压缩时 LLM 沉淀、置信度过滤、注入防御）
-- **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并运行 sidecar（桌面端自动启动，不可用时静默降级）
+- **向量记忆** — 经 Rust sidecar（HNSW）的跨会话语义检索，作为 L4 层注入上下文（相似度 × 分段时间衰减打分、已压缩话题原文排除），需配置 embedder 并手动运行 sidecar（可选；不运行时向量记忆静默降级，对话不受影响）
+- **外部插件（器官）** — 用户自装纯 JS 插件扩展系统：全局清单 `DATA_DIR/plugins.json`、per-agent 清单 `agents/<id>/plugins.yml`（与 SOUL.md 同级）；可监听引擎事件缝（感知注入/LLM 请求/回合/归档/审批）、注册 `ext__` 前缀外部工具（审批缺省从严）；无热重载，重启生效；开发指引见 [`docs/开发指南.md`](docs/开发指南.md) §5.7
 - **Skill 系统** — 基于 SKILL.md 的技能加载（内置目录 / 全局目录 / Agent 私有目录），已工具化：L1 只注技能目录（名字+一句话）作发现入口，规程正文经 `skill` 工具按名取回（不预塞全文进上下文）；技能不存在返回可用列表（fail-closed）；活跃保护——话题压缩摘要记 usedSkills，组装时自动重取规程正文（尾部 system 注入，取失败跳过）；`POST /agents/:id/skills/reload` 热重载；调用记录落 `skill-history.jsonl`（`GET /agents/:id/skill-history` 查询）
 - **Plan / Subagent** — 计划管理（REST，plans.jsonl 持久化，重启自动恢复）与 `dispatch_subagent` 工具（前台/后台借用其他 Agent；后台任务持久化 subagent-tasks.jsonl，重启 running 标 lost，输出超 ~4KB 截尾 preview + 全量 log 双轨；`kind` 分型——delegate 借用人形 / puppet 傀儡：调用方的一次性分身，无 SOUL 无记忆、记忆即弃，用主人的模型与工具裸跑，写类操作回主人会话审批）；终态任务可 resume（`POST /agents/:id/subagents/:taskId/resume`，同简报重跑、复用记录 attempts+1）；任务终态通知注入 owner 感知回合（开关 `subagentNotify` 缺省开）；`dispatch_subagent_batch` 批量 swarm（模板 × ≤16 items 全傀儡派发，burst 坡道 + 429 限流自适应续跑，结果 XML 原位聚合，无审批桥接——面向只读/分析/汇总类批量任务）
 - **定时任务** — Cron 调度，到点自动给 Agent 派发任务
 - **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试）；错误分类重试（429/5xx/网络/超时指数退避）+ Agent 级备用 Provider 降级链（`fallbackProviderIds`）；型号级 `apiMode` 三族协议切换（`chat_completions` / `anthropic` / `responses`，缺省回落 provider 级），配置热更下一次调用即生效、无需重启
 - **蓝图工作流** — start / llm / tool / end 节点编排（线性链）
-- **桌面应用** — Tauri 启动 Rust sidecar，sidecar 守护 Node 引擎（失败自动重启）
 
 > 规划中：蓝图分支/并行/审批、公共 Skill 池、generate_image 工具、多用户
 > 完整功能状态见 [`docs/路线图.md`](docs/路线图.md)
@@ -68,8 +68,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 ### 环境
 
 - Node.js 22+
-- Rust（版本见 `rust-toolchain.toml`，当前 1.88）
-- protoc 27+
+- Rust（版本见 `rust-toolchain.toml`，当前 1.88）+ protoc 27+——仅当要构建/运行可选的 sidecar（向量记忆）时需要
 
 ### 1. 克隆
 
@@ -87,21 +86,23 @@ pnpm install
 ### 3. 启动开发
 
 ```bash
-# 启动全部 dev 目标：engine + web + shared（tsc --watch）+ desktop（tauri dev，首次需完整 Rust 编译，耗时数分钟）
+# 启动全部 dev 目标：engine + web + shared（tsc --watch）
 pnpm dev
 
-# 只做 Web 开发（engine + web，不拉起桌面端）
+# 或只起 engine + web
 pnpm --filter @mindcloud/engine --filter @mindcloud/web dev
 ```
 
 - 前端：`http://localhost:3000`
 - 后端 API：`http://127.0.0.1:8848`（Swagger UI：`http://127.0.0.1:8848/docs`）
 
-### 4. 单独启动桌面
+### 4. 可选：启动 sidecar（向量记忆）
 
 ```bash
-pnpm --filter @mindcloud/desktop dev
+cargo run --manifest-path crates/zome-sidecar/Cargo.toml
 ```
+
+sidecar 提供 gRPC 向量索引（HNSW），不运行时 engine 的语义检索静默降级。
 
 ---
 
@@ -126,9 +127,9 @@ pnpm --filter @mindcloud/desktop dev
 ### 单用户本地模式
 
 - 无登录注册，开箱即用
-- 所有数据存储在本地。独立运行 engine（如 Web 模式 `pnpm dev`）默认 `~/.cloudmind-zome`；桌面端由 sidecar 解析统一数据目录（Windows 为 `%LOCALAPPDATA%\cloudmind-zome`）并在启动 engine 时注入，旧默认目录的数据由 sidecar 启动时一次性迁移
-- 两种形态均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖默认路径
-- 可作为 Web 应用或 Tauri 桌面应用运行
+- 所有数据存储在本地，默认 `~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）；sidecar 若运行会解析统一数据目录并在启动 engine 时注入
+- 经环境变量 `CLOUDMIND_DATA_DIR` 可覆盖默认路径
+- 以 Web 应用形态运行（engine + Nuxt 前端）
 
 ---
 
@@ -138,8 +139,7 @@ pnpm --filter @mindcloud/desktop dev
 |------|------|
 | 后端引擎 | Node.js + TypeScript + Fastify 5 |
 | 前端 | Nuxt 3 + Vue 3 + Pinia + TypeScript |
-| 桌面 | Tauri 2 + Rust + WebView2 |
-| 性能侧车 | Rust（zome-sidecar）+ gRPC（HNSW 向量搜索；另有 tokenizer / 进程守护能力） |
+| 性能侧车 | Rust（zome-sidecar）+ gRPC（HNSW 向量搜索；可选运行，不启动则静默降级） |
 | 存储 | per-Agent JSON/JSONL 文档存储（无数据库） |
 | 包管理 | pnpm workspace + Turborepo |
 
@@ -158,7 +158,6 @@ pnpm test:e2e         # Playwright 端到端测试（自动启动 engine + web�
 # 单独操作
 pnpm --filter @mindcloud/engine test
 pnpm --filter @mindcloud/web test
-pnpm --filter @mindcloud/desktop dev
 ```
 
 ---
@@ -180,12 +179,11 @@ pnpm --filter @mindcloud/desktop dev
 ```
 MindCloud-Zome/
 ├── apps/
-│   ├── desktop/       # Tauri 桌面应用
 │   └── web/           # Nuxt 3 前端
 ├── services/
 │   └── engine/        # Node.js 引擎（Fastify + ReAct + Tool System）
 ├── crates/
-│   └── zome-sidecar/  # Rust 性能侧车（gRPC）
+│   └── zome-sidecar/  # Rust 性能侧车（gRPC，可选）
 ├── packages/
 │   ├── shared/        # 共享 TypeScript 类型
 │   └── skills/        # 内置 Skill
@@ -199,7 +197,7 @@ MindCloud-Zome/
 
 ## 数据存储
 
-所有运行时数据本地存储。独立运行 engine（Web 模式）默认 `~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）；桌面端由 sidecar 解析统一数据目录（Windows 为 `%LOCALAPPDATA%\cloudmind-zome`），旧默认目录的数据会被一次性迁移。均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
+所有运行时数据本地存储。独立运行 engine（Web 模式）默认 `~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）；sidecar 若运行会解析统一数据目录并在其启动 engine 时注入。均可通过环境变量 `CLOUDMIND_DATA_DIR` 覆盖。
 
 ```
 DATA_DIR/

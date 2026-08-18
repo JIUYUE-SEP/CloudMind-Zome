@@ -7,7 +7,7 @@ import { DEFAULT_SIDECAR_ADDR } from "@mindcloud/shared";
 
 /**
  * Rust sidecar（zome-sidecar）的 gRPC 客户端。
- * sidecar 只在 Tauri 桌面环境运行，纯 `pnpm dev` 下不存在——
+ * sidecar 不随纯 web 形态常驻（保留为休眠能力），`pnpm dev` 下通常不存在——
  * 因此所有调用都优雅降级（返回 undefined/[]），绝不让聊天主链路失败。
  * 降级不等于静默：失败在统一出口记 warn（Health 轮询只在可用性翻转时记），
  * 故障可观测但不刷屏。

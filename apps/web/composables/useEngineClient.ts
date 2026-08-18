@@ -129,13 +129,12 @@ async function ensureOk(res: Response, action: string): Promise<void> {
 
 // 模块级 backend URL 单例：模块加载即开始解析，结果缓存，
 // 后续所有 useEngineClient() 调用直接复用，不再逐个 onMounted 异步获取。
-// 默认地址的权威定义在 packages/shared（P5-2）；Tauri 环境经 IPC 取 sidecar 实际端口覆盖
+// 默认地址的权威定义在 packages/shared（P5-2）
 const sharedBaseUrl = ref(DEFAULT_ENGINE_URL);
 
 // 模块级鉴权 token 单例（与 sharedBaseUrl 同一模式）。engine 本地 token 鉴权（P0-2）：
 // 除 /health 外 REST 全部要求 Bearer，WS 握手要求子协议携带 token。
-// 分发通道：desktop 由 Rust 侧读数据目录 auth-token 文件经 IPC 下发；
-// web 开发默认由 nitro dev server 读 engine 数据目录 auth-token 文件经
+// 分发通道：web 开发默认由 nitro dev server 读 engine 数据目录 auth-token 文件经
 // /api/engine-token 运行时下发（零配置）；NUXT_PUBLIC_ENGINE_TOKEN /
 // localStorage["cloudmind.engineToken"] 仍是优先级更高的显式覆盖。
 const sharedToken = ref("");
@@ -161,64 +160,18 @@ function invalidateEngineToken(): void {
   }
 }
 
-// desktop sidecar 意外退出（kill_on_drop 会连带杀掉 engine，WS 随之断开）：
-// Tauri 侧 emit 事件到这里置位，UI 据此提示"engine 进程已退出"，
-// 而不是永远停在"重连中"（P0-3 D-B1）
-const sidecarTerminated = ref(false);
-
 // baseUrl 尾部斜杠未归一会拼出 "//agents" 导致全部 404：赋值入口统一去除
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const tauriGlobal = typeof window !== "undefined" ? ((window as any).__TAURI__ ?? undefined) : undefined;
-
-// Tauri 环境：模块加载时经 __TAURI__.core.invoke 拿 sidecar 端口（需 tauri.conf withGlobalTauri），
-// resolve 后更新缓存；失败保留默认 8848
-if (tauriGlobal?.core?.invoke) {
-  tauriGlobal.core
-    .invoke("get_backend_url")
-    .then((url: unknown) => {
-      if (typeof url === "string" && url) sharedBaseUrl.value = normalizeBaseUrl(url);
-    })
-    .catch(() => {
-      // backend 未就绪或 IPC 失败：保留默认 8848
-    });
-}
-
-// Tauri：token 经 IPC 异步下发（模块加载即开始），同样纳入就绪 Promise——
-// 首屏 REST/WS 请求必须等 IPC 解析链走完，而不是带着空 token 抢跑
-const tauriTokenReady: Promise<string> = tauriGlobal?.core?.invoke
-  ? tauriGlobal.core
-      .invoke("get_engine_token")
-      .then((token: unknown) => {
-        const resolved = typeof token === "string" ? token : "";
-        if (resolved) sharedToken.value = resolved;
-        return resolved;
-      })
-      .catch(() => {
-        // token 未就绪：REST/WS 会被 401/4401 拒绝，界面走既有错误路径提示
-        return "";
-      })
-  : Promise.resolve("");
-
-// sidecar 意外退出事件（desktop）：engine 被连带杀掉，UI 需要明确提示而非静默重连
-if (tauriGlobal?.event?.listen) {
-  tauriGlobal.event
-    .listen("zome://sidecar-terminated", () => {
-      sidecarTerminated.value = true;
-    })
-    .catch(() => {});
-}
-
-// 非 Tauri 环境：首次调用时从 runtimeConfig 取一次（NUXT_PUBLIC_ENGINE_URL 可覆盖），之后缓存复用
+// 首次调用时从 runtimeConfig 取一次（NUXT_PUBLIC_ENGINE_URL 可覆盖），之后缓存复用
 let runtimeConfigApplied = false;
 
 export function useEngineClient(options?: EngineClientOptions) {
   const config = useRuntimeConfig();
 
-  // web 端 token 解析链（非 Tauri）：应用 runtime 显式档/localStorage 档，
+  // token 解析链：应用 runtime 显式档/localStorage 档，
   // 前两档都缺时异步拉 server 档。返回的 Promise 由模块级就绪单例缓存，
   // 首次调用即开始，后续所有 engineFetch / WS 建连只等这一次
   async function resolveWebToken(): Promise<string> {
@@ -250,7 +203,7 @@ export function useEngineClient(options?: EngineClientOptions) {
 
   function ensureEngineTokenReady(): Promise<string> {
     if (!engineTokenReadyPromise) {
-      engineTokenReadyPromise = tauriGlobal ? tauriTokenReady : resolveWebToken();
+      engineTokenReadyPromise = resolveWebToken();
     }
     return engineTokenReadyPromise;
   }
@@ -593,8 +546,6 @@ export function useEngineClient(options?: EngineClientOptions) {
     deleteScheduledTask,
     connect,
     connectSession,
-    // desktop sidecar 意外退出置位（P0-3）：UI 据此提示"engine 进程已退出"
-    sidecarTerminated,
     listBlueprints,
     createBlueprint,
     getBlueprint,

@@ -34,9 +34,7 @@ export async function createServer(context: ApiContext) {
   });
 
   await app.register(cors, {
-    // origin 判定收敛到 ws/validation.ts（F9：与 WS 握手同源）——白名单之外
-    // 并入 Tauri webview 起源（tauri://、http(s)://tauri.localhost），打包桌面端
-    // 带 Bearer 的 REST 预检不再被拦（dev 走 localhost:3000 感知不到）。
+    // origin 判定收敛到 ws/validation.ts（F9：与 WS 握手同源的白名单）。
     // 拒绝时回 false：CORS 头整体不下发（原数组未命中时 204 但无 ACAO，
     // 浏览器同判拦截，阻断语义等价）
     origin: (origin, cb) => cb(null, isAllowedCorsOrigin(origin)),
@@ -67,7 +65,7 @@ export async function createServer(context: ApiContext) {
     uiConfig: { docExpansion: "list", deepLinking: false },
   });
 
-  // 本地 token 鉴权（P0-2）：除 /health（sidecar/desktop 健康检查）与 /ws/*
+  // 本地 token 鉴权（P0-2）：除 /health（sidecar 健康检查）与 /ws/*
   // （WS 握手无法设请求头，token 由 handler 校验 subprotocol）外，
   // 全部 REST 要求 Authorization: Bearer <token>。/docs 也在保护范围内。
   app.addHook("onRequest", async (req, reply) => {

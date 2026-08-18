@@ -136,7 +136,6 @@ const groupIsConnected = ref(false);
 // 断线重连状态（P0-3）：>0 表示正在第 N 次重试
 const groupReconnectAttempts = ref(0);
 const groupStatusHint = computed(() => {
-  if (client.sidecarTerminated.value) return "engine 进程已退出，请重启应用";
   if (groupReconnectAttempts.value > 0) return `连接已断开，重连中（第 ${groupReconnectAttempts.value} 次）…`;
   return "";
 });

@@ -8,9 +8,8 @@ import path from "node:path";
  *
  * 背景：web 开发下 engine REST/WS 全部要求 Bearer token，此前只能手动配
  * NUXT_PUBLIC_ENGINE_TOKEN 或 localStorage["cloudmind.engineToken"]，指挥官
- * 打开即 401，进门体验断裂。desktop 由 Rust 读数据目录 auth-token 经 IPC 下发，
- * 这里照抄同一思路：nitro dev server 与 engine 同机，启动/请求时读 engine 的
- * auth-token 文件，经 /api/engine-token 在运行时下发给浏览器。
+ * 打开即 401，进门体验断裂。nitro dev server 与 engine 同机，启动/请求时读
+ * engine 的 auth-token 文件，经 /api/engine-token 在运行时下发给浏览器。
  *
  * 安全：token 是机密——只走 localhost 开发场景；运行时下发而非构建时内联，
  * token 不进客户端 bundle。生产/静态构建由 import.meta.dev 门禁直接返回空。

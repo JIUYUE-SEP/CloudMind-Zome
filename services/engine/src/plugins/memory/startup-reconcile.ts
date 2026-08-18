@@ -58,7 +58,7 @@ export function registerStartupReconcile(ctx: Context): void {
               // P4：compression-task 已 inject 化，mind 能力从 ctx.mind 取下喂入
               mind: ctx.mind,
             };
-            // M-b：先补"已关闭已入队未压缩"的 pending 段（desktop /F 主路径缺口）
+            // M-b：先补"已关闭已入队未压缩"的 pending 段（强杀路径缺口）
             if (hasPending) {
               const pendingCount = await ctx.memory.reconcilePendingSegments(agent.id, repo, deps);
               if (pendingCount > 0) {

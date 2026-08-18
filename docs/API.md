@@ -226,7 +226,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
 | `error` | 错误 |
 
-握手时校验 Origin（无 Origin 的非浏览器客户端放行；`tauri://` 协议及 `*.tauri.localhost` 域放行；`NODE_ENV=e2e` 全放行）。
+握手时校验 Origin（无 Origin 的非浏览器客户端放行；`NODE_ENV=e2e` 全放行）。
 
 ## 通用约定
 

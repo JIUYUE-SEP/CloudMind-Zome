@@ -32,11 +32,6 @@ undefined/
 *.swp
 *.swo
 
-# Tauri build
-apps/desktop/src-tauri/binaries/
-# P0-4：prepare-engine.mjs staging 的 engine bundle + 内嵌 Node（构建产物，勿入库）
-apps/desktop/src-tauri/resources/
-
 # Lock files (optional, keeping package-lock.json for reproducibility)
 # package-lock.json
 # pnpm-lock.yaml

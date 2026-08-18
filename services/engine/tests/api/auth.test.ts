@@ -69,7 +69,7 @@ describe("本地 token 鉴权（P0-2）", () => {
     await cleanup();
   });
 
-  it("/health 免鉴权，供 sidecar/desktop 健康检查", async () => {
+  it("/health 免鉴权，供 sidecar 健康检查", async () => {
     const res = await request(app.server).get("/health");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ status: "ok" });

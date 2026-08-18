@@ -23,12 +23,10 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          # F15：双 crate 显式登记缓存工作区——默认 workspaces="." 下本仓库根
-          # 无 Cargo.toml，编译产物 target/ 不进缓存。desktop crate 全量编译
-          # tauri+wry+webkit2gtk-sys 首跑 ~15-25min，命中缓存后增量 ~1-3min
+          # F15：显式登记缓存工作区——默认 workspaces="." 下本仓库根
+          # 无 Cargo.toml，编译产物 target/ 不进缓存
           workspaces: |
             crates/zome-sidecar -> target
-            apps/desktop/src-tauri -> target
 
       - name: Install dependencies
         run: pnpm install
@@ -56,24 +54,7 @@ jobs:
           cargo test -vv
           cargo build --release -vv
 
-      # F15：desktop crate（apps/desktop/src-tauri）进 CI——Tauri Linux 系统依赖
-      # （官方指引：webkit2gtk-4.1/gtk-3/appindicator/rsvg；libdbus-1-dev 供
-      # desktop 侧 dbus 依赖）。apt 每次 ~1-2min，不另做 apt 缓存（过度工程）
-      - name: Install Tauri Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
-
-      # cargo check/test 只编译不打包：frontendDist（apps/web/dist）无需真实
-      # 产物，但 tauri 编译期校验该路径存在，先建空目录
-      - name: Rust checks (desktop src-tauri)
-        working-directory: apps/desktop/src-tauri
-        run: |
-          mkdir -p ../../web/dist
-          cargo check
-          cargo test
-
-      # Rust 依赖漏洞审计（P5-5）：两个 crate 的 Cargo.lock 分别扫描
+      # Rust 依赖漏洞审计（P5-5）
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
@@ -82,13 +63,6 @@ jobs:
       - name: Cargo audit (zome-sidecar)
         run: cargo audit
         working-directory: crates/zome-sidecar
-
-      # quick-xml 两条 high（RUSTSEC-2026-0194/0195）暂无修复路径：plist 1.9.0
-      # 锁定 quick-xml 0.39.x，补丁只发在 ≥0.41.0；攻击面为构建期 plist 解析
-      # （非运行时不可信输入）。显式忽略已评估项，其余漏洞（含新增）仍然 fail。
-      - name: Cargo audit (desktop src-tauri)
-        run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
-        working-directory: apps/desktop/src-tauri
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

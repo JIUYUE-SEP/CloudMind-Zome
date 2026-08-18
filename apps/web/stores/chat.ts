@@ -24,7 +24,6 @@ export const useChatStore = defineStore("chat", () => {
   const handoffStatus = ref<HandoffUpdateFrame | null>(null);
   // 断线重连状态（P0-3）：>0 表示正在第 N 次重试，UI 显示"重连中"而非静默
   const reconnectAttempts = ref(0);
-  const engineTerminated = client.sidecarTerminated;
   let connection: ReturnType<typeof client.connect> | null = null;
   // 历史加载代际：每次加载/断连自增，迟到的过期响应不得覆盖当前会话
   let loadSeq = 0;
@@ -324,7 +323,6 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming,
     handoffStatus,
     reconnectAttempts,
-    engineTerminated,
     loadMessages,
     connect,
     switchTo,
