@@ -123,6 +123,43 @@ describe("plugins/tools registerExternal（E3 外部工具注册）", () => {
     expect(byName.get("ext__demo__d3")).toBe(true);
   });
 
+  it("parameters 兼容：已是 zod schema 原样保留（同一引用）", () => {
+    const zodParams = z.object({ q: z.string() });
+    ctx.tools.registerExternal("demo", { ...makeTool("search"), parameters: zodParams });
+    expect(ctx.tools.getExternal()[0].parameters).toBe(zodParams);
+  });
+
+  it("parameters 兼容：JSON Schema 对象注册时转 zod，safeParse 校验生效（合法通过/非法拒绝）", () => {
+    // 外部插件是纯 JS（拿不到 zod）给 JSON Schema——object + 标量字段 + required
+    const jsonSchema = {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "目标路径" },
+        limit: { type: "integer" },
+        verbose: { type: "boolean" },
+      },
+      required: ["path"],
+    };
+    expect(ctx.tools.registerExternal("demo", { ...makeTool("read_thing"), parameters: jsonSchema })).toBe(true);
+    const registered = ctx.tools.getExternal()[0];
+    // 合法通过：required 齐备 / 可选字段带类型正确
+    expect(registered.parameters.safeParse({ path: "a.md" }).success).toBe(true);
+    expect(registered.parameters.safeParse({ path: "a.md", limit: 3, verbose: true }).success).toBe(true);
+    // 非法拒绝：缺 required / 标量类型错误
+    expect(registered.parameters.safeParse({}).success).toBe(false);
+    expect(registered.parameters.safeParse({ path: 42 }).success).toBe(false);
+    expect(registered.parameters.safeParse({ path: "a.md", limit: "x" }).success).toBe(false);
+  });
+
+  it("parameters 兼容：边界形态（oneOf）按 MCP 既有口径降级 z.unknown()，不阻塞链路", () => {
+    const boundary = { oneOf: [{ type: "string" }, { type: "number" }] };
+    expect(ctx.tools.registerExternal("demo", { ...makeTool("flex"), parameters: boundary })).toBe(true);
+    const registered = ctx.tools.getExternal()[0];
+    // 降级为无约束：任意参数 safeParse 通过，参数校验转由插件 execute 自守
+    expect(registered.parameters.safeParse({ anything: true }).success).toBe(true);
+    expect(registered.parameters.safeParse(42).success).toBe(true);
+  });
+
   it("forAgent：外部工具纳入白名单过滤——白名单含限定名才启用，与内置同管线", () => {
     ctx.tools.registerExternal("demo", makeTool("greet"));
     // 白名单含限定名：与内置工具一起装配（内置在前、外部居中、MCP 殿后）
@@ -160,24 +197,28 @@ describe("plugins/external × tools 全链路（E3：fixture 插件 apply 内注
 
   it("E1 骨架加载的 fixture 插件 registerExternal → agent 白名单启用 → 出现在 forAgent 结果", async () => {
     // fixture 插件：inject ["tools"]，apply 里注册两个工具（一个审批缺省、一个声明只读）。
-    // parameters 用占位 stub——fixture 位于临时 DATA_DIR 下，无 node_modules 解析链，
-    // 无法 bare-import zod；本链路只断言注册与白名单（不经 execute），占位即可
+    // parameters 给真实 JSON Schema——fixture 位于临时 DATA_DIR 下，无 node_modules
+    // 解析链，无法 bare-import zod，这正是外部作者的唯一可行形态（parameters 兼容
+    // 转换的冒烟路径）；注册后断言语义校验行为（safeParse）
     const fixture = `
 export const name = "hello";
 export const inject = ["tools"];
 export function apply(ctx) {
-  const stubParams = { parse: (v) => v };
   const ok1 = ctx.tools.registerExternal("hello", {
     name: "greet",
     description: "fixture greet",
-    parameters: stubParams,
+    parameters: {
+      type: "object",
+      properties: { who: { type: "string" } },
+      required: ["who"],
+    },
     accesses: [],
     async execute() { return { success: true, output: "hi" }; },
   });
   const ok2 = ctx.tools.registerExternal("hello", {
     name: "peek",
     description: "fixture peek（声明只读）",
-    parameters: stubParams,
+    parameters: { type: "object", properties: { limit: { type: "integer" } } },
     accesses: [{ resource: "file", action: "read" }],
     requiresApproval: false,
     async execute() { return { success: true, output: "seen" }; },
@@ -207,9 +248,19 @@ export function apply(ctx) {
     expect(external[0].requiresApproval).toBe(true); // 缺省从严
     expect(external[1].requiresApproval).toBe(false); // 插件自声明只读
 
+    // 冒烟：JSON Schema parameters 已转 zod——safeParse 校验生效（合法通过/非法拒绝）
+    expect(external[0].parameters.safeParse({ who: "心智" }).success).toBe(true);
+    expect(external[0].parameters.safeParse({}).success).toBe(false); // 缺 required
+    expect(external[0].parameters.safeParse({ who: 42 }).success).toBe(false); // 类型错
+    expect(external[1].parameters.safeParse({ limit: 3 }).success).toBe(true);
+    expect(external[1].parameters.safeParse({ limit: "x" }).success).toBe(false);
+
     // 白名单启用：含限定名的 agent 装配出外部工具，不含则不启用
     const picked = ctx.tools.forAgent({ id: "a1", tools: ["ext__hello__greet"] } as AgentConfig);
     expect(picked.map((t) => t.name)).toEqual(["ext__hello__greet"]);
+    // 白名单启用的工具同样带着转换后的 schema（preflight 不再崩）
+    expect(picked[0].parameters.safeParse({ who: "zome" }).success).toBe(true);
+    expect(picked[0].parameters.safeParse({ who: 1 }).success).toBe(false);
     const none = ctx.tools.forAgent({ id: "a2", tools: [] } as unknown as AgentConfig);
     expect(none).toEqual([]);
   });

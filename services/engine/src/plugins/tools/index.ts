@@ -1,7 +1,7 @@
 import type { Context } from "cordis";
 import type { AgentConfig } from "@mindcloud/shared";
 import { getBuiltinTools } from "../../tools/builtin/index.js";
-import { McpClientManager } from "../../tools/mcp/index.js";
+import { McpClientManager, mcpInputSchemaToZod } from "../../tools/mcp/index.js";
 import { qualifyExternalToolName } from "../../tools/external/naming.js";
 import { resolveConfiguredTools } from "../../config/agent-tools.js";
 import { logger } from "../../logger.js";
@@ -30,6 +30,13 @@ export const name = "tools";
 /** 无 ctx 服务依赖 */
 export const inject: string[] = [];
 
+/**
+ * registerExternal 的工具入参：与 Tool 同构，唯 parameters 放宽为 unknown——
+ * 外部插件是纯 JS（DATA_DIR 下无 node_modules 解析链，拿不到 zod），允许给
+ * JSON Schema 对象，收编时统一转 zod（见 registerExternal JSDoc）。
+ */
+export type ExternalToolInput = Omit<Tool, "parameters"> & { parameters: unknown };
+
 /** ctx.tools 上架面 */
 export interface ToolsRegistry {
   /** MCP 管理器（ApiContext 透传用；生命周期归本插件，见头注） */
@@ -46,8 +53,11 @@ export interface ToolsRegistry {
    * 审批从严缺省：requiresApproval === undefined 按 true 登记；插件可显式标 false
    * 声明只读——这是插件作者的自声明，信任模型同 external 插件头注（用户自装代码，
    * 进程内全权限，类 Obsidian）。
+   * parameters 接受两种形态：zod schema（带 safeParse 方法，原样保留）或 JSON
+   * Schema 对象（经 mcpInputSchemaToZod 转换；oneOf/$ref 等边界形态按 MCP 既有
+   * 口径降级 z.unknown()——参数校验转由插件 execute 自守，不阻塞链路）。
    */
-  registerExternal(pluginName: string, tool: Tool): boolean;
+  registerExternal(pluginName: string, tool: ExternalToolInput): boolean;
   /** agent 工具装配：白名单 filter（内置 + 外部）+ MCP 合并（worker/puppet 创建链同一份快照语义） */
   forAgent(agentConfig: AgentConfig): Tool[];
 }
@@ -89,8 +99,18 @@ export async function apply(ctx: Context): Promise<void> {
       // 审批从严缺省：requiresApproval 缺省按 true 登记（Tool 契约里 undefined
       // 等于免审批，必须收编）；插件可显式标 false 声明只读（插件作者自声明，
       // 信任模型见面上 JSDoc）。工具名改写为限定名，其余字段原样保留
+      // parameters 兼容：已是 zod schema（带 safeParse）原样保留；否则按 JSON
+      // Schema 经 mcpInputSchemaToZod 转 zod——外部插件是纯 JS（DATA_DIR 下无
+      // node_modules 解析链，拿不到 zod），原样收编会让 preflight 的
+      // parameters.safeParse 崩（core/react/tool-call.ts）。边界形态
+      // （oneOf/$ref 等）按 MCP 既有口径降级 z.unknown()，参数校验转由插件
+      // execute 自守
+      const parameters: Tool["parameters"] =
+        typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function"
+          ? (tool.parameters as Tool["parameters"])
+          : mcpInputSchemaToZod(tool.parameters);
       externalNames.add(qualified);
-      externalTools.push({ ...tool, name: qualified, requiresApproval: tool.requiresApproval ?? true });
+      externalTools.push({ ...tool, name: qualified, parameters, requiresApproval: tool.requiresApproval ?? true });
       return true;
     },
     forAgent: (agentConfig) => {
