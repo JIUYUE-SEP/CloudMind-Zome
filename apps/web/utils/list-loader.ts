@@ -29,7 +29,9 @@ export function createListLoader<T>(): ListLoader<T> {
     } catch (err) {
       if (seq === loadSeq) error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
-      isLoading.value = false;
+      // 代际守卫（与结果/错误同口径）：并发 load 中旧代先返回时不得复位
+      // isLoading——新代仍在途，加载态只能由最新一代落定收尾
+      if (seq === loadSeq) isLoading.value = false;
     }
   }
 

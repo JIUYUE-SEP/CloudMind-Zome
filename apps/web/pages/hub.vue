@@ -179,6 +179,9 @@ async function selectGroup(session: Session) {
   selectedSession.value = session;
   // 先断旧连接，await 期间旧会话的 delta 不会串进新会话
   closeGroupConnection();
+  // 与私聊侧 disconnectInternal（stores/chat.ts）同款防护：切群即清空旧消息，
+  // 消除新群历史返回前旧群内容残留在新群名下的窗口
+  groupMessages.value = [];
   const msgs = await fetchGroupMessages(session.id);
   // await 期间组件已卸载：不得落地消息，更不得建立迟到的群聊连接（M41）
   if (!alive) return;

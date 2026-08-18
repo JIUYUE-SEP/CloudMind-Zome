@@ -219,9 +219,17 @@ export function createManagedWsConnection(
   // 建连前必须等 token 就绪（真机 #12）：REST 与 WS 都不能带着空 token 抢跑
   // /api/engine-token / Tauri IPC 的异步解析；就绪 Promise 模块级缓存，只等一次。
   // 重连仍直接 open()——首次建连成功时 token 必然已就绪
-  void deps.ensureTokenReady().then(() => {
-    if (!closedByCaller) open();
-  });
+  void deps
+    .ensureTokenReady()
+    .then(() => {
+      if (!closedByCaller) open();
+    })
+    .catch(() => {
+      // 与 4401 重建链同口径：初始建连的就绪失败不得 unhandled rejection 或
+      // 悬在既不建连也不透传的中间态——透传 onError（与首连 onerror 同一文案），
+      // 保持「未连接」由人工恢复
+      if (!closedByCaller) handlers.onError?.("WebSocket error");
+    });
 
   const sendRawFrame = (message: object): boolean => {
     if (socket && socket.readyState === WebSocket.OPEN) {

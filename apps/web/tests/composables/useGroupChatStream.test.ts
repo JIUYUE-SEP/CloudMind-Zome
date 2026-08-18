@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { useGroupChatStream } from "@/composables/useGroupChatStream";
 
 describe("useGroupChatStream", () => {
@@ -66,6 +66,20 @@ describe("useGroupChatStream", () => {
     handlers.onTurnEnd("a2");
     handlers.onTurnEnd("a1");
     expect(isStreaming.value).toBe(false);
+  });
+
+  it("非 string 的 delta 帧丢弃并 warn，不建槽（与私聊同口径防御）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { messages, isStreaming, handlers } = useGroupChatStream();
+      handlers.onTextDelta(123 as unknown as string, "a1");
+      handlers.onThinkingDelta(null as unknown as string, "a1");
+      expect(messages.value).toHaveLength(0);
+      expect(isStreaming.value).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("onError 关闭所有槽并追加错误气泡", () => {

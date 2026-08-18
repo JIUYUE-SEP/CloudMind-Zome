@@ -147,6 +147,66 @@ describe("Hub page group chat", () => {
     expect(msgs.map((m) => m.id)).toEqual(["new-s2"]);
   });
 
+  it("切群即清空旧群消息：新群历史返回前不残留旧群内容", async () => {
+    const s2 = { ...groupSession, id: "s2", name: "Team2" };
+    const record = (id: string, text: string) => ({
+      id,
+      role: "assistant",
+      content: [{ type: "text", text }],
+      createdAt: "",
+    });
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes("/sessions/s1/messages")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([record("m-s1", "S1 历史")]),
+        } as unknown as Response);
+      }
+      if (url.includes("/sessions/s2/messages")) {
+        // s2 历史慢返回：制造加载窗口期
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                json: () => Promise.resolve([record("m-s2", "S2 历史")]),
+              } as unknown as Response),
+            40,
+          ),
+        );
+      }
+      if (url.includes("/sessions") && !url.includes("/messages")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([groupSession, s2]),
+        } as unknown as Response);
+      }
+      return mockFetch(url);
+    }) as unknown as typeof globalThis.fetch;
+
+    const wrapper = await mountHub();
+    await flushPromises();
+    const groupTab = wrapper.findAll(".comm-mode-btn").find((el) => el.text() === "群聊");
+    await groupTab!.trigger("click");
+    await flushPromises();
+
+    const items = () => wrapper.findAll(".comm-item");
+    await items().find((el) => el.text().includes("Team"))!.trigger("click");
+    await flushPromises();
+    const vm = wrapper.vm as unknown as { groupMessages: { id: string }[] };
+    expect(vm.groupMessages.map((m) => m.id)).toEqual(["m-s1"]);
+
+    // 切到 s2 的瞬间（历史仍在途）：旧群消息必须已清空，不得残留在新群名下
+    await items().find((el) => el.text().includes("Team2"))!.trigger("click");
+    expect(vm.groupMessages).toEqual([]);
+
+    await new Promise((r) => setTimeout(r, 80));
+    await flushPromises();
+    expect(vm.groupMessages.map((m) => m.id)).toEqual(["m-s2"]);
+
+    wrapper.unmount();
+  });
+
   it("群聊历史加载在途时卸载组件：迟到响应不再建立连接（M41 alive 门）", async () => {
     let resolveMessages!: (value: unknown) => void;
     globalThis.fetch = vi.fn((url: string) => {

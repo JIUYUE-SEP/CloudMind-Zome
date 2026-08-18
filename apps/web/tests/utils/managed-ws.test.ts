@@ -208,6 +208,20 @@ describe("managed-ws 连接管理器生命周期（D2 共享层直测）", () =>
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
+  it("初始建连的 token 就绪失败：catch 落终态透传 onError（不 unhandled rejection）", async () => {
+    const ensureTokenReady = vi.fn().mockRejectedValue(new Error("ipc down"));
+    const onError = vi.fn();
+    const onOpen = vi.fn();
+    createManagedWsConnection("ws://localhost/ws/a1", { onError, onOpen }, false, makeDeps({ ensureTokenReady }));
+    await flush();
+    // 就绪失败：不得建连、不得悬在既不建连也不透传的中间态
+    // （初始链无 catch 时这里是 unhandled rejection，本用例直接红）
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith("WebSocket error");
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it("调用方 close() 后不再重连", async () => {
     const onClose = vi.fn();
     const onReconnecting = vi.fn();

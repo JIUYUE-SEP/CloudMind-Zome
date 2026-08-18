@@ -133,6 +133,30 @@ describe("chat store 流式状态以 turn 为界", () => {
     expect(store.messages.at(-1)!.isStreaming).toBe(false);
   });
 
+  it("零文本直接 tool.call：自动建流式槽挂徽章，后续正文进同一槽（F13）", async () => {
+    const { store, frame } = await connectAndSend();
+    // 模型无正文直接调工具：此刻 last 是 user 气泡，此前徽章被静默丢弃
+    frame({ type: "tool.call", toolCallId: "t1", name: "search", arguments: {} });
+    const assistants = () => store.messages.filter((m) => m.role === "assistant");
+    expect(assistants()).toHaveLength(1);
+    expect(assistants()[0]!.toolCalls).toHaveLength(1);
+    expect(assistants()[0]!.toolCalls[0]).toMatchObject({ toolCallId: "t1", name: "search" });
+    expect(assistants()[0]!.isStreaming).toBe(true);
+
+    // 工具结果可回写该徽章状态
+    frame({ type: "tool.result", toolCallId: "t1", output: "ok" });
+    expect(assistants()[0]!.toolCalls[0]!.status).toBe("done");
+
+    // 同一 turn 后到的正文合并进同一槽（与群聊 slotFor 同口径），不开新气泡
+    frame({ type: "text.delta", delta: "查到了" });
+    expect(assistants()).toHaveLength(1);
+    expect(assistants()[0]!.text).toBe("查到了");
+
+    frame({ type: "turn.end" });
+    expect(assistants()[0]!.isStreaming).toBe(false);
+    expect(store.isStreaming).toBe(false);
+  });
+
   it("thinking.delta 先于正文到达：建立流式气泡累积思考，正文进同一气泡", async () => {
     const store = useChatStore();
     store.connect("a1");

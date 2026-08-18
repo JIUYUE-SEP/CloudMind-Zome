@@ -89,9 +89,18 @@ export function useGroupChatStream() {
   // connectSession 的帧处理集；delta/turn.end 依赖 useEngineClient 透出的 agentId
   const handlers = {
     onTextDelta: (delta: string, agentId?: string) => {
+      // 与私聊（stores/chat.ts）同口径的双重防御：非 string 的 delta 帧丢弃，不建槽
+      if (typeof delta !== "string") {
+        console.warn("dropping non-string text.delta frame", delta);
+        return;
+      }
       slotFor(agentId).text += delta;
     },
     onThinkingDelta: (delta: string, agentId?: string) => {
+      if (typeof delta !== "string") {
+        console.warn("dropping non-string thinking.delta frame", delta);
+        return;
+      }
       slotFor(agentId).thinking += delta;
     },
     onToolCall: (toolCall: { toolCallId: string; name: string; arguments: unknown; agentId?: string }) => {

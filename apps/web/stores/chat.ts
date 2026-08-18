@@ -164,9 +164,23 @@ export const useChatStore = defineStore("chat", () => {
       },
       onToolCall: (toolCall) => {
         if (stale()) return;
+        // F13：零文本直接 tool.call 时 last 还是 user 气泡，徽章会静默丢失——
+        // 照群聊 slotFor 语义：找不到当前 turn 的流式 assistant 槽就自动建槽。
+        // 槽位口径与 onTextDelta 一致（isStreaming 的 assistant 才算本 turn 的槽，
+        // 审批卡片/历史气泡等非流式 assistant 不算），后到的 text.delta 因 last
+        // 已是流式 assistant 而合并进同一槽
         const last = messages.value[messages.value.length - 1];
-        if (last && last.role === "assistant") {
+        if (last && last.role === "assistant" && last.isStreaming) {
           last.toolCalls.push(toolCall);
+        } else {
+          messages.value.push({
+            id: nextMsgId("stream"),
+            role: "assistant",
+            text: "",
+            thinking: "",
+            toolCalls: [toolCall],
+            isStreaming: true,
+          });
         }
       },
       onToolResult: (result) => {

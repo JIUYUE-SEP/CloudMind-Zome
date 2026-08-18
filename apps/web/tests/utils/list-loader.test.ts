@@ -75,4 +75,19 @@ describe("createListLoader 列表加载模板（D2 共享层直测）", () => {
     expect(loader.list.value).toEqual(["new"]);
     expect(loader.error.value).toBe("");
   });
+
+  it("代际守卫：并发 load 中旧代先返回不得复位 isLoading（新代仍在途）", async () => {
+    const loader = createListLoader<string>();
+    const slow = deferred<string[]>();
+    const stale = loader.load(() => Promise.resolve(["stale"])); // 旧代先落定
+    const fresh = loader.load(() => slow.promise); // 新代仍在途
+    await stale;
+    // 旧代的 finally 不得提前复位加载态：新代还在加载中
+    expect(loader.isLoading.value).toBe(true);
+
+    slow.resolve(["new"]);
+    await fresh;
+    expect(loader.isLoading.value).toBe(false);
+    expect(loader.list.value).toEqual(["new"]);
+  });
 });
