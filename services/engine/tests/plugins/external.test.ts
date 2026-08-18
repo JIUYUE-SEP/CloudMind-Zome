@@ -6,11 +6,14 @@ import path from "node:path";
 import { restoreDataDir } from "../helpers/env.js";
 import { logger } from "../../src/logger.js";
 import * as externalPlugin from "../../src/plugins/external/index.js";
+import type { AgentsFace } from "../../src/plugins/agents/index.js";
 
 // 迁移第二阶段 E1：external 插件（外部插件发现/加载骨架）测试。
 // 临时目录当 DATA_DIR（CLOUDMIND_DATA_DIR 模式同 tests/plugins/config.test.ts），
-// fixture 插件（index.mjs 纯 JS ESM）现场写盘；loader 只消费模块级 logger
-// （inject=[]），直挂 root Context，不复用 agents 系挂载链。
+// fixture 插件（index.mjs 纯 JS ESM）现场写盘；loader 只消费模块级 logger +
+// agents 面（E2 起 inject=["agents"] 枚举 per-agent 清单），直挂 root Context
+// + agents 最小 stub（list() 空枚举 = 无 per-agent 加载，E1 行为不变），
+// 不复用 agents 系挂载链。
 // fixture 侧效果经 globalThis.__ext 通道断言——动态 import 的 fixture 与测试
 // 同进程同 globalThis，比「经 config 穿 markerPath 写文件」更直接。
 
@@ -58,6 +61,9 @@ describe("plugins/external（E1：外部插件发现/加载骨架）", () => {
   /** 直挂 root Context 并等骨架加载落定（await 至 loader ACTIVE） */
   async function mount(): Promise<Context> {
     const ctx = new Context();
+    // E2：external inject 追加 agents（枚举 per-agent 清单）——最小 stub：
+    // list() 空枚举 = 无 per-agent 加载，本文件 E1 行为不变
+    ctx.provide("agents", { agentRepository: { list: async () => [] } } as unknown as AgentsFace);
     await ctx.plugin(externalPlugin);
     return ctx;
   }

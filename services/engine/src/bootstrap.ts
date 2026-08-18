@@ -31,7 +31,7 @@ import { registerShutdownHandlers } from "./shutdown.js";
 // （启动对账 + scheduler start，serial 按注册序）→ http.listen() → 关停钩。
 // ApiContext 装配与 listen 段收进 plugins/http；启动对账收进 plugins/memory
 // （docs/superpowers/plans/2026-08-14-cordis-plugin-migration.md）
-// 迁移第二阶段 E1：external 插件挂全部内部插件之后、assertServices 之前
+// 迁移第二阶段 E1+E2：external 插件挂全部内部插件之后、assertServices 之前
 // （DATA_DIR 外部插件清单驱动进场，见 plugins/external 头注）。
 
 async function main() {
@@ -99,10 +99,12 @@ async function main() {
   // 末位挂载）；fiber 引用留给关停钩——close 挂插件 disposer（tools 同款先例）
   const httpFiber = await root.plugin(httpPlugin);
 
-  // external（迁移第二阶段 E1）：DATA_DIR 外部插件发现/加载骨架——清单驱动、
-  // fail-closed（单个失败 warn 不阻断，见 plugins/external 头注）。位置：全部
-  // 内部插件挂载之后、assertServices 之前——apply 内完成扫描与逐个挂载，外部
-  // 插件 inject 的内部服务已全部就位；下方 serial("engine/ready") 外部插件可监听
+  // external（迁移第二阶段 E1+E2）：DATA_DIR 外部插件发现/加载——全局 plugins.json
+  // + per-agent agents/<id>/plugins.yml 双清单驱动、fail-closed（单个失败 warn
+  // 不阻断，见 plugins/external 头注）。位置：全部内部插件挂载之后、assertServices
+  // 之前——E2 起 inject=["agents"]（枚举 per-agent 清单）要求挂在 agents 之后，
+  // 此位置满足；外部插件 inject 的内部服务已全部就位；下方 serial("engine/ready")
+  // 外部插件可监听
   await root.plugin(externalPlugin);
 
   // fail-fast 断言（P3 任务 0）：cordis 对 PENDING 纤维的 await plugin() 立即落定
