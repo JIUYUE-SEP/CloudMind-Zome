@@ -69,7 +69,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Compute
 
 - `GET /compute/providers` — 列出 Provider
-- `POST /compute/providers` — 创建 Provider（`models` 数组逐型号走白名单校验；provider id 当前**无重复校验**，同 id 会落两条配置——已知缺陷，创建方需自行保证唯一）
+- `POST /compute/providers` — 创建 Provider（`models` 数组逐型号走白名单校验；**重复 id 返回 409**）
 - `PUT /compute/providers/:id` — 更新 Provider（改 baseUrl/apiKey/apiMode/超时后，引用它的 worker 会被退役重建，下一次调用即生效）
 - `DELETE /compute/providers/:id` — 删除 Provider（引用它的 worker 一并退役；删除后相关 agent 报"Provider 不存在"明确错误，不会回落旧快照）
 - `POST /compute/providers/:id/test` — 测试 Provider 连接
@@ -170,7 +170,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 - `GET /subagents/background` — 列出后台子代理任务
 - `GET /subagents/background/:taskId` — 查询单个后台任务
-- `GET /subagents/background/:taskId/output` — 读取任务全量输出（超 10MB 返回 413）
+- `GET /subagents/background/:taskId/output?agentId=<parentAgentId>` — 读取任务全量输出（超 10MB 返回 413；缺 agentId 返回 400，非 owner 按不存在返回 404 不泄露归属）
 - `POST /agents/:agentId/subagents/:taskId/resume` — 续跑终态任务（completed/failed/lost）：同简报重跑、复用原记录（taskId 不变、attempts+1）；running 拒绝 409，非 owner 404
 - `GET /puppet-models` — 列出 Puppet 型号（内置 + 自定义），每项 `{ name, description, personaSnippet, suggestedTools?, source }`，`source` 为 `builtin` / `custom`；自定义走 `DATA_DIR/puppet-models/*.json`（同名覆盖内置），第一版只读
 
