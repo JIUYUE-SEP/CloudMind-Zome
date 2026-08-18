@@ -2,26 +2,19 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
 import type { ModelInfo, Provider } from "@/composables/useEngineClient";
+import { createListLoader } from "@/utils/list-loader";
 
 export const useComputeStore = defineStore("compute", () => {
   const client = useEngineClient();
-  const providers = ref<Provider[]>([]);
-  const isLoading = ref(false);
+  // 加载态/错误态/代际防脏写走共享模板（D2 收敛）
+  const { list: providers, isLoading, error, load: loadList } = createListLoader<Provider>();
   // 是否已完成至少一次 load（成功或失败）：区分「加载中」与「确认不存在」
   const hasLoaded = ref(false);
-  const error = ref("");
 
   async function load() {
-    isLoading.value = true;
-    error.value = "";
-    try {
-      providers.value = await client.listProviders();
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "加载失败";
-    } finally {
-      isLoading.value = false;
-      hasLoaded.value = true;
-    }
+    await loadList(() => client.listProviders());
+    // loadList 落定即记（成功或失败都算），语义同原 finally
+    hasLoaded.value = true;
   }
 
   async function addProvider(body: Omit<Provider, "id">) {

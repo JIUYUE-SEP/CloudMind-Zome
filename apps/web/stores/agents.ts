@@ -1,24 +1,15 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
 import type { AgentConfig } from "@mindcloud/shared";
 import { useEngineClient } from "@/composables/useEngineClient";
+import { createListLoader } from "@/utils/list-loader";
 
 export const useAgentsStore = defineStore("agents", () => {
   const client = useEngineClient();
-  const list = ref<AgentConfig[]>([]);
-  const isLoading = ref(false);
-  const error = ref("");
+  // 加载态/错误态/代际防脏写走共享模板（D2 收敛）
+  const { list, isLoading, error, load: loadList } = createListLoader<AgentConfig>();
 
   async function load() {
-    isLoading.value = true;
-    error.value = "";
-    try {
-      list.value = await client.listAgents();
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "加载失败";
-    } finally {
-      isLoading.value = false;
-    }
+    await loadList(() => client.listAgents());
   }
 
   async function create(agent: AgentConfig) {

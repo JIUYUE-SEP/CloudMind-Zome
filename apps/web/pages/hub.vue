@@ -226,7 +226,8 @@ function connectGroup(sessionId: string) {
       // 重连成功：拉取最新消息列表对齐断线期间的状态
       groupReconnectAttempts.value = 0;
       fetchGroupMessages(sessionId).then((msgs) => {
-        if (msgs && selectedId.value === sessionId) groupMessages.value = msgs;
+        // alive 门（与 sessions/[id].vue 同款）：组件卸载后迟到的对齐结果不得落地
+        if (msgs && alive && selectedId.value === sessionId) groupMessages.value = msgs;
       });
     },
     onClose: () => {

@@ -1,32 +1,24 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
+import { createListLoader } from "@/utils/list-loader";
 import type { ScheduledTask } from "@mindcloud/shared";
 
 export type { ScheduledTask };
 
 export const useSchedulerStore = defineStore("scheduler", () => {
   const client = useEngineClient();
-  const tasks = ref<ScheduledTask[]>([]);
-  const error = ref("");
-  // 防止切换 Agent 后旧的 load 结果覆盖新选择
-  let loadSeq = 0;
+  // 错误态/代际防脏写走共享模板（D2 收敛；本 store 不暴露 isLoading）
+  const { list: tasks, error, load: loadList } = createListLoader<ScheduledTask>();
   let tasksAgentId = "";
 
   async function load(agentId: string) {
-    const seq = ++loadSeq;
-    error.value = "";
     // 切换 Agent 时先清空，避免加载在途期间旧 Agent 的任务被误读为当前 Agent 的
     if (tasksAgentId !== agentId) {
       tasks.value = [];
       tasksAgentId = agentId;
     }
-    try {
-      const result = await client.getScheduledTasks(agentId);
-      if (seq === loadSeq) tasks.value = result;
-    } catch (err) {
-      if (seq === loadSeq) error.value = err instanceof Error ? err.message : "加载失败";
-    }
+    // 模板代际防脏写：切换 Agent 后旧的 load 结果不会覆盖新选择
+    await loadList(() => client.getScheduledTasks(agentId));
   }
 
   // engine 创建时忽略 id/agentId/时间戳并自算 nextRunAt，类型上直接排除（与 client.createScheduledTask 对齐）

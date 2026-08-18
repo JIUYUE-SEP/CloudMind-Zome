@@ -1,24 +1,15 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
 import type { Blueprint, BlueprintExecution } from "@/composables/useEngineClient";
+import { createListLoader } from "@/utils/list-loader";
 
 export const useBlueprintsStore = defineStore("blueprints", () => {
   const client = useEngineClient();
-  const blueprints = ref<Blueprint[]>([]);
-  const isLoading = ref(false);
-  const error = ref("");
+  // 加载态/错误态/代际防脏写走共享模板（D2 收敛）
+  const { list: blueprints, isLoading, error, load: loadList } = createListLoader<Blueprint>();
 
   async function load() {
-    isLoading.value = true;
-    error.value = "";
-    try {
-      blueprints.value = await client.listBlueprints();
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "加载失败";
-    } finally {
-      isLoading.value = false;
-    }
+    await loadList(() => client.listBlueprints());
   }
 
   async function create(blueprint: Omit<Blueprint, "id" | "createdAt" | "updatedAt">) {

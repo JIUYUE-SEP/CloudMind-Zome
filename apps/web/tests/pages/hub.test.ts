@@ -73,6 +73,7 @@ describe("Hub page group chat", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     MockWebSocket.instances.forEach((ws) => ws.close());
   });
 
@@ -200,6 +201,70 @@ describe("Hub page group chat", () => {
     expect(vm.groupMessages.at(-1)!.approval?.status).toBe("expired");
 
     wrapper.unmount();
+  });
+
+  // 重连用例共用：挂上群聊连接后，断线（1006）→ 1s 退避 → 新实例 auto-open 触发 onReconnected
+  async function mountGroupAndReconnect() {
+    vi.useFakeTimers();
+    const wrapper = await mountHub();
+    // 1ms 步进而非 0：fake timers 下 advance(0) 不触发当拍新挂的 0ms 定时器（WS auto-open）
+    await vi.advanceTimersByTimeAsync(1);
+    const groupTab = wrapper.findAll(".comm-mode-btn").find((el) => el.text() === "群聊");
+    await groupTab!.trigger("click");
+    await vi.advanceTimersByTimeAsync(1);
+    await wrapper.findAll(".comm-item").find((el) => el.text().includes("Team"))!.trigger("click");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    MockWebSocket.instances[0]!.onclose?.();
+    // 重连成功后的对齐拉取挂起：断线期间的消息由 deferred 控制何时返回
+    let resolveMessages!: (value: unknown) => void;
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes("/sessions/s1/messages")) {
+        return new Promise((resolve) => {
+          resolveMessages = resolve;
+        });
+      }
+      return mockFetch(url);
+    }) as unknown as typeof globalThis.fetch;
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    // 新实例 auto-open（setTimeout 0）→ onReconnected → 发起对齐拉取
+    await vi.advanceTimersByTimeAsync(1);
+    return { wrapper, resolveMessages: (v: unknown) => resolveMessages(v) };
+  }
+
+  const reconnectRecord = (id: string, text: string) => ({
+    id,
+    role: "assistant",
+    content: [{ type: "text", text }],
+    createdAt: "",
+  });
+
+  it("群聊断线重连后 onReconnected 拉取最新消息列表对齐", async () => {
+    const { wrapper, resolveMessages } = await mountGroupAndReconnect();
+    const vm = wrapper.vm as unknown as { groupMessages: { id: string }[] };
+    expect(vm.groupMessages).toEqual([]);
+
+    resolveMessages({ ok: true, json: () => Promise.resolve([reconnectRecord("re1", "断线期间的消息")]) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vm.groupMessages.map((m) => m.id)).toEqual(["re1"]);
+
+    wrapper.unmount();
+  });
+
+  it("重连对齐在途时卸载：迟到的对齐结果不落地（onReconnected alive 门）", async () => {
+    const { wrapper, resolveMessages } = await mountGroupAndReconnect();
+    const vm = wrapper.vm as unknown as { groupMessages: { id: string }[] };
+    expect(vm.groupMessages).toEqual([]);
+
+    // 对齐拉取仍在途时卸载：alive 门拦截，迟到的结果不得写回
+    wrapper.unmount();
+    resolveMessages({ ok: true, json: () => Promise.resolve([reconnectRecord("late1", "迟到对齐")]) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vm.groupMessages).toEqual([]);
   });
 });
 
