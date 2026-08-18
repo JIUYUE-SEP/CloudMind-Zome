@@ -564,6 +564,94 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  it("PUT provider 掩码 \"***\" 回写不毁已存密钥（与 config.ts tavily 口径一致）", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-mask",
+      displayName: "Mask",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-real",
+      models: [],
+    });
+
+    // 前端把 GET 到的掩码原样 PUT 回来：真实密钥必须保持不动（不得把 "***" 加密落库）
+    const res = await authedRequest(app.server)
+      .put("/compute/providers/p-mask")
+      .send({ displayName: "Mask Renamed", apiKey: "***" });
+    expect(res.status).toBe(200);
+    expect(res.body.apiKey).toBe("***");
+
+    const config = await context.configRepository.load();
+    expect(config.providers[0].displayName).toBe("Mask Renamed");
+    expect(config.providers[0].apiKey).toBe("sk-real");
+    await app.close();
+  });
+
+  it("F10：DELETE provider 不存在 → 404（不落盘、不触发退役副作用）", async () => {
+    const app = await makeApp();
+    const retireSpy = vi.fn();
+    context.retireAgentWorker = retireSpy;
+
+    const res = await authedRequest(app.server).delete("/compute/providers/ghost");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Provider not found");
+    expect(retireSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("F10：DELETE model provider 不存在 / 型号未命中 → 404（现状不变）", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server).post("/compute/providers").send({
+      id: "p-del404",
+      displayName: "Del404",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [{ id: "gpt-4o", displayName: "GPT-4o", modelType: "llm" }],
+    });
+
+    const noProvider = await authedRequest(app.server).delete("/compute/providers/ghost/models/gpt-4o");
+    expect(noProvider.status).toBe(404);
+    expect(noProvider.body.error).toBe("Provider not found");
+
+    const noModel = await authedRequest(app.server).delete("/compute/providers/p-del404/models/ghost-model");
+    expect(noModel.status).toBe(404);
+    expect(noModel.body.error).toBe("Model not found");
+
+    // 未命中的删除不改现状、不落盘
+    const config = await context.configRepository.load();
+    expect(config.providers[0].models).toHaveLength(1);
+    await app.close();
+  });
+
+  it("并发 POST 两个 provider 不互丢（repository.update 串行化读-改-写）", async () => {
+    const app = await makeApp();
+    const [r1, r2] = await Promise.all([
+      authedRequest(app.server).post("/compute/providers").send({
+        id: "p-conc-1",
+        displayName: "Conc 1",
+        providerType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        models: [],
+      }),
+      authedRequest(app.server).post("/compute/providers").send({
+        id: "p-conc-2",
+        displayName: "Conc 2",
+        providerType: "openai",
+        baseUrl: "https://api.deepseek.com",
+        models: [],
+      }),
+    ]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+
+    const listRes = await authedRequest(app.server).get("/compute/providers");
+    const ids = listRes.body.map((p: { id: string }) => p.id).sort();
+    expect(ids).toEqual(["p-conc-1", "p-conc-2"]);
+    await app.close();
+  });
+
   it("manages models under a provider", async () => {
     const app = await makeApp();
     const provider = {

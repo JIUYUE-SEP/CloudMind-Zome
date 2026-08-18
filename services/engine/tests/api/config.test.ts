@@ -153,4 +153,21 @@ describe("Config API", () => {
     expect(res.body.memory).toBeDefined();
     await app.close();
   });
+
+  it("并发两个 PUT 写不同字段不互丢（repository.update 串行化读-改-写）", async () => {
+    const app = await makeApp();
+    // 修复前：两请求各自 load 同一旧快照再分别 save，后写吞掉先写；
+    // update() 把读-改-写并入同一写队列槽位，第二个请求读到第一个落盘后的最新配置
+    const [r1, r2] = await Promise.all([
+      authedRequest(app.server).put("/config").send({ memory: { keepRecent: 9 } }),
+      authedRequest(app.server).put("/config").send({ tavilyApiKey: "tvly-conc" }),
+    ]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.memory.keepRecent).toBe(9);
+    expect(loaded.settings.tavilyApiKey).toBe("tvly-conc");
+    await app.close();
+  });
 });

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
+import { isValidAgentId } from "@mindcloud/shared";
 
 /** skill-history 查询上限（默认 50） */
 const HISTORY_DEFAULT_LIMIT = 50;
@@ -20,6 +21,10 @@ export async function registerSkillRoutes(app: FastifyInstance, context: ApiCont
     schema: { summary: "Reload agent skill catalog", tags: ["skills"] },
   }, async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
+    // 与其余 per-agent 路由同口径：非法 id 前置 400（早于 404 存在性检查）
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const config = await context.agentRepository.get(agentId);
     if (!config) return reply.status(404).send({ error: "Agent not found" });
     context.skillService?.invalidate(agentId); // 清解析缓存（否则 TTL 内目录仍是旧的）
@@ -32,6 +37,10 @@ export async function registerSkillRoutes(app: FastifyInstance, context: ApiCont
     schema: { summary: "Get agent skill usage history", tags: ["skills"] },
   }, async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
+    // 与其余 per-agent 路由同口径：非法 id 前置 400（早于 404 存在性检查）
+    if (!isValidAgentId(agentId)) {
+      return reply.status(400).send({ error: "Invalid agent id" });
+    }
     const config = await context.agentRepository.get(agentId);
     if (!config) return reply.status(404).send({ error: "Agent not found" });
     const raw = Number((request.query as { limit?: string }).limit);

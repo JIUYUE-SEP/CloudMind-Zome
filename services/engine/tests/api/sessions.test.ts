@@ -154,6 +154,44 @@ describe("Sessions API", () => {
     await app.close();
   });
 
+  it("PUT 显式空 agentIds → 400，不破坏 POST 的非空成员不变量", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    const res = await authedRequest(app.server).put(`/sessions/${session.id}`).send({ agentIds: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("agentIds must not be empty");
+    // 原成员保持不变
+    const after = await context.sessionRepository.get(session.id);
+    expect(after?.agentIds).toEqual(["a1", "a2"]);
+    await app.close();
+  });
+
+  it("POST type 白名单（对齐 shared Session 类型）：非法 400，group/intermind 放行", async () => {
+    const app = await makeApp();
+    const bad = await authedRequest(app.server)
+      .post("/sessions")
+      .send({ name: "T", agentIds: ["a1"], type: "webrtc" });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toContain("type");
+
+    const group = await authedRequest(app.server)
+      .post("/sessions")
+      .send({ name: "G", agentIds: ["a1"], type: "group" });
+    expect(group.status).toBe(200);
+    expect(group.body.type).toBe("group");
+
+    const intermind = await authedRequest(app.server)
+      .post("/sessions")
+      .send({ name: "I", agentIds: ["a1"], type: "intermind" });
+    expect(intermind.status).toBe(200);
+    expect(intermind.body.type).toBe("intermind");
+    await app.close();
+  });
+
   it("gets session messages aggregated from all agents", async () => {
     const app = await makeApp();
     const session = await context.sessionRepository.create({

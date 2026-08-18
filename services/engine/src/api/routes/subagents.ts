@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import type { BackgroundSubagent } from "../../subagent/background.js";
@@ -91,7 +92,12 @@ export async function registerSubagentRoutes(app: FastifyInstance, context: ApiC
     // 并发 resume 竞态（review 建议）：双请求同过 409 前置检查时，
     // 第二个 manager.resume() 抛 "still running"——映射为 409 而非冒泡 500
     try {
-      manager.resume(taskId);
+      // H-1：resume 返回的 completion 必须接住——runTracked 失败路径会 reject，
+      // 浮空 promise 在 Node ≥15 默认 throw 模式下 = unhandled rejection 崩进程。
+      // 重跑结果经 onUpdate/轮询暴露，REST 只负责点火，失败记 warn 即可
+      void manager.resume(taskId).completion.catch((err) => {
+        logger.warn({ err, taskId }, "[subagents] resume 重跑失败");
+      });
     } catch (err) {
       if (String(err).includes("still running")) {
         return reply.status(409).send({ error: "Task is still running" });

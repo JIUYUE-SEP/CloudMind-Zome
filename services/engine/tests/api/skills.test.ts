@@ -92,6 +92,12 @@ describe("④ hot reload", () => {
     const res = await authedRequest(app.server).post("/agents/ghost/skills/reload");
     expect(res.status).toBe(404);
   });
+
+  it("非法 agentId：前置 400（与其余 per-agent 路由同口径，早于 404）", async () => {
+    const res = await authedRequest(app.server).post("/agents/invalid!/skills/reload");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
+  });
 });
 
 describe("⑤ promptHistory 查询", () => {
@@ -124,5 +130,11 @@ describe("⑤ promptHistory 查询", () => {
   it("未知 agent：404", async () => {
     const res = await authedRequest(app.server).get("/agents/ghost/skill-history");
     expect(res.status).toBe(404);
+  });
+
+  it("非法 agentId：前置 400（与其余 per-agent 路由同口径，早于 404）", async () => {
+    const res = await authedRequest(app.server).get("/agents/invalid!/skill-history");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid agent id");
   });
 });

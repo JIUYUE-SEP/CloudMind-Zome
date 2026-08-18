@@ -19,6 +19,7 @@ import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
 import type { AgentConfig } from "@mindcloud/shared";
 import { restoreDataDir } from "../helpers/env.js";
+import { logger } from "../../src/logger.js";
 
 const config: AgentConfig = { id: "a2", name: "A2", persona: "", model: "mock", skills: [], tools: [] };
 
@@ -165,6 +166,44 @@ describe("Subagents API", () => {
     const res = await authedRequest(app.server).get("/subagents/background/t2");
     expect(res.body.status).toBe("failed");
     expect(res.body.error).toContain("bg boom");
+  });
+
+  it("H-1：resume 重跑失败不崩进程——completion 被接住记 warn，响应正常", async () => {
+    await app.close();
+    await cleanup();
+
+    // runAgent 恒失败：首次执行即落 failed，resume 重跑必然再次失败
+    const built = await buildContext(async () => {
+      throw new Error("resume boom");
+    });
+    backgroundManager = built.backgroundManager;
+    cleanup = built.cleanup;
+    app = await createServer(built.context);
+    await app.ready();
+
+    backgroundManager.register(makeTask("t-fail"), config, 60_000);
+    await vi.waitFor(() => expect(backgroundManager.get("t-fail")?.status).toBe("failed"));
+
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const res = await authedRequest(app.server).post("/agents/a1/subagents/t-fail/resume");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ taskId: "t-fail", status: "running", attempts: 2 });
+
+      // 重跑再次失败：状态落 failed。completion 若没被 .catch 接住，Node 默认
+      // throw 模式下这里会是 unhandled rejection 直接崩掉进程（vitest 判负）
+      await vi.waitFor(() => expect(backgroundManager.get("t-fail")?.status).toBe("failed"));
+      expect(backgroundManager.get("t-fail")?.attempts).toBe(2);
+      await vi.waitFor(() => {
+        const calls = warnSpy.mock.calls.filter((c) =>
+          String(c[1]).includes("resume 重跑失败"),
+        );
+        expect(calls).toHaveLength(1);
+        expect((calls[0]![0] as Record<string, unknown>).taskId).toBe("t-fail");
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("summary 暴露 kind（默认 delegate / 显式 puppet）", async () => {

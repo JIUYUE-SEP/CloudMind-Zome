@@ -151,4 +151,26 @@ describe("Handoff API", () => {
     const missing = await authedRequest(app.server).get("/handoff/ho_ghost/book");
     expect(missing.status).toBe(404);
   });
+
+  it("DELETE /handoff/:id：响应同样摘要化（对齐 D1 口径，不带交接书全文）", async () => {
+    const longBook = `[交接书] ${"长".repeat(600)}`;
+    const record = await manager.record(bookInfo({ bookText: longBook }));
+    await manager.markStatus(record.id, "scheduled");
+
+    // 长交接书：DELETE 响应只带 500 字符摘要 + 截断标记（同 list 口径）
+    const res = await authedRequest(app.server).delete(`/handoff/${record.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "aborted", abortReason: "manual" });
+    expect(res.body.bookText).toHaveLength(500);
+    expect(res.body.bookTextTruncated).toBe(true);
+    expect(longBook.startsWith(res.body.bookText)).toBe(true);
+
+    // 短交接书：不截断、原文返回
+    const short = await manager.record(bookInfo({ agentId: "a2", sessionId: "s2" }));
+    await manager.markStatus(short.id, "scheduled");
+    const shortRes = await authedRequest(app.server).delete(`/handoff/${short.id}`);
+    expect(shortRes.status).toBe(200);
+    expect(shortRes.body.bookText).toBe("[交接书] 换班移交（第 1/3 棒）");
+    expect(shortRes.body.bookTextTruncated).toBe(false);
+  });
 });

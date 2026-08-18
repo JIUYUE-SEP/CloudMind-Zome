@@ -21,6 +21,10 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     if (!body.agentIds.every(isValidAgentId)) {
       return reply.status(400).send({ error: "Invalid agent id in agentIds" });
     }
+    // type 白名单与 shared Session 类型（"group" | "intermind"）对齐，非法值 400 不落库
+    if (body.type !== undefined && body.type !== "group" && body.type !== "intermind") {
+      return reply.status(400).send({ error: "Invalid session type（只允许 group / intermind）" });
+    }
     return context.sessionRepository.create({
       name: body.name,
       agentIds: body.agentIds,
@@ -44,6 +48,10 @@ export async function registerSessionRoutes(app: FastifyInstance, context: ApiCo
     const body = (request.body ?? {}) as { name?: string; agentIds?: string[] };
     const session = await context.sessionRepository.get(id);
     if (!session) return reply.status(404).send({ error: "Session not found" });
+    // 空数组成员显式 400：POST 拒绝空成员（:18），PUT 同样不允许置空破坏该不变量
+    if (body.agentIds !== undefined && body.agentIds.length === 0) {
+      return reply.status(400).send({ error: "agentIds must not be empty" });
+    }
     if (body.agentIds && !body.agentIds.every(isValidAgentId)) {
       return reply.status(400).send({ error: "Invalid agent id in agentIds" });
     }

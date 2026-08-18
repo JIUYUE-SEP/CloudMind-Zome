@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
-import type { ModelInfo } from "@mindcloud/shared";
+import type { ModelInfo, ProviderConfig } from "@mindcloud/shared";
 import OpenAI from "openai";
 import { isApiMode } from "../../provider/protocols/index.js";
 import {
@@ -380,12 +380,6 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
         models.push(built.model);
       }
     }
-    const config = await context.configRepository.load();
-    // M33：显式 id 查重（对照 POST /agents 的 409 口径）——同 id 落两条配置会让
-    // agent.providerId 引用歧义。注：API.md 记载的「无重复校验」已过时，文档同步由主线处理
-    if (body.id && config.providers.some((p) => p.id === body.id)) {
-      return reply.status(409).send({ error: `Provider id already exists: ${body.id}` });
-    }
     const provider = {
       id: body.id || crypto.randomUUID(),
       displayName: body.displayName,
@@ -397,8 +391,19 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
       ...(body.maxRetries !== undefined ? { maxRetries: body.maxRetries } : {}),
       models,
     };
-    config.providers.push(provider);
-    await context.configRepository.save(config);
+    // M33：显式 id 查重（对照 POST /agents 的 409 口径）——同 id 落两条配置会让
+    // agent.providerId 引用歧义。注：API.md 记载的「无重复校验」已过时，文档同步由主线处理
+    // 读-改-写走 update（写队列内读最新再改再写）：并发 POST 不再互丢 provider；
+    // mutator 返回原因码 = 放弃落盘（404/409 类前置失败不落盘）
+    const { result } = await context.configRepository.update((config) => {
+      if (body.id && config.providers.some((p) => p.id === body.id)) {
+        return "conflict" as const;
+      }
+      config.providers.push(provider);
+    });
+    if (result === "conflict") {
+      return reply.status(409).send({ error: `Provider id already exists: ${body.id}` });
+    }
     return sanitizeProvider(provider);
   });
 
@@ -429,6 +434,9 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
         error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
       });
     }
+    // isApiMode 谓词把 body.apiMode 收窄为 ProtocolApiMode|undefined，但属性收窄
+    // 不继承进下面的 update 闭包——提为 const（const 初始化收窄闭包内有效）
+    const bodyApiMode = body.apiMode;
     const requestTimeoutError = validateOptionalPositiveInt(body.requestTimeout, "requestTimeout", 600_000);
     if (requestTimeoutError) {
       return reply.status(400).send({ error: requestTimeoutError });
@@ -437,32 +445,43 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
     if (maxRetriesError) {
       return reply.status(400).send({ error: maxRetriesError });
     }
-    const config = await context.configRepository.load();
-    const idx = config.providers.findIndex((p) => p.id === id);
-    if (idx < 0) return reply.status(404).send({ error: "Provider not found" });
-    const existing = config.providers[idx];
-    config.providers[idx] = {
-      ...existing,
-      displayName: body.displayName ?? existing.displayName,
-      baseUrl: body.baseUrl ?? existing.baseUrl,
-      apiMode: body.apiMode ?? existing.apiMode,
-      requestTimeout: body.requestTimeout ?? existing.requestTimeout,
-      maxRetries: body.maxRetries ?? existing.maxRetries,
-      // 空字符串视为"不修改"，避免编辑表单清空已保存的密钥
-      apiKey: body.apiKey || existing.apiKey,
-    };
-    await context.configRepository.save(config);
+    // 读-改-写走 update（写队列内读最新再改再写），跨请求不互丢更新
+    let updated: ProviderConfig | undefined;
+    const { result } = await context.configRepository.update((config) => {
+      const idx = config.providers.findIndex((p) => p.id === id);
+      if (idx < 0) return "not-found" as const; // 404：放弃修改，不落盘
+      const existing = config.providers[idx];
+      const next: ProviderConfig = {
+        ...existing,
+        displayName: body.displayName ?? existing.displayName,
+        baseUrl: body.baseUrl ?? existing.baseUrl,
+        apiMode: bodyApiMode ?? existing.apiMode,
+        requestTimeout: body.requestTimeout ?? existing.requestTimeout,
+        maxRetries: body.maxRetries ?? existing.maxRetries,
+        // 空字符串与 GET 掩码 "***" 均视为"不修改"（同 config.ts 口径）——
+        // 前者避免编辑表单清空已存密钥，后者防止掩码回写被当真 key 加密落库；
+        // "清除已存 key" 通道维持不开放（保持现状不动）
+        apiKey: body.apiKey && body.apiKey !== "***" ? body.apiKey : existing.apiKey,
+      };
+      config.providers[idx] = next;
+      updated = next;
+    });
+    if (result === "not-found") return reply.status(404).send({ error: "Provider not found" });
     await retireWorkersUsingProvider(context, id);
-    return sanitizeProvider(config.providers[idx]);
+    return sanitizeProvider(updated!);
   });
 
   app.delete("/compute/providers/:id", {
     schema: { summary: "Delete a compute provider", tags: ["compute"] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const config = await context.configRepository.load();
-    config.providers = config.providers.filter((p) => p.id !== id);
-    await context.configRepository.save(config);
+    // F10：不存在按 404（与同文件 PUT 口径一致），不再恒 204；
+    // 404 时不落盘也不触发 worker 退役副作用
+    const { result } = await context.configRepository.update((config) => {
+      if (!config.providers.some((p) => p.id === id)) return "not-found" as const;
+      config.providers = config.providers.filter((p) => p.id !== id);
+    });
+    if (result === "not-found") return reply.status(404).send({ error: "Provider not found" });
     await retireWorkersUsingProvider(context, id);
     return reply.status(204).send();
   });
@@ -534,17 +553,22 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as Record<string, unknown>;
-    const config = await context.configRepository.load();
-    const provider = config.providers.find((p) => p.id === id);
-    if (!provider) return reply.status(404).send({ error: "Provider not found" });
     const built = buildModelFromBody(body);
     if (!built.ok) return reply.status(400).send({ error: built.error });
     const model = built.model;
-    if (provider.models.some((m) => m.id === model.id)) {
+    // 读-改-写走 update：存在性/查重/落盘同一队列槽位，并发写不互丢
+    const { result } = await context.configRepository.update((config) => {
+      const provider = config.providers.find((p) => p.id === id);
+      if (!provider) return "no-provider" as const; // 404/409：放弃修改，不落盘
+      if (provider.models.some((m) => m.id === model.id)) {
+        return "dup" as const;
+      }
+      provider.models.push(model);
+    });
+    if (result === "no-provider") return reply.status(404).send({ error: "Provider not found" });
+    if (result === "dup") {
       return reply.status(409).send({ error: `Model id already exists: ${model.id}` });
     }
-    provider.models.push(model);
-    await context.configRepository.save(config);
     // H6：新增型号同样可能引入首个型号级 apiMode 覆盖，退役重建即刻生效
     await retireWorkersUsingProvider(context, id);
     return model;
@@ -555,11 +579,6 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
   }, async (request, reply) => {
     const { id, modelId } = request.params as { id: string; modelId: string };
     const body = (request.body ?? {}) as Record<string, unknown>;
-    const config = await context.configRepository.load();
-    const provider = config.providers.find((p) => p.id === id);
-    if (!provider) return reply.status(404).send({ error: "Provider not found" });
-    const idx = provider.models.findIndex((m) => m.id === modelId);
-    if (idx < 0) return reply.status(404).send({ error: "Model not found" });
     // R1（review）：PUT 校验与 POST 同口径——id 只能由路径决定，其余字段白名单构造，
     // 杜绝裸 spread 写非法 modelType / 字符串 contextWindow / 撞重复 id
     if (body.id !== undefined && body.id !== modelId) {
@@ -594,45 +613,60 @@ export async function registerComputeRoutes(app: FastifyInstance, context: ApiCo
         error: "Invalid apiMode（只允许 responses / anthropic / chat_completions）",
       });
     }
-    const existing = provider.models[idx];
-    const updated: ModelInfo = {
-      ...existing,
-      ...(body.displayName !== undefined ? { displayName: body.displayName as string } : {}),
-      ...(body.modelType !== undefined ? { modelType: body.modelType as ModelInfo["modelType"] } : {}),
-      ...(body.contextWindow !== undefined ? { contextWindow: body.contextWindow as number } : {}),
-      ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens as number } : {}),
-      ...(body.supportsReasoning !== undefined
-        ? { supportsReasoning: body.supportsReasoning as boolean }
-        : {}),
-      ...(body.supportsToolCalling !== undefined
-        ? { supportsToolCalling: body.supportsToolCalling as boolean }
-        : {}),
-      ...(body.supportsMultimodal !== undefined
-        ? { supportsMultimodal: body.supportsMultimodal as boolean }
-        : {}),
-    };
-    if (rawApiMode === null) {
-      // R4：显式清除型号级覆盖，后续 chat 回落 provider 级 apiMode
-      delete updated.apiMode;
-    } else if (rawApiMode !== undefined) {
-      updated.apiMode = rawApiMode as ModelInfo["apiMode"];
-    }
-    provider.models[idx] = updated;
-    await context.configRepository.save(config);
+    // 读-改-写走 update：404 判定与落盘同一队列槽位，并发写不互丢
+    let updatedModel: ModelInfo | undefined;
+    const { result: skipReason } = await context.configRepository.update((config) => {
+      const provider = config.providers.find((p) => p.id === id);
+      if (!provider) return "no-provider" as const; // 404：放弃修改，不落盘
+      const idx = provider.models.findIndex((m) => m.id === modelId);
+      if (idx < 0) return "no-model" as const;
+      const existing = provider.models[idx];
+      const updated: ModelInfo = {
+        ...existing,
+        ...(body.displayName !== undefined ? { displayName: body.displayName as string } : {}),
+        ...(body.modelType !== undefined ? { modelType: body.modelType as ModelInfo["modelType"] } : {}),
+        ...(body.contextWindow !== undefined ? { contextWindow: body.contextWindow as number } : {}),
+        ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens as number } : {}),
+        ...(body.supportsReasoning !== undefined
+          ? { supportsReasoning: body.supportsReasoning as boolean }
+          : {}),
+        ...(body.supportsToolCalling !== undefined
+          ? { supportsToolCalling: body.supportsToolCalling as boolean }
+          : {}),
+        ...(body.supportsMultimodal !== undefined
+          ? { supportsMultimodal: body.supportsMultimodal as boolean }
+          : {}),
+      };
+      if (rawApiMode === null) {
+        // R4：显式清除型号级覆盖，后续 chat 回落 provider 级 apiMode
+        delete updated.apiMode;
+      } else if (rawApiMode !== undefined) {
+        updated.apiMode = rawApiMode as ModelInfo["apiMode"];
+      }
+      provider.models[idx] = updated;
+      updatedModel = updated;
+    });
+    if (skipReason === "no-provider") return reply.status(404).send({ error: "Provider not found" });
+    if (skipReason === "no-model") return reply.status(404).send({ error: "Model not found" });
     // H6：型号级 apiMode 覆盖变更（含 null 清除）需退役重建 worker 即刻生效
     await retireWorkersUsingProvider(context, id);
-    return provider.models[idx];
+    return updatedModel;
   });
 
   app.delete("/compute/providers/:id/models/:modelId", {
     schema: { summary: "Delete a provider model", tags: ["compute"] },
   }, async (request, reply) => {
     const { id, modelId } = request.params as { id: string; modelId: string };
-    const config = await context.configRepository.load();
-    const provider = config.providers.find((p) => p.id === id);
-    if (!provider) return reply.status(404).send({ error: "Provider not found" });
-    provider.models = provider.models.filter((m) => m.id !== modelId);
-    await context.configRepository.save(config);
+    // F10：provider 不存在 / 型号未命中都按 404（与同文件 PUT model 口径一致），
+    // 不再恒 204；404 时不落盘也不触发 worker 退役副作用
+    const { result: skipReason } = await context.configRepository.update((config) => {
+      const provider = config.providers.find((p) => p.id === id);
+      if (!provider) return "no-provider" as const;
+      if (!provider.models.some((m) => m.id === modelId)) return "no-model" as const;
+      provider.models = provider.models.filter((m) => m.id !== modelId);
+    });
+    if (skipReason === "no-provider") return reply.status(404).send({ error: "Provider not found" });
+    if (skipReason === "no-model") return reply.status(404).send({ error: "Model not found" });
     // H6：删除型号可能移除最后一个型号级 apiMode 覆盖，退役重建即刻生效
     await retireWorkersUsingProvider(context, id);
     return reply.status(204).send();

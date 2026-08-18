@@ -87,6 +87,7 @@ export async function registerHandoffRoutes(app: FastifyInstance, context: ApiCo
     // 再落控制面。无 loop（如 REST-only 调用方）时由 manager.abort 兜底。
     await context.handoffLoops?.cancel(record.agentId, record.sessionId, "manual");
     const updated = await manager.abort(id, "manual");
-    return toSummary(updated!);
+    // 对齐 D1 口径：DELETE 响应同样摘要化（toListItem），不带交接书全文
+    return toListItem(updated!);
   });
 }

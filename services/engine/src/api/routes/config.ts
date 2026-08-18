@@ -22,14 +22,15 @@ export async function registerConfigRoutes(app: FastifyInstance, context: ApiCon
       memory?: Record<string, unknown>;
       tavilyApiKey?: string;
     };
-    const config = await context.configRepository.load();
-    if (body.memory) config.settings.memory = { ...config.settings.memory, ...body.memory } as typeof config.settings.memory;
-    // 语义：undefined（字段缺失）= 不修改；空字符串 = 清除已保存的 key；
-    // "***" 是 GET 掩码，原样回写会毁掉真实密钥，同样视为"不修改"
-    if (body.tavilyApiKey !== undefined && body.tavilyApiKey !== "***") {
-      config.settings.tavilyApiKey = body.tavilyApiKey === "" ? undefined : body.tavilyApiKey;
-    }
-    await context.configRepository.save(config);
+    // 读-改-写走 repository.update（写队列槽位内读最新再改再写），跨请求不互丢更新
+    const { config } = await context.configRepository.update((cfg) => {
+      if (body.memory) cfg.settings.memory = { ...cfg.settings.memory, ...body.memory } as typeof cfg.settings.memory;
+      // 语义：undefined（字段缺失）= 不修改；空字符串 = 清除已保存的 key；
+      // "***" 是 GET 掩码，原样回写会毁掉真实密钥，同样视为"不修改"
+      if (body.tavilyApiKey !== undefined && body.tavilyApiKey !== "***") {
+        cfg.settings.tavilyApiKey = body.tavilyApiKey === "" ? undefined : body.tavilyApiKey;
+      }
+    });
     return {
       ...config.settings,
       tavilyApiKey: config.settings.tavilyApiKey ? "***" : undefined,

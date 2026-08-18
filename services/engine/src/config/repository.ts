@@ -162,6 +162,32 @@ export class ConfigRepository {
     return run;
   }
 
+  /**
+   * 读-改-写串行化（2026-08-19 终审 REST Low）：save 队列只串行"写"本身，
+   * 端点各自 load→改→save 时两个请求交错仍会互相覆盖丢更新（A 读旧配置，
+   * B 写盘，A 再写盘即吞掉 B）。update 把三步并入同一队列槽位：mutator 读到的
+   * 是上一槽位落盘后的最新配置。写端点一律走它，不再裸 load+save。
+   * mutator 无返回（void/undefined）= 确认修改、落盘；返回其它值 = 放弃修改
+   * 不落盘，该值经 result 透传给端点（404/409 等原因码——不用闭包旗标是
+   * 因为 TS 对闭包内赋值不做控制流追踪，旗标比较会撞 TS2367）。
+   */
+  async update<R = never>(
+    mutator: (config: GlobalConfig) => R | void | Promise<R | void>,
+  ): Promise<{ config: GlobalConfig; result: R | undefined }> {
+    const run = this.saveQueue.then(async () => {
+      const config = await this.load();
+      const result = (await mutator(config)) as R | undefined;
+      if (result === undefined) await this.saveInner(config);
+      return { config, result };
+    });
+    // 队列只认 settle 不认成败：任一槽位失败不堵后续（与 save 同范式）
+    this.saveQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
   private async saveInner(config: GlobalConfig): Promise<void> {
     // decrypt 降级阻断（P0 review 返工）：master key 暂时不可用时 load 会把
     // apiKey 降级为 undefined，此时 save 会把它永久写成 undefined
