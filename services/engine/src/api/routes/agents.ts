@@ -60,6 +60,19 @@ function validateHandoffMaxShifts(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * maxContextTokens 校验（F1）：缺省（undefined/null）放行，其余必须是正整数。
+ * ≤0/NaN 落库后上下文预算与压缩水位双双失效（除零/恒真），必须在入口拦掉。
+ * NaN 由 Number.isInteger 拦截；不设上限（模型窗口差异大，超配由引擎侧兜底）。
+ */
+function validateMaxContextTokens(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return "maxContextTokens 必须是正整数";
+  }
+  return undefined;
+}
+
 export async function registerAgentRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/agents", {
     schema: { summary: "List all agents", tags: ["agents"] },
@@ -84,6 +97,10 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     const handoffError = validateHandoffMaxShifts(config.handoffMaxShifts);
     if (handoffError) {
       return reply.status(400).send({ error: handoffError });
+    }
+    const contextTokensError = validateMaxContextTokens(config.maxContextTokens);
+    if (contextTokensError) {
+      return reply.status(400).send({ error: contextTokensError });
     }
     // P1-9：重复 id 显式 409（对照 models 端点），不静默覆盖现有配置
     const existing = await context.agentRepository.get(config.id);
@@ -135,6 +152,10 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     if (handoffError) {
       return reply.status(400).send({ error: handoffError });
     }
+    const contextTokensError = validateMaxContextTokens(config.maxContextTokens);
+    if (contextTokensError) {
+      return reply.status(400).send({ error: contextTokensError });
+    }
     // 合并语义（2026-08-01 起，真机验证踩坑修复）：未传字段保留原值，
     // 不再整体覆盖——部分更新的调用方曾把 persona/skills/tools 等字段静默洗掉。
     // 显式清空字段传空数组/空串；前端全量表单提交行为不受影响。
@@ -157,6 +178,10 @@ export async function registerAgentRoutes(app: FastifyInstance, context: ApiCont
     const existing = await context.agentRepository.get(id);
     if (!existing) return reply.status(404).send({ error: "Agent not found" });
     await context.agentRepository.delete(id);
+    // F6：逐出 plans 插件的 PlanManager 缓存——不逐出时删除后 plans REST 仍出旧数据，
+    // 且僵尸 manager 后续 persist 会把已删除的 agents/{id} 目录重建回来（幽灵目录）。
+    // 同步 Map.delete，无副作用，可选链与 retireAgentWorker 同口径（测试可缺省）。
+    context.evictPlanManager?.(id);
     // P1-3（review M3）：级联清理向量索引——sidecar 逐出 INDEX_CACHE 并删磁盘
     // indices 目录。sidecar 不可达时 warn 不阻断：目录统一后磁盘 embeddings 已随
     // 上面的 rm -rf agents/{id} 删除，残留仅是 sidecar 内存缓存（重启即清）。

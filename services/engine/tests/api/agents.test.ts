@@ -472,6 +472,86 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  it("POST/PUT 接受 maxContextTokens 正整数（F1）", async () => {
+    const app = await makeApp();
+    const postRes = await authedRequest(app.server)
+      .post("/agents")
+      .send({
+        id: "a1",
+        name: "A1",
+        persona: "",
+        model: "mock",
+        skills: [],
+        tools: [],
+        maxContextTokens: 128000,
+      });
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.maxContextTokens).toBe(128000);
+
+    const putRes = await authedRequest(app.server).put("/agents/a1").send({ maxContextTokens: 64000 });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.maxContextTokens).toBe(64000);
+    await app.close();
+  });
+
+  it("maxContextTokens 非正整数 POST/PUT 显式 400（F1：≤0/NaN 会让预算与水位双失效）", async () => {
+    const app = await makeApp();
+    // NaN 无法经 JSON 表达（序列化为 null，按缺省放行）；字符串/小数/零/负数必须拦
+    for (const bad of [0, -1, 2.5, "128000"]) {
+      const postRes = await authedRequest(app.server)
+        .post("/agents")
+        .send({
+          id: "a1",
+          name: "A1",
+          persona: "",
+          model: "mock",
+          skills: [],
+          tools: [],
+          maxContextTokens: bad,
+        });
+      expect(postRes.status).toBe(400);
+      expect(postRes.body.error).toContain("maxContextTokens");
+      expect(postRes.body.error).toContain("正整数");
+    }
+
+    await authedRequest(app.server)
+      .post("/agents")
+      .send({ id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] });
+    for (const bad of [0, -1, 2.5, "128000"]) {
+      const putRes = await authedRequest(app.server).put("/agents/a1").send({ maxContextTokens: bad });
+      expect(putRes.status).toBe(400);
+      expect(putRes.body.error).toContain("maxContextTokens");
+    }
+    // 非法值未落库
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    expect(getRes.body.maxContextTokens).toBeUndefined();
+    await app.close();
+  });
+
+  it("DELETE 成功后逐出 plans 缓存（F6：evictPlanManager 随删除调用）", async () => {
+    const evictPlanManager = vi.fn();
+    const built = await buildTestContext({ evictPlanManager });
+    const app = await createServer(built.context);
+    await app.ready();
+    try {
+      const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+      await authedRequest(app.server).post("/agents").send(agent);
+      const delRes = await authedRequest(app.server).delete("/agents/a1");
+      expect(delRes.status).toBe(204);
+      expect(evictPlanManager).toHaveBeenCalledWith("a1");
+      expect(evictPlanManager).toHaveBeenCalledTimes(1);
+
+      // 删除不存在 agent（404 路径）不逐出
+      evictPlanManager.mockClear();
+      const missing = await authedRequest(app.server).delete("/agents/ghost");
+      expect(missing.status).toBe(404);
+      expect(evictPlanManager).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+      await built.cleanup();
+    }
+  });
+
   it("PUT 显式清空数组字段（skills: []）生效", async () => {
     const app = await makeApp();
     await authedRequest(app.server).post("/agents").send({ id: "a1", name: "A1", persona: "", model: "mock", skills: ["s1"], tools: ["read_file"] });

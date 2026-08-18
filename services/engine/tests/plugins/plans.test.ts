@@ -107,4 +107,53 @@ describe("plugins/plans（P7c）", () => {
     expect(plan.steps).toHaveLength(1);
     expect(plan.status).toBe("pending");
   });
+
+  it("evict：逐出后 getPlanManager 重建新实例，旧实例不再被命中（F6）", async () => {
+    const ctx = new Context();
+    await mountDeps(ctx);
+    await ctx.plugin(plansPlugin);
+
+    await ctx.agents.agentRepository.save("a1", {
+      id: "a1",
+      name: "Test",
+      persona: "",
+      model: "mock",
+      skills: [],
+      tools: [],
+    });
+
+    const m1 = await ctx.plans.getPlanManager("a1");
+    expect(m1).toBeInstanceOf(PlanManager);
+    ctx.plans.evict("a1");
+    // 逐出后重建：新实例 ≠ 旧实例；再取命中新实例缓存
+    const m2 = await ctx.plans.getPlanManager("a1");
+    expect(m2).toBeInstanceOf(PlanManager);
+    expect(m2).not.toBe(m1);
+    expect(await ctx.plans.getPlanManager("a1")).toBe(m2);
+    // 未缓存的 id 空转不炸
+    ctx.plans.evict("never-cached");
+  });
+
+  it("evict + agent 删除后：getPlanManager 返回 undefined，不再出旧数据（F6）", async () => {
+    const ctx = new Context();
+    await mountDeps(ctx);
+    await ctx.plugin(plansPlugin);
+
+    await ctx.agents.agentRepository.save("a1", {
+      id: "a1",
+      name: "Test",
+      persona: "",
+      model: "mock",
+      skills: [],
+      tools: [],
+    });
+    const m1 = await ctx.plans.getPlanManager("a1");
+    expect(m1).toBeInstanceOf(PlanManager);
+
+    // agents 路由 DELETE 的次序：先删配置，再逐出缓存
+    await ctx.agents.agentRepository.delete("a1");
+    ctx.plans.evict("a1");
+    // 不再命中僵尸实例（删除前不逐出的话这里会返回 m1 出旧数据）
+    expect(await ctx.plans.getPlanManager("a1")).toBeUndefined();
+  });
 });

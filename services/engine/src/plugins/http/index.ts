@@ -81,6 +81,8 @@ export function apply(ctx: Context): void {
     blueprintRepository: ctx.blueprint.blueprintRepository,
     getAgentWorker: ctx.agents.getOrCreateWorker,
     getPlanManager: ctx.plans.getPlanManager,
+    // F6：agent 删除时逐出 plans 缓存（路由 DELETE 经此调用，见 plugins/plans 头注）
+    evictPlanManager: (agentId) => ctx.plans.evict(agentId),
     runAgentCollect: ctx.subagents.runAgentCollect,
     subagentDispatcher: ctx.subagents.dispatcher,
     backgroundManager: ctx.subagents.backgroundManager,

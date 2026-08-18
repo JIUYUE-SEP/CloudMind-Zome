@@ -22,6 +22,13 @@ export const inject = ["agents", "llm"];
 export interface PlansFace {
   /** 按 agent 维度获取（懒创建）PlanManager；agent 不存在时返回 undefined */
   getPlanManager(agentId: string): Promise<PlanManager | undefined>;
+  /**
+   * 逐出缓存的 PlanManager（F6）：agent 删除时由 agents 路由 DELETE 调用。
+   * 不逐出时删除后 plans REST 仍命中旧实例出旧数据，且僵尸 manager 后续
+   * persist 会把已删除的 agents/{id} 目录重建回来（幽灵目录）。
+   * 对已持有旧实例引用的在途调用不兜底——Map 逐出只保证后续获取重建。
+   */
+  evict(agentId: string): void;
 }
 
 declare module "cordis" {
@@ -50,5 +57,8 @@ export function apply(ctx: Context): void {
     planManagers.set(agentId, manager);
     return manager;
   }
-  ctx.provide("plans", { getPlanManager } satisfies PlansFace);
+  function evict(agentId: string): void {
+    planManagers.delete(agentId);
+  }
+  ctx.provide("plans", { getPlanManager, evict } satisfies PlansFace);
 }
