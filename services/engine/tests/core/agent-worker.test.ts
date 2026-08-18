@@ -1470,6 +1470,41 @@ ${SECURITY_GUIDELINE}` },
       );
       warn.mockRestore();
     });
+
+    it("M40 补齐：opts.fromAgentId 落盘消息带 agentId 归因；无归因则记录不带", async () => {
+      // intermind 私信唤醒路径：perception 透传 fromAgentId → 落盘记录可归因
+      const appended: ChatMessageRecord[] = [];
+      const worker = new AgentWorker(
+        makeConfig(new CapturingProvider(), {
+          append: async (m) => {
+            appended.push(m);
+          },
+        }),
+      );
+      await worker.enqueueSystemNotice("【来自 甲 的私信】你好", "default", {
+        intermindRide: true,
+        fromAgentId: "a1",
+      });
+      await vi.waitFor(() => expect(worker.status).toBe("idle"));
+      expect(appended[0]).toMatchObject({
+        role: "user",
+        sessionId: "default",
+        agentId: "a1",
+      });
+
+      // subagent 终态等无归因路径：落盘记录不带 agentId（与私聊用户亲口消息同形态）
+      const plainAppended: ChatMessageRecord[] = [];
+      const plainWorker = new AgentWorker(
+        makeConfig(new CapturingProvider(), {
+          append: async (m) => {
+            plainAppended.push(m);
+          },
+        }),
+      );
+      await plainWorker.enqueueSystemNotice("[系统通知] 子任务完成", "notice_t1");
+      await vi.waitFor(() => expect(plainWorker.status).toBe("idle"));
+      expect(plainAppended[0]!.agentId).toBeUndefined();
+    });
   });
 });
 

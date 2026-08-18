@@ -70,8 +70,10 @@ export class MessageRepository implements IMessageRepository {
    * 只保留最近 limit 条的滚动窗口——内存与归档大小无关（归档可能远超
    * readLines 的 100MB 上限，这里逐行流式读、可提前 break）。
    *
-   * 时间序前提：两个文件各自按 createdAt 递增追加（归档按热存储移除顺序追加，
-   * 先归档后热存储）；同 createdAt 时归档优先。before 游标命中任一侧后，
+   * 时间序前提：两个文件各自按 createdAt 递增——热存储按到达顺序追加；归档
+   * 有序性由 archiveAndRemove 保序写入维护（乱序批次如孤儿补归档走流式归并
+   * 插入，见其注释；先归档后热存储）。同 createdAt 时归档优先。before 游标
+   * 命中任一侧后，
    * 其前最近 limit 条即本页（未知游标按无游标处理，与 listBySession 同语义）。
    */
   async listBySessionWithArchived(
@@ -139,9 +141,35 @@ export class MessageRepository implements IMessageRepository {
     const all = await this.store().readLines();
     const archived = all.filter((m) => wanted.has(m.id));
     if (archived.length === 0) return;
-    // 先写归档再删热存储：归档成功前不动 messages.jsonl
-    for (const record of archived) {
-      await this.archiveStore().appendLine(record);
+    // 「归档按 createdAt 递增」是归并读（listBySessionWithArchived /
+    // firstUserMessageBySession / recall 倒序窗口）的时间序前提。裸 append
+    // 只在新批次不早于归档尾时保序；乱序批次真实存在——reconcile 孤儿补归档
+    // （崩溃窗口后归档已增长）、跨会话归档交错（intermind 封顶把上月来信
+    // 追加在昨日话题段之后）。乱序批次改走流式归并重写，把记录插到正确位置
+    // （内存与归档大小无关）；快路径只看归档尾一行，常规追加保持 O(1)。
+    archived.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const tail = await this.archiveStore().readLastLine();
+    // 快路径：归档不存在/为空（tail undefined——尾行撕裂也归此列，该行本就
+    // 不可解析，追加不影响可读行的相对序），或新批次不早于归档尾 → 直接 append
+    if (tail === undefined || tail.createdAt <= archived[0]!.createdAt) {
+      // 先写归档再删热存储：归档成功前不动 messages.jsonl
+      for (const record of archived) {
+        await this.archiveStore().appendLine(record);
+      }
+    } else {
+      const inserts = archived;
+      await this.archiveStore().rewriteLines(async function* (existing) {
+        let i = 0;
+        for await (const record of existing) {
+          // 同 createdAt 时新插入批次排在既有行之前——与归并读
+          // 「同 createdAt 归档（旧侧）优先」的相对口径无关，仅保持递增
+          while (i < inserts.length && inserts[i]!.createdAt <= record.createdAt) {
+            yield inserts[i++]!;
+          }
+          yield record;
+        }
+        while (i < inserts.length) yield inserts[i++]!;
+      });
     }
     await this.store().mutateLines((records) => records.filter((m) => !wanted.has(m.id)));
   }

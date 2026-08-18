@@ -101,6 +101,48 @@ describe("Intermind 热存储封顶（H8）", () => {
     // 游标本身已归档：不误拒（其前窗口为空）
     const empty = await service.listMessages("a2", "a1", { limit: 10, before: ids[0]! });
     expect(empty).toEqual([]);
+
+    // listSessions 口径（G3c）：count 跨热存储+归档（热存储恒封顶 200，
+    // 总数 上限+1）；lastMessageAt 取热存储最新一条
+    const sessions = await service.listSessions("a2");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      peer: "a1",
+      count: INTERMIND_HOT_LIMIT + 1,
+      lastMessageAt: hotA2.at(-1)!.createdAt,
+    });
+  });
+
+  it("并发 send 同刻修剪同一对 (repo, session)：串行修剪不产重复归档行（G3c）", async () => {
+    // 直接预填接收方来信线程到恰好上限（避开 200 次 send 的慢路径）
+    const a2Repo = new MessageRepository("a2");
+    const base = Date.parse("2026-08-01T00:00:00.000Z");
+    for (let i = 1; i <= INTERMIND_HOT_LIMIT; i++) {
+      await a2Repo.append({
+        id: `pre-${i}`,
+        sessionId: "intermind:a1",
+        role: "user",
+        content: [{ type: "text", text: `预填${i}` }],
+        agentId: "a1",
+        createdAt: new Date(base + i * 1000).toISOString(),
+      });
+    }
+
+    // 两封并发：各 append 一封后热存储最高 上限+2 条，两个修剪竞速同一批溢出。
+    // 未串行化时两个修剪同读超帽快照、各自 append 同一批 id → 归档重复行
+    await Promise.all([
+      service.send("a1", "a2", "并发1", { wake: false }),
+      service.send("a1", "a2", "并发2", { wake: false }),
+    ]);
+
+    // 串行修剪：前者归档最旧溢出、后者看到修剪后的真实水位自然跳过——
+    // pre-1/pre-2 各恰好一行（getArchivedByIds 按文件行返回，重复行会暴露）
+    const archived = await a2Repo.getArchivedByIds(["pre-1", "pre-2"]);
+    expect(archived.map((m) => m.id).sort()).toEqual(["pre-1", "pre-2"]);
+    expect(archived).toHaveLength(2);
+    // 热存储收敛回上限，来往总数守恒（200 热 + 2 归档）
+    const hot = await a2Repo.listBySession("intermind:a1", { limit: INTERMIND_HOT_LIMIT + 2 });
+    expect(hot).toHaveLength(INTERMIND_HOT_LIMIT);
   });
 
   it("归档失败：写信本身成功、记 warn，热存储继续增长待下封重试", async () => {

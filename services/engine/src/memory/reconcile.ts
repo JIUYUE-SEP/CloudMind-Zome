@@ -40,7 +40,11 @@ export async function reconcileHotStorage(
   const orphans = await repo.getByIds([...archivedIds]);
   if (orphans.length === 0) return 0;
 
-  // 复用 archiveAndRemove 的"先写归档再删热存储"原子序，失败不丢消息
+  // 复用 archiveAndRemove 的"先写归档再删热存储"原子序，失败不丢消息。
+  // 孤儿 createdAt 可能早于归档尾部（崩溃窗口后归档已增长、跨会话归档交错）——
+  // 裸 append 会破坏「归档按 createdAt 递增」前提（listBySessionWithArchived /
+  // firstUserMessageBySession / recall 的归并读依赖）；有序性由 archiveAndRemove
+  // 的保序写入承担（乱序批次流式归并插入，见其实现注释）
   await repo.archiveAndRemove(orphans.map((m) => m.id));
   return orphans.length;
 }

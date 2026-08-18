@@ -64,6 +64,47 @@ describe("plugins/perception（P8a）", () => {
     );
   });
 
+  it("fromAgentId 归因透传（M40 补齐）：并入 opts 传给 enqueueSystemNotice", async () => {
+    const worker = makeWorker();
+    const { ctx } = await mountPerception(worker);
+
+    const ok = await ctx.perception.injectNotice({
+      source: "intermind",
+      targetAgentId: "a2",
+      text: "【来自 甲 的私信】你好",
+      sourceId: "default",
+      fromAgentId: "a1",
+      opts: { intermindRide: true },
+    });
+
+    expect(ok).toBe(true);
+    // 归因并入 opts：落盘消息带 agentId；原搭车标记不丢
+    expect(enqueueSpy(worker)).toHaveBeenCalledWith(
+      "【来自 甲 的私信】你好",
+      "default",
+      { intermindRide: true, fromAgentId: "a1" },
+    );
+  });
+
+  it("无 fromAgentId 时 opts 原样透传（subagent 终态等无归因路径零变化）", async () => {
+    const worker = makeWorker();
+    const { ctx } = await mountPerception(worker);
+
+    await ctx.perception.injectNotice({
+      source: "subagents",
+      targetAgentId: "a1",
+      text: "[系统通知] 子任务完成",
+      sourceId: "notice_t9",
+    });
+
+    // 无归因：opts 保持 undefined（不凭空造对象），enqueue 签名第三参原样
+    expect(enqueueSpy(worker)).toHaveBeenCalledWith(
+      "[系统通知] 子任务完成",
+      "notice_t9",
+      undefined,
+    );
+  });
+
   it("白名单外 source：warn 记档并丢弃（不解析 worker、不入队）", async () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const worker = makeWorker();

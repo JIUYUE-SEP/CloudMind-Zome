@@ -44,6 +44,13 @@ export interface PerceptionInject {
   text: string;
   /** 通知落盘/入队所用会话 id（subagents：notice_<taskId>；intermind：主会话 default） */
   sourceId: string;
+  /**
+   * 通知归因来源 agent（M40：intermind 私信唤醒 = 发送方）。透传进
+   * enqueueSystemNotice，落盘消息记录带 agentId（role 仍 user、LLM 入参
+   * ChatMessage 无此字段，协议零影响；REST 历史/前端/审计数据面可识别归因）。
+   * 无来源归因（subagent 终态等）不填。
+   */
+  fromAgentId?: string;
   /** 透传选项（intermind 搭车标记：感知回合内回信不再唤醒） */
   opts?: { intermindRide?: boolean };
 }
@@ -109,8 +116,14 @@ export function apply(ctx: Context): void {
         return false;
       }
       // ④ 入队感知回合（先落热存储再入队的机制本体在 enqueueSystemNotice；
-      //    await 完成 = 落盘窗口已关闭，turn/end 溯源检查不会抢在落盘前）
-      await worker.enqueueSystemNotice(resolved.text, resolved.sourceId, resolved.opts);
+      //    await 完成 = 落盘窗口已关闭，turn/end 溯源检查不会抢在落盘前）。
+      //    M40 补齐：fromAgentId 并入 opts 透传，落盘通知消息带 agentId 归因；
+      //    无归因时 opts 原样透传（subagent 终态等路径零变化）
+      const enqueueOpts =
+        resolved.fromAgentId !== undefined
+          ? { ...resolved.opts, fromAgentId: resolved.fromAgentId }
+          : resolved.opts;
+      await worker.enqueueSystemNotice(resolved.text, resolved.sourceId, enqueueOpts);
       return true;
     },
   } satisfies PerceptionFace);

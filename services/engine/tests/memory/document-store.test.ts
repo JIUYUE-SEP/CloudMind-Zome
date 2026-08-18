@@ -43,6 +43,47 @@ describe("DocumentStore", () => {
     expect(lines).toEqual([{ v: 2 }]);
   });
 
+  it("readLastLine：返回末行记录；文件不存在/为空/尾行撕裂返回 undefined", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    // 不存在
+    await expect(store.readLastLine()).resolves.toBeUndefined();
+    // 正常追加后取到末行
+    await store.appendLine({ v: 1 });
+    await store.appendLine({ v: 2 });
+    await expect(store.readLastLine()).resolves.toEqual({ v: 2 });
+    // 尾行撕裂（崩溃截断的半行 JSON）：不可解析 → undefined（不炸读路径）
+    await fs.appendFile(store.filePath, '{"v":3', "utf-8");
+    await expect(store.readLastLine()).resolves.toBeUndefined();
+    // 空文件
+    const empty = new DocumentStore<{ v: number }>(path.join(tmpDir, "empty.jsonl"));
+    await fs.writeFile(empty.filePath, "");
+    await expect(empty.readLastLine()).resolves.toBeUndefined();
+  });
+
+  it("rewriteLines：流式重写保序插入（G3c 归档乱序修复承载），写队列内原子 rename", async () => {
+    const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
+    for (const v of [1, 3, 5]) await store.appendLine({ v });
+    // 把 2/4 插到正确位置（模拟保序归并）
+    await store.rewriteLines(async function* (existing) {
+      const inserts = [{ v: 2 }, { v: 4 }];
+      let i = 0;
+      for await (const record of existing) {
+        while (i < inserts.length && inserts[i]!.v <= record.v) yield inserts[i++]!;
+        yield record;
+      }
+      while (i < inserts.length) yield inserts[i++]!;
+    });
+    expect((await store.readLines()).map((r) => r.v)).toEqual([1, 2, 3, 4, 5]);
+
+    // transform 抛异常：原文件不动
+    await expect(
+      store.rewriteLines(async function* () {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect((await store.readLines()).map((r) => r.v)).toEqual([1, 2, 3, 4, 5]);
+  });
+
   it("读缓存：重复读结果一致，append 后缓存失效读到新数据", async () => {
     const store = new DocumentStore<{ v: number }>(path.join(tmpDir, "data.jsonl"));
     await store.appendLine({ v: 1 });

@@ -139,6 +139,16 @@ describe("read_private_messages 工具", () => {
     // 空页：无来往私信
     const empty = await readPrivateMessagesTool.execute(makeCtx(), { from: "ghost" });
     expect((empty.output as { hint: string }).hint).toContain("没有与 ghost 的来往私信");
+
+    // 空页 + before 游标（G3c）：已翻到尽头报「没有更早的信」，
+    // 不能误报「没有来往私信」（模型会误判从没来过信、停止翻页甚至否认历史）
+    const endPage = await readPrivateMessagesTool.execute(makeCtx(), {
+      from: "a2",
+      before: "m-oldest",
+    });
+    const endHint = (endPage.output as { hint: string }).hint;
+    expect(endHint).toContain("更早的信");
+    expect(endHint).not.toContain("没有与 a2 的来往私信");
   });
 
   it("before 未知游标：service 抛错原样转为失败（M36）", async () => {

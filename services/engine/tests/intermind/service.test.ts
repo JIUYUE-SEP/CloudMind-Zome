@@ -64,9 +64,14 @@ beforeEach(async () => {
     getAgentConfig: (id) => agentRepository.get(id),
     getMessageRepository: (id) => new MessageRepository(id),
     // P8a：唤醒改经 perception 单口；harness 直连 worker 通道并回报已入队，
-    // 白名单/无 worker 语义由 tests/plugins/perception.test.ts 覆盖
+    // 白名单/无 worker 语义由 tests/plugins/perception.test.ts 覆盖。
+    // fromAgentId 并入 opts 透传与 perception 插件同口径（M40 补齐）
     injectNotice: async (p) => {
-      worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+      worker.enqueueSystemNotice(
+        p.text,
+        p.sourceId,
+        p.fromAgentId !== undefined ? { ...p.opts, fromAgentId: p.fromAgentId } : p.opts,
+      );
       return true;
     },
   });
@@ -101,13 +106,19 @@ describe("IntermindService.send", () => {
 
     // 唤醒：一次 enqueueSystemNotice，文本格式 + 独立 notice 会话 + ride 标记
     expect(wakeSpy).toHaveBeenCalledTimes(1);
-    const [text, sourceId, opts] = wakeSpy.mock.calls[0] as [string, string, { intermindRide?: boolean }];
+    const [text, sourceId, opts] = wakeSpy.mock.calls[0] as [
+      string,
+      string,
+      { intermindRide?: boolean; fromAgentId?: string },
+    ];
     expect(text).toBe(
       "【来自 甲 的私信】你好，乙——可用 send_private_message 给 ta 回信（to: a1）",
     );
     // 通知注入接收方主会话（与前端私聊同一会话），裸原文不写主会话（#8）
     expect(sourceId).toBe("default");
     expect(opts.intermindRide).toBe(true);
+    // M40 补齐：唤醒路径通知与搭车同口径带发送方 agentId 归因
+    expect(opts.fromAgentId).toBe("a1");
     // 审计：谁给谁写了什么（warn 级，内容摘要）
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -266,12 +277,13 @@ describe("IntermindService.send", () => {
     const result = await workerless.send("a1", "a2", "hi");
     expect(result.woke).toBe(false);
     expect(await new MessageRepository("a2").listBySession("intermind:a1")).toHaveLength(1);
-    // 唤醒请求仍经单口委托（source 归属 + 主会话 sourceId + ride 标记）
+    // 唤醒请求仍经单口委托（source 归属 + 主会话 sourceId + 发送方归因 + ride 标记）
     expect(injectNotice).toHaveBeenCalledWith({
       source: "intermind",
       targetAgentId: "a2",
       text: buildPrivateMessageNotice("甲", "a1", "hi"),
       sourceId: "default",
+      fromAgentId: "a1",
       opts: { intermindRide: true },
     });
   });
@@ -292,8 +304,13 @@ describe("IntermindService.send", () => {
     const withRealWorker = new IntermindService({
       getAgentConfig: (id) => agentRepository.get(id),
       getMessageRepository: (id) => new MessageRepository(id),
+      // fromAgentId 并入 opts 透传，与 perception 插件同口径（M40 补齐）
       injectNotice: async (p) => {
-        await worker.enqueueSystemNotice(p.text, p.sourceId, p.opts);
+        await worker.enqueueSystemNotice(
+          p.text,
+          p.sourceId,
+          p.fromAgentId !== undefined ? { ...p.opts, fromAgentId: p.fromAgentId } : p.opts,
+        );
         return true;
       },
     });
@@ -311,6 +328,8 @@ describe("IntermindService.send", () => {
     expect(textOf(mainUser[0]!)).toContain("send_private_message");
     expect(textOf(mainUser[0]!)).toContain("to: a1");
     expect(textOf(mainUser[0]!)).not.toBe("你好，乙");
+    // M40 补齐：唤醒路径落盘的通知消息同样带发送方 agentId 归因（搭车同口径）
+    expect(mainUser[0]!.agentId).toBe("a1");
 
     // intermind 来信线程：裸原文恰好一条（不带前缀）
     const thread = await recipientRepo.listBySession("intermind:a1");

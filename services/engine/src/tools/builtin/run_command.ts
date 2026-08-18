@@ -45,8 +45,11 @@ function signalProcessTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signa
  * 强制杀掉整棵进程树。shell:true 时 child 只是壳（sh/cmd），
  * 只杀壳会留下孙进程孤儿：Windows 用 taskkill /T 杀进程树，
  * POSIX 用负 pid 杀整个进程组（配合 spawn 的 detached）。
- * 返回的 Promise 在 kill 生效后 resolve，调用方应等待它再上报结果，
- * 否则调用方（如测试清理）会在进程未死透时竞争资源。
+ * 等待口径如实：Windows 分支返回的 Promise 等 taskkill 退出才 resolve
+ * （进程树已死透，调用方应 await 再上报结果，否则调用方（如测试清理）
+ * 会在进程未死透时竞争资源）；POSIX 分支 SIGKILL 即发即返，不等进程组
+ * 死透——内核异步回收需要时间，调用方如需等退出应另听 child 的
+ * close 事件（超时路径的 SIGTERM→SIGKILL 升级链即如此，不等本 Promise）。
  */
 function killProcessTree(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.pid === undefined) return Promise.resolve();
@@ -155,7 +158,9 @@ export const runCommandTool: Tool = {
         if (killedForOutputLimit) return;
         if (stdoutBuf.length + stderrBuf.length > MAX_OUTPUT_SIZE) {
           killedForOutputLimit = true;
-          // 等进程树死透再上报，避免调用方在进程未退出时竞争资源（如删除 cwd）
+          // 等 kill 落定再上报，避免调用方在进程未退出时竞争资源（如删除 cwd）。
+          // 如实口径：Windows 分支等 taskkill 退出 = 进程树死透；POSIX 分支
+          // SIGKILL 即发即返（见 killProcessTree 注释），不等进程组死透
           void killProcessTree(child).then(() => {
             const { stdout, stderr } = truncateOutput(stdoutBuf, stderrBuf, MAX_OUTPUT_SIZE);
             settle({

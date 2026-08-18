@@ -116,4 +116,32 @@ describe("reconcileHotStorage 启动对账", () => {
 
     await expect(reconcileHotStorage("a1", failingRepo)).rejects.toThrow("disk gone");
   });
+
+  it("孤儿 createdAt 早于现有归档尾部：保序插入归档正确位置，归并读仍按时间序（G3c）", async () => {
+    const repo = new MessageRepository("a1");
+    const timed = (id: string, createdAt: string): ChatMessageRecord => ({
+      ...makeMsg(id),
+      createdAt,
+    });
+    // 崩溃现场重建：m-old 的压缩档已写但归档未完成（孤儿，createdAt 10:00）；
+    // 归档里已有更晚归档的 m-new（12:00）——裸 append 会把 m-old 追加到末尾，
+    // 破坏「归档按 createdAt 递增」前提
+    await repo.append(timed("m-old", "2026-07-21T10:00:00.000Z"));
+    await repo.append(timed("m-new", "2026-07-21T12:00:00.000Z"));
+    await repo.archiveAndRemove(["m-new"]); // 归档 = [m-new(12:00)]
+    await repo.append(timed("m-hot", "2026-07-21T13:00:00.000Z"));
+    await writeCompressedTopic("a1", makeTopic(["m-old"]));
+
+    const count = await reconcileHotStorage("a1", repo);
+    expect(count).toBe(1);
+
+    // 归档文件本身按 createdAt 递增（m-old 插在 m-new 之前，不是追加末尾）
+    const archived = await repo.getArchivedByIds(["m-old", "m-new"]);
+    expect(archived.map((m) => m.id)).toEqual(["m-old", "m-new"]);
+    // 归并读（热存储 + 归档）按时间序：m-old → m-new → m-hot
+    const merged = await repo.listBySessionWithArchived("s1", { limit: 10 });
+    expect(merged.map((m) => m.id)).toEqual(["m-old", "m-new", "m-hot"]);
+    // 热存储只剩 m-hot
+    expect((await repo.listBySession("s1")).map((m) => m.id)).toEqual(["m-hot"]);
+  });
 });

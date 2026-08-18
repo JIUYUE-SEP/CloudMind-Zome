@@ -74,10 +74,14 @@ export const readPrivateMessagesTool: Tool = {
         ...(parsed.before !== undefined ? { before: parsed.before } : {}),
       });
       // 翻页指引（M36，recall 同风格 hint 字段）：满页 = 可能还有更早的信，
-      // 游标取本页最旧一封（listMessages 返回按时间正序，首条最旧）
+      // 游标取本页最旧一封（listMessages 返回按时间正序，首条最旧）。
+      // 空页分两种（G3c）：带 before 游标的空页 = 已翻到尽头，报「没有更早的信」；
+      // 无游标的空页 = 线程不存在，报「没有来往私信」——混用会让模型误判从没来过信
       const hint =
         messages.length === 0
-          ? `没有与 ${parsed.from} 的来往私信`
+          ? parsed.before !== undefined
+            ? `没有与 ${parsed.from} 的更早的信（已翻到最早）`
+            : `没有与 ${parsed.from} 的来往私信`
           : messages.length < limit
             ? `这是与 ${parsed.from} 的来往私信，共 ${messages.length} 封，已读到最早`
             : `本次按上限返回最近 ${limit} 封，可能还有更早的信——再调用本工具并传 before: "${messages[0]!.id}" 向前翻页`;

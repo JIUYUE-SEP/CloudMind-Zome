@@ -158,6 +158,10 @@ export class IntermindService {
         targetAgentId: toAgentId,
         text: noticeText,
         sourceId: INTERMIND_NOTICE_SESSION_ID,
+        // M40 补齐：唤醒路径通知与搭车同口径带发送方 agentId 归因——
+        // 经 perception 透传进 enqueueSystemNotice，落盘消息带 agentId
+        // （role 仍 user、LLM 入参不含，论证见下方搭车路径注释）
+        fromAgentId,
         opts: { intermindRide: true },
       });
     } else {
@@ -188,8 +192,29 @@ export class IntermindService {
    * 取全量计算真实溢出：listBySession 缺省只回最近 100 条窗口，已超帽的存量会话
    * 靠窗口永远收敛不到上限以下。失败只记 warn——信已落盘，下封信再试，
    * 不能让归档故障炸掉写信主流程。
+   *
+   * 并发修剪串行化（G3c）：双向同刻 send 会对同一 (repo, session) 并发修剪，
+   * 「读快照（listBySession）→ 归档+删热存储」的快照读在 DocumentStore 写队列
+   * 之外，两个修剪同读超帽水位会各自 append 同一批溢出消息，归档产重复行
+   * （归并读不按 id 去重，重复行用户可见）。按 agent 串行修剪：后到的修剪看到
+   * 前者修剪后的真实水位，溢出为 0 自然跳过。
    */
-  private async trimHotStorage(agentId: string, sessionId: string): Promise<void> {
+  private trimQueues = new Map<string, Promise<void>>();
+
+  private trimHotStorage(agentId: string, sessionId: string): Promise<void> {
+    const prev = this.trimQueues.get(agentId) ?? Promise.resolve();
+    // trimHotStorageInner 内部全 catch（不 reject），prev.then 单分支即可
+    const next = prev.then(() => this.trimHotStorageInner(agentId, sessionId));
+    this.trimQueues.set(agentId, next);
+    // 队列尾部 settle 后清理，避免 Map 随 agent 数驻留（DocumentStore 同范式）
+    const cleanup = () => {
+      if (this.trimQueues.get(agentId) === next) this.trimQueues.delete(agentId);
+    };
+    next.then(cleanup, cleanup);
+    return next;
+  }
+
+  private async trimHotStorageInner(agentId: string, sessionId: string): Promise<void> {
     try {
       const repo = this.deps.getMessageRepository(agentId);
       const records = await repo.listBySession(sessionId, { limit: Number.MAX_SAFE_INTEGER });
@@ -207,9 +232,8 @@ export class IntermindService {
   async listSessions(agentId: string): Promise<IntermindSessionSummary[]> {
     // 按消息前缀扫描推导会话：与 messages 端点同口径——
     // 对端即使是已删除 agent 或非人形发送者（如历史数据）也照常列出
-    const records = await this.deps
-      .getMessageRepository(agentId)
-      .listBySessionPrefix(INTERMIND_SESSION_PREFIX);
+    const repo = this.deps.getMessageRepository(agentId);
+    const records = await repo.listBySessionPrefix(INTERMIND_SESSION_PREFIX);
     const byPeer = new Map<string, ChatMessageRecord[]>();
     for (const record of records) {
       const peer = record.sessionId.slice(INTERMIND_SESSION_PREFIX.length);
@@ -218,11 +242,22 @@ export class IntermindService {
       list.push(record);
       byPeer.set(peer, list);
     }
+    // count 跨热存储+归档（G3c）：H8 封顶把最旧溢出移入归档后热存储恒 200 条，
+    // 只数热存储会把长线程条数钉死在 200。归档侧流式全扫按会话前缀计数
+    // （内存 O(1)，低频管理面读可承受一次全扫）。对端发现与 lastMessageAt 不需
+    // 看归档：trim 保底最新 200 条留在热存储，有信线程不可能整体只存在于归档。
+    const archivedCounts = new Map<string, number>();
+    for await (const record of repo.listArchivedLazy()) {
+      if (!record.sessionId.startsWith(INTERMIND_SESSION_PREFIX)) continue;
+      const peer = record.sessionId.slice(INTERMIND_SESSION_PREFIX.length);
+      if (!byPeer.has(peer)) continue;
+      archivedCounts.set(peer, (archivedCounts.get(peer) ?? 0) + 1);
+    }
     return Array.from(byPeer.entries())
       .map(([peer, msgs]) => ({
         peer,
         lastMessageAt: msgs[msgs.length - 1]!.createdAt,
-        count: msgs.length,
+        count: msgs.length + (archivedCounts.get(peer) ?? 0),
       }))
       .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
   }

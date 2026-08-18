@@ -138,6 +138,72 @@ export class DocumentStore<T extends object> {
   }
 
   /**
+   * 读文件最后一行（仅供"保序追加"的快路径判定，如归档 createdAt 尾值）。
+   * 读尾部窗口而非全量：归档可超 readLines 的 100MB 上限。
+   * 文件不存在 / 为空 / 尾窗口内没有完整行 / 尾行损坏（崩溃撕裂）一律返回
+   * undefined（尾行不可读不影响可读行——该行对所有读取路径本就不可解析），
+   * 由调用方决定保守口径。
+   */
+  async readLastLine(): Promise<T | undefined> {
+    let handle: fs.FileHandle | undefined;
+    try {
+      handle = await fs.open(this.filePath, "r");
+      const stat = await handle.stat();
+      if (stat.size === 0) return undefined;
+      // 尾窗口 256KB：正常消息行远小于此；窗口内找不到完整行就放弃（回退保守路径）
+      const windowSize = Math.min(stat.size, 256 * 1024);
+      const buf = Buffer.alloc(windowSize);
+      await handle.read(buf, 0, windowSize, stat.size - windowSize);
+      const text = buf.toString("utf-8");
+      // 去掉结尾换行后，最后一个 \n 之后即末行；没有 \n 说明整个窗口就是末行
+      // （单行文件）或末行比窗口还长（巨型行/撕裂行，JSON 解析会失败兜底）
+      const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+      const lastNewline = body.lastIndexOf("\n");
+      const line = (lastNewline < 0 ? body : body.slice(lastNewline + 1)).trim();
+      if (!line) return undefined;
+      try {
+        const { version, data } = splitSchemaVersion(JSON.parse(line) as T);
+        return this.schema.migrate(data, version, this.filePath);
+      } catch {
+        return undefined; // 尾行撕裂/版本迁移失败：回退保守路径
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw err;
+    } finally {
+      await handle?.close();
+    }
+  }
+
+  /**
+   * 流式整表重写（修复性写入：向大文件中间保序插入）：逐行读旧文件 →
+   * transform 产出的记录逐行写 tmp → 原子 rename，全程在同一个写队列槽内，
+   * 内存与文件大小无关——归档可超 readLines 的 100MB 上限（review M10），
+   * 这类写入不能用 readLines+writeLines/mutateLines 的整表物化。
+   * transform 抛异常时不写入（tmp 残留由下次写覆盖，原文件不动）。
+   */
+  async rewriteLines(
+    transform: (records: AsyncGenerator<T, void, void>) => AsyncIterable<T>,
+  ): Promise<void> {
+    await this.enqueueWrite(async () => {
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+      const tmpPath = `${this.filePath}.tmp`;
+      const handle = await fs.open(tmpPath, "w");
+      try {
+        for await (const record of transform(this.readLinesLazy())) {
+          await handle.write(
+            JSON.stringify(stampSchemaVersion(record, this.schema.currentVersion)) + "\n",
+          );
+        }
+      } finally {
+        await handle.close();
+      }
+      await renameWithRetry(tmpPath, this.filePath);
+      readCache.delete(this.filePath);
+    });
+  }
+
+  /**
    * 逐行解析：空行跳过、坏行记日志跳过（JSON 撕裂属崩溃窗口预期内）；
    * 版本检查/迁移放在坏行跳过的 catch 之外——版本过高与迁移失败必须显式上抛。
    */

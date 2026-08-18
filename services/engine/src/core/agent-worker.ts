@@ -354,11 +354,14 @@ export class AgentWorker {
    * 再入队触发一轮正常感知（感知回合无审批通道：写类工具一律 fail-closed，含嵌套 dispatch——防环因此平凡成立）。
    * D1 欠账修复：落盘改 await 再入队——原 fire-and-forget 存在 turn/end 溯源
    * 检查抢在落盘前的理论窗口；落盘失败仍 warn 后入队感知（语义不变）。
+   * M40 补齐：opts.fromAgentId 时落盘消息记录带 agentId 归因（intermind 私信
+   * 唤醒 = 发送方；与搭车路径同口径）。只落数据面——入队给 LLM 的 ChatMessage
+   * 协议无 agentId 字段，模型侧仍靠【】前缀区分，协议零影响。
    */
   async enqueueSystemNotice(
     text: string,
     sourceId: string,
-    opts?: { intermindRide?: boolean },
+    opts?: { intermindRide?: boolean; fromAgentId?: string },
   ): Promise<void> {
     const message: ChatMessage = {
       id: randomUUID(),
@@ -367,7 +370,13 @@ export class AgentWorker {
       createdAt: new Date().toISOString(),
     };
     await this.config.messageRepository
-      .append({ ...message, sessionId: sourceId })
+      .append({
+        ...message,
+        sessionId: sourceId,
+        // M40：归因只落在持久化记录上（REST 历史/前端/审计可按 agentId 识别
+        // 「对端来信通知」与「用户亲口消息」，群聊归属标注同构）
+        ...(opts?.fromAgentId !== undefined ? { agentId: opts.fromAgentId } : {}),
+      })
       .catch((err) => {
         logger.warn({ err: err }, "[agent-worker] 系统通知落盘失败（仍入队感知）");
       });
