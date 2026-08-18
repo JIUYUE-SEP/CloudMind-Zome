@@ -4,7 +4,7 @@ package zome;
 service ZomeSidecar {
   rpc Upsert(UpsertRequest) returns (UpsertResponse);
   rpc Search(SearchRequest) returns (SearchResponse);
-  rpc CountTokens(TokenCountRequest) returns (TokenCountResponse);
+  rpc DeleteDocs(DeleteDocsRequest) returns (DeleteDocsResponse);
   rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -16,8 +16,10 @@ message SearchRequest { string agent_id = 1; repeated float query = 2; uint32 to
 message SearchResponse { repeated SearchResult results = 1; }
 message SearchResult { string doc_id = 1; float score = 2; }
 
-message TokenCountRequest { string text = 1; string model = 2; }
-message TokenCountResponse { uint32 count = 1; }
+// M14：按 doc_id 批量删除向量（tombstone 方案，hnsw_rs 不支持物理删点，
+// 见 docs/架构文档.md §9.1）——已压缩归档话题的消息向量经此清除
+message DeleteDocsRequest { string agent_id = 1; repeated string doc_ids = 2; }
+message DeleteDocsResponse {}
 
 message DeleteAgentRequest { string agent_id = 1; }
 message DeleteAgentResponse {}

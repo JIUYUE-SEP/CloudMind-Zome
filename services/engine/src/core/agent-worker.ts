@@ -288,6 +288,7 @@ export class AgentWorker {
     this.boundaryModel =
       this.topicConfig.boundaryModel || this.topicConfig.compressionModel || config.model;
     this.topicTracker = new TopicTracker(this.topicConfig);
+    const memoryIndexer = config.memoryIndexer;
     this.compressionQueue = new CompressionQueue(async (segment) => {
       await runCompressionTask(segment, {
         agentId: this.config.agentId,
@@ -298,6 +299,11 @@ export class AgentWorker {
         mind: this.config.mind,
         // P8b：归档成功事件缝（memory/archived）——缺省 undefined，压缩任务不发事件
         onArchived: this.config.onMemoryArchived,
+        // M14：归档成功后删除对应向量——无索引器（Mock embedder）时不挂钩子，
+        // 保持"未索引则不删"的对称语义；sidecar 不可用由 indexer 内部降级
+        deleteArchivedVectors: memoryIndexer
+          ? (ids) => memoryIndexer.deleteByDocIds(this.config.agentId, ids)
+          : undefined,
       });
       // M-b：任务成功完成才清 pending；失败由队列捕获告警，pending 保留待对账
       await removePendingSegment(this.config.agentId, segment.topicId);

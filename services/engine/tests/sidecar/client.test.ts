@@ -21,6 +21,7 @@ describe("SidecarClient gRPC 字段往返", () => {
   const upsertRequests: any[] = [];
   const searchRequests: any[] = [];
   const deleteRequests: any[] = [];
+  const deleteDocsRequests: any[] = [];
 
   beforeAll(async () => {
     const def = protoLoader.loadSync(PROTO_PATH, { keepCase: true, longs: Number, defaults: true });
@@ -38,6 +39,10 @@ describe("SidecarClient gRPC 字段往返", () => {
       },
       DeleteAgent: (call: any, cb: any) => {
         deleteRequests.push(call.request);
+        cb(null, {});
+      },
+      DeleteDocs: (call: any, cb: any) => {
+        deleteDocsRequests.push(call.request);
         cb(null, {});
       },
     });
@@ -76,6 +81,18 @@ describe("SidecarClient gRPC 字段往返", () => {
     expect(ok).toBe(true);
     expect(deleteRequests).toHaveLength(1);
     expect(deleteRequests[0].agent_id).toBe("agent-1");
+  });
+
+  it("deleteDocs 发送 agent_id/doc_ids（M14）；空列表不发 RPC", async () => {
+    const ok = await client.deleteDocs("agent-1", ["doc-1", "doc-2"]);
+    expect(ok).toBe(true);
+    expect(deleteDocsRequests).toHaveLength(1);
+    expect(deleteDocsRequests[0].agent_id).toBe("agent-1");
+    expect(deleteDocsRequests[0].doc_ids).toEqual(["doc-1", "doc-2"]);
+
+    // 空列表直接成功返回，不产生 RPC
+    await expect(client.deleteDocs("agent-1", [])).resolves.toBe(true);
+    expect(deleteDocsRequests).toHaveLength(1);
   });
 });
 

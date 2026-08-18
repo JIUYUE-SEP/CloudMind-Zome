@@ -191,4 +191,15 @@ describe("TS↔Rust sidecar 真实链路冒烟（P5-3）", () => {
     // 内存缓存已逐出：同 agent 再检索按未知 agent 处理返回空
     expect(await client.search(agent, [1, 0, 0, 0], 5)).toEqual([]);
   });
+
+  it("DeleteDocs：tombstone 删除后被删文档不可检索、其余文档不受影响（M14）", async (ctx) => {
+    guard(ctx);
+    const agent = `smokedeldocs${Date.now()}`;
+    expect(await client.upsert(agent, "keep", [0, 1, 0, 0])).toBe(true);
+    expect(await client.upsert(agent, "drop", [1, 0, 0, 0])).toBe(true);
+
+    expect(await client.deleteDocs(agent, ["drop"])).toBe(true);
+    const hits = await client.search(agent, [1, 0, 0, 0], 5);
+    expect(hits.map((h) => h.id)).toEqual(["keep"]);
+  });
 });

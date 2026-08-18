@@ -101,4 +101,22 @@ export class MemoryIndexer {
       return [];
     }
   }
+
+  /**
+   * 按 doc_id 批量删除向量（M14）：已压缩归档话题的消息向量清除入口。
+   * sidecar 不可用时静默降级——与索引写入同一语义（索引是增强能力，
+   * 删除失败不阻断主链路；残留向量被 L4 归档排除兜住正确性，仅索引体积代价，
+   * 下一轮压缩/启动 compaction 仍有清除机会）。
+   */
+  async deleteByDocIds(agentId: string, docIds: string[]): Promise<void> {
+    if (docIds.length === 0) return;
+    if (!(await this.client.isAvailable())) return;
+    const ok = await this.client.deleteDocs(agentId, docIds);
+    if (!ok) {
+      logger.warn(
+        { agentId, count: docIds.length },
+        "[memory] 向量删除失败，已跳过（不影响主链路）",
+      );
+    }
+  }
 }

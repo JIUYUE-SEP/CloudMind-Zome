@@ -52,6 +52,11 @@ interface ZomeSidecarGrpc {
     opts: { deadline: number },
     cb: (err: unknown, res: unknown) => void,
   ): void;
+  DeleteDocs(
+    req: { agent_id: string; doc_ids: string[] },
+    opts: { deadline: number },
+    cb: (err: unknown, res: unknown) => void,
+  ): void;
 }
 
 type GrpcMethod = keyof ZomeSidecarGrpc;
@@ -198,6 +203,24 @@ export class SidecarClient {
       logger.error({ err: err }, "[sidecar] DeleteAgent 明确报错，内存缓存可能未逐出");
       return undefined;
     });
+    return res !== undefined;
+  }
+
+  /**
+   * 按 doc_id 批量删除向量（M14 tombstone）：sidecar 从 docs/doc_ids 移除并
+   * 追加墓碑行落盘，被删文档立即不可检索，物理剔除交给 sidecar 运行期/启动
+   * compaction。sidecar 不可达时返回 false（调用方 warn 降级，不阻断主流程——
+   * 残留向量被 L4 归档排除兜住正确性，仅索引体积代价）。
+   */
+  async deleteDocs(agentId: string, docIds: string[]): Promise<boolean> {
+    if (docIds.length === 0) return true;
+    // bool 契约不变（M-a）：明确报错 error 级留痕，仍按 false 返回
+    const res = await this.call("DeleteDocs", { agent_id: agentId, doc_ids: docIds }).catch(
+      (err: unknown) => {
+        logger.error({ err: err }, "[sidecar] DeleteDocs 明确报错，向量墓碑未写入");
+        return undefined;
+      },
+    );
     return res !== undefined;
   }
 }

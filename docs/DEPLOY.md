@@ -19,18 +19,13 @@ pnpm install
 #    此时 sidecar 二进制未就位必失败，这里必须按包过滤）
 pnpm --filter @mindcloud/engine --filter @mindcloud/web build
 
-# 3. 构建 Rust sidecar
-cd crates/zome-sidecar
-cargo build --release
-cd ../..
-
-# 4. 准备 sidecar 二进制
+# 3. 准备 sidecar 二进制（脚本内先 cargo build --release 再拷贝，保证新鲜度）
 node scripts/prepare-sidecar.mjs release
 
-# 5. 准备 engine 分发产物 + 内嵌 Node（tauri build 的 beforeBuildCommand 会自动执行，此处可手动验证）
+# 4. 准备 engine 分发产物 + 内嵌 Node（tauri build 的 beforeBuildCommand 会自动执行，此处可手动验证）
 node scripts/prepare-engine.mjs
 
-# 6. 构建桌面安装包
+# 5. 构建桌面安装包（beforeBuildCommand 自动执行步骤 3-4 与 web 构建）
 pnpm --filter @mindcloud/desktop build
 ```
 

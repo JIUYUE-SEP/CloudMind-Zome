@@ -30,6 +30,23 @@ export interface CompressionTaskDeps {
    * enforce）按压缩任务失败上传（队列捕获告警、pending 段保留待对账）。
    */
   onArchived?: (ids: string[]) => void | Promise<void>;
+  /**
+   * 已归档消息向量的删除钩子（M14）：每次 archiveAndRemove 成功后按 msgIds
+   * 删除 sidecar 向量（tombstone），向量索引不再随压缩无界增长。可选——
+   * 缺省不删；监听者抛错仅 warn 降级，不按压缩任务失败上传（残留向量被
+   * L4 归档排除兜住正确性，仅索引体积代价，与 onArchived 的强约束刻意不同）
+   */
+  deleteArchivedVectors?: (ids: string[]) => void | Promise<void>;
+}
+
+/** M14：归档成功后删除对应向量；失败仅 warn，不炸压缩主流程 */
+async function deleteArchivedVectors(deps: CompressionTaskDeps, ids: string[]): Promise<void> {
+  if (!deps.deleteArchivedVectors) return;
+  try {
+    await deps.deleteArchivedVectors(ids);
+  } catch (err) {
+    logger.warn({ err: err }, "[memory] 已归档消息向量删除失败（已跳过，不阻断压缩）");
+  }
 }
 
 export async function runCompressionTask(
@@ -40,6 +57,8 @@ export async function runCompressionTask(
     // 短话题：不调用 LLM，仅归档，保证热存储有界
     const ids = segment.messages.map((m) => m.id);
     await deps.messageRepository.archiveAndRemove(ids);
+    // M14：归档成功后删除对应向量（tombstone）
+    await deleteArchivedVectors(deps, ids);
     // P8b 事件缝（memory/archived）：归档成功后发
     await deps.onArchived?.(ids);
     return;
@@ -76,6 +95,8 @@ async function compressAndArchiveSegment(
   if (deps.mind.isInjectionSuspect(summaryText)) {
     logger.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${enriched.topicId}`);
     await deps.messageRepository.archiveAndRemove(enriched.msgIds);
+    // M14：归档成功后删除对应向量（tombstone）
+    await deleteArchivedVectors(deps, enriched.msgIds);
     // P8b 事件缝（memory/archived）：仅归档降级同样是归档成功
     await deps.onArchived?.(enriched.msgIds);
     return;
@@ -90,6 +111,9 @@ async function compressAndArchiveSegment(
     await removeCompressedTopic(deps.agentId, compressed.topicId);
     throw err;
   }
+  // M14：归档成功后删除对应向量（tombstone）。置于沉淀/onArchived 之前：
+  // 删除失败仅 warn 降级（见 helper），不改变后续两者的既有成败语义
+  await deleteArchivedVectors(deps, compressed.msgIds);
   // Phase 7：归档成功后顺手沉淀经验到 MIND.md（append-only）。
   // M12：必须在归档成功之后——先沉淀再归档时，归档失败的回滚只隔离压缩档，
   // MIND.md 会留下孤儿经验，重启对账重压缩又沉淀一份（重复）。置于

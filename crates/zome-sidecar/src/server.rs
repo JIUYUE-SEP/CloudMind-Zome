@@ -2,13 +2,11 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 use crate::supervisor;
-use crate::tokenizer;
 use crate::vector;
 use crate::zome::zome_sidecar_server::{ZomeSidecar, ZomeSidecarServer};
 use crate::zome::{
-    DeleteAgentRequest, DeleteAgentResponse, HealthRequest, HealthResponse, SearchRequest,
-    SearchResponse, SearchResult, TokenCountRequest, TokenCountResponse, UpsertRequest,
-    UpsertResponse,
+    DeleteAgentRequest, DeleteAgentResponse, DeleteDocsRequest, DeleteDocsResponse, HealthRequest,
+    HealthResponse, SearchRequest, SearchResponse, SearchResult, UpsertRequest, UpsertResponse,
 };
 
 #[derive(Default)]
@@ -74,13 +72,21 @@ impl ZomeSidecar for ZomeSidecarService {
         Ok(Response::new(SearchResponse { results }))
     }
 
-    async fn count_tokens(
+    /// M14：按 doc_id 批量删除（tombstone 方案）——已压缩归档话题的消息向量
+    /// 经此清除；被删文档立即不可检索，物理剔除交给运行期/启动 compaction
+    async fn delete_docs(
         &self,
-        request: Request<TokenCountRequest>,
-    ) -> Result<Response<TokenCountResponse>, Status> {
+        request: Request<DeleteDocsRequest>,
+    ) -> Result<Response<DeleteDocsResponse>, Status> {
         let req = request.into_inner();
-        let count = tokenizer::count_tokens(&req.text, &req.model);
-        Ok(Response::new(TokenCountResponse { count }))
+        let agent_id = crate::sanitize_agent_id(&req.agent_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let state = vector::get_or_load(&agent_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let mut guard = state.write().await;
+        guard.delete_docs(&req.doc_ids).await;
+        Ok(Response::new(DeleteDocsResponse {}))
     }
 
     async fn delete_agent(

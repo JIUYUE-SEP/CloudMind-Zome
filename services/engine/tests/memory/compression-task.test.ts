@@ -239,3 +239,91 @@ describe("runCompressionTask 压缩前复核拆分（方案 C 定案 4）", () =
     warn.mockRestore();
   });
 });
+
+describe("runCompressionTask 向量删除钩子（M14）", () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "compression-vecdel-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
+  function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
+    return { agentId: "a1", provider, model: "mock", messageRepository: repo, mind: mindService };
+  }
+
+  const CLEAN_REPLY = "话题主题：协作偏好\n关键结论：\n- 提交前要先跑测试\n经验：\n";
+
+  it("正常压缩路径：归档成功后按 msgIds 调删除钩子", async () => {
+    const ids = ["m1", "m2", "m3"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const d = deps(repo, new FixedReplyProvider(CLEAN_REPLY));
+    const deleteHook = vi.fn();
+    d.deleteArchivedVectors = deleteHook;
+
+    await runCompressionTask(makeSegment(ids), d);
+
+    expect(deleteHook).toHaveBeenCalledTimes(1);
+    expect(deleteHook).toHaveBeenCalledWith(ids);
+    // 归档语义不受影响
+    expect(await repo.listBySession("s1")).toEqual([]);
+  });
+
+  it("archiveOnly 短段：同样调删除钩子（不调 LLM）", async () => {
+    const ids = ["m1", "m2"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const d = deps(repo, new FixedReplyProvider("不该被调用"));
+    const deleteHook = vi.fn();
+    d.deleteArchivedVectors = deleteHook;
+
+    await runCompressionTask({ ...makeSegment(ids), archiveOnly: true }, d);
+
+    expect(deleteHook).toHaveBeenCalledWith(ids);
+  });
+
+  it("归档失败：压缩档回滚，删除钩子不调用（无归档则无删除）", async () => {
+    const ids = ["m1", "m2"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const d = deps(repo, new FixedReplyProvider(CLEAN_REPLY));
+    const deleteHook = vi.fn();
+    d.deleteArchivedVectors = deleteHook;
+    vi.spyOn(repo, "archiveAndRemove").mockRejectedValue(new Error("archive down"));
+
+    await expect(runCompressionTask(makeSegment(ids), d)).rejects.toThrow("archive down");
+    expect(deleteHook).not.toHaveBeenCalled();
+    // 消息仍在热存储（回滚语义不变）
+    expect((await repo.listBySession("s1")).map((m) => m.id)).toEqual(ids);
+  });
+
+  it("删除钩子抛错：仅 warn，压缩主流程照常完成", async () => {
+    const ids = ["m1", "m2"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const d = deps(repo, new FixedReplyProvider(CLEAN_REPLY));
+    d.deleteArchivedVectors = async () => {
+      throw new Error("sidecar down");
+    };
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    await runCompressionTask(makeSegment(ids), d);
+
+    // 主流程完成：归档 + 落档都在
+    expect(await repo.listBySession("s1")).toEqual([]);
+    expect((await fs.readdir(compressedDir("a1"))).filter((f) => f.endsWith(".md"))).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining("向量删除失败"),
+    );
+    warn.mockRestore();
+  });
+});

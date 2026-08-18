@@ -1,7 +1,5 @@
-pub mod sandbox;
 pub mod server;
 pub mod supervisor;
-pub mod tokenizer;
 pub mod vector;
 
 pub mod zome {

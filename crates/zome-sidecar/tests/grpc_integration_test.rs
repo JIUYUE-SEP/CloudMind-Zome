@@ -8,7 +8,7 @@ static PORT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use zome_sidecar::server;
 use zome_sidecar::zome::{
-    DeleteAgentRequest, HealthRequest, SearchRequest, UpsertRequest,
+    DeleteAgentRequest, DeleteDocsRequest, HealthRequest, SearchRequest, UpsertRequest,
     zome_sidecar_client::ZomeSidecarClient,
 };
 
@@ -168,6 +168,65 @@ async fn test_grpc_delete_agent_clears_vectors() {
         .expect("search")
         .into_inner();
     assert!(res.results.is_empty());
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M14：DeleteDocs 后被删文档立即不可检索，同 agent 其余文档不受影响
+#[tokio::test]
+async fn test_grpc_delete_docs_hides_deleted() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let (server, mut client) = spawn_server_ready().await;
+    for (doc, v) in [("keep", vec![0.0, 1.0]), ("drop", vec![1.0, 0.0])] {
+        client
+            .upsert(UpsertRequest {
+                agent_id: "grpc-deldocs-agent".to_string(),
+                doc_id: doc.to_string(),
+                embedding: v,
+            })
+            .await
+            .expect("upsert");
+    }
+    client
+        .delete_docs(DeleteDocsRequest {
+            agent_id: "grpc-deldocs-agent".to_string(),
+            doc_ids: vec!["drop".to_string()],
+        })
+        .await
+        .expect("delete_docs");
+
+    let res = client
+        .search(SearchRequest {
+            agent_id: "grpc-deldocs-agent".to_string(),
+            query: vec![1.0, 0.0],
+            top_k: 10,
+        })
+        .await
+        .expect("search")
+        .into_inner();
+    assert_eq!(res.results.len(), 1);
+    assert_eq!(res.results[0].doc_id, "keep");
+
+    server.abort();
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M14：DeleteDocs 拒绝非法 agent_id（沿用 sanitize 规则）
+#[tokio::test]
+async fn test_grpc_delete_docs_rejects_invalid_id() {
+    let _lock = PORT_LOCK.lock().await;
+    let tmp = temp_data_dir();
+    let (server, mut client) = spawn_server_ready().await;
+    let status = client
+        .delete_docs(DeleteDocsRequest {
+            agent_id: "../bad".to_string(),
+            doc_ids: vec!["d1".to_string()],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
 
     server.abort();
     std::fs::remove_dir_all(&tmp).ok();

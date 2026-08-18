@@ -13,6 +13,7 @@ function makeClient(overrides: Partial<SidecarClient> = {}): SidecarClient {
     isAvailable: async () => true,
     upsert: vi.fn(async () => true),
     search: vi.fn(async () => [{ id: "d1", score: 0.9 }]),
+    deleteDocs: vi.fn(async () => true),
     ...overrides,
   } as unknown as SidecarClient;
 }
@@ -138,5 +139,33 @@ describe("MemoryIndexer", () => {
     const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
     await expect(indexer.search("a1", "query", 5)).resolves.toEqual([]);
     silent.mockRestore();
+  });
+
+  it("deleteByDocIds 正常路径调用 sidecar DeleteDocs（M14）", async () => {
+    const client = makeClient();
+    const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
+    await indexer.deleteByDocIds("a1", ["m1", "m2"]);
+    expect(client.deleteDocs).toHaveBeenCalledWith("a1", ["m1", "m2"]);
+  });
+
+  it("deleteByDocIds 空列表/sidecar 不可用时不发 RPC（M14 静默降级）", async () => {
+    const client = makeClient({ isAvailable: async () => false });
+    const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
+    await indexer.deleteByDocIds("a1", []);
+    expect(client.deleteDocs).not.toHaveBeenCalled();
+    await indexer.deleteByDocIds("a1", ["m1"]);
+    expect(client.deleteDocs).not.toHaveBeenCalled();
+  });
+
+  it("deleteByDocIds 删除失败仅 warn 降级，不抛出（M14 不炸主流程）", async () => {
+    const client = makeClient({ deleteDocs: vi.fn(async () => false) });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const indexer = new MemoryIndexer(client, makeEmbedder(), SHORT_TIMEOUT_MS);
+    await expect(indexer.deleteByDocIds("a1", ["m1"])).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "a1", count: 1 }),
+      expect.stringContaining("向量删除失败"),
+    );
+    warn.mockRestore();
   });
 });

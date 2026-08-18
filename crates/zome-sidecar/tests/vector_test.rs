@@ -387,7 +387,7 @@ async fn test_upsert_stamps_schema_version() {
         std::fs::read_to_string(tmp.join("agents/stamp-agent/indices/hnsw/embeddings.jsonl"))
             .unwrap();
     assert!(
-        content.contains("\"schemaVersion\":1"),
+        content.contains("\"schemaVersion\":2"),
         "stamped row expected: {content}"
     );
 
@@ -447,5 +447,247 @@ async fn test_delete_agent_idempotent_and_validates_id() {
         .await
         .unwrap();
     assert!(zome_sidecar::vector::delete_agent("../bad").await.is_err());
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M14：delete_docs 后 search 立即不可见，墓碑行落盘（deleted:true + v2 版本戳）；
+/// 幂等——重复删除/删除不存在文档不重复落行
+#[tokio::test]
+async fn test_delete_docs_hides_and_persists_tombstone() {
+    let tmp = temp_data_dir();
+    let state = get_or_load("tomb-agent").await.unwrap();
+    state.write().await.upsert("keep", &[0.0, 1.0]).await;
+    state.write().await.upsert("drop", &[1.0, 0.0]).await;
+
+    let deleted = state.write().await.delete_docs(&["drop".to_string()]).await;
+    assert_eq!(deleted, 1);
+    // 删除立即可见：对原向量零距离查询也搜不出
+    let results = state.read().await.search(&[1.0, 0.0], 10);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "keep");
+
+    let path = tmp.join("agents/tomb-agent/indices/hnsw/embeddings.jsonl");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let tombstone_lines: Vec<&str> = content
+        .lines()
+        .filter(|l| l.contains("\"deleted\":true"))
+        .collect();
+    assert_eq!(tombstone_lines.len(), 1);
+    assert!(tombstone_lines[0].contains("\"doc_id\":\"drop\""));
+    assert!(tombstone_lines[0].contains("\"schemaVersion\":2"));
+
+    // 幂等：重复删除同一 doc_id / 删除从未索引的 doc_id 都不再落墓碑行
+    let again = state
+        .write()
+        .await
+        .delete_docs(&["drop".to_string(), "never-existed".to_string()])
+        .await;
+    assert_eq!(again, 0);
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        content
+            .lines()
+            .filter(|l| l.contains("\"deleted\":true"))
+            .count(),
+        1
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M14：重启后墓碑仍生效——把真实写出的文件挂到另一个 agent 名下冷载入
+/// （等价进程重启读盘），被删文档不可见
+#[tokio::test]
+async fn test_tombstone_survives_reload() {
+    let tmp = temp_data_dir();
+    let state = get_or_load("tomb-src-agent").await.unwrap();
+    state.write().await.upsert("keep", &[0.0, 1.0]).await;
+    state.write().await.upsert("drop", &[1.0, 0.0]).await;
+    state.write().await.delete_docs(&["drop".to_string()]).await;
+
+    // 冷载入等价物：同一文件内容，换个未入缓存的 agent 名走 get_or_load
+    let src = tmp.join("agents/tomb-src-agent/indices/hnsw/embeddings.jsonl");
+    let dst_dir = tmp.join("agents/tomb-copy-agent/indices/hnsw");
+    std::fs::create_dir_all(&dst_dir).unwrap();
+    std::fs::copy(&src, dst_dir.join("embeddings.jsonl")).unwrap();
+
+    let reloaded = get_or_load("tomb-copy-agent").await.unwrap();
+    let results = reloaded.read().await.search(&[1.0, 0.0], 10);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "keep");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M14：行序语义——墓碑之后的新 upsert 行让同 doc_id 复活（后行覆盖前行）
+#[tokio::test]
+async fn test_load_tombstone_then_reupsert_last_wins() {
+    let tmp = temp_data_dir();
+    let dir = tmp.join("agents/tomb-order-agent/indices/hnsw");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("embeddings.jsonl"),
+        "{\"doc_id\":\"d1\",\"embedding\":[1.0,0.0]}\n\
+         {\"doc_id\":\"d1\",\"embedding\":[],\"schemaVersion\":2,\"deleted\":true}\n\
+         {\"doc_id\":\"d1\",\"embedding\":[0.0,1.0],\"schemaVersion\":2}\n",
+    )
+    .unwrap();
+
+    let state = get_or_load("tomb-order-agent").await.unwrap();
+    // d1 以最后一条 [0,1] 复活：对查询 [1,0] 距离应为 1（非零距离命中）
+    let results = state.read().await.search(&[1.0, 0.0], 10);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "d1");
+    assert!(results[0].1 > 0.5);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M14：启动 compaction 物理剔除墓碑——触发重写后文件里既无墓碑行也无被删文档
+#[tokio::test]
+async fn test_startup_compaction_purges_tombstone_lines() {
+    let tmp = temp_data_dir();
+    let dir = tmp.join("agents/tomb-compact-agent/indices/hnsw");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut content = String::new();
+    // 3 存活 doc + 150 行（upsert 与墓碑交替）：行数远超唯一文档数触发启动重写
+    for i in 0..50u32 {
+        content.push_str(&format!(
+            "{{\"doc_id\":\"keep{}\",\"embedding\":[1.0,{}]}}\n",
+            i % 3,
+            i
+        ));
+        content.push_str(&format!(
+            "{{\"doc_id\":\"drop{i}\",\"embedding\":[0.0,1.0]}}\n"
+        ));
+        content.push_str(&format!(
+            "{{\"doc_id\":\"drop{i}\",\"embedding\":[],\"schemaVersion\":2,\"deleted\":true}}\n"
+        ));
+    }
+    std::fs::write(dir.join("embeddings.jsonl"), &content).unwrap();
+
+    let state = get_or_load("tomb-compact-agent").await.unwrap();
+    let results = state.read().await.search(&[1.0, 0.0], 10);
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().all(|(id, _)| id.starts_with("keep")));
+
+    let after = std::fs::read_to_string(dir.join("embeddings.jsonl")).unwrap();
+    assert_eq!(after.lines().count(), 3);
+    assert!(!after.contains("deleted"));
+    assert!(!after.contains("drop"));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M47：运行期 compaction——重复 upsert 的孤儿点达阈值（>存活 2 倍且 ≥100）
+/// 即重建索引并重写文件，不再只在启动时剔除；重写后检索语义不变
+#[tokio::test]
+async fn test_runtime_compaction_triggered_by_upsert_orphans() {
+    let tmp = temp_data_dir();
+    let state = get_or_load("rt-compact-agent").await.unwrap();
+    let path = tmp.join("agents/rt-compact-agent/indices/hnsw/embeddings.jsonl");
+
+    // 3 doc × 34 轮 = 102 点、99 孤儿：未到阈值，文件保持 append-only
+    for round in 0..34u32 {
+        for doc in ["a", "b", "c"] {
+            state.write().await.upsert(doc, &[1.0, round as f32]).await;
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 102);
+
+    // 第 103 点：孤儿 100 达阈值，本次 upsert 内触发重建 + 重写
+    state.write().await.upsert("a", &[1.0, 99.0]).await;
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after.lines().count(), 3);
+    assert!(after.contains("99.0")); // a 的最新向量保留
+
+    // 重写后检索语义不变：每 doc 只认最新向量
+    let results = state.read().await.search(&[1.0, 0.0], 10);
+    assert_eq!(results.len(), 3);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M47：删除产生的孤儿点同样计入运行期 compaction 触发
+#[tokio::test]
+async fn test_runtime_compaction_triggered_by_deletes() {
+    let tmp = temp_data_dir();
+    let state = get_or_load("rt-del-compact-agent").await.unwrap();
+    let path = tmp.join("agents/rt-del-compact-agent/indices/hnsw/embeddings.jsonl");
+
+    for i in 0..120u32 {
+        state
+            .write()
+            .await
+            .upsert(&format!("d{i}"), &[1.0, i as f32])
+            .await;
+    }
+    // 删 110：孤儿 110 ≥ 100 且总点 120 > 存活 10 × 2 → 触发重写
+    let ids: Vec<String> = (0..110u32).map(|i| format!("d{i}")).collect();
+    let deleted = state.write().await.delete_docs(&ids).await;
+    assert_eq!(deleted, 110);
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after.lines().count(), 10);
+    assert!(!after.contains("deleted"));
+
+    let results = state.read().await.search(&[1.0, 0.0], 200);
+    assert_eq!(results.len(), 10);
+    assert!(
+        results
+            .iter()
+            .all(|(id, _)| { id.strip_prefix('d').unwrap().parse::<u32>().unwrap() >= 110 })
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M47：delete_agent 后经旧句柄的迟到 upsert 被退役标记拒绝——
+/// 不重建已删目录/文件，旧记忆不复活
+#[tokio::test]
+async fn test_late_upsert_after_delete_agent_does_not_resurrect() {
+    let tmp = temp_data_dir();
+    let state = get_or_load("late-upsert-agent").await.unwrap();
+    state.write().await.upsert("old-doc", &[1.0, 0.0]).await;
+
+    zome_sidecar::vector::delete_agent("late-upsert-agent")
+        .await
+        .unwrap();
+    // 旧句柄仍在（在飞调用方场景）：迟到 upsert 必须被拒
+    state.write().await.upsert("late-doc", &[0.0, 1.0]).await;
+    state
+        .write()
+        .await
+        .delete_docs(&["old-doc".to_string()])
+        .await;
+
+    // 磁盘未复活
+    assert!(!tmp.join("agents/late-upsert-agent/indices").exists());
+    // 重新加载为空索引
+    let fresh = get_or_load("late-upsert-agent").await.unwrap();
+    assert!(fresh.read().await.search(&[1.0, 0.0], 10).is_empty());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// M48：ENOENT 是正常冷启（空索引、无错误）；真读错误（非法 UTF-8）降级为
+/// 空索引但 warn 留痕——两种路径都不报错、不 panic
+#[tokio::test]
+async fn test_load_state_missing_vs_corrupt_file() {
+    let tmp = temp_data_dir();
+    // ENOENT：从未写入的 agent
+    let fresh = get_or_load("cold-start-agent").await.unwrap();
+    assert!(fresh.read().await.search(&[1.0, 0.0], 10).is_empty());
+
+    // 真错误：非法 UTF-8 让 read_to_string 失败（InvalidData）
+    let dir = tmp.join("agents/corrupt-agent/indices/hnsw");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("embeddings.jsonl"), b"\xff\xfe\x00bad").unwrap();
+    let corrupt = get_or_load("corrupt-agent").await.unwrap();
+    assert!(corrupt.read().await.search(&[1.0, 0.0], 10).is_empty());
+    // 降级后可正常写入（索引仍是活的）
+    corrupt.write().await.upsert("d1", &[1.0, 0.0]).await;
+    assert_eq!(corrupt.read().await.search(&[1.0, 0.0], 10).len(), 1);
+
     std::fs::remove_dir_all(&tmp).ok();
 }
