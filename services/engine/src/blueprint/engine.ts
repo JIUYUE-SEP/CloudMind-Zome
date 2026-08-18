@@ -69,6 +69,12 @@ export async function executeBlueprint(
  * M25 结构校验：本引擎只支持线性链（getNextNode 只取首条出边），
  * 因此悬空边（source/target 指向不存在节点）与分支边（同一 source 多条出边）
  * 都视为非法蓝图，直接抛错而不是静默丢弃。
+ *
+ * F7 补修：环检测。M25 只拦悬空/分支边，A→B→A 这类环会漏到执行期——
+ * executeNode 靠 visited 静默截停，且节点动作在父帧执行、visited 检查在
+ * 子帧，环入口节点会被执行两次后仍报 completed。出度 ≤1 已由上方分支边
+ * 校验保证，沿唯一出边走链、回到本路径已访问节点即成环（含自环 A→A）；
+ * 逐节点起跑以覆盖游离于 start 链之外的不可达环。
  */
 function validateBlueprint(blueprint: Blueprint): void {
   const nodeIds = new Set(blueprint.nodes.map((n) => n.id));
@@ -86,6 +92,22 @@ function validateBlueprint(blueprint: Blueprint): void {
     }
     sources.add(edge.source);
   }
+
+  // 环检测（见函数头注释）：出度 ≤1 前提下沿边走链，撞见本路径已访问节点即环
+  const nextBySource = new Map(blueprint.edges.map((e) => [e.source, e.target]));
+  for (const node of blueprint.nodes) {
+    const chain: string[] = [];
+    let current: string | undefined = node.id;
+    while (current !== undefined) {
+      const at = chain.indexOf(current);
+      if (at !== -1) {
+        const cycle = [...chain.slice(at), current].join(" -> ");
+        throw new Error(`blueprint contains a cycle: ${cycle} (cycles are not supported)`);
+      }
+      chain.push(current);
+      current = nextBySource.get(current);
+    }
+  }
 }
 
 async function executeNode(
@@ -96,6 +118,9 @@ async function executeNode(
   visited: Set<string>,
   execution: BlueprintExecution
 ): Promise<void> {
+  // F7 两层防御：第一层是 validateBlueprint 的校验期环检测（非法蓝图直接
+  // failed 不执行）；此处的 visited 截停保留为第二层运行时防御——正常路径
+  // 永不触发（环在校验期已被拦截），仅兜住校验逻辑未来变动/旁路调用的意外
   if (visited.has(node.id)) return;
   visited.add(node.id);
 

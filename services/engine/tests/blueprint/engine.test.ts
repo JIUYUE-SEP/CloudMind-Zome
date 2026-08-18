@@ -292,6 +292,61 @@ describe("executeBlueprint", () => {
     expect(result.logs.join("\n")).toContain("multiple outgoing edges");
   });
 
+  it("F7：A→B→A 环 → 校验期明确报错不执行（节点动作零调用）", async () => {
+    // llm 节点挂 enqueue 间谍：环若漏到执行期，旧行为是 visited 静默截停
+    // 且环入口节点被执行两次仍报 completed；现在校验期即拦截
+    const enqueued: Job[] = [];
+    const context = {
+      getAgentWorker: async () => ({ enqueue: (job: Job) => { enqueued.push(job); } }),
+    } as unknown as ApiContext;
+    const blueprint: Blueprint = {
+      id: "b1",
+      name: "Test",
+      nodes: [
+        { id: "start", type: "start", x: 0, y: 0 },
+        { id: "a", type: "llm", x: 200, y: 0, config: { agentId: "a1", prompt: "x" } },
+        { id: "b", type: "tool", x: 400, y: 0, config: { toolName: "list_files", arguments: {} } },
+      ],
+      edges: [
+        { source: "start", target: "a" },
+        { source: "a", target: "b" },
+        { source: "b", target: "a" },
+      ],
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const result = await executeBlueprint(blueprint, context);
+    expect(result.status).toBe("failed");
+    expect(result.logs.join("\n")).toContain("cycle");
+    expect(result.logs.join("\n")).toContain("a -> b -> a");
+    // 节点动作零调用：llm 不入队、tool 不执行，无任何节点产出
+    expect(enqueued).toHaveLength(0);
+    expect(result.logs.join("\n")).not.toContain("executed");
+    expect(result.outputs).toEqual({});
+  });
+
+  it("F7：自环（A→A）→ 校验期明确报错不执行", async () => {
+    const blueprint: Blueprint = {
+      id: "b1",
+      name: "Test",
+      nodes: [
+        { id: "start", type: "start", x: 0, y: 0 },
+        { id: "a", type: "tool", x: 200, y: 0, config: { toolName: "list_files", arguments: {} } },
+      ],
+      edges: [
+        { source: "start", target: "a" },
+        { source: "a", target: "a" },
+      ],
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const result = await executeBlueprint(blueprint, mockContext);
+    expect(result.status).toBe("failed");
+    expect(result.logs.join("\n")).toContain("cycle");
+    expect(result.logs.join("\n")).toContain("a -> a");
+    expect(result.logs.join("\n")).not.toContain("executed");
+  });
+
   it("M25：执行后清理 blueprint-workspace/<executionId>（不泄漏磁盘）", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "blueprint-workspace-test-"));
     const originalDataDir = process.env.CLOUDMIND_DATA_DIR;
