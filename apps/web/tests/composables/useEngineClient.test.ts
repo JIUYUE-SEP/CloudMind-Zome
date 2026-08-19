@@ -450,3 +450,110 @@ describe("useEngineClient WS 自动重连（P0-3）", () => {
     expect(onError).toHaveBeenCalledWith("WebSocket error");
   });
 });
+
+// F2：消息分页参数对象收口 + /plugins、/system/info、会话管理端点恢复
+describe("useEngineClient 消息分页与新端点（F2）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  interface CapturedCall {
+    url: string;
+    method: string;
+    body?: unknown;
+  }
+
+  function captureCalls(jsonBody: unknown = []) {
+    const calls: CapturedCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(jsonBody) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    return calls;
+  }
+
+  it("getMessages：limit/before 均透传为查询参数", async () => {
+    const calls = captureCalls();
+    const client = useEngineClient();
+    await client.getMessages("a1", "s1", { limit: 50, before: "msg_x" });
+    expect(calls[0].url).toContain("/chat/a1/messages?");
+    expect(calls[0].url).toContain("sessionId=s1");
+    expect(calls[0].url).toContain("limit=50");
+    expect(calls[0].url).toContain("before=msg_x");
+  });
+
+  it("getMessages：缺省 options 不拼 limit/before（向后兼容）", async () => {
+    const calls = captureCalls();
+    const client = useEngineClient();
+    await client.getMessages("a1", "s1");
+    expect(calls[0].url).toContain("sessionId=s1");
+    expect(calls[0].url).not.toContain("limit=");
+    expect(calls[0].url).not.toContain("before=");
+  });
+
+  it("getSessionMessages：before 游标透传并经 URLSearchParams 编码", async () => {
+    const calls = captureCalls();
+    const client = useEngineClient();
+    await client.getSessionMessages("s1", { limit: 100, before: "m 9" });
+    expect(calls[0].url).toContain("/sessions/s1/messages?");
+    expect(calls[0].url).toContain("limit=100");
+    expect(calls[0].url).toContain("before=m+9");
+  });
+
+  it("listPlugins：GET /plugins 并返回加载结果", async () => {
+    const payload = {
+      loaded: ["hello"],
+      skipped: [{ name: "bad", reason: "no-apply" }],
+      perAgent: [{ agentId: "a1", name: "hello", status: "loaded" }],
+    };
+    const calls = captureCalls(payload);
+    const client = useEngineClient();
+    const result = await client.listPlugins();
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toContain("/plugins");
+    expect(result).toEqual(payload);
+  });
+
+  it("getSystemInfo：GET /system/info 并返回系统信息", async () => {
+    const payload = {
+      version: "0.1.0",
+      gitCommit: "3c465f2",
+      dataDir: "/data",
+      port: 3947,
+      uptimeSec: 12,
+      sidecar: { configured: true },
+    };
+    const calls = captureCalls(payload);
+    const client = useEngineClient();
+    const result = await client.getSystemInfo();
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toContain("/system/info");
+    expect(result).toEqual(payload);
+  });
+
+  it("updateSession：PUT /sessions/:id 携带 patch 并返回更新后的会话", async () => {
+    const updated = { id: "s1", name: "新名", agentIds: ["a1"], type: "group", createdAt: "", updatedAt: "" };
+    const calls = captureCalls(updated);
+    const client = useEngineClient();
+    const result = await client.updateSession("s1", { name: "新名" });
+    expect(calls[0].method).toBe("PUT");
+    expect(calls[0].url).toContain("/sessions/s1");
+    expect(calls[0].body).toEqual({ name: "新名" });
+    expect(result).toEqual(updated);
+  });
+
+  it("deleteSession：DELETE /sessions/:id，id 含特殊字符被编码", async () => {
+    const calls = captureCalls();
+    const client = useEngineClient();
+    await client.deleteSession("s 1");
+    expect(calls[0].method).toBe("DELETE");
+    expect(calls[0].url).toContain("/sessions/s%201");
+  });
+});

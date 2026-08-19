@@ -39,7 +39,7 @@ export const useChatStore = defineStore("chat", () => {
 
   async function loadMessages(agentId: string) {
     const seq = ++loadSeq;
-    const records = await client.getMessages(agentId, sessionId.value, 100);
+    const records = await client.getMessages(agentId, sessionId.value, { limit: 100 });
     if (seq !== loadSeq) return;
     messages.value = recordsToDisplay(records);
   }

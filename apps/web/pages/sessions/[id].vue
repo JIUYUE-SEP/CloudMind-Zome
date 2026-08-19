@@ -78,7 +78,7 @@ onMounted(async () => {
     return;
   }
   try {
-    const records = await client.getSessionMessages(sessionId.value, 100);
+    const records = await client.getSessionMessages(sessionId.value, { limit: 100 });
     if (!alive) return;
     messages.value = recordsToDisplay(records);
   } catch {
@@ -117,7 +117,7 @@ function connect() {
       // 重连成功：拉取最新消息列表对齐断线期间的状态
       reconnectAttempts.value = 0;
       client
-        .getSessionMessages(sessionId.value, 100)
+        .getSessionMessages(sessionId.value, { limit: 100 })
         .then((records) => {
           if (alive) messages.value = recordsToDisplay(records);
         })

@@ -5,14 +5,7 @@
     </div>
 
     <nav v-if="showRightNav" class="right-nav">
-      <NuxtLink
-        v-for="item in navItems"
-        :key="item.label + item.to"
-        :to="item.to"
-        class="nav-item"
-        :class="{ placeholder: item.placeholder }"
-        @click="handleNav($event, item)"
-      >
+      <NuxtLink v-for="item in navItems" :key="item.label + item.to" :to="item.to" class="nav-item">
         <span class="nav-label">{{ item.label }}</span>
       </NuxtLink>
     </nav>
@@ -36,31 +29,25 @@ import { useRoute } from "vue-router";
 interface NavItem {
   label: string;
   to: string;
-  placeholder?: boolean;
 }
 
 const route = useRoute();
 
 const navItems: NavItem[] = [
-  { label: "行动中心", to: "", placeholder: true },
+  { label: "行动中心", to: "/scheduler" },
   { label: "心智整备", to: "/agents" },
-  { label: "自动委托", to: "", placeholder: true },
+  { label: "自动委托", to: "/blueprints" },
   { label: "通讯中枢", to: "/hub" },
-  { label: "广播站", to: "", placeholder: true },
+  { label: "广播站", to: "/changelog" },
 ];
 
+// 导航仅首页常驻（/agents、/hub 等目的地页均不显示，维持既有口径）
 const topLevelPaths = new Set(["/"]);
 
 const showRightNav = computed(() => topLevelPaths.has(route.path));
 
 // 心智整备各页面（列表/新建/编辑）为全宽布局，按原型隐藏底栏
 const showBottomBar = computed(() => !route.path.startsWith("/agents"));
-
-function handleNav(e: Event, item: NavItem) {
-  if (item.placeholder) {
-    e.preventDefault();
-  }
-}
 </script>
 
 <style scoped>
@@ -110,13 +97,8 @@ function handleNav(e: Event, item: NavItem) {
   transition: background 0.2s;
 }
 
-.nav-item:hover:not(.placeholder) {
+.nav-item:hover {
   background: rgba(0, 229, 201, 0.08);
-}
-
-.nav-item.placeholder {
-  opacity: 0.4;
-  cursor: default;
 }
 
 .nav-label {

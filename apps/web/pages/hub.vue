@@ -197,7 +197,7 @@ async function selectGroup(session: Session) {
 
 async function fetchGroupMessages(sessionId: string): Promise<DisplayMessage[] | null> {
   try {
-    const records = await client.getSessionMessages(sessionId, 100);
+    const records = await client.getSessionMessages(sessionId, { limit: 100 });
     return recordsToDisplay(records);
   } catch {
     return null;

@@ -57,6 +57,58 @@ export interface Session {
   updatedAt: string;
 }
 
+/** 消息分页参数（私聊 /chat/:agentId/messages 与群聊 /sessions/:id/messages 同口径） */
+export interface MessagePageOptions {
+  limit?: number;
+  /** 消息 id 游标：取游标之前的一页，游标本身不含；缺省拉最新一页 */
+  before?: string;
+}
+
+// ---- /plugins 与 /system/info 响应类型：与 engine 侧契约对齐 ----
+// （plugins: services/engine/src/plugins/external/index.ts 的 ExternalFace；
+//   system: services/engine/src/api/routes/system.ts，web 不依赖 engine 包，本地镜像）
+
+/** 外部插件跳过原因（engine SkipReason 契约镜像，取值勿随意改） */
+export type PluginSkipReason =
+  | "disabled"
+  | "invalid-entry"
+  | "missing-entry"
+  | "import-failed"
+  | "no-apply"
+  | "invalid-name"
+  | "name-mismatch"
+  | "mount-failed"
+  | "apply-failed"
+  | "pending";
+
+export interface SkippedPlugin {
+  name: string;
+  reason: PluginSkipReason;
+}
+
+export interface PerAgentPluginResult {
+  agentId: string;
+  name: string;
+  status: "loaded" | PluginSkipReason;
+}
+
+/** GET /plugins 响应（engine ExternalFace 镜像） */
+export interface PluginLoadResult {
+  loaded: string[];
+  skipped: SkippedPlugin[];
+  perAgent: PerAgentPluginResult[];
+}
+
+/** GET /system/info 响应（无 git 的打包分发省略 gitCommit） */
+export interface SystemInfo {
+  version: string;
+  gitCommit?: string;
+  dataDir: string;
+  port: number;
+  uptimeSec: number;
+  sidecar: { configured: boolean };
+}
+
 export interface HandoffRecord {
   id: string;
   agentId: string;
@@ -261,10 +313,15 @@ export function useEngineClient(options?: EngineClientOptions) {
     await ensureOk(res, "delete agent");
   }
 
-  async function getMessages(agentId: string, sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
+  async function getMessages(
+    agentId: string,
+    sessionId: string,
+    options: MessagePageOptions = {},
+  ): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
     params.set("sessionId", sessionId);
-    if (limit) params.set("limit", String(limit));
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.before) params.set("before", options.before);
     const res = await engineFetch(`${baseUrl.value}/chat/${encodeURIComponent(agentId)}/messages?${params.toString()}`);
     await ensureOk(res, "get messages");
     return res.json();
@@ -287,11 +344,45 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
-  async function getSessionMessages(sessionId: string, limit?: number): Promise<ChatMessageRecord[]> {
+  // engine 只应用 name/agentIds（其余字段静默丢弃），类型与之一致
+  async function updateSession(id: string, patch: Partial<Pick<Session, "name" | "agentIds">>): Promise<Session> {
+    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    await ensureOk(res, "update session");
+    return res.json();
+  }
+
+  async function deleteSession(id: string): Promise<void> {
+    const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await ensureOk(res, "delete session");
+  }
+
+  async function getSessionMessages(
+    sessionId: string,
+    options: MessagePageOptions = {},
+  ): Promise<ChatMessageRecord[]> {
     const params = new URLSearchParams();
-    if (limit) params.set("limit", String(limit));
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.before) params.set("before", options.before);
     const res = await engineFetch(`${baseUrl.value}/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`);
     await ensureOk(res, "get session messages");
+    return res.json();
+  }
+
+  // Plugins（外部插件加载结果只读端点）
+  async function listPlugins(): Promise<PluginLoadResult> {
+    const res = await engineFetch(`${baseUrl.value}/plugins`);
+    await ensureOk(res, "list plugins");
+    return res.json();
+  }
+
+  // System（引擎版本/数据目录/运行时长等只读信息）
+  async function getSystemInfo(): Promise<SystemInfo> {
+    const res = await engineFetch(`${baseUrl.value}/system/info`);
+    await ensureOk(res, "get system info");
     return res.json();
   }
 
@@ -527,7 +618,11 @@ export function useEngineClient(options?: EngineClientOptions) {
     getMessages,
     listSessions,
     createSession,
+    updateSession,
+    deleteSession,
     getSessionMessages,
+    listPlugins,
+    getSystemInfo,
     listHandoffs,
     listProviders,
     createProvider,
