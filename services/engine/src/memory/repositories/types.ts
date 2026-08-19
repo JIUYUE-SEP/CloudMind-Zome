@@ -9,6 +9,12 @@ export interface MemoryRecord {
   createdAt: string;
   /** P4-a flush 置信度（0-1，压缩调用赋值）；随记录落盘供审计（REST 自然透出）。旧记录无此字段 */
   confidence?: number;
+  /**
+   * P4-b：来源话题的重要性（flush 时继承自压缩档）。仅 high/low 落盘——normal
+   * 为缺省语义不写字段（normal 话题的 flush 记录与 P4-a 写盘字节一致）；
+   * 旧记录无此字段按 normal 语义。L4 检索时 high 条目时间衰减恒 1.0。
+   */
+  importance?: "high" | "normal" | "low";
 }
 
 export interface ActionRecord {

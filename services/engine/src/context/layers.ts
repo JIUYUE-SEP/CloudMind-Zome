@@ -27,6 +27,8 @@ export interface TopicSummary {
   createdAt: string;
   /** 阶段 5 二期：该话题内使用过的技能名（活跃保护——组装时自动重取规程正文） */
   usedSkills?: string[];
+  /** P4-b：话题重要性（压缩调用赋值）；存量档无此字段时按 normal 语义（undefined） */
+  importance?: "high" | "normal" | "low";
 }
 
 /**

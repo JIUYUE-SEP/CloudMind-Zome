@@ -139,11 +139,15 @@ export class SemanticRetriever {
     // P4-a：flush 事实条目与消息条目同一打分/过滤口径（相似度 × 时间衰减）。
     // MemoryRecord 无 sessionId，不标跨场景来源；id 用原始 recordId
     // （pipeline 去重键 `mem:${id}` 恰好与向量 doc_id 一致）
+    // P4-b 差异化保留：importance=high 的 flush 条目时间衰减恒 1.0（设计决策 5
+    // 的兑现落点——L4 中只有 flush 条目带 importance：消息向量条目来自消息，
+    // 消息无 importance 来源，且所属话题一经压缩即被归档排除出 L4）
     for (const record of memRecords) {
       if (!record) continue;
       const content = record.content.trim().slice(0, MAX_INJECT_CHARS);
       if (!content) continue;
-      const score = (simById.get(`mem:${record.id}`) ?? 0) * timeDecay(record.createdAt, now);
+      const decay = record.importance === "high" ? 1.0 : timeDecay(record.createdAt, now);
+      const score = (simById.get(`mem:${record.id}`) ?? 0) * decay;
       if (score < this.config.minScore) continue;
       memories.push({ id: record.id, content, score, createdAt: record.createdAt });
     }

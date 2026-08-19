@@ -62,6 +62,17 @@ const REPLY_WITH_FACTS = [
 
 const REPLY_NO_FACTS = "话题主题：常规\n关键结论：\n- 结论\n经验：\n长期记忆：\n重要性：normal";
 
+/** P4-b 用：normal 话题但带一条高置信事实（验证 normal 不落 importance 字段） */
+const REPLY_NORMAL_WITH_FACTS = [
+  "话题主题：常规部署",
+  "关键结论：",
+  "- 按原计划推进",
+  "经验：",
+  "长期记忆：",
+  "- 部署窗口在周五晚上 | 0.8",
+  "重要性：normal",
+].join("\n");
+
 describe("runCompressionTask memory flush（P4-a）", () => {
   let tmpDir: string;
   let originalDataDir: string | undefined;
@@ -157,6 +168,34 @@ describe("runCompressionTask memory flush（P4-a）", () => {
 
     const raw = await fs.readFile(path.join(compressedDir("a1"), "tp_p4a_flush.md"), "utf-8");
     expect(raw).toContain("importance: high");
+  });
+
+  // P4-b：flush 条目继承话题重要性——L4「高重要不衰减」的依据
+  it("P4-b：high 话题的 flush 记录带 importance: high（继承话题档）", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const { deps } = makeDeps(repo, REPLY_WITH_FACTS);
+
+    await runCompressionTask(makeSegment(ids), deps);
+
+    const memories = await new MemoryRepository("a1").list();
+    expect(memories).toHaveLength(2);
+    expect(memories.every((m) => m.importance === "high")).toBe(true);
+  });
+
+  it("P4-b：normal 话题的 flush 记录不落 importance 字段（与 P4-a 写盘字节一致）", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const { deps } = makeDeps(repo, REPLY_NORMAL_WITH_FACTS);
+
+    await runCompressionTask(makeSegment(ids), deps);
+
+    const memories = await new MemoryRepository("a1").list();
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.content).toBe("部署窗口在周五晚上");
+    expect("importance" in memories[0]!).toBe(false);
   });
 
   it("无 indexMemory 钩子（Mock embedder 无索引器）：写库照做、只跳过向量", async () => {

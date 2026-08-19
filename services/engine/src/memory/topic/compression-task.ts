@@ -103,6 +103,9 @@ async function flushMemoryFacts(
         embeddingId: `mem:${recordId}`,
         createdAt: compressed.compressedAt,
         confidence: fact.confidence,
+        // P4-b：flush 条目继承话题重要性（L4 高重要不衰减的依据）；
+        // normal 为缺省语义不落字段——normal 话题的写盘字节与 P4-a 一致
+        ...(compressed.importance !== "normal" ? { importance: compressed.importance } : {}),
       });
       // 同批内互重也去（循环内登记，下一轮回合即见）
       existing.add(fact.text.trim());

@@ -242,6 +242,8 @@ interface ParsedCompressedFile {
   text: string;
   /** 阶段 5 二期：该话题内使用过的技能名（无字段的旧档为 undefined） */
   usedSkills?: string[];
+  /** P4-b：重要性（P4-a 起写入 frontmatter）；存量档无此行/非法值按 normal 语义（undefined） */
+  importance?: "high" | "normal" | "low";
 }
 
 /** 解析 frontmatter 块的 key: value 行（未知 key 保留，供版本迁移链使用） */
@@ -287,12 +289,19 @@ function parseCompressedFile(raw: string, fallbackId: string): ParsedCompressedF
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  // P4-b：重要性读回——只认三个合法值；存量档无此行或值非法时为 undefined（按 normal 语义）
+  const rawImportance = fm["importance"];
+  const importance =
+    rawImportance === "high" || rawImportance === "normal" || rawImportance === "low"
+      ? rawImportance
+      : undefined;
   return {
     topicId: fm["topic_id"] || fallbackId,
     label: fm["label"] || "（未命名话题）",
     compressedAt,
     text: parts.join("\n"),
     ...(usedSkills.length > 0 ? { usedSkills } : {}),
+    ...(importance ? { importance } : {}),
   };
 }
 
@@ -302,38 +311,66 @@ function parseCompressedFile(raw: string, fallbackId: string): ParsedCompressedF
  * topicId 自带时间戳前缀（tp_<Date.now()>），文件名倒序即时间倒序：
  * 先按文件名取前 N 个再读内容，避免每轮全量扫描目录。
  * 目录不存在/单档损坏不中断，最多返回空数组。
+ *
+ * P4-b 高重要常驻（差异化保留）：最近 count 个之外，最近一个 importance=high
+ * 的压缩档若不在其中，则始终追加注入（防高重要话题被新话题挤出）。追加档比
+ * 前 N 个都旧，置于数组末尾——整体仍按时间倒序（降级 drop-oldest 从末尾砍的
+ * 口径不变）。前 N 个里已有 high 或全目录无 high 时不追加，返回与旧版一致。
  */
 export async function latestSummaries(agentId: string, count: number): Promise<TopicSummary[]> {
   if (count <= 0) return [];
+  const dir = compressedDir(agentId);
   let files: string[];
   try {
-    files = await fs.readdir(compressedDir(agentId));
+    files = await fs.readdir(dir);
   } catch {
     return [];
   }
-  const candidates = files
+  const sorted = files
     .filter((f) => f.endsWith(".md"))
     .sort()
-    .reverse()
-    .slice(0, count);
+    .reverse();
+  // 读单档的统一降级口径：损坏档返回 null（调用处 warn 跳过），高版本档显式上抛
+  const readOne = async (file: string): Promise<TopicSummary | null> => {
+    const raw = await fs.readFile(path.join(dir, file), "utf-8");
+    const p = parseCompressedFile(raw, file.replace(/\.md$/, ""));
+    if (!p) return null;
+    return {
+      id: p.topicId,
+      label: p.label,
+      text: p.text,
+      createdAt: p.compressedAt,
+      ...(p.usedSkills ? { usedSkills: p.usedSkills } : {}),
+      ...(p.importance ? { importance: p.importance } : {}),
+    };
+  };
   const parsed: TopicSummary[] = [];
-  for (const file of candidates) {
+  for (const file of sorted.slice(0, count)) {
     try {
-      const raw = await fs.readFile(path.join(compressedDir(agentId), file), "utf-8");
-      const p = parseCompressedFile(raw, file.replace(/\.md$/, ""));
-      if (p) {
-        parsed.push({
-          id: p.topicId,
-          label: p.label,
-          text: p.text,
-          createdAt: p.compressedAt,
-          ...(p.usedSkills ? { usedSkills: p.usedSkills } : {}),
-        });
-      }
+      const s = await readOne(file);
+      if (s) parsed.push(s);
     } catch (err) {
       // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
       if (err instanceof UnsupportedSchemaVersionError) throw err;
       logger.warn({ err: err }, `[topic] 压缩档读取失败，已跳过：${file}`);
+    }
+  }
+  // P4-b：前 N 个无 high 才向旧扫描——找到最近一个 high 即追加并停。
+  // 最坏情况（无 high 档）全目录扫一遍：目录文件数有限、单档体积小，
+  // 与 listCompressedTopicMeta 的逐个读 frontmatter 同口径，可接受
+  if (!parsed.some((t) => t.importance === "high")) {
+    for (const file of sorted.slice(count)) {
+      try {
+        const s = await readOne(file);
+        if (!s) continue;
+        if (s.importance === "high") {
+          parsed.push(s);
+          break;
+        }
+      } catch (err) {
+        if (err instanceof UnsupportedSchemaVersionError) throw err;
+        logger.warn({ err: err }, `[topic] 压缩档读取失败，已跳过：${file}`);
+      }
     }
   }
   return parsed;

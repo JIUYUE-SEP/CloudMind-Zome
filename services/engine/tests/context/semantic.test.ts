@@ -278,9 +278,15 @@ describe("SemanticRetriever mem: 条目（P4-a flush 事实召回）", () => {
     vi.useRealTimers();
   });
 
-  type MemRec = { id: string; content: string; embeddingId: string; createdAt: string };
-  function memRec(id: string, content: string, createdAt: string): MemRec {
-    return { id, content, embeddingId: `mem:${id}`, createdAt };
+  type MemRec = {
+    id: string;
+    content: string;
+    embeddingId: string;
+    createdAt: string;
+    importance?: "high" | "normal" | "low";
+  };
+  function memRec(id: string, content: string, createdAt: string, importance?: MemRec["importance"]): MemRec {
+    return { id, content, embeddingId: `mem:${id}`, createdAt, ...(importance ? { importance } : {}) };
   }
   function makeMemoryRepo(records: MemRec[]) {
     return { get: async (id: string) => records.find((r) => r.id === id) };
@@ -341,5 +347,35 @@ describe("SemanticRetriever mem: 条目（P4-a flush 事实召回）", () => {
     const out = await r.retrieve("a1", "q", new Set(), "default");
     expect(out).toHaveLength(1);
     expect(out[0]!.content).toHaveLength(2000);
+  });
+
+  // P4-b 差异化保留：importance=high 的 flush 条目时间衰减恒 1.0（设计决策 5）
+  it("高重要不衰减：importance=high 的 mem: 条目时间衰减恒 1.0", async () => {
+    const old = new Date(NOW - 100 * DAY).toISOString(); // 三个月以上，普通条目保底 0.3
+    const indexer = makeIndexer([
+      { id: "mem:high", score: 0.9 },
+      { id: "mem:normal", score: 0.9 },
+    ]);
+    const memoryRepo = makeMemoryRepo([
+      memRec("high", "高重要话题的关键事实", old, "high"),
+      memRec("normal", "常规话题的事实", old, "normal"),
+    ]);
+    const r = new SemanticRetriever(indexer, makeRepo([]), config, archivedMessageIds, memoryRepo);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+
+    // high: 0.9 × 1.0 = 0.9；normal: 0.9 × 0.3 = 0.27
+    expect(out.map((m) => m.id)).toEqual(["high", "normal"]);
+    expect(out[0]!.score).toBeCloseTo(0.9);
+    expect(out[1]!.score).toBeCloseTo(0.27);
+  });
+
+  it("旧记录无 importance 字段（P4-b 之前 flush 的存量条目）：照常衰减", async () => {
+    const indexer = makeIndexer([{ id: "mem:legacy", score: 0.9 }]);
+    const memoryRepo = makeMemoryRepo([
+      memRec("legacy", "存量事实", new Date(NOW - 100 * DAY).toISOString()),
+    ]);
+    const r = new SemanticRetriever(indexer, makeRepo([]), config, archivedMessageIds, memoryRepo);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+    expect(out[0]!.score).toBeCloseTo(0.27);
   });
 });
