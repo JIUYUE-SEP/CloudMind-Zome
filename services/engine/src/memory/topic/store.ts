@@ -90,6 +90,11 @@ export interface CompressedTopicMeta {
  */
 const SAFE_TOPIC_ID = /^[A-Za-z0-9_-]+$/;
 
+/** topicId 白名单校验（P4-d REST 入参防路径穿越，与文件名段同一 regex） */
+export function isValidTopicId(topicId: string): boolean {
+  return SAFE_TOPIC_ID.test(topicId);
+}
+
 /**
  * 列出压缩档元信息（recall 浏览记忆目录）：按开始时间倒序，可选 offset/limit 分页。
  * 缺省 limit=不限（调用方——RecallService——统一负责分页与总数，避免这里先截
@@ -136,6 +141,162 @@ export async function listCompressedTopicMeta(
   return metas
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(offset, offset + limit);
+}
+
+/** frontmatter importance 归一（P4-d）：只认三个合法值，存量档无此行/非法值按 normal 语义 */
+function normalizeImportance(raw: string | undefined): "high" | "normal" | "low" {
+  return raw === "high" || raw === "low" ? raw : "normal";
+}
+
+/** 压缩档审计元信息（P4-d REST 列表项）：frontmatter 的审计视图，importance 已归一 */
+export interface CompressedTopicAuditMeta {
+  topicId: string;
+  label: string;
+  importance: "high" | "normal" | "low";
+  sourceId: string;
+  sourceName: string;
+  compressedAt: string;
+  msgCount: number;
+}
+
+/**
+ * 审计元信息的按档指纹缓存（P4-d）：与 archivedIdsCache 同一 (mtimeMs, size)
+ * 指纹口径——压缩档一经写入不再变化，指纹兜底外部改动；REST 列表每页都调，
+ * 命中时只付 readdir + stat，不再每页全量读所有 .md 内容
+ */
+const auditMetaCache = new Map<
+  string,
+  { mtimeMs: number; size: number; meta: CompressedTopicAuditMeta }
+>();
+
+/**
+ * 列出压缩档审计元信息（P4-d REST 列表）：按压缩时间倒序，offset/limit 分页。
+ * 损坏档 warn 跳过、高版本档显式上抛——与 listCompressedTopicMeta 同口径。
+ */
+export async function listCompressedTopics(
+  agentId: string,
+  options?: { limit?: number; offset?: number },
+): Promise<CompressedTopicAuditMeta[]> {
+  const dir = compressedDir(agentId);
+  let files: string[];
+  try {
+    files = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const present = new Set<string>();
+  const metas: CompressedTopicAuditMeta[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".md")) continue;
+    const filePath = path.join(dir, file);
+    present.add(filePath);
+    try {
+      const stat = await fs.stat(filePath);
+      const cached = auditMetaCache.get(filePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        metas.push(cached.meta);
+        continue;
+      }
+      const raw = await fs.readFile(filePath, "utf-8");
+      // 版本门禁（P1-1）：高版本档显式报错，不按旧格式静默抠字段
+      assertCompressedVersion(raw, filePath);
+      const fm = parseFrontmatterBlock(raw.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "");
+      const rawCount = Number(fm["msg_count"] ?? 0);
+      const meta: CompressedTopicAuditMeta = {
+        topicId: fm["topic_id"] || file.replace(/\.md$/, ""),
+        label: fm["label"] || "（未命名话题）",
+        importance: normalizeImportance(fm["importance"]),
+        sourceId: fm["source_id"] ?? "",
+        sourceName: fm["source_name"] ?? "",
+        compressedAt: fm["compressed_at"] ?? "",
+        msgCount: Number.isFinite(rawCount) ? rawCount : 0,
+      };
+      auditMetaCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, meta });
+      metas.push(meta);
+    } catch (err) {
+      // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
+      if (err instanceof UnsupportedSchemaVersionError) throw err;
+      logger.warn({ err: err }, `[topic] 压缩档读取失败，已跳过：${file}`);
+    }
+  }
+  // 清理已删除压缩档的缓存项（restore 删档 / 外部清理），避免无限增长
+  for (const key of auditMetaCache.keys()) {
+    if (path.dirname(key) === dir && !present.has(key)) auditMetaCache.delete(key);
+  }
+  const offset = Math.max(0, Math.floor(options?.offset ?? 0));
+  const limit =
+    options?.limit === undefined ? Infinity : Math.max(1, Math.floor(options.limit));
+  return metas
+    .sort((a, b) => b.compressedAt.localeCompare(a.compressedAt))
+    .slice(offset, offset + limit);
+}
+
+/** 压缩档全文（P4-d REST 单档详情）：frontmatter 归一字段 + 正文 Summary/Key Points 区 + msgIds */
+export interface CompressedTopicDetail {
+  topicId: string;
+  label: string;
+  importance: "high" | "normal" | "low";
+  sourceId: string;
+  sourceName: string;
+  compressedAt: string;
+  startedAt: string;
+  endedAt: string;
+  msgCount: number;
+  usedSkills: string[];
+  summary: string;
+  keyPoints: string[];
+  msgIds: string[];
+}
+
+/**
+ * 读单档全文（P4-d REST 详情用）；档不存在/topicId 非法/frontmatter 损坏返回 null，
+ * 高版本档显式上抛（与 readCompressedTopicMsgIds 同口径）。
+ */
+export async function readCompressedTopic(
+  agentId: string,
+  topicId: string,
+): Promise<CompressedTopicDetail | null> {
+  if (!SAFE_TOPIC_ID.test(topicId)) return null;
+  const filePath = path.join(compressedDir(agentId), `${topicId}.md`);
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+  // 版本门禁（P1-1）：高版本档显式报错
+  assertCompressedVersion(raw, filePath);
+  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!fmMatch) return null;
+  const fm = parseFrontmatterBlock(fmMatch[1]!);
+  const compressedAt = fm["compressed_at"];
+  if (!compressedAt) return null;
+  const body = fmMatch[2]!;
+  const summary = body.match(/## Summary\n\n([\s\S]*?)(?=\n## )/)?.[1]?.trim() ?? "";
+  const keyPointsBlock = body.match(/## Key Points\n\n([\s\S]*?)(?=\n## |$)/)?.[1]?.trim() ?? "";
+  const keyPoints = keyPointsBlock
+    .split("\n")
+    .filter((l) => l.startsWith("- "))
+    .map((l) => l.slice(2));
+  const rawCount = Number(fm["msg_count"] ?? 0);
+  return {
+    topicId: fm["topic_id"] || topicId,
+    label: fm["label"] || "（未命名话题）",
+    importance: normalizeImportance(fm["importance"]),
+    sourceId: fm["source_id"] ?? "",
+    sourceName: fm["source_name"] ?? "",
+    compressedAt,
+    startedAt: fm["started_at"] || compressedAt,
+    endedAt: fm["ended_at"] || compressedAt,
+    msgCount: Number.isFinite(rawCount) ? rawCount : 0,
+    usedSkills: (fm["used_skills"] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    summary,
+    keyPoints,
+    msgIds: parseArchivedMsgIds(raw),
+  };
 }
 
 /**

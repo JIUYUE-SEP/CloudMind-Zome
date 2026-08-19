@@ -1,5 +1,5 @@
 import { logger } from "../logger.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage, ChatMessageRecord } from "@mindcloud/shared";
 import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../provider/types.js";
@@ -591,6 +591,17 @@ export class AgentWorker {
         .join("");
       void indexer.indexMessage(agentId, msg.id, text);
     }
+  }
+
+  /**
+   * P4-d：topics restore 恢复回热存储的消息重索引（REST 经 ApiContext
+   * reindexMessages 钩子调达）。压缩归档时 M14 已 tombstone 对应向量，
+   * 不重新索引则恢复原文对 L4 语义检索永久不可见。与 indexTurnMessages
+   * 同口径：无索引器/语义检索关闭时全免，fire-and-forget 静默降级
+   * （索引是增强能力，不影响恢复本体）。
+   */
+  reindexMessages(records: ChatMessageRecord[]): void {
+    this.indexTurnMessages(records);
   }
 
   private async processQueue(): Promise<void> {

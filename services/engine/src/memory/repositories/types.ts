@@ -65,7 +65,8 @@ export interface IMessageRepository {
   firstUserMessageBySession?(sessionId: string): Promise<ChatMessageRecord | undefined>;
   /**
    * 跨存储读（用户可见完整历史）：热存储 + 归档合并、按 createdAt 时间序，
-   * limit/before 跨存储分页正确。归档可能巨大，实现必须流式/分段，
+   * limit/before 跨存储分页正确。同 id 两侧并存（P4-d restore 双轨）时去重，
+   * 热存储副本独存（在场权威）。归档可能巨大，实现必须流式/分段，
    * 内存与归档大小无关（"她的意识"路径——上下文组装/L4/reconcile/压缩——
    * 继续走 listBySession，不经此方法）。
    */

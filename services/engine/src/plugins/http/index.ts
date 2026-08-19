@@ -109,6 +109,19 @@ export function apply(ctx: Context): void {
     // F1：inject 已声明 external（见 inject 列表注），装配执行时面必就位
     external: ctx.external,
     retireAgentWorker: (agentId) => ctx.agents.retire(agentId),
+    // P4-d：topics restore 的重索引钩子——压缩归档时 M14 已 tombstone 向量，
+    // 恢复后经 worker 的索引器重新 embed upsert（无索引器/语义检索关闭时
+    // worker 内静默跳过）。fire-and-forget：embed 是慢操作，不阻断 restore
+    // 响应；worker 创建/索引失败仅 warn（恢复本体已成功，向量下一轮可由
+    // 新消息索引自然覆盖，残留不可检索代价与索引失败降级口径一致）
+    reindexMessages: (agentId, records) => {
+      void ctx.agents
+        .getOrCreateWorker(agentId)
+        .then((worker) => worker?.reindexMessages(records))
+        .catch((err) => {
+          logger.warn({ err: err }, "[http] 恢复消息重索引失败（已跳过，不影响恢复结果）");
+        });
+    },
     listSkills: async () => {
       const dirs: string[] = [];
       const builtin = await findBuiltinSkillsDir();

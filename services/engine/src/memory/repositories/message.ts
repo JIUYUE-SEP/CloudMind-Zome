@@ -70,10 +70,21 @@ export class MessageRepository implements IMessageRepository {
    * 只保留最近 limit 条的滚动窗口——内存与归档大小无关（归档可能远超
    * readLines 的 100MB 上限，这里逐行流式读、可提前 break）。
    *
+   * 同 id 去重（P4-d）：「恢复即删档」把归档原文写回热存储但归档行保留
+   * （双轨各归其位），同 id 会并存两侧。热存储是在场权威、归档是历史副本
+   * （restore 写回的正是归档行本身）——归档副本跳过，热存储副本独存。
+   * 幸存副本的位置按热侧归并位（恢复消息回最近视图，与 L3 listBySession
+   * 尾部窗口口径一致）；游标命中同样以幸存的热侧副本为准（去重跳过先于
+   * before 判断）。归档副本在归并序里先于热副本出现（时间序位置 vs
+   * 恢复落点在热存储文件尾），边并边去重无法预知后者存在，故先流式预扫
+   * 热存储收集 id 全集——热存储全量读的代价既有路径已接受（listBySession
+   * 的 readLines 同是全量），内存仍与归档大小无关。
+   *
    * 时间序前提：两个文件各自按 createdAt 递增——热存储按到达顺序追加；归档
    * 有序性由 archiveAndRemove 保序写入维护（乱序批次如孤儿补归档走流式归并
-   * 插入，见其注释；先归档后热存储）。同 createdAt 时归档优先。before 游标
-   * 命中任一侧后，
+   * 插入，见其注释；先归档后热存储）。恢复段（旧 createdAt 落在热存储文件尾）
+   * 是唯一例外，幸存副本按热侧归并位输出即上述去重口径。同 createdAt 时归档
+   * 优先。before 游标命中任一侧后，
    * 其前最近 limit 条即本页（未知游标按无游标处理，与 listBySession 同语义）。
    */
   async listBySessionWithArchived(
@@ -83,6 +94,11 @@ export class MessageRepository implements IMessageRepository {
     const rawLimit = options?.limit;
     const limit = Number.isInteger(rawLimit) && (rawLimit as number) > 0 ? (rawLimit as number) : 100;
     const before = options?.before;
+    // P4-d 去重预扫：热存储 id 全集（见头注「同 id 去重」）
+    const hotIds = new Set<string>();
+    for await (const record of this.store().readLinesLazy()) {
+      hotIds.add(record.id);
+    }
     const aIt = this.archiveStore().readLinesLazy()[Symbol.asyncIterator]();
     const hIt = this.store().readLinesLazy()[Symbol.asyncIterator]();
 
@@ -102,13 +118,18 @@ export class MessageRepository implements IMessageRepository {
         const aRecord = a.done ? null : a.value;
         const hRecord = h.done ? null : h.value;
         let record: ChatMessageRecord;
+        let fromArchive: boolean;
         if (aRecord !== null && (hRecord === null || aRecord.createdAt <= hRecord.createdAt)) {
           record = aRecord;
+          fromArchive = true;
           a = await aIt.next();
         } else {
           record = hRecord!;
+          fromArchive = false;
           h = await hIt.next();
         }
+        // 同 id 去重（P4-d）：归档副本跳过，热存储副本独存（见头注）
+        if (fromArchive && hotIds.has(record.id)) continue;
         if (record.sessionId !== sessionId) continue;
         // before 游标：其前已累积的滚动窗口即本页，游标之后的消息无关，提前停读
         if (before !== undefined && record.id === before) break;

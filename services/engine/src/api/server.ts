@@ -10,6 +10,7 @@ import { registerAgentRoutes } from "./routes/agents.js";
 import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
+import { registerTopicRoutes } from "./routes/topics.js";
 import { registerActionRoutes } from "./routes/actions.js";
 import { registerSkillRoutes } from "./routes/skills.js";
 import { registerComputeRoutes } from "./routes/compute.js";
@@ -84,6 +85,7 @@ export async function createServer(context: ApiContext) {
   await registerAgentRoutes(app, context);
   await registerChatRoutes(app, context);
   await registerMemoryRoutes(app, context);
+  await registerTopicRoutes(app, context);
   await registerActionRoutes(app, context);
   await registerSkillRoutes(app, context);
   await registerComputeRoutes(app, context);

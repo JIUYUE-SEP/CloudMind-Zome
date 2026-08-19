@@ -23,7 +23,7 @@ import type { IntermindService } from "../intermind/service.js";
 import type { MindService } from "../plugins/mind/index.js";
 import type { ComputeFace } from "../plugins/compute/index.js";
 import type { ExternalFace } from "../plugins/external/index.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage, ChatMessageRecord } from "@mindcloud/shared";
 
 export interface ApiContext {
   agentRepository: IAgentRepository;
@@ -68,4 +68,11 @@ export interface ApiContext {
   external?: ExternalFace;
   /** 退役 agent 的 worker（skills/reload 复用配置变更的退役/重建机制：下次使用按新目录重建） */
   retireAgentWorker?(agentId: string): void;
+  /**
+   * 恢复消息的重索引钩子（P4-d topics restore）：压缩归档时 M14 已 tombstone
+   * 对应向量，恢复回热存储后需重新 embed upsert，否则原文对 L4 永久不可见。
+   * 可选——缺省/无索引器（Mock embedder）时静默跳过（与 indexTurnMessages 同口径）；
+   * 实现侧 fire-and-forget，不阻断 restore 响应。
+   */
+  reindexMessages?(agentId: string, records: ChatMessageRecord[]): void | Promise<void>;
 }

@@ -173,6 +173,51 @@ describe("MessageRepository 归档", () => {
     ).toEqual(["m4", "m5"]);
   });
 
+  it("listBySessionWithArchived：同 id 两侧并存（restore 双轨）去重，热存储副本独存", async () => {
+    // P4-d「恢复即删档」后果：归档行保留不动 + 原文写回热存储 → 同 id 并存。
+    // 口径：热存储是在场权威——归档副本跳过，热侧副本独存且按热侧归并位输出
+    // （恢复消息回最近视图，与 L3 listBySession 尾部窗口一致）。
+    const repo = new MessageRepository("a1");
+    await repo.append(recAt("m1", "2026-08-01T00:00:00.000Z"));
+    await repo.append(recAt("m2", "2026-08-02T00:00:00.000Z"));
+    await repo.append(recAt("m3", "2026-08-03T00:00:00.000Z"));
+    await repo.archiveAndRemove(["m1", "m2", "m3"]);
+    await repo.append(recAt("m4", "2026-08-04T00:00:00.000Z"));
+    // restore 写回 m2：同 id、createdAt 不变、落在热存储文件尾。
+    // 内容故意改异，把「以哪侧为准」钉成可观察断言（真实 restore 写回的是同一行）
+    await repo.append({
+      ...recAt("m2", "2026-08-02T00:00:00.000Z"),
+      content: [{ type: "text", text: "热侧 m2" }],
+    });
+
+    const all = await repo.listBySessionWithArchived("s1");
+    // m2 只出现一次，位置在热侧归并位（恢复段末尾），而非归档的时间序位置
+    expect(all.map((m) => m.id)).toEqual(["m1", "m3", "m4", "m2"]);
+    expect(all.filter((m) => m.id === "m2")).toHaveLength(1);
+    // 内容以热存储为准
+    expect(all.find((m) => m.id === "m2")?.content[0]).toEqual({ type: "text", text: "热侧 m2" });
+  });
+
+  it("listBySessionWithArchived：before 游标命中双轨 id，以幸存的热侧副本位置为准", async () => {
+    const repo = new MessageRepository("a1");
+    await repo.append(recAt("m1", "2026-08-01T00:00:00.000Z"));
+    await repo.append(recAt("m2", "2026-08-02T00:00:00.000Z"));
+    await repo.append(recAt("m3", "2026-08-03T00:00:00.000Z"));
+    await repo.archiveAndRemove(["m1", "m2", "m3"]);
+    await repo.append(recAt("m4", "2026-08-04T00:00:00.000Z"));
+    await repo.append(recAt("m2", "2026-08-02T00:00:00.000Z")); // restore 写回
+
+    // 游标 m2 命中热侧副本（归档副本已被去重跳过）：其前窗口 = m1/m3/m4
+    expect(
+      (await repo.listBySessionWithArchived("s1", { limit: 10, before: "m2" })).map((m) => m.id),
+    ).toEqual(["m1", "m3", "m4"]);
+    // 窗口截断同样不重复：最近 2 条
+    expect((await repo.listBySessionWithArchived("s1", { limit: 2 })).map((m) => m.id)).toEqual([
+      "m4",
+      "m2",
+    ]);
+  });
+
   it("listBySessionWithArchived：>100MB 归档只取尾部，不触发 readLines 上限（流式分页）", async () => {
     const repo = new MessageRepository("a1");
     await repo.append(recAt("m1", "2026-08-01T00:00:00.000Z"));
