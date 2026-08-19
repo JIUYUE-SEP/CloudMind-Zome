@@ -312,4 +312,167 @@ describe("Sessions API", () => {
     expect(capped.body).toHaveLength(500);
     await app.close();
   });
+
+  // before 分页共用夹具：u1 为复制进两成员仓库的 user 消息；r1/late1 只在 a1，
+  // r2/late2 只在 a2（assistant 消息只入所属成员仓库，与 session-handler 一致）。
+  // createdAt 轴：u1(1000) < r1(2000) < r2(3000) < late1(5000) < late2(6000)
+  async function seedBeforeFixture(sessionId: string) {
+    const mk = (id: string, ms: number, role: "user" | "assistant"): ChatMessageRecord => ({
+      id,
+      sessionId,
+      role,
+      content: [{ type: "text", text: id }],
+      createdAt: new Date(ms).toISOString(),
+    });
+    const a1 = context.getMessageRepository("a1");
+    const a2 = context.getMessageRepository("a2");
+    await a1.append(mk("u1", 1000, "user"));
+    await a2.append(mk("u1", 1000, "user"));
+    await a1.append(mk("r1", 2000, "assistant"));
+    await a2.append(mk("r2", 3000, "assistant"));
+    await a1.append(mk("late1", 5000, "assistant"));
+    await a2.append(mk("late2", 6000, "assistant"));
+  }
+
+  it("before 分页：assistant 游标只在 a1，跨成员合并后只含早于游标的消息", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+
+    const res = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=r1`,
+    );
+    expect(res.status).toBe(200);
+    // a2 的 r2（t=3000）虽在 a2 尾部窗口内，但晚于游标 r1（t=2000），被 createdAt 过滤
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["u1"]);
+    await app.close();
+  });
+
+  it("before+limit：截取「早于游标」的尾部 limit 条，游标本身不含", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+
+    // 游标前一页 = [u1, r1, r2, late1]，limit=2 取尾部
+    const res = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=late2&limit=2`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["r2", "late1"]);
+
+    // 不限 limit：游标前整页（游标本身不含）
+    const full = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=late2`,
+    );
+    expect(full.status).toBe(200);
+    expect(full.body.map((m: { id: string }) => m.id)).toEqual(["u1", "r1", "r2", "late1"]);
+    await app.close();
+  });
+
+  it("before 游标命中首条（user 消息，两成员仓库都有）返回空页", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+
+    const res = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=u1`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    await app.close();
+  });
+
+  it("before 游标不存在于任何成员时按无游标处理（与私聊端点同口径）", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+
+    const res = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=no-such-id`,
+    );
+    expect(res.status).toBe(200);
+    // 无游标语义 = 现状：合并去重后的尾部 limit 条（此处全量 5 条）
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["u1", "r1", "r2", "late1", "late2"]);
+    await app.close();
+  });
+
+  it("跨热存储+归档读：归档层的消息能被列出（加载更早翻进归档层）", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+    // u1/r1 在 a1 移入归档层（话题压缩后的真实形态）；a2 仓库不动
+    // （u1 副本仍在 a2 热存储）——r1 从此只存在于 a1 归档
+    await context.getMessageRepository("a1").archiveAndRemove(["u1", "r1"]);
+
+    const res = await authedRequest(app.server).get(`/sessions/${session.id}/messages`);
+    expect(res.status).toBe(200);
+    // r1 只能来自 a1 归档层；u1 归档/热各一份去重后一条
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["u1", "r1", "r2", "late1", "late2"]);
+    await app.close();
+  });
+
+  it("before 游标只在归档层：预查跨存储命中，页内容正确", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+    await context.getMessageRepository("a1").archiveAndRemove(["u1", "r1"]);
+
+    const res = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=r1`,
+    );
+    expect(res.status).toBe(200);
+    // 游标 r1 只存在于 a1 归档层：预查 getByIds 不命中、getArchivedByIds 命中
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["u1"]);
+    await app.close();
+  });
+
+  it("before 预查按 sessionId 过滤：其他会话的同 id 消息不污染游标", async () => {
+    const app = await makeApp();
+    const session = await context.sessionRepository.create({
+      name: "Team",
+      agentIds: ["a1", "a2"],
+      type: "group",
+    });
+    await seedBeforeFixture(session.id);
+    // 另一会话的同 id 消息（createdAt 更晚）：若预查不按 sessionId 过滤，
+    // 游标 r1 会错拿 t=9999，本页会被错误放大为全量
+    await context.getMessageRepository("a1").append({
+      id: "r1",
+      sessionId: "other-session",
+      role: "assistant",
+      content: [{ type: "text", text: "other" }],
+      createdAt: new Date(9999).toISOString(),
+    });
+
+    const res = await authedRequest(app.server).get(
+      `/sessions/${session.id}/messages?before=r1`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.map((m: { id: string }) => m.id)).toEqual(["u1"]);
+    await app.close();
+  });
 });

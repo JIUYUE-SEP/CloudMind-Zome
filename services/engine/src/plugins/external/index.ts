@@ -47,7 +47,10 @@ import { getAgentDir, getDataDir } from "../../config/paths.js";
  *   rc.8 的 await ctx.plugin() 对 PENDING 纤维立即返回，promise 兑现
  *   ≠ 激活）。
  * - 挂载点：bootstrap 全部内部插件挂载之后、assertServices 之前——外部
- *   插件 inject 的内部服务已就位，且能监听随后的 serial("engine/ready")。
+ *   插件 inject 的内部服务已就位（唯一例外：http 面——F1 起 http inject
+ *   external，激活顺延到本插件上架之后；外部插件 inject "http" 会在加载期
+ *   被记 pending，随后实际激活。http 是组合根专用面，外部插件无正当消费
+ *   场景，如实记录此口径），且能监听随后的 serial("engine/ready")。
  * - 信任模型：用户自装代码，进程内全权限（类 Obsidian），V1 不做沙箱。
  */
 export const name = "external";

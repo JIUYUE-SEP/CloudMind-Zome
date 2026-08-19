@@ -25,11 +25,15 @@ import * as intermindPlugin from "../../src/plugins/intermind/index.js";
 import * as subagentsPlugin from "../../src/plugins/subagents/index.js";
 import * as sidecarPlugin from "../../src/plugins/sidecar/index.js";
 import * as httpPlugin from "../../src/plugins/http/index.js";
+import * as externalPlugin from "../../src/plugins/external/index.js";
 
 // P9 http 插件挂载测试：inject 全消费面 PENDING 语义 + ctx.http 面上架 +
 // 真 listen 冒烟（listen 前 token 就绪/落盘语义、/health 免鉴权、REST 401/200、
 // dispose 子 fiber 收回 app.close、listen 只调一次防御）。
 // 挂载链同 bootstrap 序（缺 scheduler/invariants——http 不 inject 它们）。
+// F1 起 http inject external（bootstrap 里 external 殿后挂载、http 纤维 PENDING
+// 顺延激活）：mountDeps 不含 external——listen 用例须按 bootstrap 序补挂
+// external 后 http 才激活；/plugins 集成用例正是钉住这个顺延激活语义。
 describe("plugins/http（P9）", () => {
   let tempDir: string;
   let originalDataDir: string | undefined;
@@ -118,6 +122,7 @@ describe("plugins/http（P9）", () => {
       "compute",
       "config",
       "sidecar",
+      "external",
     ]);
     expect(typeof httpPlugin.apply).toBe("function");
   });
@@ -136,6 +141,8 @@ describe("plugins/http（P9）", () => {
     process.env.PORT = String(port);
     const ctx = new Context();
     await mountDeps(ctx);
+    // F1：http inject external——先补挂 external，http 才能激活（bootstrap 序等价）
+    await ctx.plugin(externalPlugin);
     const httpFiber = await ctx.plugin(httpPlugin);
 
     await ctx.http.listen();
@@ -166,6 +173,8 @@ describe("plugins/http（P9）", () => {
     process.env.PORT = String(port);
     const ctx = new Context();
     await mountDeps(ctx);
+    // F1：http inject external——先补挂 external，http 才能激活（bootstrap 序等价）
+    await ctx.plugin(externalPlugin);
     const httpFiber = await ctx.plugin(httpPlugin);
 
     await ctx.http.listen();
@@ -211,6 +220,8 @@ describe("plugins/http（P9）", () => {
     let httpFiber: Awaited<ReturnType<typeof ctx.plugin>> | undefined;
     try {
       await mountDeps(ctx);
+      // F1：http inject external——先补挂 external，http 才能激活（bootstrap 序等价）
+      await ctx.plugin(externalPlugin);
       httpFiber = await ctx.plugin(httpPlugin);
 
       await expect(ctx.http.listen()).rejects.toThrow("exit:2");
@@ -226,5 +237,44 @@ describe("plugins/http（P9）", () => {
       occupier.close();
       await httpFiber?.dispose();
     }
+  });
+
+  it("F1 集成：bootstrap 序挂载（http PENDING → external 殿后激活），GET /plugins 200 且 loaded 含 fixture", async () => {
+    // fixture 外部插件写进临时 DATA_DIR（external.test.ts 同款写法）
+    await fs.mkdir(path.join(tempDir, "plugins", "hello"), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, "plugins", "hello", "index.mjs"),
+      `export const name = "hello";\nexport function apply() {}\n`,
+    );
+    await fs.writeFile(path.join(tempDir, "plugins.json"), JSON.stringify({ plugins: { hello: {} } }));
+
+    const port = await getFreePort();
+    process.env.PORT = String(port);
+    const ctx = new Context();
+    await mountDeps(ctx);
+    // bootstrap 序：http 先挂——inject 的 external 未就位，纤维停 PENDING
+    // （直构 ApiContext 的单测天然绕过 inject 守门，本条钉住真实组合根时序）
+    const httpFiber = await ctx.plugin(httpPlugin);
+    expect(httpFiber.state).toBe(0);
+    // external 殿后：上架即激活等待中的 http 纤维（PENDING → ACTIVE）
+    await ctx.plugin(externalPlugin);
+    expect(httpFiber.state).toBe(2);
+
+    await ctx.http.listen();
+    const token = (await fs.readFile(path.join(tempDir, "auth-token"), "utf-8")).trim();
+    const res = await fetch(`http://127.0.0.1:${port}/plugins`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      loaded: string[];
+      skipped: { name: string; reason: string }[];
+      perAgent: unknown[];
+    };
+    expect(body.loaded).toContain("hello");
+    expect(body.skipped).toEqual([]);
+    expect(body.perAgent).toEqual([]);
+
+    await httpFiber.dispose();
   });
 });

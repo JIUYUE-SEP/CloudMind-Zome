@@ -23,6 +23,8 @@ import { registerPuppetModelRoutes } from "./routes/puppet-models.js";
 import { registerIntermindRoutes } from "./routes/intermind.js";
 import { registerLogRoutes } from "./routes/logs.js";
 import { registerHandoffRoutes } from "./routes/handoff.js";
+import { registerPluginRoutes } from "./routes/plugins.js";
+import { registerSystemRoutes } from "./routes/system.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 import { registerSessionWebSocket } from "./ws/session-handler.js";
 import { isAllowedCorsOrigin } from "./ws/validation.js";
@@ -95,6 +97,8 @@ export async function createServer(context: ApiContext) {
   await registerIntermindRoutes(app, context);
   await registerLogRoutes(app);
   await registerHandoffRoutes(app, context);
+  await registerPluginRoutes(app, context);
+  await registerSystemRoutes(app, context);
   await registerSessionWebSocket(app, context);
   await registerWebSocketHandler(app, context);
 

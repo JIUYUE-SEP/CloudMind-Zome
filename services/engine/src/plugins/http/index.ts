@@ -54,6 +54,13 @@ export const inject = [
   "compute",
   "config",
   "sidecar",
+  // F1：/plugins 路由读 ctx.external——cordis 对未 inject 的服务访问即抛
+  // （"cannot get property without inject"，已 provide 也一样）。inject 后
+  // http 纤维在 bootstrap 挂载位（external 之前）停 PENDING，external 上架
+  // 才激活——external inject=["agents"] 与 http 无环，激活顺延由 cordis 保证
+  // （assertServices 兜底 fail-fast）；代价是外部插件 inject "http" 会被记
+  // pending（http 面是组合根专用，外部插件无正当消费场景，如实记录）
+  "external",
 ];
 
 /** ctx.http 上架面 */
@@ -99,6 +106,8 @@ export function apply(ctx: Context): void {
     intermindService: ctx.intermind,
     mind: ctx.mind,
     compute: ctx.compute,
+    // F1：inject 已声明 external（见 inject 列表注），装配执行时面必就位
+    external: ctx.external,
     retireAgentWorker: (agentId) => ctx.agents.retire(agentId),
     listSkills: async () => {
       const dirs: string[] = [];

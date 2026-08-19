@@ -96,8 +96,10 @@ async function main() {
   await root.plugin(intermindPlugin);
   await root.plugin(subagentsPlugin);
 
-  // http（P9 收口）：ApiContext 装配与 listen 段收进插件（inject 全消费面，
-  // 末位挂载）；fiber 引用留给关停钩——close 挂插件 disposer（tools 同款先例）
+  // http（P9 收口）：ApiContext 装配与 listen 段收进插件（inject 全消费面）；
+  // fiber 引用留给关停钩——close 挂插件 disposer（tools 同款先例）。
+  // F1 起 inject 含 external：本行挂载后纤维停 PENDING，待下方 external 上架
+  // 才激活（cordis PENDING 语义：await 立即落定，assertServices 兜底时序回归）
   const httpFiber = await root.plugin(httpPlugin);
 
   // external（迁移第二阶段 E1+E2）：DATA_DIR 外部插件发现/加载——全局 plugins.json
