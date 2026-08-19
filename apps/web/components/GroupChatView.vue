@@ -10,6 +10,9 @@
       </div>
     </header>
     <div ref="messagesEl" class="messages">
+      <div v-if="loadingOlder" class="load-older">加载中…</div>
+      <button v-else-if="hasMoreHistory" type="button" class="load-older" @click="handleLoadOlder">加载更早</button>
+      <div v-else-if="messages.length" class="load-older done">没有更早的消息了</div>
       <template v-for="msg in messages" :key="msg.id">
         <ApprovalCard
           v-if="msg.approval"
@@ -58,6 +61,11 @@ const props = defineProps<{
   isStreaming: boolean;
   // 连接异常的可感知提示（P0-3）："重连中…"，优先于默认状态文案
   statusHint?: string;
+  // 「加载更早」入口态与动作。动作为函数 prop 而非 emit：前置合并后要按
+  // 返回的前置条数做滚动锚定，emit 拿不到父级处理结果
+  hasMoreHistory: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => Promise<number>;
 }>();
 
 const emit = defineEmits<{
@@ -76,7 +84,11 @@ const statusText = computed(() => {
   return "已连接";
 });
 
-// 新消息/流式增量/工具卡片出现时自动滚动到底部（与 ChatView 同一口径）
+// 新消息/流式增量/工具卡片出现时自动滚动到底部（与 ChatView 同一口径）；
+// 「加载更早」的前置合并不滚底：凭首条消息 id 变化识别前置插入并跳过，
+// 由 handleLoadOlder 把视口锚定回原位置
+let firstMsgIdBeforePrepend: string | null = null;
+
 watch(
   () => [
     props.messages.length,
@@ -87,9 +99,35 @@ watch(
   async () => {
     await nextTick();
     const el = messagesEl.value;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (firstMsgIdBeforePrepend !== null) {
+      if (props.messages[0]?.id !== firstMsgIdBeforePrepend) {
+        // 本次长度变化来自前置合并
+        firstMsgIdBeforePrepend = null;
+        return;
+      }
+      // 前置页尚未落地（流式增量先触发 watch）：锚记保留，本次照常滚底
+    }
+    el.scrollTop = el.scrollHeight;
   },
 );
+
+async function handleLoadOlder() {
+  const el = messagesEl.value;
+  const prevHeight = el?.scrollHeight ?? 0;
+  const prevTop = el?.scrollTop ?? 0;
+  firstMsgIdBeforePrepend = props.messages[0]?.id ?? "";
+  const prepended = await props.onLoadOlder();
+  if (!prepended) {
+    // 无新消息插入：watch 不会触发，锚记直接复位
+    firstMsgIdBeforePrepend = null;
+    return;
+  }
+  await nextTick();
+  // 视口锚定原首条消息：滚动位置下移新插入的高度
+  if (el) el.scrollTop = el.scrollHeight - prevHeight + prevTop;
+  firstMsgIdBeforePrepend = null;
+}
 
 function agentName(agentId: string): string {
   return props.agents.find((a) => a.id === agentId)?.name || agentId;
@@ -133,6 +171,23 @@ function onApprovalExpired(approvalId: string) {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
+}
+.load-older {
+  display: block;
+  margin: 0 auto 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--mc-text-tertiary, #5a6a7a);
+  background: none;
+  border: none;
+  text-align: center;
+}
+button.load-older {
+  cursor: pointer;
+  color: var(--mc-accent, #00e5c9);
+}
+button.load-older:hover {
+  text-decoration: underline;
 }
 .speaker {
   font-size: 12px;

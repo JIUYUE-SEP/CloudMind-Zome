@@ -14,6 +14,9 @@
       :is-connected="isConnected"
       :is-streaming="isStreaming"
       :status-hint="statusHint"
+      :has-more-history="hasMoreHistory"
+      :loading-older="loadingOlder"
+      :on-load-older="onLoadOlder"
       @send="onSend"
       @approval-respond="onApprovalRespond"
       @approval-expired="onApprovalExpired"
@@ -27,8 +30,7 @@ import { useRoute } from "vue-router";
 import { useSessionsStore } from "@/stores/sessions";
 import { useAgentsStore } from "@/stores/agents";
 import { useEngineClient } from "@/composables/useEngineClient";
-import { useChatRecords } from "@/composables/useChatRecords";
-import { useGroupChatStream } from "@/composables/useGroupChatStream";
+import { useGroupChatStream, HISTORY_PAGE_LIMIT } from "@/composables/useGroupChatStream";
 import type { Session } from "@/composables/useEngineClient";
 import BackButton from "@/components/BackButton.vue";
 import {
@@ -43,16 +45,19 @@ const route = useRoute();
 const sessions = useSessionsStore();
 const agents = useAgentsStore();
 const client = useEngineClient();
-const { recordsToDisplay } = useChatRecords();
 const sessionId = computed(() => route.params.id as string);
 const session = ref<Session | undefined>(undefined);
 const {
   messages,
   isStreaming,
+  hasMoreHistory,
+  loadingOlder,
   handlers: streamHandlers,
   pushUserMessage,
   pushError,
   resetStreamState,
+  applyHistoryPage,
+  loadOlderHistory,
 } = useGroupChatStream();
 const isConnected = ref(false);
 const notFound = ref(false);
@@ -78,9 +83,10 @@ onMounted(async () => {
     return;
   }
   try {
-    const records = await client.getSessionMessages(sessionId.value, { limit: 100 });
+    const records = await client.getSessionMessages(sessionId.value, { limit: HISTORY_PAGE_LIMIT });
     if (!alive) return;
-    messages.value = recordsToDisplay(records);
+    // 整页落地：翻页游标与「加载更早」入口态一并复位
+    applyHistoryPage(records);
   } catch {
     // 历史加载失败则从空会话开始
   }
@@ -114,12 +120,12 @@ function connect() {
       expireAllPendingApprovals(messages.value);
     },
     onReconnected: () => {
-      // 重连成功：拉取最新消息列表对齐断线期间的状态
+      // 重连成功：拉取最新消息列表对齐断线期间的状态（整页替换同时复位翻页游标）
       reconnectAttempts.value = 0;
       client
-        .getSessionMessages(sessionId.value, { limit: 100 })
+        .getSessionMessages(sessionId.value, { limit: HISTORY_PAGE_LIMIT })
         .then((records) => {
-          if (alive) messages.value = recordsToDisplay(records);
+          if (alive) applyHistoryPage(records);
         })
         .catch(() => {
           // 对齐失败不阻塞连接态
@@ -144,6 +150,13 @@ function onSend(text: string) {
     return;
   }
   pushUserMessage(text);
+}
+
+// 「加载更早」：游标为当前最早一条记录，更旧一页前置合并（并发/切会话由 composable 闸住）
+function onLoadOlder(): Promise<number> {
+  return loadOlderHistory((before) =>
+    client.getSessionMessages(sessionId.value, { limit: HISTORY_PAGE_LIMIT, before }),
+  );
 }
 
 // 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问

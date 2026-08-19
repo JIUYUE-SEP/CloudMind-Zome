@@ -159,3 +159,87 @@ describe("ChatView", () => {
     expect(wrapper.find(".handoff-banner").text()).toContain("已达棒数上限，自动续跑停止");
   });
 });
+
+
+describe("ChatView 加载更早入口（F3）", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    MockWebSocket.instances = [];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    MockWebSocket.instances.forEach((ws) => ws.close());
+  });
+
+  // 服务端满页截断语义的 mock：before 游标（消息 id，不含本身）之前最近 limit 条
+  function stubHistoryServer(count: number) {
+    const all = Array.from({ length: count }, (_, i) => ({
+      id: `m${i + 1}`,
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: `第 ${i + 1} 条` }],
+      createdAt: new Date(1_700_000_000_000 + i * 1000).toISOString(),
+    }));
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      let body: unknown = [];
+      if (url.includes("/chat/")) {
+        const u = new URL(url);
+        const limit = Number(u.searchParams.get("limit") ?? "100");
+        const before = u.searchParams.get("before");
+        let list = all;
+        if (before) {
+          const idx = all.findIndex((r) => r.id === before);
+          if (idx >= 0) list = all.slice(0, idx);
+        }
+        body = list.slice(-limit);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as unknown as Response);
+    }) as unknown as typeof fetch;
+    return urls;
+  }
+
+  it("满页首载显示「加载更早」，点击前置更早历史，短页后变「没有更早的消息了」", async () => {
+    const urls = stubHistoryServer(120);
+    const wrapper = mount(ChatView, { props: { agentId: "a1" } });
+    await flushPromises();
+
+    // 首载最新 100 条（m21..m120），满页 → 入口可点
+    expect(wrapper.findAll(".message-bubble")).toHaveLength(100);
+    const btn = wrapper.find("button.load-older");
+    expect(btn.exists()).toBe(true);
+    expect(btn.text()).toBe("加载更早");
+
+    await btn.trigger("click");
+    await flushPromises();
+
+    // 游标为首载最早一条 m21；更早的 m1..m20 前置到列表头部
+    expect(urls.some((u) => u.includes("before=m21"))).toBe(true);
+    const bubbles = wrapper.findAll(".message-bubble");
+    expect(bubbles).toHaveLength(120);
+    expect(bubbles[0]!.text()).toContain("第 1 条");
+    // 短页收口：按钮消失，显示「没有更早」
+    expect(wrapper.find("button.load-older").exists()).toBe(false);
+    expect(wrapper.find(".load-older.done").text()).toBe("没有更早的消息了");
+  });
+
+  it("短历史（不满一页）无加载入口，直接显示「没有更早的消息了」", async () => {
+    stubHistoryServer(3);
+    const wrapper = mount(ChatView, { props: { agentId: "a1" } });
+    await flushPromises();
+    expect(wrapper.find("button.load-older").exists()).toBe(false);
+    expect(wrapper.find(".load-older.done").text()).toBe("没有更早的消息了");
+  });
+
+  it("空历史不显示翻页文案，保持空态", async () => {
+    stubHistoryServer(0);
+    const wrapper = mount(ChatView, { props: { agentId: "a1" } });
+    await flushPromises();
+    expect(wrapper.find("button.load-older").exists()).toBe(false);
+    expect(wrapper.find(".load-older.done").exists()).toBe(false);
+    expect(wrapper.find(".empty").text()).toBe("暂无消息，开始对话吧");
+  });
+});

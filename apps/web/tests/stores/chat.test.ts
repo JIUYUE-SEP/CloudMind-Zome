@@ -322,3 +322,248 @@ describe("chat store 流式状态以 turn 为界", () => {
     vi.useRealTimers();
   });
 });
+
+
+describe("chat store 加载更早翻页（F3）", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // 模拟服务端满页截断语义：before 游标（消息 id，游标本身不含）之前最近 limit 条
+  function makeHistory(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `m${i + 1}`,
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: `消息 ${i + 1}` }],
+      createdAt: new Date(1_700_000_000_000 + i * 1000).toISOString(),
+    }));
+  }
+
+  function stubServer(all: ReturnType<typeof makeHistory>) {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        let body: unknown = [];
+        if (url.includes("/chat/")) {
+          const u = new URL(url);
+          const limit = Number(u.searchParams.get("limit") ?? "100");
+          const before = u.searchParams.get("before");
+          let list = all;
+          if (before) {
+            const idx = all.findIndex((r) => r.id === before);
+            if (idx >= 0) list = all.slice(0, idx);
+          }
+          body = list.slice(-limit);
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    return calls;
+  }
+
+  it("满页首载后 loadOlder 前置合并更旧一页，维持升序、游标推进", async () => {
+    const calls = stubServer(makeHistory(150));
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    // 首载拿最新 100 条（m51..m150），满页 → 可能还有更早
+    expect(store.messages).toHaveLength(100);
+    expect(store.messages[0]!.id).toBe("m51");
+    expect(store.hasMore).toBe(true);
+
+    const prepended = await store.loadOlder("a1");
+    expect(prepended).toBe(50);
+    // 游标为首载最早一条 m51；取回 m1..m50（不满一页 → 没有更早）
+    expect(calls.some((u) => u.includes("before=m51"))).toBe(true);
+    expect(store.messages.map((m) => m.id)).toEqual(makeHistory(150).map((r) => r.id));
+    expect(store.hasMore).toBe(false);
+  });
+
+  it("历史恰为满页：loadOlder 空页收口（满页只代表「可能还有」）", async () => {
+    const calls = stubServer(makeHistory(100));
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    expect(store.hasMore).toBe(true);
+
+    const prepended = await store.loadOlder("a1");
+    expect(prepended).toBe(0);
+    expect(calls.some((u) => u.includes("before=m1"))).toBe(true);
+    expect(store.hasMore).toBe(false);
+    expect(store.messages).toHaveLength(100);
+  });
+
+  it("没有更早后 loadOlder 短路：不再发起请求", async () => {
+    const calls = stubServer(makeHistory(120));
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    await store.loadOlder("a1"); // m1..m20 短页 → hasMore=false
+    expect(store.hasMore).toBe(false);
+
+    const callCount = calls.length;
+    expect(await store.loadOlder("a1")).toBe(0);
+    expect(calls.length).toBe(callCount);
+    expect(store.messages).toHaveLength(120);
+  });
+
+  it("前置页与现有列表按 id 去重：重叠记录不重复上屏", async () => {
+    stubServer(makeHistory(150));
+    const store = useChatStore();
+    await store.loadMessages("a1");
+
+    // 伪造一页与现有列表重叠的响应（未知游标按无游标返回尾部窗口的边界）
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        const body = url.includes("before=")
+          ? [
+              {
+                id: "m0",
+                role: "assistant" as const,
+                content: [{ type: "text" as const, text: "更早" }],
+                createdAt: "2023-11-14T00:00:00.000Z",
+              },
+              {
+                id: "m51",
+                role: "assistant" as const,
+                content: [{ type: "text" as const, text: "重复" }],
+                createdAt: "2023-11-14T00:00:51.000Z",
+              },
+            ]
+          : [];
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+
+    const prepended = await store.loadOlder("a1");
+    expect(prepended).toBe(1); // m51 已存在，被去重
+    expect(store.messages[0]!.id).toBe("m0");
+    expect(store.messages.filter((m) => m.id === "m51")).toHaveLength(1);
+    expect(store.messages).toHaveLength(101);
+  });
+
+  it("断开/切换复位翻页状态：loadOlder 不再带旧游标", async () => {
+    stubServer(makeHistory(150));
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    expect(store.hasMore).toBe(true);
+
+    store.disconnect();
+    expect(store.hasMore).toBe(false);
+    expect(store.loadingOlder).toBe(false);
+    expect(store.messages).toEqual([]);
+    expect(await store.loadOlder("a1")).toBe(0);
+  });
+
+  it("loadOlder 在途时断连：迟到的旧页不落地", async () => {
+    let resolveOlder!: (value: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("before=")) {
+          return new Promise((resolve) => {
+            resolveOlder = resolve;
+          });
+        }
+        if (url.includes("/chat/")) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(makeHistory(100)),
+          } as unknown as Response);
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    const p = store.loadOlder("a1");
+    expect(store.loadingOlder).toBe(true);
+    // 让翻页请求真正发出（token 就绪链 + fetch 均在微任务后），再断连
+    await new Promise((r) => setTimeout(r, 0));
+    store.disconnect();
+    resolveOlder({ ok: true, json: () => Promise.resolve(makeHistory(50)) });
+
+    expect(await p).toBe(0);
+    expect(store.messages).toEqual([]);
+  });
+
+  it("并发翻页被闸住：在途时重复调用直接返回 0", async () => {
+    let resolveOlder!: (value: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("before=")) {
+          return new Promise((resolve) => {
+            resolveOlder = resolve;
+          });
+        }
+        if (url.includes("/chat/")) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(makeHistory(100)),
+          } as unknown as Response);
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    const p1 = store.loadOlder("a1");
+    const p2 = store.loadOlder("a1");
+    expect(await p2).toBe(0);
+    resolveOlder({ ok: true, json: () => Promise.resolve([]) });
+    expect(await p1).toBe(0);
+    expect(store.loadingOlder).toBe(false);
+    expect(store.hasMore).toBe(false); // 空页收口
+  });
+
+  it("流式进行中翻页不打断生成：历史前置、尾部流式气泡保持 streaming", async () => {
+    MockWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    const history = makeHistory(120);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        let body: unknown = [];
+        if (url.includes("/chat/")) {
+          body = url.includes("before=") ? history.slice(0, 20) : history.slice(-100);
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+
+    const store = useChatStore();
+    await store.loadMessages("a1");
+    store.connect("a1");
+    await new Promise((r) => setTimeout(r, 0));
+    store.send("hi");
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    ws.onmessage?.({ data: JSON.stringify({ type: "text.delta", delta: "生成中" }) });
+    expect(store.isStreaming).toBe(true);
+
+    const prepended = await store.loadOlder("a1");
+    expect(prepended).toBe(20);
+    expect(store.messages[0]!.id).toBe("m1");
+    // 尾部流式气泡不受前置合并影响
+    const last = store.messages[store.messages.length - 1]!;
+    expect(last.isStreaming).toBe(true);
+    expect(last.text).toBe("生成中");
+    expect(store.isStreaming).toBe(true);
+
+    // 后续增量仍入同一气泡
+    ws.onmessage?.({ data: JSON.stringify({ type: "text.delta", delta: "继续" }) });
+    expect(store.messages[store.messages.length - 1]!.text).toBe("生成中继续");
+    store.disconnect();
+  });
+});

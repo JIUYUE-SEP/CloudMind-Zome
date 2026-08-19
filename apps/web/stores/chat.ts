@@ -14,12 +14,18 @@ import {
 
 const { recordsToDisplay } = useChatRecords();
 
+/** 历史分页大小：与群聊（useGroupChatStream）同口径，服务端满页截断语义 */
+const HISTORY_PAGE_LIMIT = 100;
+
 export const useChatStore = defineStore("chat", () => {
   const client = useEngineClient();
   const sessionId = ref<string>("default");
   const messages = ref<DisplayMessage[]>([]);
   const isConnected = ref(false);
   const isStreaming = ref(false);
+  // 「加载更早」翻页状态：hasMore=false 表示没有更早历史；loadingOlder 闸住并发翻页
+  const hasMore = ref(false);
+  const loadingOlder = ref(false);
   /** 换班移交状态（水位撞顶自动续跑：scheduled/running 时输入框保持可打断） */
   const handoffStatus = ref<HandoffUpdateFrame | null>(null);
   // 断线重连状态（P0-3）：>0 表示正在第 N 次重试，UI 显示"重连中"而非静默
@@ -27,6 +33,10 @@ export const useChatStore = defineStore("chat", () => {
   let connection: ReturnType<typeof client.connect> | null = null;
   // 历史加载代际：每次加载/断连自增，迟到的过期响应不得覆盖当前会话
   let loadSeq = 0;
+  // 「加载更早」游标：当前已加载最早一条 engine 记录的 id。
+  // 不能用 messages[0].id——本地消息（流式/审批卡片/错误条）是本地生成的 id，
+  // 且 recordsToDisplay 会丢掉 tool 记录，游标必须是记录级的 id
+  let oldestRecordId: string | undefined;
   // 当前视图所属 agent：切换/卸载时区分「当前会话」与「已被替换的旧视图」。
   // 真机 #6 根因：Vue 替换 keyed ChatView 时先挂新组件、后跑旧组件 onUnmounted，
   // 旧组件卸载的 disconnect() 会作废新 agent 正在加载的历史并清空 messages——
@@ -39,9 +49,47 @@ export const useChatStore = defineStore("chat", () => {
 
   async function loadMessages(agentId: string) {
     const seq = ++loadSeq;
-    const records = await client.getMessages(agentId, sessionId.value, { limit: 100 });
+    const records = await client.getMessages(agentId, sessionId.value, { limit: HISTORY_PAGE_LIMIT });
     if (seq !== loadSeq) return;
     messages.value = recordsToDisplay(records);
+    // 整页替换即复位翻页状态：不满一页即没有更早历史（服务端满页截断语义，
+    // 满页只代表「可能还有」，下一页空页收口）
+    oldestRecordId = records[0]?.id;
+    hasMore.value = records.length >= HISTORY_PAGE_LIMIT;
+    loadingOlder.value = false;
+  }
+
+  /**
+   * 加载更早的一页历史并前置合并（「加载更早」入口）。
+   * 返回实际前置的消息条数（0 = 没有更早/在途/失败），供视图层决定是否做滚动锚定。
+   * 只在列表头部插入，不触碰尾部流式气泡——流式进行中翻页不打断生成。
+   */
+  async function loadOlder(agentId: string): Promise<number> {
+    if (loadingOlder.value || !hasMore.value || !oldestRecordId) return 0;
+    // 代际不自增（不得作废在途的 loadMessages），只快照：在途期间切换/重载则丢弃本页
+    const seq = loadSeq;
+    loadingOlder.value = true;
+    try {
+      const records = await client.getMessages(agentId, sessionId.value, {
+        limit: HISTORY_PAGE_LIMIT,
+        before: oldestRecordId,
+      });
+      if (seq !== loadSeq) return 0;
+      hasMore.value = records.length >= HISTORY_PAGE_LIMIT;
+      if (records.length > 0) oldestRecordId = records[0]!.id;
+      // 防御性按 id 去重：游标互斥时本页与列表本不重叠，但未知游标
+      // （服务端按无游标返回最新页）等边界不得让消息重复上屏
+      const existing = new Set(messages.value.map((m) => m.id));
+      const fresh = recordsToDisplay(records).filter((m) => !existing.has(m.id));
+      messages.value = [...fresh, ...messages.value];
+      return fresh.length;
+    } catch {
+      // 加载失败保持现状：入口仍可点击重试
+      return 0;
+    } finally {
+      // 过期代际的 loadingOlder 已由 disconnectInternal/loadMessages 复位，不重复动
+      if (seq === loadSeq) loadingOlder.value = false;
+    }
   }
 
   function connect(agentId: string) {
@@ -312,6 +360,10 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming.value = false;
     reconnectAttempts.value = 0;
     handoffStatus.value = null;
+    // 翻页状态随会话一并复位：切换 agent 后游标/hasMore 不得带入新会话
+    oldestRecordId = undefined;
+    hasMore.value = false;
+    loadingOlder.value = false;
     // store 是单例：清空消息，避免切换 agent 时短暂残留上一个会话的内容
     messages.value = [];
   }
@@ -323,7 +375,10 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming,
     handoffStatus,
     reconnectAttempts,
+    hasMore,
+    loadingOlder,
     loadMessages,
+    loadOlder,
     connect,
     switchTo,
     disconnect,

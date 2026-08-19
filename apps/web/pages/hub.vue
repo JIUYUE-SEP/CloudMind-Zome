@@ -80,6 +80,9 @@
             :is-connected="groupIsConnected"
             :is-streaming="groupIsStreaming"
             :status-hint="groupStatusHint"
+            :has-more-history="groupHasMoreHistory"
+            :loading-older="groupLoadingOlder"
+            :on-load-older="onGroupLoadOlder"
             @send="onGroupSend"
             @approval-respond="onGroupApprovalRespond"
             @approval-expired="onGroupApprovalExpired"
@@ -99,9 +102,8 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
-import { useEngineClient, type Session } from "@/composables/useEngineClient";
-import { useChatRecords, type DisplayMessage } from "@/composables/useChatRecords";
-import { useGroupChatStream } from "@/composables/useGroupChatStream";
+import { useEngineClient, type Session, type ChatMessageRecord } from "@/composables/useEngineClient";
+import { useGroupChatStream, HISTORY_PAGE_LIMIT } from "@/composables/useGroupChatStream";
 import {
   findPendingApproval,
   settleApproval,
@@ -116,7 +118,6 @@ import GroupChatView from "@/components/GroupChatView.vue";
 const agents = useAgentsStore();
 const sessions = useSessionsStore();
 const client = useEngineClient();
-const { recordsToDisplay } = useChatRecords();
 
 const tab = ref<"private" | "group">("private");
 const selectedId = ref<string>("");
@@ -127,10 +128,15 @@ const selectedSession = ref<Session | undefined>(undefined);
 const {
   messages: groupMessages,
   isStreaming: groupIsStreaming,
+  hasMoreHistory: groupHasMoreHistory,
+  loadingOlder: groupLoadingOlder,
   handlers: groupHandlers,
   pushUserMessage: pushGroupUserMessage,
   pushError: pushGroupError,
   resetStreamState: resetGroupStream,
+  applyHistoryPage: applyGroupHistoryPage,
+  clearHistory: clearGroupHistory,
+  loadOlderHistory: loadGroupOlderHistory,
 } = useGroupChatStream();
 const groupIsConnected = ref(false);
 // 断线重连状态（P0-3）：>0 表示正在第 N 次重试
@@ -179,26 +185,26 @@ async function selectGroup(session: Session) {
   // 先断旧连接，await 期间旧会话的 delta 不会串进新会话
   closeGroupConnection();
   // 与私聊侧 disconnectInternal（stores/chat.ts）同款防护：切群即清空旧消息，
-  // 消除新群历史返回前旧群内容残留在新群名下的窗口
-  groupMessages.value = [];
-  const msgs = await fetchGroupMessages(session.id);
+  // 消除新群历史返回前旧群内容残留在新群名下的窗口；
+  // clearHistory 同时作废在途翻页并复位游标/入口态
+  clearGroupHistory();
+  const records = await fetchGroupMessages(session.id);
   // await 期间组件已卸载：不得落地消息，更不得建立迟到的群聊连接（M41）
   if (!alive) return;
   // await 期间又选了别的会话/私聊：过期的历史结果不得覆盖当前消息列表
   if (seq !== groupSelectSeq) return;
-  if (msgs) {
-    groupMessages.value = msgs;
+  if (records) {
+    applyGroupHistoryPage(records);
   } else {
-    groupMessages.value = [];
+    clearGroupHistory();
     pushGroupError("历史消息加载失败");
   }
   connectGroup(session.id);
 }
 
-async function fetchGroupMessages(sessionId: string): Promise<DisplayMessage[] | null> {
+async function fetchGroupMessages(sessionId: string): Promise<ChatMessageRecord[] | null> {
   try {
-    const records = await client.getSessionMessages(sessionId, { limit: 100 });
-    return recordsToDisplay(records);
+    return await client.getSessionMessages(sessionId, { limit: HISTORY_PAGE_LIMIT });
   } catch {
     return null;
   }
@@ -225,11 +231,11 @@ function connectGroup(sessionId: string) {
       expireAllPendingApprovals(groupMessages.value);
     },
     onReconnected: () => {
-      // 重连成功：拉取最新消息列表对齐断线期间的状态
+      // 重连成功：拉取最新消息列表对齐断线期间的状态（整页替换同时复位翻页游标）
       groupReconnectAttempts.value = 0;
-      fetchGroupMessages(sessionId).then((msgs) => {
+      fetchGroupMessages(sessionId).then((records) => {
         // alive 门（与 sessions/[id].vue 同款）：组件卸载后迟到的对齐结果不得落地
-        if (msgs && alive && selectedId.value === sessionId) groupMessages.value = msgs;
+        if (records && alive && selectedId.value === sessionId) applyGroupHistoryPage(records);
       });
     },
     onClose: () => {
@@ -258,6 +264,14 @@ function onGroupSend(text: string) {
     return;
   }
   pushGroupUserMessage(text);
+}
+
+// 「加载更早」：游标为当前最早一条记录，更旧一页前置合并
+// （并发由 composable 闸住；切群后迟到的旧页由 historySeq 代际丢弃）
+function onGroupLoadOlder(): Promise<number> {
+  return loadGroupOlderHistory((before) =>
+    client.getSessionMessages(selectedId.value, { limit: HISTORY_PAGE_LIMIT, before }),
+  );
 }
 
 // 审批卡片点击后回执引擎；remember 表示本会话对同名工具不再询问

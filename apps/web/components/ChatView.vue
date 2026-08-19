@@ -1,6 +1,9 @@
 <template>
   <div class="chat-view">
     <div ref="messagesEl" class="messages">
+      <div v-if="chat.loadingOlder" class="load-older">加载中…</div>
+      <button v-else-if="chat.hasMore" type="button" class="load-older" @click="onLoadOlder">加载更早</button>
+      <div v-else-if="chat.messages.length" class="load-older done">没有更早的消息了</div>
       <div v-if="!chat.messages.length" class="empty">暂无消息，开始对话吧</div>
       <template v-for="msg in chat.messages" :key="msg.id">
         <ApprovalCard
@@ -71,7 +74,12 @@ watch(
   { immediate: true },
 );
 
-// 流式输出时自动滚动到底部（正文/思考/工具卡片增量都触发）
+// 流式输出时自动滚动到底部（正文/思考/工具卡片增量都触发）；
+// 「加载更早」的前置合并不滚底：凭首条消息 id 变化识别前置插入并跳过，
+// 由 onLoadOlder 把视口锚定回原位置（锚记先于 await 挂出，流式增量
+// 抢先在同一帧触发 watch 时首条 id 未变，锚记保留、本次照常滚底）
+let firstMsgIdBeforePrepend: string | null = null;
+
 watch(
   () => [
     chat.messages.length,
@@ -82,9 +90,34 @@ watch(
   async () => {
     await nextTick();
     const el = messagesEl.value;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (firstMsgIdBeforePrepend !== null) {
+      if (chat.messages[0]?.id !== firstMsgIdBeforePrepend) {
+        // 本次长度变化来自前置合并
+        firstMsgIdBeforePrepend = null;
+        return;
+      }
+    }
+    el.scrollTop = el.scrollHeight;
   },
 );
+
+async function onLoadOlder() {
+  const el = messagesEl.value;
+  const prevHeight = el?.scrollHeight ?? 0;
+  const prevTop = el?.scrollTop ?? 0;
+  firstMsgIdBeforePrepend = chat.messages[0]?.id ?? "";
+  const prepended = await chat.loadOlder(props.agentId);
+  if (!prepended) {
+    // 无新消息插入：watch 不会触发，锚记直接复位
+    firstMsgIdBeforePrepend = null;
+    return;
+  }
+  await nextTick();
+  // 视口锚定原首条消息：滚动位置下移新插入的高度
+  if (el) el.scrollTop = el.scrollHeight - prevHeight + prevTop;
+  firstMsgIdBeforePrepend = null;
+}
 
 onUnmounted(() => {
   connectSeq++;
@@ -135,6 +168,23 @@ function onApprovalRespond(payload: ApprovalResponsePayload) {
   text-align: center;
   padding: 40px 0;
   font-size: 13px;
+}
+.load-older {
+  display: block;
+  margin: 0 auto 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--mc-text-tertiary, #5a6a7a);
+  background: none;
+  border: none;
+  text-align: center;
+}
+button.load-older {
+  cursor: pointer;
+  color: var(--mc-accent, #00e5c9);
+}
+button.load-older:hover {
+  text-decoration: underline;
 }
 .status {
   padding: 4px 12px;
