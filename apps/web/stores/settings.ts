@@ -1,12 +1,14 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useEngineClient } from "@/composables/useEngineClient";
-import type { AppSettings, ToolInfo } from "@/composables/useEngineClient";
+import type { AppSettings, SystemInfo, ToolInfo } from "@/composables/useEngineClient";
 
 export const useSettingsStore = defineStore("settings", () => {
   const client = useEngineClient();
   const settings = ref<AppSettings | null>(null);
   const tools = ref<ToolInfo[]>([]);
+  const systemInfo = ref<SystemInfo | null>(null);
+  const systemInfoError = ref("");
   const loadError = ref("");
   const saveState = ref<"" | "saving" | "saved" | "error">("");
   const saveError = ref("");
@@ -56,5 +58,27 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  return { settings, tools, loadError, saveState, saveError, load, save, loadTools };
+  async function loadSystemInfo() {
+    systemInfoError.value = "";
+    try {
+      systemInfo.value = await client.getSystemInfo();
+    } catch (err) {
+      // 系统信息是只读展示，失败只在本节内透出，不阻塞设置表单（口径同 loadTools）
+      systemInfoError.value = err instanceof Error ? err.message : "加载失败";
+    }
+  }
+
+  return {
+    settings,
+    tools,
+    systemInfo,
+    systemInfoError,
+    loadError,
+    saveState,
+    saveError,
+    load,
+    save,
+    loadTools,
+    loadSystemInfo,
+  };
 });

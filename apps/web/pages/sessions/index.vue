@@ -27,11 +27,31 @@
     <div v-if="sessions.error" class="load-error">加载失败：{{ sessions.error }}</div>
     <div v-else-if="sessions.isLoading && !groupSessions.length" class="load-empty">加载中...</div>
     <div v-else-if="!groupSessions.length" class="load-empty">暂无群聊</div>
+    <div v-if="actionError" class="load-error">{{ actionError }}</div>
     <ul class="session-list">
       <li v-for="session in groupSessions" :key="session.id">
-        <NuxtLink :to="`/sessions/${session.id}`">
-          {{ session.name }} ({{ session.agentIds.length }} 人)
-        </NuxtLink>
+        <template v-if="editingId === session.id">
+          <input
+            v-model="editingName"
+            type="text"
+            class="rename-input"
+            @keyup.enter="confirmRename"
+            @keyup.esc="editingId = ''"
+          />
+          <button :disabled="renaming" @click="confirmRename">{{ renaming ? "保存中..." : "保存" }}</button>
+          <button class="ghost" @click="editingId = ''">取消</button>
+        </template>
+        <template v-else>
+          <NuxtLink :to="`/sessions/${session.id}`" class="name">
+            {{ session.name }} ({{ session.agentIds.length }} 人)
+          </NuxtLink>
+          <div class="row-actions">
+            <button class="ghost" @click="startRename(session)">重命名</button>
+            <button class="danger" :disabled="deletingId === session.id" @click="removeSession(session)">
+              {{ deletingId === session.id ? "删除中..." : "删除" }}
+            </button>
+          </div>
+        </template>
       </li>
     </ul>
   </div>
@@ -41,6 +61,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useSessionsStore } from "@/stores/sessions";
 import { useAgentsStore } from "@/stores/agents";
+import type { Session } from "@/composables/useEngineClient";
 
 const sessions = useSessionsStore();
 const agents = useAgentsStore();
@@ -49,6 +70,12 @@ const selectedAgentId = ref("");
 const creating = ref(false);
 const formError = ref("");
 const newSession = ref<{ name: string; agentIds: string[] }>({ name: "", agentIds: [] });
+// 行内重命名 / 删除的交互态（actionError 两种操作共用，谁发起谁覆盖）
+const editingId = ref("");
+const editingName = ref("");
+const renaming = ref(false);
+const deletingId = ref("");
+const actionError = ref("");
 
 // 本页只展示群聊（与 hub 的口径一致），intermind 等其他类型不混入
 const groupSessions = computed(() => sessions.sessions.filter((s) => s.type === "group"));
@@ -102,6 +129,54 @@ async function createSession() {
 function agentName(id: string): string {
   const agent = agents.list.find((a) => a.id === id);
   return agent?.name || id;
+}
+
+function startRename(session: Session) {
+  editingId.value = session.id;
+  editingName.value = session.name;
+  actionError.value = "";
+}
+
+async function confirmRename() {
+  const id = editingId.value;
+  const name = editingName.value.trim();
+  if (!id || renaming.value) return;
+  if (!name) {
+    actionError.value = "群聊名称不能为空";
+    return;
+  }
+  // 名称未变直接退出编辑态，不发 PUT
+  const current = sessions.sessions.find((s) => s.id === id);
+  if (current && current.name === name) {
+    editingId.value = "";
+    return;
+  }
+  renaming.value = true;
+  actionError.value = "";
+  try {
+    await sessions.rename(id, name);
+    editingId.value = "";
+  } catch (err) {
+    // 404 等失败透出 err.message（ensureOk 已带 engine 的 error 正文），保持编辑态可改可退
+    actionError.value = err instanceof Error ? err.message : "重命名失败";
+  } finally {
+    renaming.value = false;
+  }
+}
+
+async function removeSession(session: Session) {
+  if (!confirm(`确定删除群聊「${session.name}」吗？`)) return;
+  deletingId.value = session.id;
+  actionError.value = "";
+  try {
+    await sessions.remove(session.id);
+    // 删掉的正是重命名中的行：退出编辑态
+    if (editingId.value === session.id) editingId.value = "";
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : "删除失败";
+  } finally {
+    deletingId.value = "";
+  }
 }
 </script>
 
@@ -188,6 +263,9 @@ header h1 {
 }
 
 .session-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   padding: 12px;
   border-bottom: 1px solid var(--mc-panel);
 }
@@ -195,6 +273,45 @@ header h1 {
 .session-list a {
   color: var(--mc-accent);
   text-decoration: none;
+}
+
+.session-list .name {
+  flex: 1;
+}
+
+.row-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.row-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--mc-text-secondary);
+}
+
+button.danger {
+  background: var(--mc-danger);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rename-input {
+  flex: 1;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--mc-text);
 }
 
 button {
