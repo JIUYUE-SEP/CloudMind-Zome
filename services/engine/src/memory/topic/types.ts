@@ -30,7 +30,7 @@ export interface CompressedTopic {
   keyPoints: string[];
   msgIds: string[];
   msgCount: number;
-  /** v1 恒 normal；LLM 重要性标记留 v2 */
+  /** P4-a 起由压缩调用真实赋值（它能看全段内容）；解析失败/缺省回落 normal */
   importance: "high" | "normal" | "low";
   sourceId: string;
   sourceName?: string;
@@ -42,6 +42,13 @@ export interface CompressedTopic {
   embeddingId?: string;
   /** Phase 7：同一次压缩调用顺手提取的经验（0-N 条，没有为空数组） */
   experiences?: ExtractedExperience[];
+  /**
+   * P4-a memory flush：同一次压缩调用顺手提取的长期记忆事实（0-5 条，没有为空数组）。
+   * 与 MIND 经验分工：memories 沉淀事实（"发生了什么值得记住的事"），
+   * MIND 沉淀经验/偏好（"我学到什么"）。由调用方在归档成功后落 memories.jsonl
+   * 并 embed 入向量索引（doc_id `mem:<recordId>`，L4 可召回）。
+   */
+  memoryFacts?: MemoryFact[];
   /** 阶段 5 二期：本话题内 Skill 工具成功调用过的技能名（活跃保护，组装自动重取依据） */
   usedSkills?: string[];
 }
@@ -54,6 +61,16 @@ export interface ExtractedExperience {
   title: string;
   text: string;
   /** 0-1（解析时已 clamp）；写入 MIND.md 时 ≤ 0.5 直接不落盘 */
+  confidence: number;
+}
+
+/**
+ * 从话题中提取的一条长期记忆事实（P4-a）。
+ * 颗粒度为事实/决策/情感表达（如"指挥官定稿用方案 C"），一句话一条。
+ */
+export interface MemoryFact {
+  text: string;
+  /** 0-1（解析时已 clamp）；flush 落盘时 ≤ 0.5 直接不写（与 MIND 经验同口径） */
   confidence: number;
 }
 

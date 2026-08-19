@@ -13,7 +13,7 @@ import {
   HANDOFF_MAX_SHIFTS_MIN,
   HANDOFF_MAX_SHIFTS_MAX,
 } from "../handoff/types.js";
-import type { ActionRecord, IActionRepository, IMessageRepository } from "../memory/repositories/types.js";
+import type { ActionRecord, IActionRepository, IMemoryRepository, IMessageRepository } from "../memory/repositories/types.js";
 import type { ScheduledTaskJob } from "../scheduler/types.js";
 import { ContextPipeline } from "../context/pipeline.js";
 import { SECURITY_GUIDELINE } from "../context/security-guideline.js";
@@ -120,6 +120,12 @@ export interface AgentWorkerConfig {
    * 生产经 agents 插件从 ctx.memory.getActionRepository 注入，傀儡/蓝图不接。
    */
   actionRepository?: IActionRepository;
+  /**
+   * 长期记忆仓库（P4-a memory flush）：压缩 flush 落 memories.jsonl + L4 解析
+   * `mem:` 命中共用同一仓储。可选——缺省不 flush、mem: 命中静默跳过；
+   * 生产经 agents 插件从 ctx.memory.getMemoryRepository 注入。
+   */
+  memoryRepository?: IMemoryRepository;
   approve: (toolName: string, args: unknown, toolCallId: string) => boolean | Promise<boolean>;
   temperature?: number;
   topP?: number;
@@ -297,6 +303,12 @@ export class AgentWorker {
         boundaryModel: this.boundaryModel,
         messageRepository: this.config.messageRepository,
         mind: this.config.mind,
+        // P4-a memory flush：归档成功后长期记忆事实落 memories.jsonl + 向量索引。
+        // 无索引器（Mock embedder）时 indexMemory 不挂钩子——写库照做、只跳过向量
+        memoryRepository: this.config.memoryRepository,
+        indexMemory: memoryIndexer
+          ? (recordId, text) => memoryIndexer.indexMessage(this.config.agentId, `mem:${recordId}`, text)
+          : undefined,
         // P8b：归档成功事件缝（memory/archived）——缺省 undefined，压缩任务不发事件
         onArchived: this.config.onMemoryArchived,
         // M14：归档成功后删除对应向量——无索引器（Mock embedder）时不挂钩子，
@@ -316,6 +328,8 @@ export class AgentWorker {
         this.semanticConfig,
         // P5：归档查询能力构造注入（semantic 值边已切；core→memory 边本就在）
         archivedMessageIds,
+        // P4-a：flush 事实仓库——索引命中 `mem:<recordId>` 时回读 memories.jsonl
+        config.memoryRepository,
       );
     }
   }

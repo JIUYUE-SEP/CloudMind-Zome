@@ -7,6 +7,8 @@ export interface MemoryRecord {
   content: string;
   embeddingId: string;
   createdAt: string;
+  /** P4-a flush 置信度（0-1，压缩调用赋值）；随记录落盘供审计（REST 自然透出）。旧记录无此字段 */
+  confidence?: number;
 }
 
 export interface ActionRecord {

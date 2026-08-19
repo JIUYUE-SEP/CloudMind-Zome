@@ -185,6 +185,8 @@ export function apply(ctx: Context, config: Config): void {
         messageRepository: new MessageRepository(agentId),
         // H1：工具调用落档（actions.jsonl 唯一写入方）——ctx.memory 工厂现造，与其他 repository 同语义
         actionRepository: ctx.memory.getActionRepository(agentId),
+        // P4-a：长期记忆仓库（memory flush 落库 + L4 `mem:` 命中解析共用）
+        memoryRepository: ctx.memory.getMemoryRepository(agentId),
         approve: () => true,
         temperature: agentConfig.temperature,
         topP: agentConfig.topP,

@@ -268,3 +268,78 @@ describe("SemanticRetriever", () => {
     expect(out.map((m) => m.id)).toEqual(["real"]);
   });
 });
+
+describe("SemanticRetriever mem: 条目（P4-a flush 事实召回）", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  type MemRec = { id: string; content: string; embeddingId: string; createdAt: string };
+  function memRec(id: string, content: string, createdAt: string): MemRec {
+    return { id, content, embeddingId: `mem:${id}`, createdAt };
+  }
+  function makeMemoryRepo(records: MemRec[]) {
+    return { get: async (id: string) => records.find((r) => r.id === id) };
+  }
+
+  it("mem: 命中经 memoryRepo 解析注入，与消息条目同一打分口径", async () => {
+    const indexer = makeIndexer([
+      { id: "mem:r1", score: 0.9 },
+      { id: "m1", score: 0.8 },
+    ]);
+    const repo = makeRepo([rec("m1", "消息命中", new Date(NOW).toISOString())]);
+    const memoryRepo = makeMemoryRepo([memRec("r1", "指挥官拍板用方案 C", new Date(NOW).toISOString())]);
+    const r = new SemanticRetriever(indexer, repo, config, archivedMessageIds, memoryRepo);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+
+    // r1: 0.9 × 1.0 = 0.9 排前；m1: 0.8 × 1.0 = 0.8
+    expect(out.map((m) => m.id)).toEqual(["r1", "m1"]);
+    expect(out[0]).toMatchObject({
+      id: "r1",
+      content: "指挥官拍板用方案 C",
+    });
+    expect(out[0]!.source).toBeUndefined(); // MemoryRecord 无 sessionId，不标跨场景来源
+    expect(out[0]!.score).toBeCloseTo(0.9);
+  });
+
+  it("归档排除只按消息 id：archivedIds 含同名 id 也不误伤 mem: 条目", async () => {
+    const indexer = makeIndexer([
+      { id: "mem:r1", score: 0.9 },
+      { id: "r1", score: 0.8 },
+    ]);
+    const repo = makeRepo([rec("r1", "已归档的消息原文", new Date(NOW).toISOString())]);
+    const memoryRepo = makeMemoryRepo([memRec("r1", "flush 事实", new Date(NOW).toISOString())]);
+    // archivedIds 只有消息 id 语义：消息 r1 被排除，mem:r1 不受影响
+    const r = new SemanticRetriever(indexer, repo, config, async () => new Set(["r1"]), memoryRepo);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+
+    expect(out.map((m) => m.id)).toEqual(["r1"]);
+    expect(out[0]!.content).toBe("flush 事实");
+  });
+
+  it("mem: 幽灵命中（库中无此记录）静默跳过；无 memoryRepo 时 mem: 命中跳过", async () => {
+    const indexer = makeIndexer([
+      { id: "mem:ghost", score: 0.99 },
+      { id: "real", score: 0.8 },
+    ]);
+    const repo = makeRepo([rec("real", "存在", new Date(NOW).toISOString())]);
+    const withRepo = new SemanticRetriever(indexer, repo, config, archivedMessageIds, makeMemoryRepo([]));
+    expect((await withRepo.retrieve("a1", "q", new Set(), "default")).map((m) => m.id)).toEqual(["real"]);
+
+    const noRepo = new SemanticRetriever(indexer, repo, config, archivedMessageIds);
+    expect((await noRepo.retrieve("a1", "q", new Set(), "default")).map((m) => m.id)).toEqual(["real"]);
+  });
+
+  it("mem: 条目按 2000 字符截断（与索引侧一致）", async () => {
+    const indexer = makeIndexer([{ id: "mem:big", score: 0.9 }]);
+    const memoryRepo = makeMemoryRepo([memRec("big", "x".repeat(5000), new Date(NOW).toISOString())]);
+    const r = new SemanticRetriever(indexer, makeRepo([]), config, archivedMessageIds, memoryRepo);
+    const out = await r.retrieve("a1", "q", new Set(), "default");
+    expect(out).toHaveLength(1);
+    expect(out[0]!.content).toHaveLength(2000);
+  });
+});

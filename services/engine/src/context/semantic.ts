@@ -1,6 +1,6 @@
 import { logger } from "../logger.js";
 import type { MemoryIndexer } from "../memory/indexer.js";
-import type { IMessageRepository } from "../memory/repositories/types.js";
+import type { IMemoryRepository, IMessageRepository } from "../memory/repositories/types.js";
 import type { ChatMessageRecord } from "../memory/repositories/types.js";
 import type { SemanticMemory } from "./layers.js";
 
@@ -77,6 +77,11 @@ export class SemanticRetriever {
     private config: SemanticSearchConfig,
     /** 已压缩话题原文 id 查询（构造注入，原值级 import memory/topic/store 已切） */
     private archivedIds: (agentId: string) => Promise<Set<string>>,
+    /**
+     * P4-a flush 事实仓库（可选）：索引命中 `mem:<recordId>` 时按 id 回读
+     * memories.jsonl 解析注入内容。缺省时 mem: 命中静默跳过（不炸检索主链路）。
+     */
+    private memoryRepo?: Pick<IMemoryRepository, "get">,
   ) {}
 
   /**
@@ -97,10 +102,21 @@ export class SemanticRetriever {
     if (candidateIds.length === 0) return [];
     const simById = new Map(hits.map((h) => [h.id, h.score] as const));
 
-    const [records, archivedIds] = await Promise.all([
-      this.repo.getByIds(candidateIds),
+    // P4-a：候选分两类——消息 id 走消息仓库；`mem:<recordId>` 是压缩 flush 的
+    // 长期记忆事实（向量 doc_id 约定），走 memories.jsonl 仓库解析。
+    // 归档排除（archivedIds）只按消息 id 比对，天然不误伤 mem: 条目
+    const msgIds = candidateIds.filter((id) => !id.startsWith("mem:"));
+    const memRecordIds = candidateIds
+      .filter((id) => id.startsWith("mem:"))
+      .map((id) => id.slice("mem:".length));
+
+    const [records, archivedIds, memRecords] = await Promise.all([
+      this.repo.getByIds(msgIds),
       // 已压缩话题的原文 id（压缩档 frontmatter 索引，不读 messages_archived.jsonl 全文）
       this.archivedIds(agentId),
+      this.memoryRepo
+        ? Promise.all(memRecordIds.map((id) => this.memoryRepo!.get(id)))
+        : Promise.resolve([]),
     ]);
 
     const now = Date.now();
@@ -119,6 +135,17 @@ export class SemanticRetriever {
         source: record.sessionId && record.sessionId !== currentSourceId ? record.sessionId : undefined,
         createdAt: record.createdAt,
       });
+    }
+    // P4-a：flush 事实条目与消息条目同一打分/过滤口径（相似度 × 时间衰减）。
+    // MemoryRecord 无 sessionId，不标跨场景来源；id 用原始 recordId
+    // （pipeline 去重键 `mem:${id}` 恰好与向量 doc_id 一致）
+    for (const record of memRecords) {
+      if (!record) continue;
+      const content = record.content.trim().slice(0, MAX_INJECT_CHARS);
+      if (!content) continue;
+      const score = (simById.get(`mem:${record.id}`) ?? 0) * timeDecay(record.createdAt, now);
+      if (score < this.config.minScore) continue;
+      memories.push({ id: record.id, content, score, createdAt: record.createdAt });
     }
     return memories.sort((a, b) => b.score - a.score).slice(0, this.config.topK);
   }
