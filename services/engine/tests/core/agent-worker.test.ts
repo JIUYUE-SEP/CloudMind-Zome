@@ -1644,6 +1644,89 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
     expect(userTexts.some((t) => t.includes("用户之前聊过"))).toBe(true);
   });
 
+  /** P4-c 装配透传用：按 prompt 分流 修订程/草稿程/复核/正常对话，计数两程调用 */
+  class TwoPassProvider implements LLMProvider {
+    name = "two-pass";
+    draftCalls = 0;
+    revisionCalls = 0;
+    supportsModel() {
+      return true;
+    }
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      const prompt = params.messages
+        .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+        .join("\n");
+      if (prompt.includes("对话归档修订编辑")) {
+        this.revisionCalls += 1;
+        yield {
+          type: "text.delta",
+          delta: "话题主题：修订后主题\n关键结论：\n- 修订结论\n经验：\n重要性：high\n",
+        };
+      } else if (prompt.includes("对话归档助手")) {
+        this.draftCalls += 1;
+        yield {
+          type: "text.delta",
+          delta: "话题主题：草稿主题\n关键结论：\n- 草稿结论\n经验：\n重要性：normal\n",
+        };
+      } else if (prompt.includes("对话归档复核裁判")) {
+        yield { type: "text.delta", delta: "SINGLE_TOPIC" };
+      } else {
+        yield { type: "text.delta", delta: "ok" };
+      }
+      yield { type: "step.end" };
+    }
+  }
+
+  it("P4-c twoPass 装配透传：topicCompression.twoPass 开 → 压缩走草稿→修订两程，落档为修订产物", async () => {
+    const provider = new TwoPassProvider();
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 4, twoPass: true },
+    });
+
+    // 与「达到消息阈值」测试同路径：user 消息先按 ws/scheduler 路径持久化再入队
+    await repo.append({ ...seqMessage("u1", "第一个问题", 0), sessionId: "agent-1" });
+    await repo.append({ ...seqMessage("u2", "第二个问题", 1), sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "第一个问题", 0)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "第二个问题", 1)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    await worker.drainCompression();
+
+    // topicCompression.twoPass 经 worker topicConfig 透传到压缩 deps：草稿程 + 修订程各一次
+    expect(provider.draftCalls).toBe(1);
+    expect(provider.revisionCalls).toBe(1);
+    // 最终档为修订产物（草稿不落地）
+    const summaries = await latestSummaries("agent-1", 1);
+    expect(summaries[0]!.label).toBe("修订后主题");
+    expect(summaries[0]!.importance).toBe("high");
+    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+  });
+
+  it("P4-c twoPass 缺省关：压缩仍现状单程，修订程零调用", async () => {
+    const provider = new TwoPassProvider();
+    const repo = new MessageRepository("agent-1");
+    const worker = new AgentWorker({
+      ...makeConfig(provider),
+      messageRepository: repo,
+      topicCompression: { messageThreshold: 4 },
+    });
+
+    await repo.append({ ...seqMessage("u1", "第一个问题", 0), sessionId: "agent-1" });
+    await repo.append({ ...seqMessage("u2", "第二个问题", 1), sessionId: "agent-1" });
+    worker.enqueue({ id: "j1", messages: [seqMessage("u1", "第一个问题", 0)], onEvent: () => {} });
+    worker.enqueue({ id: "j2", messages: [seqMessage("u2", "第二个问题", 1)], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    await worker.drainCompression();
+
+    expect(provider.draftCalls).toBe(1);
+    expect(provider.revisionCalls).toBe(0);
+    const summaries = await latestSummaries("agent-1", 1);
+    expect(summaries[0]!.label).toBe("草稿主题");
+    expect(await repo.listBySession("agent-1")).toHaveLength(0);
+  });
+
   it("LLM 裁判判 NEW_TOPIC：段关闭、切点在判决依据消息之前、新消息开新话题", async () => {
     const provider = new TopicJudgeProvider("NEW_TOPIC");
     const repo = new MessageRepository("agent-1");

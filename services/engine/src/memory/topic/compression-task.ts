@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { IMemoryRepository, IMessageRepository } from "../repositories/types.js";
 import type { LLMProvider } from "../../provider/types.js";
 import type { MindService } from "../../plugins/mind/index.js";
-import { compressTopic } from "./compressor.js";
+import { compressTopic, compressTopicTwoPass } from "./compressor.js";
 import { reviewTopicSegments } from "./judge.js";
 import { removeCompressedTopic, writeCompressedTopic } from "./store.js";
 import type { CompressedTopic, TopicSegment } from "./types.js";
@@ -22,6 +22,12 @@ export interface CompressionTaskDeps {
   model: string;
   /** 裁判/复核模型链（boundaryModel || compressionModel || 主模型，调用方解析好） */
   boundaryModel?: string;
+  /**
+   * 双程压缩开关（P4-c，Agent 级 twoPassCompression 经 topicCompression.twoPass 透传）：
+   * true 时压缩走草稿→修订两程（第二程失败回退草稿）；缺省 false 走现状单程。
+   * 对账补压缩路径（startup-reconcile）不接——与 flush 同纪律，那边维持单程。
+   */
+  twoPass?: boolean;
   messageRepository: IMessageRepository;
   /** mind 能力注入（P4）：经验沉淀 + 注入检测；类型复用 MindService（与源函数逐字一致），type-only 不算值边 */
   mind: Pick<MindService, "appendMindExperiences" | "isInjectionSuspect">;
@@ -154,7 +160,10 @@ async function compressAndArchiveSegment(
   deps: CompressionTaskDeps,
 ): Promise<void> {
   // 压缩失败不 fallback 主模型语义：异常由调用方（队列/对账）统一告警，原始消息留在热存储
-  const compressed = await compressTopic(segment, deps.provider, deps.model);
+  // P4-c：开关开的 agent 走双程（草稿→修订，第二程失败回退草稿）；关的走现状单程
+  const compressed = deps.twoPass
+    ? await compressTopicTwoPass(segment, deps.provider, deps.model)
+    : await compressTopic(segment, deps.provider, deps.model);
   // 阶段 5 二期：话题内 Skill 使用清单随摘要落档（活跃保护——组装时自动重取依据）
   const enriched = segment.usedSkills?.length
     ? { ...compressed, usedSkills: segment.usedSkills }

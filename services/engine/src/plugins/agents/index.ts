@@ -239,6 +239,10 @@ export function apply(ctx: Context, config: Config): void {
           ...(agentConfig.topicBoundaryModel !== undefined
             ? { boundaryModel: agentConfig.topicBoundaryModel }
             : {}),
+          // P4-c：双程压缩开关（Agent 级，缺省关）
+          ...(agentConfig.twoPassCompression !== undefined
+            ? { twoPass: agentConfig.twoPassCompression }
+            : {}),
           ...(agentConfig.topicDetectionWindowMinutes !== undefined
             ? { windowMinutes: agentConfig.topicDetectionWindowMinutes }
             : {}),

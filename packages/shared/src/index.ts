@@ -30,6 +30,8 @@ export interface AgentConfig {
   compressionModel?: string;
   /** 话题边界 LLM 裁判/压缩前复核模型；缺省用 compressionModel，再缺省用主模型 */
   topicBoundaryModel?: string;
+  /** 双程压缩开关（ContextPipeline Phase 4 P4-c）：开启后压缩先产草稿、再由模型对照原文修订产出最终档（第二程失败回退草稿，永不更差）；缺省关（灰度） */
+  twoPassCompression?: boolean;
   /** 话题检测时间窗（分钟）：超过该间隔无交互视为新话题，缺省 30 */
   topicDetectionWindowMinutes?: number;
   /** 当前话题消息数达到该阈值即关闭并压缩，缺省 20 */

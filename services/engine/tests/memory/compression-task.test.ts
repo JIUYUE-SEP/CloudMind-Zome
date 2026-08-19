@@ -327,3 +327,122 @@ describe("runCompressionTask 向量删除钩子（M14）", () => {
     warn.mockRestore();
   });
 });
+
+describe("runCompressionTask 双程压缩接线（P4-c：deps.twoPass）", () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "compression-twopass-test-"));
+    originalDataDir = process.env.CLOUDMIND_DATA_DIR;
+    process.env.CLOUDMIND_DATA_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    restoreDataDir(originalDataDir);
+  });
+
+  /** 三路分流：复核（SINGLE_TOPIC）/ 修订程 / 草稿程；记录两程调用次数 */
+  class TwoPassBranchProvider implements LLMProvider {
+    name = "two-pass-branch";
+    draftCalls = 0;
+    revisionCalls = 0;
+    constructor(private failRevision = false) {}
+    supportsModel() {
+      return true;
+    }
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      const prompt = params.messages
+        .map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+        .join("\n");
+      if (prompt.includes("对话归档复核裁判")) {
+        yield { type: "text.delta", delta: "SINGLE_TOPIC" };
+      } else if (prompt.includes("对话归档修订编辑")) {
+        this.revisionCalls += 1;
+        if (this.failRevision) throw new Error("revision down");
+        yield {
+          type: "text.delta",
+          delta: "话题主题：修订后主题\n关键结论：\n- 修订结论\n经验：\n重要性：high\n",
+        };
+      } else {
+        this.draftCalls += 1;
+        yield {
+          type: "text.delta",
+          delta: "话题主题：草稿主题\n关键结论：\n- 草稿结论\n经验：\n重要性：normal\n",
+        };
+      }
+      yield { type: "step.end" };
+    }
+  }
+
+  function deps(repo: MessageRepository, provider: LLMProvider): CompressionTaskDeps {
+    return { agentId: "a1", provider, model: "mock", messageRepository: repo, mind: mindService };
+  }
+
+  async function readOnlyCompressedFile(agentId: string): Promise<string> {
+    const files = (await fs.readdir(compressedDir(agentId))).filter((f) => f.endsWith(".md"));
+    expect(files).toHaveLength(1);
+    return fs.readFile(path.join(compressedDir(agentId), files[0]!), "utf-8");
+  }
+
+  it("开关开：草稿→修订各一次，最终档为修订产物（草稿不落地），归档照常", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new TwoPassBranchProvider();
+    const d = deps(repo, provider);
+    d.twoPass = true;
+
+    await runCompressionTask(makeSegment(ids), d);
+
+    expect(provider.draftCalls).toBe(1);
+    expect(provider.revisionCalls).toBe(1);
+    const file = await readOnlyCompressedFile("a1");
+    expect(file).toContain("修订后主题");
+    expect(file).toContain("修订结论");
+    expect(file).toContain("importance: high");
+    expect(file).not.toContain("草稿主题");
+    expect(await repo.listBySession("s1")).toEqual([]);
+    expect((await repo.getArchivedByIds(ids)).map((m) => m.id).sort()).toEqual(ids);
+  });
+
+  it("开关开但第二程失败：回退草稿，档照常落（永不更差）并 warn", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new TwoPassBranchProvider(true);
+    const d = deps(repo, provider);
+    d.twoPass = true;
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    await runCompressionTask(makeSegment(ids), d);
+
+    expect(provider.draftCalls).toBe(1);
+    expect(provider.revisionCalls).toBe(1);
+    const file = await readOnlyCompressedFile("a1");
+    expect(file).toContain("草稿主题");
+    expect(file).not.toContain("修订后主题");
+    expect(await repo.listBySession("s1")).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining("第二程失败"),
+    );
+    warn.mockRestore();
+  });
+
+  it("开关缺省（不传 twoPass）：现状单程——草稿一次、修订零次", async () => {
+    const ids = ["m1", "m2", "m3", "m4"];
+    const repo = new MessageRepository("a1");
+    for (const id of ids) await repo.append(makeMsg(id));
+    const provider = new TwoPassBranchProvider();
+
+    await runCompressionTask(makeSegment(ids), deps(repo, provider));
+
+    expect(provider.draftCalls).toBe(1);
+    expect(provider.revisionCalls).toBe(0);
+    const file = await readOnlyCompressedFile("a1");
+    expect(file).toContain("草稿主题");
+    expect(await repo.listBySession("s1")).toEqual([]);
+  });
+});

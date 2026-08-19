@@ -81,6 +81,8 @@ export interface TopicCompressionConfig {
   compressionModel?: string;
   /** 话题边界裁判/压缩前复核模型；缺省用 compressionModel，再缺省用主模型 */
   boundaryModel?: string;
+  /** 双程压缩（P4-c）：true 时压缩走草稿→修订两程；默认 false（Agent 级开关缺省关，灰度） */
+  twoPass: boolean;
   /** 时间间隔超过该分钟数视为新话题，默认 30 */
   windowMinutes: number;
   /** 当前话题消息数达到该阈值即关闭压缩，默认 20 */
@@ -94,6 +96,8 @@ export const DEFAULT_TOPIC_COMPRESSION_CONFIG: TopicCompressionConfig = {
   windowMinutes: 30,
   messageThreshold: 20,
   hotMemoryCount: 2,
+  // P4-c：双程压缩缺省关（灰度观察质量收益后再议默认开）
+  twoPass: false,
 };
 
 /** 短话题不调用 LLM 压缩（一两句话就产一个压缩档只会制造噪声），仅归档 */

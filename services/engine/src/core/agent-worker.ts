@@ -301,6 +301,8 @@ export class AgentWorker {
         provider: this.config.provider,
         model: this.topicConfig.compressionModel || this.config.model,
         boundaryModel: this.boundaryModel,
+        // P4-c：双程压缩开关（Agent 级 twoPassCompression，缺省关；开的走草稿→修订两程）
+        twoPass: this.topicConfig.twoPass,
         messageRepository: this.config.messageRepository,
         mind: this.config.mind,
         // P4-a memory flush：归档成功后长期记忆事实落 memories.jsonl + 向量索引。

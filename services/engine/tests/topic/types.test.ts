@@ -49,6 +49,11 @@ describe("normalizeTopicCompressionConfig", () => {
     warn.mockRestore();
   });
 
+  it("twoPass 缺省 false，true 透传（P4-c 双程压缩开关缺省关）", () => {
+    expect(normalizeTopicCompressionConfig().twoPass).toBe(false);
+    expect(normalizeTopicCompressionConfig({ twoPass: true }).twoPass).toBe(true);
+  });
+
   it("合法取值原样保留", () => {
     const config = normalizeTopicCompressionConfig({
       messageThreshold: 50,
