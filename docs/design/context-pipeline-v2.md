@@ -2,7 +2,7 @@
 
 > 版本：v2 | 日期：2026-07-17（2026-07-22 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：**Phase 1/2/3/5/6/7 已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`）；Phase 4（可选）待评估
+> 状态：**Phase 1–7 全部已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`；Phase 4 于 2026-08-19 完成，实施报告 `docs/design/context-pipeline-phase4.md`）
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---
@@ -261,7 +261,7 @@ if (topicClosed) {
 |---|---|---|
 | `auto_compact_threshold_percent` | 无对应（实现修订 2026-07-28） | 每轮无条件 assemble + 管线内降级，无阈值预检；`thresholdRatio` 从未存在 |
 | `compact_model` | `compressionModel`（Agent 级字段，可选，缺省主模型） | 用便宜模型做压缩 |
-| `memory_flush_enabled` | 无对应（未实现，留待 Phase 4 评估） | 压缩前先写 memory 文档 |
+| `memory_flush_enabled` | `twoPassCompression` 无关；flush 已实现（Phase 4） | 压缩同次调用产出长期记忆事实落 memories.jsonl（不写独立文档） |
 | `wall_clock_budget_secs` | 压缩超时 60s（`COMPRESS_TIMEOUT_MS` 代码常量，不可配置） | 压缩超时保护 |
 | `two_pass_enabled` | v2 不做 | 留作未来优化 |
 
@@ -319,7 +319,8 @@ msg_count: 47
 
 **理由**：纯 markdown 可读性好，embedding_id 支持语义检索反查。
 
-> **实现修订（2026-07-28）**：`embedding_id` 至今仍只是预留——`CompressedTopic.embeddingId` 在全代码库从未被赋值，所有压缩档该字段**恒为空串**；L4 的"已压缩话题原文排除"走的是 `archivedMessageIds`（压缩档 msg_ids 汇总），不依赖 embedding_id。原"Phase 3 接入"承诺未兑现，是否接入留待重新评估。
+> **实现修订（2026-07-28）**：`embedding_id` 至今仍只是预留——`CompressedTopic.embeddingId` 在全代码库从未被赋值，所有压缩档该字段**恒为空串**；L4 的"已压缩话题原文排除"走的是 `archivedMessageIds`（压缩档 msg_ids 汇总），不依赖 embedding_id。原"Phase 3 接入"承诺未兑现。
+> **最终处置（2026-08-19 Phase 4）**：**正式放弃**——msg_ids + tombstone 删除已覆盖其全部预期用途，该预留字段不会接入。
 
 ### 4. 热存储清理：归档保护
 
@@ -400,12 +401,13 @@ return 0.3;                              // 三个月以上保底 30%
 
 **验收**：提到过去聊过的话题时，Agent 能"想起"被压缩的细节。
 
-### Phase 4（可选）：优化
+### Phase 4（可选）：优化 — ✅ 已完成（2026-08-19，报告 `docs/design/context-pipeline-phase4.md`）
 
-- [ ] `TopicDetector` v2：LLM 版话题检测（小模型分类）
-- [ ] 双程压缩（grok-build two-pass）
-- [ ] 差异化保留（high 重要话题保留更多轮数）
-- [ ] 用户可审计接口（查看 `_compressed/` 列表、恢复归档）
+- [x] memory flush（决策 6 落地：压缩同次调用产出长期记忆事实，落 memories.jsonl + 入向量索引可 L4 召回）
+- [x] 双程压缩（Agent 级 `twoPassCompression`，缺省关；第二程失败回退草稿）
+- [x] 差异化保留（importance 由压缩调用真实赋值；L5 高重要档常驻注入 + L4 mem: 条目 high 不衰减）
+- [x] 用户可审计接口（`GET /agents/:id/topics` 列表 / 单档全文 / `POST .../restore` 恢复即删档）
+- [ ] ~~`TopicDetector` v2：LLM 版话题检测~~（方案 C 裁判+压缩前复核已实质覆盖该意图，不重复建设）
 
 ### Phase 5：记忆检索最终设计（2026-07-22）— ✅ 已完成
 

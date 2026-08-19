@@ -63,7 +63,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /sessions/:id` — 获取会话
 - `PUT /sessions/:id` — 更新会话
 - `DELETE /sessions/:id` — 删除会话
-- `GET /sessions/:id/messages?limit=xxx` — 获取会话历史消息（合并各成员仓库：按消息 id 去重，assistant/tool 消息带 `agentId` 归属标注，`limit` 为合并后总量；limit clamp 缺省 100、上限 500，非法值回落缺省）
+- `GET /sessions/:id/messages?limit=xxx&before=xxx` — 获取会话历史消息（合并各成员仓库：按消息 id 去重，assistant/tool 消息带 `agentId` 归属标注，`limit` 为合并后总量；limit clamp 缺省 100、上限 500，非法值回落缺省；`before` 为消息 id 游标，跨成员透传 + 合并后按时间序截取游标之前一页，可翻进归档层；未知游标按无游标处理）
 - WebSocket `GET /ws/sessions/:sessionId` — 群聊实时对话
 
 ### Compute
@@ -189,6 +189,17 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 - `GET /memory/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的记忆（limit clamp 缺省 100、上限 500，非法值回落缺省；offset 非法回落 undefined）
 - `GET /memory/:agentId/:id` — 获取单条记忆
+
+### Topics（压缩档审计，2026-08-19 Phase 4）
+
+- `GET /agents/:id/topics?limit=xxx&offset=xxx` — 压缩档列表（`compressedAt` 倒序；每条含 topicId/label/importance/sourceId/sourceName/compressedAt/msgCount；损坏档跳过、高版本档 500）
+- `GET /agents/:id/topics/:topicId` — 单档全文（frontmatter 各字段 + summary + keyPoints + msgIds；档不存在 404）
+- `POST /agents/:id/topics/:topicId/restore` — 恢复即删档：该档消息从归档写回热存储（已在热存储的 id 跳过、归档缺行计数 missing、全缺 409 不动档），随后删除压缩档并重新索引原文向量（恢复后原文回 L3/L4、L5 不再注入该摘要）；返回 `{ restored, missing }`；重复 restore 404
+
+### System / Plugins（2026-08-19 前端完善轮）
+
+- `GET /system/info` — 引擎系统信息：`{ version, gitCommit?, dataDir, port, uptimeSec, sidecar: { configured } }`（gitCommit 无 git 时省略；configured 只表示引擎装配了 sidecar 客户端，不代表 sidecar 在跑）
+- `GET /plugins` — 外部插件加载结果：`{ loaded: string[], skipped: { name, reason }[], perAgent: { agentId, name, status }[] }`（reason/status 取值见 `plugins/external/index.ts` 的 SkipReason 契约）
 
 ### Actions
 
