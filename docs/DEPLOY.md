@@ -32,6 +32,24 @@ REST 需 Bearer token——见 `docs/API.md` 鉴权章节；开发模式下前�
 > `cargo build --release --manifest-path crates/zome-sidecar/Cargo.toml` 并运行
 > `zome-sidecar`（gRPC `127.0.0.1:50051`），engine 会自动连接；不运行则静默降级。
 
+## 安装后更新
+
+一条命令（推荐）：
+
+```bash
+scripts/update.sh              # git pull → pnpm install → build → pnpm verify
+scripts/update.sh --skip-verify  # 跳过验证快速更新
+```
+
+脚本**不是**自动更新器：不在后台跑、不检查新版本、不重启进程——更新完成后请自行重启 engine 与 web 生效。等价的手工四步：`git pull` → `pnpm install` → `pnpm --filter @mindcloud/shared --filter @mindcloud/engine --filter @mindcloud/web build` → 重启。若在用 sidecar，记得一并 `cargo build --release`。
+
+**数据兼容性**：
+
+- 数据目录（DATA_DIR）在更新中不受影响。落盘格式带 `schemaVersion` 戳（单文件 JSON 顶层 / JSONL 每行 / 压缩档 frontmatter），**读时惰性迁移**——升级后旧格式数据在首次被读到时自动迁移，无需手工处理
+- 启动对账：engine 每次启动自动补归档「压缩档已写但归档未完成」的孤儿消息与未压缩 pending 段，异常退出后的更新同样安全
+- 若启动时报 `落盘格式版本过高`：说明**代码比数据旧**（数据由更新版本写入）——请升级代码，**不要删数据目录**（文件未被做任何改动）
+- 回滚：`git checkout <旧 commit>` + 重新 build 即可回到旧版代码；但回滚后旧代码可能读不出新版本写入的数据格式（同上的高版本报错），数据本身始终保留
+
 ## 数据目录
 
 - 默认 `~/.cloudmind-zome`（Windows 上为 `%USERPROFILE%\.cloudmind-zome`）
