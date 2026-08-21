@@ -201,6 +201,13 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `GET /system/info` — 引擎系统信息：`{ version, gitCommit?, dataDir, port, uptimeSec, sidecar: { configured } }`（gitCommit 无 git 时省略；configured 只表示引擎装配了 sidecar 客户端，不代表 sidecar 在跑）
 - `GET /plugins` — 外部插件加载结果：`{ loaded: string[], skipped: { name, reason }[], perAgent: { agentId, name, status }[] }`（reason/status 取值见 `plugins/external/index.ts` 的 SkipReason 契约）
 
+**Plugins 管理面（2026-08-21 M1/M2）**：
+
+- `GET /plugins/manifest` — 全局清单管理视图：`{ plugins: [{ name, enabled, config, hasEntry: true }], unregistered: string[] }`（unregistered = 目录有 index.mjs 但未登记入全局清单的名字；清单文件损坏返回 409 不覆盖）
+- `PUT /plugins/manifest/:name` — 单条写：body `{ enabled?: boolean, config?: object }`（至少一个；config 必须 JSON 对象非数组非标量）。未登记→登记；返回 `{ name, enabled, config, requiresRestart: true }`（**无热重载**：变更重启 engine 生效）。非法名/类型错 400、目录不存在 404、清单损坏 409
+- `GET /agents/:id/plugins/manifest` — 该 agent 的 plugins.yml 内容：`{ plugins: [{ name, enabled, config }] }`（文件缺失按空清单；agent 不存在 404）
+- `PUT /agents/:id/plugins/manifest/:name` — 同全局单条语义写回 plugins.yml（js-yaml dump 会重写排版并丢弃手写注释——语义保留）
+
 ### Actions
 
 - `GET /actions/:agentId?limit=xxx&offset=xxx` — 列出 Agent 的动作记录（limit clamp 缺省 100、上限 500，非法值回落缺省；offset 非法回落 undefined）
