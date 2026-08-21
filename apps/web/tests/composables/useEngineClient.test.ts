@@ -557,3 +557,94 @@ describe("useEngineClient 消息分页与新端点（F2）", () => {
     expect(calls[0].url).toContain("/sessions/s%201");
   });
 });
+
+// M2：插件清单管理端点（全局 /plugins/manifest + per-agent /agents/:id/plugins/manifest）
+describe("useEngineClient 插件清单管理端点（M2）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  interface CapturedCall {
+    url: string;
+    method: string;
+    body?: unknown;
+  }
+
+  function captureCalls(jsonBody: unknown = {}) {
+    const calls: CapturedCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(jsonBody) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    return calls;
+  }
+
+  it("getPluginsManifest：GET /plugins/manifest 并返回清单条目与未登记目录", async () => {
+    const payload = {
+      plugins: [{ name: "alpha", enabled: true, config: { key: "v" }, hasEntry: true }],
+      unregistered: ["beta"],
+    };
+    const calls = captureCalls(payload);
+    const client = useEngineClient();
+    const result = await client.getPluginsManifest();
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toContain("/plugins/manifest");
+    expect(result).toEqual(payload);
+  });
+
+  it("updatePluginManifest：PUT /plugins/manifest/:name 携带补丁，名称被编码", async () => {
+    const updated = { name: "al pha", enabled: false, config: {}, requiresRestart: true };
+    const calls = captureCalls(updated);
+    const client = useEngineClient();
+    const result = await client.updatePluginManifest("al pha", { enabled: false });
+    expect(calls[0].method).toBe("PUT");
+    expect(calls[0].url).toContain("/plugins/manifest/al%20pha");
+    expect(calls[0].body).toEqual({ enabled: false });
+    expect(result).toEqual(updated);
+  });
+
+  it("getAgentPluginsManifest：GET /agents/:id/plugins/manifest，agentId 被编码", async () => {
+    const payload = { plugins: [{ name: "alpha", enabled: true, config: {} }] };
+    const calls = captureCalls(payload);
+    const client = useEngineClient();
+    const result = await client.getAgentPluginsManifest("a 1");
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toContain("/agents/a%201/plugins/manifest");
+    expect(result).toEqual(payload);
+  });
+
+  it("updateAgentPluginManifest：PUT per-agent 单条，config 补丁原样携带", async () => {
+    const updated = { name: "p1", enabled: true, config: { k: 2 }, requiresRestart: true };
+    const calls = captureCalls(updated);
+    const client = useEngineClient();
+    const result = await client.updateAgentPluginManifest("a1", "p1", { config: { k: 2 } });
+    expect(calls[0].method).toBe("PUT");
+    expect(calls[0].url).toContain("/agents/a1/plugins/manifest/p1");
+    expect(calls[0].body).toEqual({ config: { k: 2 } });
+    expect(result).toEqual(updated);
+  });
+
+  it("409 清单损坏：透出 engine 的 error 正文", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ error: "plugins.json 解析失败：Unexpected token" }),
+        } as unknown as Response),
+      ),
+    );
+    const client = useEngineClient();
+    await expect(client.getPluginsManifest()).rejects.toThrow(
+      "Failed to get plugins manifest: plugins.json 解析失败：Unexpected token",
+    );
+  });
+});

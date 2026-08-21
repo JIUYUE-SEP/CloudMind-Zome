@@ -53,39 +53,129 @@
 
     <section>
       <h2>外部插件</h2>
-      <p v-if="plugins.error" class="hint error">加载失败：{{ plugins.error }}</p>
+      <!-- 常驻提示（任何写操作成功后出现）：engine 无热重载，清单写只改文件，重启才生效 -->
+      <p v-if="plugins.restartHint" class="restart-hint">变更将在 engine 重启后生效</p>
+      <!-- 写操作错误（开关/登记/config 共用）：engine 的 400/404/409 error 正文 -->
+      <p v-if="plugins.writeError" class="hint error">{{ plugins.writeError }}</p>
+
+      <!-- 管理清单区（M2）：全局 manifest 条目（enabled 开关 + config 编辑） -->
+      <p v-if="plugins.manifestError" class="hint error">加载失败：{{ plugins.manifestError }}</p>
       <p
-        v-else-if="plugins.isLoading && !plugins.loaded.length && !plugins.skipped.length && !plugins.perAgent.length"
+        v-else-if="plugins.manifestLoading && !plugins.manifestEntries.length && !plugins.unregistered.length"
         class="hint"
       >
         加载中...
       </p>
       <template v-else>
-        <h3 class="sub">已加载（{{ plugins.loaded.length }}）</h3>
-        <p v-if="!plugins.loaded.length" class="hint">暂无已加载的外部插件</p>
+        <h3 class="sub">插件清单（{{ plugins.manifestEntries.length }}）</h3>
+        <p v-if="!plugins.manifestEntries.length" class="hint">暂无已登记的外部插件</p>
         <ul v-else class="rows">
-          <li v-for="name in plugins.loaded" :key="name">{{ name }}</li>
-        </ul>
-
-        <h3 class="sub">已跳过（{{ plugins.skipped.length }}）</h3>
-        <p v-if="!plugins.skipped.length" class="hint">暂无被跳过的插件</p>
-        <ul v-else class="rows">
-          <li v-for="p in plugins.skipped" :key="p.name">
-            <strong>{{ p.name }}</strong>
-            <span class="meta">{{ skipReasonText(p.reason) }}</span>
+          <li v-for="entry in plugins.manifestEntries" :key="entry.name" class="manifest-row">
+            <div class="row-line">
+              <strong>{{ entry.name }}</strong>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  class="enabled-toggle"
+                  :checked="entry.enabled"
+                  @change="onTogglePlugin(entry, $event)"
+                />
+                启用
+              </label>
+              <button class="mini-btn config-btn" @click="openConfigEditor(entry)">
+                {{ configEditing === entry.name ? "收起配置" : "配置" }}
+              </button>
+            </div>
+            <div v-if="configEditing === entry.name" class="config-editor">
+              <textarea v-model="configDraft" class="config-textarea" rows="6" spellcheck="false"></textarea>
+              <p v-if="configError" class="hint error">{{ configError }}</p>
+              <div class="config-actions">
+                <button class="save config-save" @click="saveConfig(entry)">保存</button>
+                <button class="mini-btn" @click="closeConfigEditor">取消</button>
+              </div>
+            </div>
           </li>
         </ul>
 
-        <h3 class="sub">按 Agent 挂载（{{ plugins.perAgent.length }}）</h3>
-        <p v-if="!plugins.perAgent.length" class="hint">暂无按 Agent 的挂载记录</p>
+        <!-- 未登记目录：plugins/ 下有 index.mjs 但未登记入全局清单（plugins.json） -->
+        <h3 class="sub">未登记（{{ plugins.unregistered.length }}）</h3>
+        <p v-if="!plugins.unregistered.length" class="hint">暂无未登记的插件目录</p>
         <ul v-else class="rows">
-          <li v-for="p in plugins.perAgent" :key="`${p.agentId}:${p.name}`">
-            <strong>{{ p.name }}</strong>
-            <span class="meta">{{ p.agentId }}</span>
-            <span class="status" :class="{ failed: p.status !== 'loaded' }">{{ pluginStatusText(p.status) }}</span>
+          <li v-for="name in plugins.unregistered" :key="name">
+            <strong>{{ name }}</strong>
+            <span class="badge">未登记</span>
+            <button class="mini-btn register-btn" @click="onRegister(name)">登记</button>
           </li>
         </ul>
       </template>
+
+      <!-- per-agent 管理：选中 agent 后管理其 plugins.yml 清单（切换即重载） -->
+      <h3 class="sub">按 Agent 管理</h3>
+      <p v-if="agents.error" class="hint error">Agent 列表加载失败：{{ agents.error }}</p>
+      <p v-else-if="!agents.list.length" class="hint">暂无 Agent</p>
+      <template v-else>
+        <select v-model="selectedAgent" class="agent-select">
+          <option v-for="a in agents.list" :key="a.id" :value="a.id">{{ a.name }}（{{ a.id }}）</option>
+        </select>
+        <p v-if="plugins.agentError" class="hint error">加载失败：{{ plugins.agentError }}</p>
+        <p v-else-if="plugins.agentLoading && !plugins.agentEntries.length" class="hint">加载中...</p>
+        <template v-else>
+          <p v-if="!plugins.agentEntries.length" class="hint">该 Agent 暂无插件清单条目</p>
+          <ul v-else class="rows">
+            <li v-for="entry in plugins.agentEntries" :key="entry.name">
+              <strong>{{ entry.name }}</strong>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  class="agent-enabled-toggle"
+                  :checked="entry.enabled"
+                  @change="onToggleAgentPlugin(entry, $event)"
+                />
+                启用
+              </label>
+            </li>
+          </ul>
+        </template>
+      </template>
+
+      <!-- 加载结果（只读）：引擎当前运行态，清单变更重启后才反映到这里——诊断信息折叠在下；
+           加载失败时自动展开（:open），不藏错误 -->
+      <details class="load-results" :open="!!plugins.error">
+        <summary class="sub">加载结果（当前运行态）</summary>
+        <p v-if="plugins.error" class="hint error">加载失败：{{ plugins.error }}</p>
+        <p
+          v-else-if="plugins.isLoading && !plugins.loaded.length && !plugins.skipped.length && !plugins.perAgent.length"
+          class="hint"
+        >
+          加载中...
+        </p>
+        <template v-else>
+          <h3 class="sub">已加载（{{ plugins.loaded.length }}）</h3>
+          <p v-if="!plugins.loaded.length" class="hint">暂无已加载的外部插件</p>
+          <ul v-else class="rows">
+            <li v-for="name in plugins.loaded" :key="name">{{ name }}</li>
+          </ul>
+
+          <h3 class="sub">已跳过（{{ plugins.skipped.length }}）</h3>
+          <p v-if="!plugins.skipped.length" class="hint">暂无被跳过的插件</p>
+          <ul v-else class="rows">
+            <li v-for="p in plugins.skipped" :key="p.name">
+              <strong>{{ p.name }}</strong>
+              <span class="meta">{{ skipReasonText(p.reason) }}</span>
+            </li>
+          </ul>
+
+          <h3 class="sub">按 Agent 挂载（{{ plugins.perAgent.length }}）</h3>
+          <p v-if="!plugins.perAgent.length" class="hint">暂无按 Agent 的挂载记录</p>
+          <ul v-else class="rows">
+            <li v-for="p in plugins.perAgent" :key="`${p.agentId}:${p.name}`">
+              <strong>{{ p.name }}</strong>
+              <span class="meta">{{ p.agentId }}</span>
+              <span class="status" :class="{ failed: p.status !== 'loaded' }">{{ pluginStatusText(p.status) }}</span>
+            </li>
+          </ul>
+        </template>
+      </details>
     </section>
 
     <section>
@@ -127,20 +217,95 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useSettingsStore } from "@/stores/settings";
 import { usePluginsStore, skipReasonText, pluginStatusText } from "@/stores/plugins";
+import { useAgentsStore } from "@/stores/agents";
+import type { AgentPluginManifestEntry, PluginManifestEntry } from "@/composables/useEngineClient";
 import { formatUptime } from "@/utils/system-info";
 
 const store = useSettingsStore();
 const plugins = usePluginsStore();
+const agents = useAgentsStore();
 
-onMounted(() => {
+// per-agent 选择器：v-model 直达 store，切换即重新加载该 agent 的清单
+const selectedAgent = computed({
+  get: () => plugins.selectedAgentId,
+  set: (id: string) => {
+    void plugins.selectAgent(id);
+  },
+});
+
+onMounted(async () => {
   store.load();
   store.loadTools();
   store.loadSystemInfo();
   plugins.load();
+  plugins.loadManifest();
+  await agents.load();
+  // 默认选中第一个 Agent（选中即触发其清单加载）；无 Agent 时选择器不渲染
+  if (agents.list.length && !plugins.selectedAgentId) {
+    await plugins.selectAgent(agents.list[0].id);
+  }
 });
+
+// enabled 开关：点击即 PUT。原生 checkbox 点击瞬间已翻转 DOM 态，失败时 store 状态未变，
+// 需手动把 DOM 拨回原值（:checked 绑定只在状态变化时 patch，不会自发回弹）
+async function onTogglePlugin(entry: PluginManifestEntry, event: Event) {
+  const checkbox = event.target as HTMLInputElement;
+  const ok = await plugins.setPluginEnabled(entry.name, checkbox.checked);
+  if (!ok) checkbox.checked = entry.enabled;
+}
+
+async function onToggleAgentPlugin(entry: AgentPluginManifestEntry, event: Event) {
+  const checkbox = event.target as HTMLInputElement;
+  const ok = await plugins.setAgentPluginEnabled(entry.name, checkbox.checked);
+  if (!ok) checkbox.checked = entry.enabled;
+}
+
+// 登记：失败时 writeError 已在节内透出；成功后条目由 store 从未登记区移入清单区
+async function onRegister(name: string) {
+  await plugins.register(name);
+}
+
+// config 编辑器：单开（同时刻只展开一条），draft 是该条目 config 的格式化 JSON 文本
+const configEditing = ref("");
+const configDraft = ref("");
+const configError = ref("");
+
+function openConfigEditor(entry: PluginManifestEntry) {
+  if (configEditing.value === entry.name) {
+    closeConfigEditor();
+    return;
+  }
+  configEditing.value = entry.name;
+  configDraft.value = JSON.stringify(entry.config, null, 2);
+  configError.value = "";
+}
+
+function closeConfigEditor() {
+  configEditing.value = "";
+  configDraft.value = "";
+  configError.value = "";
+}
+
+// 保存前置校验与 engine parsePatch 同口径：合法 JSON 且为对象（非数组非标量）；
+// 写失败时 writeError 透出，编辑器保持打开供修正重试
+async function saveConfig(entry: PluginManifestEntry) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configDraft.value);
+  } catch {
+    configError.value = "JSON 格式非法，请检查";
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    configError.value = "配置必须是 JSON 对象（非数组非标量）";
+    return;
+  }
+  const ok = await plugins.savePluginConfig(entry.name, parsed as Record<string, unknown>);
+  if (ok) closeConfigEditor();
+}
 </script>
 
 <style scoped>
@@ -301,5 +466,97 @@ input {
 
 .info-value {
   word-break: break-all;
+}
+
+.restart-hint {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--mc-warning);
+}
+
+/* 清单行：首行名称+开关+配置按钮，config 编辑器整行展开在下方 */
+.rows li.manifest-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* scoped 的 label 元素选择器是纵向表单排版，开关标签用类选择器压回横向内联 */
+.toggle {
+  flex-direction: row;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--mc-text-secondary);
+  cursor: pointer;
+}
+
+.mini-btn {
+  padding: 2px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--mc-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mini-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--mc-warning);
+}
+
+.agent-select {
+  align-self: flex-start;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--mc-text);
+}
+
+.config-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.config-textarea {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--mc-text);
+  font-family: monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.load-results summary {
+  cursor: pointer;
+  user-select: none;
 }
 </style>

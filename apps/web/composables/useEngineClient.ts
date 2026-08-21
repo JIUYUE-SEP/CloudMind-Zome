@@ -99,6 +99,49 @@ export interface PluginLoadResult {
   perAgent: PerAgentPluginResult[];
 }
 
+// ---- /plugins/manifest 管理面类型：engine 契约在 services/engine/src/plugins/external/manifest.ts
+// （ManifestEntryView / ManifestPatch / readGlobalManifest / readAgentManifest），web 不依赖 engine 包，本地镜像 ----
+
+/** 全局清单条目（engine ManifestEntryView 镜像 + hasEntry 恒 true：有清单条目） */
+export interface PluginManifestEntry {
+  name: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  hasEntry: true;
+}
+
+/** GET /plugins/manifest 响应（engine readGlobalManifest 镜像）：清单条目 + 目录有 index.mjs 但未登记的名字 */
+export interface PluginsManifest {
+  plugins: PluginManifestEntry[];
+  unregistered: string[];
+}
+
+/** 单条写补丁（engine ManifestPatch 镜像）：两字段至少其一；config 整体替换该条目原 config */
+export interface PluginManifestPatch {
+  enabled?: boolean;
+  config?: Record<string, unknown>;
+}
+
+/** PUT 写响应（engine 写端点镜像）：无热重载（决策 5），requiresRestart 恒 true */
+export interface PluginManifestUpdateResult {
+  name: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  requiresRestart: boolean;
+}
+
+/** per-agent 清单条目（engine readAgentManifest 镜像，无 hasEntry） */
+export interface AgentPluginManifestEntry {
+  name: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+/** GET /agents/:id/plugins/manifest 响应 */
+export interface AgentPluginsManifest {
+  plugins: AgentPluginManifestEntry[];
+}
+
 /** GET /system/info 响应（无 git 的打包分发省略 gitCommit） */
 export interface SystemInfo {
   version: string;
@@ -379,6 +422,49 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
+  // Plugins manifest（M2 管理面：清单读写；400/404/409 由 ensureOk 透出 engine 的 error 正文）
+  async function getPluginsManifest(): Promise<PluginsManifest> {
+    const res = await engineFetch(`${baseUrl.value}/plugins/manifest`);
+    await ensureOk(res, "get plugins manifest");
+    return res.json();
+  }
+
+  async function updatePluginManifest(
+    name: string,
+    patch: PluginManifestPatch,
+  ): Promise<PluginManifestUpdateResult> {
+    const res = await engineFetch(`${baseUrl.value}/plugins/manifest/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    await ensureOk(res, "update plugin manifest");
+    return res.json();
+  }
+
+  async function getAgentPluginsManifest(agentId: string): Promise<AgentPluginsManifest> {
+    const res = await engineFetch(`${baseUrl.value}/agents/${encodeURIComponent(agentId)}/plugins/manifest`);
+    await ensureOk(res, "get agent plugins manifest");
+    return res.json();
+  }
+
+  async function updateAgentPluginManifest(
+    agentId: string,
+    name: string,
+    patch: PluginManifestPatch,
+  ): Promise<PluginManifestUpdateResult> {
+    const res = await engineFetch(
+      `${baseUrl.value}/agents/${encodeURIComponent(agentId)}/plugins/manifest/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    );
+    await ensureOk(res, "update agent plugin manifest");
+    return res.json();
+  }
+
   // System（引擎版本/数据目录/运行时长等只读信息）
   async function getSystemInfo(): Promise<SystemInfo> {
     const res = await engineFetch(`${baseUrl.value}/system/info`);
@@ -622,6 +708,10 @@ export function useEngineClient(options?: EngineClientOptions) {
     deleteSession,
     getSessionMessages,
     listPlugins,
+    getPluginsManifest,
+    updatePluginManifest,
+    getAgentPluginsManifest,
+    updateAgentPluginManifest,
     getSystemInfo,
     listHandoffs,
     listProviders,
