@@ -33,6 +33,38 @@
           <span class="tool-badge">{{ statusLabel(statusOf(tool)) }}</span>
         </summary>
         <pre class="tool-args">{{ formatArgs(tool.arguments) }}</pre>
+        <!-- generate_image 结果：persisted:true 出图（nuxt 代理取流），persisted:false 出远端链接+note -->
+        <div v-if="imageCards.get(tool.toolCallId)" class="tool-image-result">
+          <template v-if="imageCards.get(tool.toolCallId)!.persisted">
+            <img
+              v-if="imageCards.get(tool.toolCallId)!.imageUrl && !imageFailed.has(tool.toolCallId)"
+              class="tool-image"
+              :src="imageCards.get(tool.toolCallId)!.imageUrl"
+              :alt="imageCards.get(tool.toolCallId)!.path"
+              @error="onImageError(tool.toolCallId)"
+            />
+            <div v-else class="tool-image-fallback">图片不可用：{{ imageCards.get(tool.toolCallId)!.path }}</div>
+          </template>
+          <template v-else>
+            <a
+              v-if="imageCards.get(tool.toolCallId)!.linkHref"
+              class="tool-image-link"
+              :href="imageCards.get(tool.toolCallId)!.linkHref"
+              target="_blank"
+              rel="noopener noreferrer"
+              >查看生成图片（远端链接，可能有时效）</a
+            >
+            <span v-else class="tool-image-fallback">
+              图片未落盘：{{ imageCards.get(tool.toolCallId)!.sourceUrl }}
+            </span>
+            <div v-if="imageCards.get(tool.toolCallId)!.note" class="tool-image-note">
+              {{ imageCards.get(tool.toolCallId)!.note }}
+            </div>
+          </template>
+          <div v-if="imageCards.get(tool.toolCallId)!.meta" class="tool-image-meta">
+            {{ imageCards.get(tool.toolCallId)!.meta }}
+          </div>
+        </div>
       </details>
     </div>
   </div>
@@ -49,8 +81,10 @@ const props = withDefaults(
     thinking?: string;
     toolCalls?: DisplayToolCall[];
     isStreaming?: boolean;
+    /** 当前会话归属 agent（generate_image 出图经 /api/agent-file 代理取流时拼接用）；群聊按消息归属传 */
+    agentId?: string;
   }>(),
-  { thinking: "", toolCalls: () => [], isStreaming: false },
+  { thinking: "", toolCalls: () => [], isStreaming: false, agentId: "" },
 );
 
 const roleClass = computed(() => `role-${props.role}`);
@@ -134,6 +168,83 @@ function formatArgs(args: unknown): string {
   } catch {
     return String(args);
   }
+}
+
+// ---- generate_image 工具卡渲染 ----
+// 按 output 形状特判（plan 阶段 2-3）：persisted:true + files/images/ 路径 →
+// 经 /api/agent-file 代理出图；persisted:false + sourceUrl → 远端链接 + note。
+// model/size 可为 undefined（缺省未传时引擎不携带），有才展示。
+interface GenerateImageOutput {
+  persisted: boolean;
+  path?: string;
+  sourceUrl?: string;
+  note?: string;
+  model?: string;
+  size?: string;
+}
+
+interface ImageCardView extends GenerateImageOutput {
+  /** 仅 persisted 且有会话 agentId 时拼出；缺 agentId 退化为路径文本兜底 */
+  imageUrl?: string;
+  /** sourceUrl 过 scheme 白名单（^https?://）才产出；否则退化为纯文本展示 */
+  linkHref?: string;
+  meta: string;
+}
+
+function parseGenerateImageOutput(output: unknown): GenerateImageOutput | null {
+  if (typeof output !== "object" || output === null) return null;
+  let o = output as Record<string, unknown>;
+  // tool.result 帧/历史 tool 消息的载荷是整个 ToolResult 壳（{success, output}——
+  // engine tool-call.ts 把 execute 返回值原样透传进帧）：先拆壳再判内层形状；
+  // 内层形状直喂兼容保留（防御/测试桩）
+  if (o.success === true && typeof o.output === "object" && o.output !== null) {
+    o = o.output as Record<string, unknown>;
+  }
+  const base = {
+    ...(typeof o.model === "string" ? { model: o.model } : {}),
+    ...(typeof o.size === "string" ? { size: o.size } : {}),
+  };
+  if (o.persisted === true && typeof o.path === "string" && o.path.startsWith("files/images/")) {
+    return { persisted: true, path: o.path, ...base };
+  }
+  if (o.persisted === false && typeof o.sourceUrl === "string") {
+    return {
+      persisted: false,
+      sourceUrl: o.sourceUrl,
+      ...(typeof o.note === "string" ? { note: o.note } : {}),
+      ...base,
+    };
+  }
+  return null;
+}
+
+const imageCards = computed(() => {
+  const map = new Map<string, ImageCardView>();
+  for (const tool of props.toolCalls) {
+    const parsed = parseGenerateImageOutput(tool.output);
+    if (!parsed) continue;
+    map.set(tool.toolCallId, {
+      ...parsed,
+      meta: [parsed.model, parsed.size].filter(Boolean).join(" · "),
+      ...(parsed.persisted && parsed.path && props.agentId
+        ? {
+            imageUrl: `/api/agent-file?agentId=${encodeURIComponent(props.agentId)}&path=${encodeURIComponent(parsed.path)}`,
+          }
+        : {}),
+      ...(parsed.sourceUrl && /^https?:\/\//.test(parsed.sourceUrl)
+        ? { linkHref: parsed.sourceUrl }
+        : {}),
+    });
+  }
+  return map;
+});
+
+// 加载失败（代理 404/415/断网）按 toolCallId 记名，退化为路径文本兜底
+const imageFailed = ref(new Set<string>());
+function onImageError(toolCallId: string) {
+  const next = new Set(imageFailed.value);
+  next.add(toolCallId);
+  imageFailed.value = next;
 }
 </script>
 
@@ -341,5 +452,37 @@ function formatArgs(args: unknown): string {
   word-break: break-word;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* ---- generate_image 工具卡出图 ---- */
+.tool-image-result {
+  padding: 8px 10px;
+  border-top: 1px solid var(--mc-panel);
+}
+.tool-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 6px;
+}
+.tool-image-fallback {
+  color: #8899aa;
+  font-size: 11px;
+  word-break: break-all;
+}
+.tool-image-link {
+  color: var(--mc-accent, #00e5c9);
+  word-break: break-all;
+}
+.tool-image-note {
+  margin-top: 4px;
+  color: #e8b86a;
+  font-size: 11px;
+}
+.tool-image-meta {
+  margin-top: 4px;
+  color: var(--mc-text-tertiary, #5a6a7a);
+  font-size: 10px;
+  font-family: monospace;
 }
 </style>

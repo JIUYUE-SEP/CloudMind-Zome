@@ -22,6 +22,7 @@
           :thinking="msg.thinking"
           :tool-calls="msg.toolCalls"
           :is-streaming="msg.isStreaming"
+          :agent-id="agentId"
         />
       </template>
     </div>

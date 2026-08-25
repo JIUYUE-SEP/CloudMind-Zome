@@ -8,6 +8,8 @@ export interface DisplayToolCall {
   name: string;
   arguments: unknown;
   status?: ToolCallStatus;
+  /** 工具结果载荷（tool.result 帧 / 历史 tool 消息回填）；generate_image 等媒体工具卡据此渲染 */
+  output?: unknown;
 }
 
 export interface DisplayMessage {
@@ -35,9 +37,20 @@ export function useChatRecords() {
     for (const r of records) {
       if (seen.has(r.id)) continue;
       seen.add(r.id);
-      // tool 结果记录不进气泡：调用已作为徽章挂在 assistant 消息上，
-      // 与实时流式（tool.result 只更新徽章）保持渲染一致
-      if (r.role === "tool") continue;
+      // tool 结果记录不进气泡：调用已作为徽章挂在 assistant 消息上；
+      // 结果载荷回填到对应 toolCall.output（generate_image 工具卡出图用），
+      // 与实时流式（tool.result 帧回填 output + 更新徽章）保持渲染一致
+      if (r.role === "tool") {
+        if (r.toolCallId) {
+          const text = r.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("");
+          try {
+            setToolCallOutput(out, r.toolCallId, JSON.parse(text));
+          } catch {
+            // 非 JSON 结果（纯文本/被截断）：不回填，媒体工具卡不渲染，行为同前
+          }
+        }
+        continue;
+      }
       out.push({
         id: r.id,
         role: r.role,
@@ -52,6 +65,24 @@ export function useChatRecords() {
   }
 
   return { recordsToDisplay };
+}
+
+/**
+ * 从消息流尾部向前找包含 toolCallId 的工具调用并回填结果载荷。
+ * 实时流式（tool.result 帧）与历史回放（tool 消息 JSON 解析）共用。
+ */
+export function setToolCallOutput(
+  messages: DisplayMessage[],
+  toolCallId: string,
+  output: unknown,
+): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const toolCall = messages[i]!.toolCalls.find((t) => t.toolCallId === toolCallId);
+    if (toolCall) {
+      toolCall.output = output;
+      return;
+    }
+  }
 }
 
 /**

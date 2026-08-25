@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { HandoffUpdateFrame } from "@mindcloud/shared";
 import { useEngineClient } from "@/composables/useEngineClient";
-import { useChatRecords, setToolCallStatus, type DisplayMessage } from "@/composables/useChatRecords";
+import { useChatRecords, setToolCallStatus, setToolCallOutput, type DisplayMessage } from "@/composables/useChatRecords";
 import {
   createApprovalMessage,
   findPendingApproval,
@@ -235,6 +235,8 @@ export const useChatStore = defineStore("chat", () => {
         // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
         expireApprovalByToolCallId(messages.value, result.toolCallId);
         setToolCallStatus(messages.value, result.toolCallId, "done");
+        // 结果载荷回填（generate_image 工具卡出图/回退链接用）
+        setToolCallOutput(messages.value, result.toolCallId, result.output);
       },
       onApprovalRequest: (request) => {
         if (stale()) return;

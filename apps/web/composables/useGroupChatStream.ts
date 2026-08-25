@@ -1,6 +1,6 @@
 import { ref } from "vue";
 import type { DisplayMessage } from "@/composables/useChatRecords";
-import { useChatRecords, setToolCallStatus } from "@/composables/useChatRecords";
+import { useChatRecords, setToolCallStatus, setToolCallOutput } from "@/composables/useChatRecords";
 import type { ChatMessageRecord } from "@/composables/useEngineClient";
 import {
   createApprovalMessage,
@@ -173,10 +173,12 @@ export function useGroupChatStream() {
     onToolCall: (toolCall: { toolCallId: string; name: string; arguments: unknown; agentId?: string }) => {
       slotFor(toolCall.agentId).toolCalls.push(toolCall);
     },
-    onToolResult: (result: { toolCallId: string }) => {
+    onToolResult: (result: { toolCallId: string; output: unknown }) => {
       // 工具结果返回时，若审批卡片还未处理，说明已超时或在他端处理过
       expireApprovalByToolCallId(messages.value, result.toolCallId);
       setToolCallStatus(messages.value, result.toolCallId, "done");
+      // 结果载荷回填（generate_image 工具卡出图/回退链接用）
+      setToolCallOutput(messages.value, result.toolCallId, result.output);
     },
     onApprovalRequest: (request: ApprovalRequestPayload) => {
       setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");

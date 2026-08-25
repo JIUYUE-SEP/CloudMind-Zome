@@ -149,4 +149,164 @@ describe("MessageBubble", () => {
     await wrapper.find(".thinking-summary").trigger("click");
     expect(details.attributes("open")).toBeDefined();
   });
+
+  it("generate_image persisted:true：渲染 img，src 经 /api/agent-file 代理拼接，meta 显示 model·size", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        agentId: "a1",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "generate_image",
+            arguments: { prompt: "a cat" },
+            output: { path: "files/images/20260826-061100-a1b2c3.png", model: "gpt-image-1", size: "1024x1024", persisted: true },
+          },
+        ],
+      },
+    });
+    const img = wrapper.find(".tool-image");
+    expect(img.exists()).toBe(true);
+    expect(img.attributes("src")).toBe(
+      `/api/agent-file?agentId=a1&path=${encodeURIComponent("files/images/20260826-061100-a1b2c3.png")}`,
+    );
+    expect(wrapper.find(".tool-image-meta").text()).toBe("gpt-image-1 · 1024x1024");
+    expect(wrapper.find(".tool-image-fallback").exists()).toBe(false);
+  });
+
+  it("generate_image persisted:true 但缺 agentId：退化为路径文本，不渲染 img", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "generate_image",
+            arguments: {},
+            output: { path: "files/images/x.png", persisted: true },
+          },
+        ],
+      },
+    });
+    expect(wrapper.find(".tool-image").exists()).toBe(false);
+    expect(wrapper.find(".tool-image-fallback").text()).toContain("files/images/x.png");
+    // model/size 缺省（undefined）：meta 行不渲染
+    expect(wrapper.find(".tool-image-meta").exists()).toBe(false);
+  });
+
+  it("generate_image 图片加载失败：img 退场，退化为路径文本兜底", async () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        agentId: "a1",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "generate_image",
+            arguments: {},
+            output: { path: "files/images/x.png", persisted: true },
+          },
+        ],
+      },
+    });
+    await wrapper.find(".tool-image").trigger("error");
+    expect(wrapper.find(".tool-image").exists()).toBe(false);
+    expect(wrapper.find(".tool-image-fallback").text()).toContain("files/images/x.png");
+  });
+
+  it("generate_image persisted:false：渲染 sourceUrl 外链 + note，不渲染 img", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        agentId: "a1",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "generate_image",
+            arguments: {},
+            output: {
+              persisted: false,
+              sourceUrl: "https://img.example.com/r.png",
+              note: "图片下载失败（HTTP 500），未落盘；sourceUrl 可能有时效",
+            },
+          },
+        ],
+      },
+    });
+    expect(wrapper.find(".tool-image").exists()).toBe(false);
+    const link = wrapper.find(".tool-image-link");
+    expect(link.exists()).toBe(true);
+    expect(link.attributes("href")).toBe("https://img.example.com/r.png");
+    expect(link.attributes("target")).toBe("_blank");
+    expect(wrapper.find(".tool-image-note").text()).toContain("HTTP 500");
+  });
+
+  it("generate_image 整壳真形状（ToolResult {success,output}，与 tool.result 帧一致）：拆壳后渲染 img", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        agentId: "a1",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "generate_image",
+            arguments: { prompt: "a cat" },
+            // engine tool-call.ts 把 execute 返回的整个 ToolResult 透传进帧：
+            // output = { success: true, output: { path, persisted, ... } }
+            output: { success: true, output: { path: "files/images/x.png", persisted: true } },
+          },
+        ],
+      },
+    });
+    const img = wrapper.find(".tool-image");
+    expect(img.exists()).toBe(true);
+    expect(img.attributes("src")).toBe(
+      `/api/agent-file?agentId=a1&path=${encodeURIComponent("files/images/x.png")}`,
+    );
+  });
+
+  it("generate_image persisted:false 但 sourceUrl 非 http(s)：不渲染链接，退化为纯文本", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        agentId: "a1",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "generate_image",
+            arguments: {},
+            output: { persisted: false, sourceUrl: "javascript:alert(1)", note: "n" },
+          },
+        ],
+      },
+    });
+    expect(wrapper.find(".tool-image-link").exists()).toBe(false);
+    expect(wrapper.find(".tool-image-fallback").text()).toContain("javascript:alert(1)");
+    expect(wrapper.find(".tool-image-note").text()).toBe("n");
+  });
+
+  it("非 generate_image 形状的 output：不渲染图片结果块", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        role: "assistant",
+        text: "",
+        agentId: "a1",
+        toolCalls: [
+          {
+            toolCallId: "t1",
+            name: "web_search",
+            arguments: {},
+            output: { results: [{ title: "t", url: "u", content: "c" }] },
+          },
+        ],
+      },
+    });
+    expect(wrapper.find(".tool-image-result").exists()).toBe(false);
+  });
 });
