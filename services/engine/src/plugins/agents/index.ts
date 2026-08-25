@@ -160,6 +160,8 @@ export function apply(ctx: Context, config: Config): void {
         },
       );
       const embedder = await ctx.llm.createEmbedder(agentConfig);
+      // 决策 5 单一事实源收进 createImage（e2e Mock / 未配置 undefined / dangling
+      // undefined+warn 三分支全在工厂内）；此处无条件透传，undefined 即不注入
       const imageProvider = await ctx.llm.createImage(agentConfig);
       const tools = ctx.tools.forAgent(agentConfig);
       const workspaceDir = getAgentDir(agentId);

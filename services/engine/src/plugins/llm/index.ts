@@ -30,7 +30,7 @@ export interface LlmFactories {
     agentConfig: AgentConfig,
   ): Promise<{ provider: LLMProvider; config?: ProviderConfig } | undefined>;
   createEmbedder(agentConfig: AgentConfig): Promise<EmbedderProvider>;
-  createImage(agentConfig: AgentConfig): Promise<ImageGenProvider>;
+  createImage(agentConfig: AgentConfig): Promise<ImageGenProvider | undefined>;
 }
 
 export const name = "llm";
@@ -152,15 +152,27 @@ export function apply(ctx: Context): void {
   }
 
   async function createImage(agentConfig: AgentConfig) {
-    if (process.env.NODE_ENV === "e2e" || !agentConfig.imageProviderId) {
+    if (process.env.NODE_ENV === "e2e") {
       return new MockImageGenProvider();
+    }
+    // 决策 5：未配置 imageProviderId 的 agent 不造 provider（undefined）——
+    // 工具的 imageProvider 守卫据此返回配置指引错误，而不是静默落盘 mock 图
+    if (!agentConfig.imageProviderId) {
+      return undefined;
     }
     const config = await configRepo.load();
     const providerConfig = config.providers.find((p) => p.id === agentConfig.imageProviderId);
     if (!providerConfig) {
-      return new MockImageGenProvider();
+      // 决策 5 同性质（主控裁定）：dangling 配置不静默造假图——Mock 只属于 e2e；
+      // 返 undefined（工具守卫报配置指引）+ warn 一条（只带 id，不落正文）
+      logger.warn(
+        { agentId: agentConfig.id, imageProviderId: agentConfig.imageProviderId },
+        "[llm] imageProviderId 在 config.providers 中查无此项，生图 provider 未装配",
+      );
+      return undefined;
     }
-    return new OpenAIImageGenProvider(providerConfig.apiKey, providerConfig.baseUrl);
+    // 决策 1：agentConfig.imageModelId 作为 provider 默认型号传入（工具参数 model 可临时覆盖）
+    return new OpenAIImageGenProvider(providerConfig.apiKey, providerConfig.baseUrl, agentConfig.imageModelId);
   }
 
   ctx.provide("llm", {

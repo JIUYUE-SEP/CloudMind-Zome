@@ -889,7 +889,10 @@ export class AgentWorker {
                 });
               }
             : undefined,
-          services: this.config.services,
+          // generate_image 断点接通：worker 自有 imageProvider 合入工具服务面。
+          // 以 worker 自有为准（装配层按 agent 配置决定是否注入，决策 5），
+          // config.services 内的同名字段不覆盖本行
+          services: { ...this.config.services, imageProvider: this.config.imageProvider },
         },
         maxSteps: this.reactMaxSteps,
         contextWindow,

@@ -5,19 +5,25 @@ import { ProviderError } from "./errors.js";
 export class OpenAIImageGenProvider implements ImageGenProvider {
   name = "openai";
   private client: OpenAI;
+  private readonly defaultModel: string;
 
-  constructor(apiKey?: string, baseURL?: string) {
+  constructor(apiKey?: string, baseURL?: string, defaultModel?: string) {
     this.client = new OpenAI({ apiKey, baseURL });
+    // 决策 1：型号从配置来（AgentConfig.imageModelId 经装配层传入），缺省回落 dall-e-3
+    this.defaultModel = defaultModel ?? "dall-e-3";
   }
 
+  // 决策 1：配置即信任，supportsModel 不做名字白名单（恒 true）；
+  // 接口保留，未来第二协议族照 LLM 侧 apiMode 三族先例扩支持面时再收窄
   supportsModel(model: string) {
-    return model.startsWith("dall-e");
+    void model;
+    return true;
   }
 
-  async generate(prompt: string, options?: { size?: string }) {
+  async generate(prompt: string, options?: { size?: string; model?: string }) {
     try {
       const response = await this.client.images.generate({
-        model: "dall-e-3",
+        model: options?.model ?? this.defaultModel,
         prompt,
         size: options?.size as OpenAI.Images.ImageGenerateParams["size"] | undefined,
       });
@@ -30,10 +36,14 @@ export class OpenAIImageGenProvider implements ImageGenProvider {
 
 export class MockImageGenProvider implements ImageGenProvider {
   name = "mock";
-  supportsModel() {
+  supportsModel(model: string) {
+    void model;
     return true;
   }
-  async generate() {
+  // 签名同步接受 prompt/options（决策 6：测试断言型号透传用），返回行为不变
+  async generate(_prompt?: string, _options?: { size?: string; model?: string }) {
+    void _prompt;
+    void _options;
     return { url: "data:image/png;base64,mock" };
   }
 }

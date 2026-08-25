@@ -117,7 +117,8 @@ export interface ImageGenProvider {
   name: string;
   generate(
     prompt: string,
-    options?: { size?: string }
+    /** model：工具参数临时覆盖型号（决策 1）；缺省由 provider 默认型号兜底 */
+    options?: { size?: string; model?: string }
   ): Promise<{ url?: string; data?: string }>;
   supportsModel(model: string): boolean;
 }
