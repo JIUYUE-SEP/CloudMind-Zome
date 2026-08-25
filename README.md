@@ -31,7 +31,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **群聊** — 多 Agent 会话，@mention 路由（`@all` / `@所有人` 广播，无 @ 时全员回复）；同 session 消息经 promise chain 串行处理（灭回复颠倒）
 - **Intermind 私信** — 人形间写信型私信：`send_private_message` 写信入 `intermind:<peer>` 独立会话并触发接收方一轮感知回合即时读信；感知回合内回信搭车（只入队、不再次唤醒，连环惊醒机制上不可能）；免审批但需工具白名单显式授权，warn 级审计留痕；傀儡硬禁邮（swarm 无法轰炸）；`read_private_messages` 可读完整来往信件（不受 200 字摘要截断）；设计定案见 [`docs/design/intermind.md`](docs/design/intermind.md)
 - **Agent 管理** — 创建、编辑、删除 Agent（基本资料 / 人设 / 模型 / Skill / 工具 / 外观）
-- **工具调用** — ReActLoop 调用 13 个内置工具（真实清单见 `services/engine/src/tools/builtin/index.ts`）：
+- **工具调用** — ReActLoop 调用 14 个内置工具（真实清单见 `services/engine/src/tools/builtin/index.ts`）：
   - `read_file` — 读取工作区文件（免审批）
   - `write_file` — 写文件（需人工审批）
   - `bash` — 在工作区执行允许的 shell 命令（需人工审批）
@@ -42,6 +42,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
   - `dispatch_subagent_batch` — ≤16 items 批量 swarm 全傀儡派发（需人工审批）
   - `skill` — 按名取回 SKILL.md 规程正文（免审批）
   - `web_search` — Tavily 联网搜索（需人工审批，可「本会话免问」）
+  - `generate_image` — 生图（需人工审批，可「本会话免问」；型号从 imageModelId 配置来、工具参数可覆盖；结果落盘 files/images/，下载失败回退远端链接）
   - `send_private_message` — Intermind 私信写信（免审批，需白名单授权）
   - `read_private_messages` — 读取与对端的完整来往私信（免审批，需白名单授权）
   - `recall` — 浏览压缩档话题、取回归档原文（免审批）
@@ -58,7 +59,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 - **算力平台** — LLM Provider 管理（API Key AES-256-GCM 加密存储、baseUrl SSRF 校验、连接测试）；错误分类重试（429/5xx/网络/超时指数退避）+ Agent 级备用 Provider 降级链（`fallbackProviderIds`）；型号级 `apiMode` 三族协议切换（`chat_completions` / `anthropic` / `responses`，缺省回落 provider 级），配置热更下一次调用即生效、无需重启
 - **蓝图工作流** — start / llm / tool / end 节点编排（线性链）
 
-> 规划中：蓝图分支/并行/审批、公共 Skill 池、generate_image 工具、多用户
+> 规划中：蓝图分支/并行/审批、公共 Skill 池、多用户
 > 完整功能状态见 [`docs/路线图.md`](docs/路线图.md)
 
 ---

@@ -51,6 +51,14 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 > 非法取值由引擎归一并 warn：`topicMessageThreshold < 4` clamp 到 4；`semanticTopK < 1` 重置为默认值 10。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
 
+### Files（agent 工作区文件，只读）
+
+- `GET /agents/:id/files/*` — 读取 agent 工作区 `files/` 子树内的单个文件（generate_image 落盘产物经此供 web 取图）。仅 GET；全局 Bearer 鉴权与其他 REST 端点同口径。
+  - 路径：`*` 为 `files/` 下的相对路径；resolve 后必须仍在 `files/` 子树内，`..` 穿越返回 **400**。
+  - 错误码：非法 agent id **400**；agent 不存在 **404**；文件不存在 **404**；目标是目录（不列目录）**400**；扩展名不在白名单 **415**。
+  - content-type 按扩展名白名单映射：`.png → image/png`、`.jpg/.jpeg → image/jpeg`、`.webp → image/webp`、`.gif → image/gif`；响应带 content-length，读流回包。
+  - 浏览器侧经 nuxt 代理 `GET /api/agent-file?agentId=..&path=..` 访问（img 标签无法带 Authorization header；token 只留服务端）。
+
 ### Chat
 
 - `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx&before=xxx` — 获取用户可见完整历史（`sessionId` 必填）：热存储与话题压缩归档合并、按时间序返回；`before` 为消息 id 游标，支持跨归档/热存储边界翻页。话题压缩只收她的上下文，聊天记录不因压缩消失
@@ -135,6 +143,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `dispatch_subagent` / `dispatch_subagent_batch` — 派发子任务/swarm 批量傀儡（需人工审批）
 - `skill` — 按名取技能规程正文（免审批）
 - `web_search` — Tavily 联网搜索（需人工审批，可本会话免问）
+- `generate_image` — 生图（需人工审批，可本会话免问）：型号链 `imageProviderId`/`imageModelId` 配置 → 工具参数 `model` 临时覆盖 → 缺省回落 dall-e-3；provider 返回 url 下载落盘 `files/images/`（15s 超时 / 20MB 上限 / png·jpeg·webp·gif 白名单），返回 data 直接写盘；下载失败回退 `persisted:false + sourceUrl`；未配置 imageProviderId 的 agent 调用返回配置指引错误
 - `send_private_message` — Intermind 人形间私信（免审批、审计留痕；傀儡不可用）
 - `read_private_messages` — Intermind 读全文（免审批；傀儡不可用）
 - `recall` — 回忆工具（上阁楼）：`action=topics` 浏览压缩档目录、`action=read` 按 `topicId`/`query` 取归档原文（分页 + 翻页指引，单条/总输出截断护栏；免审批、需白名单授权、傀儡硬禁；归档原文不经 L4 自动注入）
