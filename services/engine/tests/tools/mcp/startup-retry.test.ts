@@ -118,8 +118,10 @@ describe("McpClientManager 启动期重试（F4）", () => {
         .map((a) => a.at)
         .slice(1)
         .map((at, i) => at - attempts()[i].at);
-      // 末段间隔 < 首段间隔 ×1.5：未封顶时第 7 间隔 ≥ 首段的 3 倍以上
-      expect(gaps[gaps.length - 1]).toBeLessThan(gaps[0] * 1.5);
+      // 封顶证明：未封顶时第 7 间隔 ≥ 30ms×2^6 = 1920ms（还不含 spawn 耗时）。
+      // 用固定上界而非与首段间隔的比值——首段间隔含 spawn 失败耗时，
+      // 高负载下该耗时波动会让比值断言误伤（2026-08-25 全套件实测 179 vs 142.5）。
+      expect(gaps[gaps.length - 1]).toBeLessThan(1000);
 
       // 节流：重试期反复失败只产出首条 warn（窗口 5min，测试时长内全折叠）；
       // connectAll 的首次失败走的是另一条「连接失败，按不可用降级」文案
