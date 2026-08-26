@@ -227,7 +227,7 @@ describe("ContextPipeline", () => {
       makeInput({ history: history(12), tools: [bigTool] }),
     );
     expect(result.messages.filter((m) => m.role === "user")).toHaveLength(5);
-    expect(result.tools).toHaveLength(1); // Phase 1 全部工具视为 L6-core，不裁剪
+    expect(result.tools).toHaveLength(1); // 无名前缀工具归 L6-core，不裁剪
   });
 
   it("兜底：预算极小且无可降层时按现状返回，不死循环、不碰 L1", async () => {
@@ -534,5 +534,126 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
     expect(textOf(r1.messages[0])).toBe("人格内容");
     expect(r2.messages[0].role).toBe("system");
     expect(textOf(r2.messages[0])).toBe(textOf(r1.messages[0]));
+  });
+});
+
+describe("L6-ext 工具裁剪（决策 1：mcp__/ext__ 前缀分流）", () => {
+  /** 生产真形状：OpenAI function 格式（agent-worker.ts:652-659 同款构造） */
+  function coreTool(name: string): unknown {
+    return { type: "function", function: { name, description: "core", parameters: {} } };
+  }
+  function extTool(name: string, descLen = 200): unknown {
+    return {
+      type: "function",
+      function: { name, description: "x".repeat(descLen), parameters: {} },
+    };
+  }
+  function toolNames(tools: unknown[]): string[] {
+    return tools.map((t) => (t as { function: { name: string } }).function.name);
+  }
+
+  it("混合 tools 分流计数正确：core 全保留、ext 归可裁层，输出 core 在前 ext 在后", async () => {
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    try {
+      const pipeline = makePipeline(100_000);
+      const result = await pipeline.assemble(
+        makeInput({
+          history: history(2),
+          tools: [
+            coreTool("read_file"),
+            extTool("mcp__fs__read", 10),
+            coreTool("dispatch_subagent"),
+            extTool("ext__hello__greet", 10),
+            coreTool("generate_image"),
+          ],
+        }),
+      );
+      expect(toolNames(result.tools)).toEqual([
+        "read_file",
+        "dispatch_subagent",
+        "generate_image",
+        "mcp__fs__read",
+        "ext__hello__greet",
+      ]);
+      expect(
+        debug.mock.calls.some((c) => String(c[0]).includes("L6 分流：core=3 ext=2")),
+      ).toBe(true);
+    } finally {
+      debug.mockRestore();
+    }
+  });
+
+  it("超预算：l6ext:halve 一步即满足——ext 裁掉后半（注册序保前部），core 全保留，L3 不动", async () => {
+    // history(3)=39；tools JSON=1324（core 2 件 177 + ext 4 件 1140）；总量 1363
+    // 预算 850：超 → halve（4→2，tools 752，total 791 ≤ 850）停，不碰 L3
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    try {
+      const pipeline = makePipeline(850);
+      const result = await pipeline.assemble(
+        makeInput({
+          history: history(3),
+          tools: [
+            coreTool("read_file"),
+            coreTool("write_file"),
+            extTool("mcp__a__t1"),
+            extTool("mcp__a__t2"),
+            extTool("mcp__b__t3"),
+            extTool("ext__p__t4"),
+          ],
+        }),
+      );
+      expect(toolNames(result.tools)).toEqual([
+        "read_file",
+        "write_file",
+        "mcp__a__t1",
+        "mcp__a__t2",
+      ]);
+      // L3 未裁：3 条历史完整保留
+      expect(result.messages.filter((m) => m.role === "user")).toHaveLength(3);
+      const steps = debug.mock.calls.map((c) => String(c[0]));
+      expect(steps.some((s) => s.includes("降级 l6ext:halve"))).toBe(true);
+      expect(steps.some((s) => s.includes("降级 l3:"))).toBe(false);
+    } finally {
+      debug.mockRestore();
+    }
+  });
+
+  it("超预算：halve 不够再 drop 清空 ext——仍先于任何 L3 步骤，core 一件不裁", async () => {
+    // 同上乘组，预算 500：halve 后 total 791 仍超 → drop（ext 清空，total 219 ≤ 500）
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    try {
+      const pipeline = makePipeline(500);
+      const result = await pipeline.assemble(
+        makeInput({
+          history: history(3),
+          tools: [
+            coreTool("read_file"),
+            coreTool("dispatch_subagent"),
+            extTool("mcp__a__t1"),
+            extTool("mcp__a__t2"),
+            extTool("mcp__b__t3"),
+            extTool("ext__p__t4"),
+          ],
+        }),
+      );
+      expect(toolNames(result.tools)).toEqual(["read_file", "dispatch_subagent"]);
+      expect(result.messages.filter((m) => m.role === "user")).toHaveLength(3);
+      const steps = debug.mock.calls.map((c) => String(c[0]));
+      expect(steps.some((s) => s.includes("降级 l6ext:drop"))).toBe(true);
+      expect(steps.some((s) => s.includes("降级 l3:"))).toBe(false);
+    } finally {
+      debug.mockRestore();
+    }
+  });
+
+  it("无 ext 时与现状恒等：既有用例即钉（混合名/无名字工具全归 core，永不裁）", async () => {
+    // 极预算压到必须动 L3：core 工具再大也不进裁剪序列
+    const pipeline = makePipeline(150);
+    const bigCore = { type: "function", function: { name: "x".repeat(45) } }; // 无名前缀 → core
+    const result = await pipeline.assemble(
+      makeInput({ history: history(12), tools: [bigCore, { nope: true }] }),
+    );
+    expect(result.tools).toHaveLength(2);
+    expect(result.messages.filter((m) => m.role === "user")).toHaveLength(5);
   });
 });

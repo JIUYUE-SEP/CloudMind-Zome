@@ -1,6 +1,7 @@
 import { logger } from "../logger.js";
 import type { ChatMessage } from "@mindcloud/shared";
 import { createLayers } from "./layers.js";
+import { isExtTool } from "./tool-classify.js";
 import type { ToolSchema, SemanticMemory, TopicSummary, ContextLayers } from "./layers.js";
 import type { MindChunk } from "../mind/mind-files.js";
 import { assembleMessages, systemMessage } from "./assembler.js";
@@ -70,7 +71,7 @@ export interface AssembleInput {
   history: ChatMessage[];
   /** L1 人格文件内容 */
   mindContext: string;
-  /** L6 工具定义（Phase 1 全部视为 L6-core，永不裁剪） */
+  /** L6 工具定义（经 tool-classify 分流：mcp__/ext__ 前缀归 L6-ext 可裁剪，其余归 L6-core 永不裁剪） */
   tools: ToolSchema[];
   /** 当前场景 ID（session/group；Phase 3 跨场景标注与多轮去重分键使用） */
   sourceId: string;
@@ -94,7 +95,7 @@ export interface AssembleInput {
 
 export interface AssembleResult {
   messages: ChatMessage[];
-  /** 降级后的工具列表（L6-ext 裁剪在此生效；Phase 1 恒等于输入） */
+  /** 降级后的工具列表（L6-ext 裁剪在此生效；无 ext 时恒等于输入） */
   tools: ToolSchema[];
 }
 
@@ -220,10 +221,18 @@ export class ContextPipeline {
       l5: (input.topicSummaries ?? []).filter((t) => !seen.has(`topic:${t.id}`)),
       // MIND.md 经验块：已在上游按话题检索，直接进层（Phase 1 不去重、不降级）
       mind: [...(input.mindChunks ?? [])],
-      l6Core: [...input.tools],
-      // Phase 1 决策：现有 7 个内置工具全部为 L6-core；L6-ext 预留（MCP 接入后启用）
-      l6Ext: [],
+      l6Core: input.tools.filter((t) => !isExtTool(t)),
+      // 决策 1：mcp__/ext__ 前缀动态工具归 L6-ext（可裁剪层），内置工具全归
+      // core（编排能力不被预算静默剥夺）；分类单一事实源 tool-classify.ts
+      l6Ext: input.tools.filter(isExtTool),
     });
+    // A4 观测面：有 ext 时分类计数进 debug 一行；无 ext 不打（决策 4：行为与
+    // 现状恒等，含可观测面——M3「未超预算零 debug」契约不破）
+    if (layers.l6Ext.length > 0) {
+      logger.debug(
+        `[ContextPipeline] agent=${input.agentId} L6 分流：core=${layers.l6Core.length} ext=${layers.l6Ext.length}`,
+      );
+    }
 
     // 单次 assemble 的统一时间基准：增量计数的渲染文本与最终组装必须是同一份，
     // 否则"计数的文本"和"发出的文本"可能差一个相对时间渲染边界（M3 增量计数）

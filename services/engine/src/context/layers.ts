@@ -52,9 +52,15 @@ export interface ContextLayers {
   l4: SemanticMemory[];
   /** L5 话题摘要（按时间倒序，最新在前；伪装成历史消息注入 messages） */
   l5: TopicSummary[];
-  /** L6-core 核心工具描述（文件读写/bash/edit 等基础能力） */
+  /** L6-core 核心工具描述（内置 14 工具含 dispatch 系：Agent 基本盘，永不裁剪） */
   l6Core: ToolSchema[];
-  /** L6-ext 扩展工具描述（MCP/subagent 专用等；Phase 1 恒空，预留裁剪槽位） */
+  /**
+   * L6-ext 扩展工具描述（可裁剪层）：`mcp__` / `ext__` 前缀的动态注册工具
+   * （MCP server / 外部插件）经 tool-classify 分流归入，超预算按降级序列先于
+   * L3 裁剪（halve 保前部注册序 → drop 清空）。fail-safe：读不到合法名字
+   * （无 function 段 / name 非 string）一律归 core，不误裁不可识别项。
+   * 开放点：旧设想"subagent 专用入 ext"未采纳——dispatch 系归 core（决策 1）。
+   */
   l6Ext: ToolSchema[];
 }
 
