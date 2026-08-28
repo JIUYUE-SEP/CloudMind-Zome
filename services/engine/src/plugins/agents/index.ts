@@ -17,6 +17,8 @@ import { MockEmbedderProvider } from "../../provider/embedder.js";
 import { MemoryIndexer } from "../../memory/indexer.js";
 import { loadTopicState } from "../../memory/topic/state.js";
 import { getAgentDir } from "../../config/paths.js";
+import { DynamicToolLoader } from "../../core/dynamic-tool-loader.js";
+import { ToolBlurbStore } from "../../core/tool-blurb-store.js";
 import type { AgentConfig, ProviderConfig } from "@mindcloud/shared";
 import type { AgentRepository } from "../../memory/repositories/agent.js";
 import type { SubagentDispatcher } from "../../subagent/dispatcher.js";
@@ -123,6 +125,8 @@ export function apply(ctx: Context, config: Config): void {
   const workerRegistry = new WorkerRegistry();
   const agentRepository = ctx.memory.agentRepository;
   const configRepo = ctx.config;
+  // blurb 策展存储（spec v2 决策 2）：插件级单例（= 进程级），跨 agent/worker 复用
+  const toolBlurbStore = new ToolBlurbStore();
 
   // 配置变更退役接线（P3-6）：收进插件内部，不再跨 bootstrap。
   // 可逆纪律例外自陈：这里是直接赋值而非 on/off 订阅——AgentRepository.onChange
@@ -166,6 +170,16 @@ export function apply(ctx: Context, config: Config): void {
       const tools = ctx.tools.forAgent(agentConfig);
       const workspaceDir = getAgentDir(agentId);
 
+      // blurb LLM 策展（spec v2 决策 1）：worker 构建内同步完成一次批量概括
+      // （装配层 async 发起，走 agent 自己的 provider 链落 llm_calls 账）；
+      // 无动态工具零调用零落盘；失败=缺席降级机械版，不阻塞 worker 创建
+      const dynamicToolLoader = new DynamicToolLoader(tools);
+      await dynamicToolLoader.ensureBlurbs(
+        provider,
+        agentConfig.modelId || agentConfig.model || "gpt-4o",
+        toolBlurbStore,
+      );
+
       // G2（双源统一）：pipeline 预算与水位 W 同一查找链——型号表 contextWindow 优先
       // 驱动预算；查不到回退 agent 显式 maxContextTokens / 80_000（pipeline-factory 兜底）
       const resolvedContextWindow = await ctx.compute.resolveContextWindow(configRepo, {
@@ -184,6 +198,7 @@ export function apply(ctx: Context, config: Config): void {
         provider,
         tools,
         workspaceDir,
+        dynamicToolLoader,
         messageRepository: new MessageRepository(agentId),
         // H1：工具调用落档（actions.jsonl 唯一写入方）——ctx.memory 工厂现造，与其他 repository 同语义
         actionRepository: ctx.memory.getActionRepository(agentId),

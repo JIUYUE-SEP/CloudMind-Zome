@@ -157,6 +157,12 @@ export interface AgentWorkerConfig {
   memoryIndexer?: import("../memory/indexer.js").MemoryIndexer;
   embedder?: import("../provider/types.js").EmbedderProvider;
   imageProvider?: import("../provider/types.js").ImageGenProvider;
+  /**
+   * 动态工具加载器（可选注入）：生产装配层构造并完成 blurb 策展（ensureBlurbs，
+   * 含 LLM 调用，需 async——worker 构造同步无法做）后注入；缺省由 worker 按
+   * config.tools 自建（测试/自定义路径，blurb 全走机械降级版）。
+   */
+  dynamicToolLoader?: DynamicToolLoader;
   /** 注入工具执行上下文的服务（如 subagent dispatcher），供 dispatch_subagent 等工具使用 */
   services?: ToolContext["services"];
   /**
@@ -321,8 +327,9 @@ export class AgentWorker {
   constructor(private config: AgentWorkerConfig) {
     this.pipeline = config.contextPipeline ?? new ContextPipeline();
     // 按需工具目录（spec 决策 4）：worker 级单实例，session 粘性 loaded set
-    // 随 worker 生命周期；config 变更 → worker 退役重建 → 天然清空
-    this.dynamicToolLoader = new DynamicToolLoader(config.tools);
+    // 随 worker 生命周期；config 变更 → worker 退役重建 → 天然清空。
+    // 生产由装配层注入（已完成 blurb 策展）；缺省自建（机械降级版 blurb）
+    this.dynamicToolLoader = config.dynamicToolLoader ?? new DynamicToolLoader(config.tools);
     this.reactMaxSteps = normalizeReactMaxSteps(config.reactMaxSteps);
     this.handoffMaxShifts = normalizeHandoffMaxShifts(config.handoffMaxShifts);
     this.topicConfig = normalizeTopicCompressionConfig(config.topicCompression);

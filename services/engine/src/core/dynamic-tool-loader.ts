@@ -1,5 +1,8 @@
 import { isExtToolName } from "../context/tool-classify.js";
+import type { LLMProvider } from "../provider/types.js";
 import type { Tool } from "../tools/types.js";
+import { descHashOf, type ToolBlurbEntry, type ToolBlurbStore } from "./tool-blurb-store.js";
+import { summarizeBlurbs, type BlurbRequestItem } from "./tool-blurb-summarizer.js";
 
 /** loaded set 上限（session 粘性，满则 LRU 逐出最久未用——spec 决策 4） */
 export const DYNAMIC_TOOL_LOADED_CAP = 16;
@@ -64,6 +67,8 @@ export class DynamicToolLoader {
   private loaded = new Map<string, Tool>();
   /** 每件工具的取回序号（每次成功 load 提交单调 +1，含重复取回）：turn 对账的复活判据 */
   private readonly loadSeqs = new Map<string, number>();
+  /** LLM 策展 blurb 内存映射（ensureBlurbs 填充；缺席件回落机械截断） */
+  private readonly llmBlurbs = new Map<string, string>();
 
   /** @param tools 全量 Tool 注册表（worker config.tools），内部按 isExtToolName 滤动态 */
   constructor(tools: Tool[]) {
@@ -88,12 +93,54 @@ export class DynamicToolLoader {
     return this.loadSeqs.get(name) ?? 0;
   }
 
+  /** blurb 单一出口：LLM 策展命中 → LLM 版；否则机械截断（firstSentenceBlurb 保留作降级实现，spec 决策 4） */
+  blurbFor(name: string, description: string): string {
+    return this.llmBlurbs.get(name) ?? firstSentenceBlurb(description);
+  }
+
+  /**
+   * blurb 策展（spec 决策 1-4，worker 装配期同步一次）：读盘 → 未命中件
+   * （新名字/描述哈希变，user 条目除外——v3 兼容位：永不被自动重新生成覆盖）
+   * 凑一批 LLM 概括 → 成功件落盘（source:"llm"）+ 填内存映射；
+   * **降级件（调用失败/解析缺件）不写盘不写映射**——失败=缺席，下次 worker
+   * 重建自动重试。无动态工具：零调用零落盘（恒等）。
+   */
+  async ensureBlurbs(provider: LLMProvider, model: string, store: ToolBlurbStore): Promise<void> {
+    if (this.dynamicTools.size === 0) return;
+    const disk = await store.getAll();
+    const missing: BlurbRequestItem[] = [];
+    for (const [name, tool] of this.dynamicTools) {
+      const hash = descHashOf(tool.description);
+      const hit = disk[name];
+      // 命中 = 名字在且哈希一致（source 不论）；user 条目即使哈希变也不重算（v3 预留语义）
+      if (hit && (hit.descHash === hash || hit.source === "user")) {
+        this.llmBlurbs.set(name, hit.blurb);
+        continue;
+      }
+      missing.push({ name, description: tool.description });
+    }
+    if (missing.length === 0) return;
+    const produced = await summarizeBlurbs(provider, model, missing);
+    const now = new Date().toISOString();
+    const upserts: Array<[string, ToolBlurbEntry]> = [];
+    for (const item of missing) {
+      const blurb = produced.get(item.name);
+      if (!blurb) continue; // 降级=缺席：不落盘、下次重试
+      this.llmBlurbs.set(item.name, blurb);
+      upserts.push([
+        item.name,
+        { blurb, descHash: descHashOf(item.description), source: "llm", updatedAt: now },
+      ]);
+    }
+    await store.upsert(upserts);
+  }
+
   /** 未 loaded 动态工具的目录条目（注册序） */
   catalog(): CatalogEntry[] {
     const entries: CatalogEntry[] = [];
     for (const [name, tool] of this.dynamicTools) {
       if (this.loaded.has(name)) continue;
-      entries.push({ name, blurb: firstSentenceBlurb(tool.description) });
+      entries.push({ name, blurb: this.blurbFor(name, tool.description) });
     }
     return entries;
   }
