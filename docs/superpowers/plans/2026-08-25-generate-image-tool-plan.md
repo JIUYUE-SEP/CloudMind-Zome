@@ -132,3 +132,5 @@
 - **非 OpenAI 报文形态的生图端点**：第一版不管（决策 1），遇上再扩协议族。
 - **工具卡形状识别耦合**：MessageBubble 按 output 形状特判 generate_image——若未来更多媒体工具，抽通用 media 渲染。本单不抽象。
 - 开放点（不阻塞）：e2e 增补生图用例；image-gen 的用量统计是否进 `llm_calls.jsonl`（倾向：进，字段复用，阶段 1 实现时顺手，review 时定夺）。
+- **【记档 2026-08-26 总审】下载链 SSRF 残余**：`generate_image.ts:216` 直接 fetch provider 返回 url（含重定向），无内网判定——主向量已被 provider baseUrl SSRF 校验盖住，残余仅「合法 provider 响应内嵌恶意 url」窄面，且有 content-type 白名单 + 20MB + files/images/ 圈禁三重兜底。后续加固方向：scheme 白名单 + 私网段拒绝（单独开单）。
+- **【记档 2026-08-26 总审】puppet/蓝图路径未接 imageProvider**：`plugins/subagents/index.ts:157-164`、`blueprint/engine.ts:262` 的 services 不含 imageProvider——子代理调 generate_image 恒命中决策 5 守卫（安全降级），但「请在 agent 设置中配置」文案对该场景略误导。是否接线留后续定夺。
