@@ -14,6 +14,7 @@ import {
 } from "../../context/truncate.js";
 import { getTokenCounter } from "../../context/token-counter.js";
 import { stripUnansweredToolCalls } from "../../context/history-sanitize.js";
+import { readToolName } from "../../context/tool-classify.js";
 import { logger } from "../../logger.js";
 import { HANDOFF_DEFAULT_MAX_SHIFTS } from "../../handoff/types.js";
 import {
@@ -60,6 +61,13 @@ export interface TurnInput {
   model: string;
   messages: ChatMessage[];
   tools: unknown[];
+  /**
+   * 按需工具目录（spec 决策 4 轮内生效）：每步 stepInput 构造前重读工具表
+   * （worker 侧 = 重建「内置 + 已取回动态工具」schema）——step N 经 load_tool
+   * 取回，step N+1 即可调；增量经 contextUsedTokens 自然计入水位，无预算盲区。
+   * 可选：缺省（测试桩/旧调用方）时工具表整轮固定，行为与现状恒等。
+   */
+  refreshTools?: () => unknown[];
   toolCtx: ToolExecutionContext;
   maxSteps?: number;
   maxTokens?: number;
@@ -279,9 +287,44 @@ export async function runTurn(
     watermarked = true;
   }
 
+  // 对账基线（refreshTools reconcile）：assemble 后工具存活集 + 轮初取回序号
+  // 快照——循环内 refresh 以此区分「幸存 / 轮内新取回 / 显式复活 / 保持被裁」
+  const dynLoader = input.toolCtx.services?.dynamicToolLoader;
+  const assembleSurvivors = new Set<string>();
+  for (const t of tools) {
+    const n = readToolName(t);
+    if (n !== undefined) assembleSurvivors.add(n);
+  }
+  const loadSeqSnapshot = new Map<string, number>();
+  if (dynLoader) {
+    for (const t of dynLoader.loadedTools()) {
+      loadSeqSnapshot.set(t.name, dynLoader.loadSeqOf(t.name));
+    }
+  }
+
   for (; step < maxSteps && !watermarkStop; step++) {
     if (input.signal?.aborted) {
       throw new Error("aborted");
+    }
+    // 按需工具目录：步前重读工具表（上一步 load_tool 的取回本步生效）；
+    // 未接 refreshTools 时 tools 整轮固定，与现状恒等
+    if (input.refreshTools) {
+      const refreshed = input.refreshTools();
+      if (!dynLoader) {
+        // 无动态工具：refreshed 恒等于轮初工具表（恒等路径）
+        tools = refreshed;
+      } else {
+        // 对账（review High 修复：refresh 不得冲掉 assemble 的 l6ext 裁剪）——
+        // 存活基线（assemble 后 core+幸存 ext）内的保留；基线外的仅当取回
+        // 序号在轮内前进而复活（轮内新取回 / 显式重复取回被裁件，机制本意）；
+        // 未触碰的被裁件保持被裁。序号快照在轮初（下方 reconcile 基线）。
+        tools = refreshed.filter((t) => {
+          const n = readToolName(t);
+          if (n === undefined) return true; // fail-safe：不可识别项同 core 口径保留
+          if (assembleSurvivors.has(n)) return true;
+          return dynLoader.loadSeqOf(n) > (loadSeqSnapshot.get(n) ?? 0);
+        });
+      }
     }
     const stepInput: StepInput = {
       provider: input.provider,

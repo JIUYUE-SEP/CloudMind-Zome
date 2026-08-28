@@ -59,7 +59,7 @@ describe("generate_image 工具", () => {
     });
     const registered = getBuiltinTools().find((t) => t.name === "generate_image");
     expect(registered?.requiresApproval).toBe(true);
-    expect(getBuiltinTools()).toHaveLength(14);
+    expect(getBuiltinTools()).toHaveLength(15); // 14 + load_tool（2026-08-26 按需工具目录）
   });
 
   it("参数校验：空 prompt / 超长 prompt / 非法 size / 非法参数类型", async () => {

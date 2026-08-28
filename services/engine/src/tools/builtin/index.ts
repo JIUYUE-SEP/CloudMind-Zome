@@ -12,6 +12,7 @@ import { sendPrivateMessageTool } from "./send_private_message.js";
 import { readPrivateMessagesTool } from "./read_private_messages.js";
 import { recallTool } from "./recall.js";
 import { generateImageTool } from "./generate_image.js";
+import { loadTool } from "./load_tool.js";
 import type { Tool } from "../types.js";
 
 export function getBuiltinTools(): Tool[] {
@@ -30,5 +31,6 @@ export function getBuiltinTools(): Tool[] {
     readPrivateMessagesTool,
     recallTool,
     generateImageTool,
+    loadTool,
   ];
 }

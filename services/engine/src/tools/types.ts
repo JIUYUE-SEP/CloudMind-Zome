@@ -7,6 +7,7 @@ import type { PuppetModelService } from "../subagent/puppet-models.js";
 import type { IntermindService } from "../intermind/service.js";
 import type { RecallService } from "../memory/recall.js";
 import type { ImageGenProvider } from "../provider/types.js";
+import type { DynamicToolLoader } from "../core/dynamic-tool-loader.js";
 
 export interface ToolAccess {
   resource: "file" | "network" | "process" | "memory";
@@ -31,6 +32,8 @@ export interface ToolServices {
   recallService?: RecallService;
   /** 生图 provider（generate_image 工具）；未配置 imageProviderId 的 agent 缺省不注入 → 工具返回配置指引错误（决策 5） */
   imageProvider?: ImageGenProvider;
+  /** 动态工具加载器（load_tool 工具：目录取回 + session 粘性 loaded set）；无动态工具的 agent 不注入 → 工具返回指引 */
+  dynamicToolLoader?: DynamicToolLoader;
 }
 
 export interface ToolContext {

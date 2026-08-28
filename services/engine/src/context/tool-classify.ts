@@ -20,8 +20,13 @@ export function readToolName(schema: unknown): string | undefined {
   return typeof name === "string" ? name : undefined;
 }
 
+/** 名字版前缀判定（Tool 实例侧用，如 worker 动态工具目录）：`mcp__` / `ext__` 开头 → true */
+export function isExtToolName(name: string): boolean {
+  return name.startsWith("mcp__") || name.startsWith("ext__");
+}
+
 /** 名字以 `mcp__` 或 `ext__` 开头 → L6-ext；读不到名字或无前缀 → false（归 core） */
 export function isExtTool(schema: unknown): boolean {
   const name = readToolName(schema);
-  return name !== undefined && (name.startsWith("mcp__") || name.startsWith("ext__"));
+  return name !== undefined && isExtToolName(name);
 }

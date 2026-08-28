@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readToolName, isExtTool } from "../../src/context/tool-classify.js";
+import { readToolName, isExtTool, isExtToolName } from "../../src/context/tool-classify.js";
 import { getBuiltinTools } from "../../src/tools/builtin/index.js";
 
 /** 生产真形状：worker 经 zodToJsonSchema 构造的 OpenAI function 格式（agent-worker.ts:652-659） */
@@ -72,5 +72,24 @@ describe("tool-classify（L6 分流：mcp__/ext__ → ext，其余 → core）",
     for (const tool of builtins) {
       expect(isExtTool(fnTool(tool.name))).toBe(false);
     }
+  });
+});
+
+describe("isExtToolName（名字版，Tool 实例侧用）", () => {
+  it("三态：mcp__/ext__ 前缀 true，其余 false", () => {
+    expect(isExtToolName("mcp__fs__read")).toBe(true);
+    expect(isExtToolName("ext__hello__greet")).toBe(true);
+    expect(isExtToolName("read_file")).toBe(false);
+    expect(isExtToolName("load_tool")).toBe(false);
+    expect(isExtToolName("mcp_")).toBe(false); // 单下划线不算
+    expect(isExtToolName("")).toBe(false);
+  });
+
+  it("isExtTool 委托恒等：同名 schema 形状判定与名字版一致", () => {
+    for (const name of ["mcp__a__t", "ext__b__t", "read_file", "dispatch_subagent"]) {
+      expect(isExtTool(fnTool(name))).toBe(isExtToolName(name));
+    }
+    // 读不到名字时 isExtTool false（fail-safe），不委托出 true
+    expect(isExtTool({ nope: true })).toBe(false);
   });
 });
