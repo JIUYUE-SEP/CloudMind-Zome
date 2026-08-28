@@ -144,6 +144,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `skill` — 按名取技能规程正文（免审批）
 - `web_search` — Tavily 联网搜索（需人工审批，可本会话免问）
 - `generate_image` — 生图（需人工审批，可本会话免问）：型号链 `imageProviderId`/`imageModelId` 配置 → 工具参数 `model` 临时覆盖 → 缺省回落 dall-e-3；provider 返回 url 下载落盘 `files/images/`（15s 超时 / 20MB 上限 / png·jpeg·webp·gif 白名单），返回 data 直接写盘；下载失败回退 `persisted:false + sourceUrl`；未配置 imageProviderId 的 agent 调用返回配置指引错误
+- `load_tool` — 按需工具取回（免审批）：按限定名取回 `mcp__`/`ext__` 动态工具的完整描述 + parameters JSON Schema 并注入后续步骤（session 粘性 LRU 16 取回序）；原子 fail-closed——未知名返错误+可用名录、内置名返「已常驻无需取回」，任一非法整体不生效
 - `send_private_message` — Intermind 人形间私信（免审批、审计留痕；傀儡不可用）
 - `read_private_messages` — Intermind 读全文（免审批；傀儡不可用）
 - `recall` — 回忆工具（上阁楼）：`action=topics` 浏览压缩档目录、`action=read` 按 `topicId`/`query` 取归档原文（分页 + 翻页指引，单条/总输出截断护栏；免审批、需白名单授权、傀儡硬禁；归档原文不经 L4 自动注入）
