@@ -5,6 +5,14 @@
       <h1>系统设置</h1>
     </header>
 
+    <!-- 子页面入口（独立路由 /settings/tools，不嵌套不动主导航） -->
+    <section class="entry-section">
+      <NuxtLink to="/settings/tools" class="entry-card">
+        <strong>工具与技能简介</strong>
+        <span class="hint">动态工具与 Skill 的目录简介（blurb）：状态 / 重生成 / 编辑</span>
+      </NuxtLink>
+    </section>
+
     <section v-if="store.settings">
       <h2>工具列表</h2>
       <ul class="tools">
@@ -335,6 +343,28 @@ section {
   flex-direction: column;
   gap: 16px;
   max-width: 600px;
+}
+
+/* 子页面入口卡片（工具与技能简介 → /settings/tools） */
+.entry-section {
+  margin-bottom: 24px;
+}
+
+.entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  background: var(--mc-panel);
+  text-decoration: none;
+  color: var(--mc-text);
+  max-width: 600px;
+}
+
+.entry-card:hover {
+  border-color: var(--mc-accent);
 }
 
 label {

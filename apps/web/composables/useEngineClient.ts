@@ -48,6 +48,48 @@ export interface EngineLogEntry {
   msg: string;
 }
 
+// ---- blurb 管理 v3（/agents/:id/tool-catalog + /tool-blurbs）契约镜像：
+// services/engine/src/core/tool-catalog-service.ts（web 不依赖 engine 包，本地镜像） ----
+/** status 四态（builtin 恒 "core" 无管理面） */
+export type ToolBlurbStatus = "llm" | "user" | "missing" | "stale";
+export interface ToolCatalogDynamicItem {
+  name: string;
+  blurb: string;
+  source?: "llm" | "user";
+  status: ToolBlurbStatus;
+}
+export interface ToolCatalogSkillItem {
+  name: string;
+  /** 作者行（SKILL.md description 原文） */
+  authorLine: string;
+  /** 覆盖行（skill:<name> 条目 blurb） */
+  overrideBlurb?: string;
+  source?: "llm" | "user";
+  status: ToolBlurbStatus;
+}
+export interface ToolCatalogBuiltinItem {
+  name: string;
+  blurb: string;
+  status: "core";
+}
+export interface ToolCatalog {
+  dynamic: ToolCatalogDynamicItem[];
+  skills: ToolCatalogSkillItem[];
+  builtin: ToolCatalogBuiltinItem[];
+}
+export interface ToolBlurbRegenerateResult {
+  generated: string[];
+  failed: string[];
+  /** user 条目跳过不碰 */
+  skipped: string[];
+}
+export interface ToolBlurbEntry {
+  blurb: string;
+  descHash: string;
+  source: "llm" | "user";
+  updatedAt: string;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -465,6 +507,38 @@ export function useEngineClient(options?: EngineClientOptions) {
     return res.json();
   }
 
+  // blurb 管理 v3（tool-catalog 三清单 / 重生成 / 用户编辑）
+  async function getToolCatalog(agentId: string): Promise<ToolCatalog> {
+    const res = await engineFetch(`${baseUrl.value}/agents/${encodeURIComponent(agentId)}/tool-catalog`);
+    await ensureOk(res, "get tool catalog");
+    return res.json();
+  }
+
+  async function regenerateToolBlurbs(agentId: string, names?: string[]): Promise<ToolBlurbRegenerateResult> {
+    const res = await engineFetch(
+      `${baseUrl.value}/agents/${encodeURIComponent(agentId)}/tool-blurbs/regenerate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(names && names.length > 0 ? { names } : {}),
+      },
+      // 概括走 LLM 调用（最长 30s×3 重试），放宽到 120s 同 executeBlueprint 口径
+      120_000,
+    );
+    await ensureOk(res, "regenerate tool blurbs");
+    return res.json();
+  }
+
+  async function putToolBlurb(name: string, blurb: string): Promise<ToolBlurbEntry> {
+    const res = await engineFetch(`${baseUrl.value}/tool-blurbs/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blurb }),
+    });
+    await ensureOk(res, "put tool blurb");
+    return res.json();
+  }
+
   // System（引擎版本/数据目录/运行时长等只读信息）
   async function getSystemInfo(): Promise<SystemInfo> {
     const res = await engineFetch(`${baseUrl.value}/system/info`);
@@ -712,6 +786,9 @@ export function useEngineClient(options?: EngineClientOptions) {
     updatePluginManifest,
     getAgentPluginsManifest,
     updateAgentPluginManifest,
+    getToolCatalog,
+    regenerateToolBlurbs,
+    putToolBlurb,
     getSystemInfo,
     listHandoffs,
     listProviders,
