@@ -19,6 +19,7 @@ import { loadTopicState } from "../../memory/topic/state.js";
 import { getAgentDir } from "../../config/paths.js";
 import { DynamicToolLoader } from "../../core/dynamic-tool-loader.js";
 import { ToolBlurbStore } from "../../core/tool-blurb-store.js";
+import { applySkillBlurbOverrides } from "../../core/tool-catalog-service.js";
 import type { AgentConfig, ProviderConfig } from "@mindcloud/shared";
 import type { AgentRepository } from "../../memory/repositories/agent.js";
 import type { SubagentDispatcher } from "../../subagent/dispatcher.js";
@@ -232,8 +233,13 @@ export function apply(ctx: Context, config: Config): void {
         onMemoryArchived: ctx.memory.onTopicArchived
           ? (ids) => ctx.memory.onTopicArchived!(agentId, ids)
           : undefined,
-        // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）
-        skillCatalog: (await ctx.skills.list(agentId)).map((s) => `- ${s.name}：${s.description}`),
+        // L1 技能目录（阶段 5 一期：只注名字+一句话作发现入口，正文经 Skill 工具取回）。
+        // v3 覆盖层（spec 决策 2）：命中 skill:<name> 条目（user 源或哈希一致）用
+        // 覆盖行，否则作者行——SKILL.md 原文一个字不动
+        skillCatalog: applySkillBlurbOverrides(
+          await ctx.skills.list(agentId),
+          await toolBlurbStore.getAll(),
+        ),
         memoryIndexer,
         embedder,
         imageProvider,

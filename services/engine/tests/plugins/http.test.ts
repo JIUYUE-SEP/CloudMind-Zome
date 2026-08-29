@@ -122,6 +122,8 @@ describe("plugins/http（P9）", () => {
       "compute",
       "config",
       "sidecar",
+      // v3 blurb 管理面：regenerate 走 agent provider 链（ctx.llm.createProvider）
+      "llm",
       "external",
     ]);
     expect(typeof httpPlugin.apply).toBe("function");

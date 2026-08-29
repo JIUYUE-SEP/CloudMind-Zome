@@ -36,8 +36,8 @@ export interface CatalogEntry {
   blurb: string;
 }
 
-/** 描述首句：取到首个句读/换行为止；再截 CATALOG_BLURB_MAX */
-function firstSentenceBlurb(description: string): string {
+/** 描述首句：取到首个句读/换行为止；再截 CATALOG_BLURB_MAX（blurb 机械降级版单一事实源） */
+export function firstSentenceBlurb(description: string): string {
   const firstLine = description.split("\n", 1)[0] ?? "";
   const match = /^.*?[。！？.!?]/.exec(firstLine);
   const sentence = match ? match[0] : firstLine;

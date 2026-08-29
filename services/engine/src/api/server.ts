@@ -8,6 +8,7 @@ import { loggerStreams } from "../logger.js";
 import { extractBearerToken, getAuthToken, isTokenValid } from "../config/auth-token.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerToolBlurbRoutes } from "./routes/tool-blurbs.js";
 import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
@@ -85,6 +86,7 @@ export async function createServer(context: ApiContext) {
 
   await registerAgentRoutes(app, context);
   await registerFileRoutes(app, context);
+  await registerToolBlurbRoutes(app, context);
   await registerChatRoutes(app, context);
   await registerMemoryRoutes(app, context);
   await registerTopicRoutes(app, context);

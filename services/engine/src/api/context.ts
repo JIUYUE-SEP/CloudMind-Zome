@@ -23,6 +23,7 @@ import type { IntermindService } from "../intermind/service.js";
 import type { MindService } from "../plugins/mind/index.js";
 import type { ComputeFace } from "../plugins/compute/index.js";
 import type { ExternalFace } from "../plugins/external/index.js";
+import type { ToolCatalogService } from "../core/tool-catalog-service.js";
 import type { ChatMessage, ChatMessageRecord } from "@mindcloud/shared";
 
 export interface ApiContext {
@@ -66,6 +67,8 @@ export interface ApiContext {
   compute?: ComputeFace;
   /** 外部插件加载结果面（F1：plugins 路由经此取；装配层透传 ctx.external） */
   external?: ExternalFace;
+  /** blurb 管理面（v3：tool-catalog 三清单 / regenerate / 用户编辑；http 插件装配） */
+  toolCatalog?: ToolCatalogService;
   /** 退役 agent 的 worker（skills/reload 复用配置变更的退役/重建机制：下次使用按新目录重建） */
   retireAgentWorker?(agentId: string): void;
   /**

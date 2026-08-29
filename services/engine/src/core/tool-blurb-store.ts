@@ -82,4 +82,9 @@ export class ToolBlurbStore {
     for (const [name, entry] of entries) current[name] = entry;
     await this.store.writeJson(current);
   }
+
+  /** 单件写（v3 用户编辑用，读-改-写合并同款） */
+  async upsertOne(name: string, entry: ToolBlurbEntry): Promise<void> {
+    await this.upsert([[name, entry]]);
+  }
 }

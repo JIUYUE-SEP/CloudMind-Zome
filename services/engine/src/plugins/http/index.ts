@@ -8,6 +8,9 @@ import { MessageRepository } from "../../memory/repositories/message.js";
 import { MemoryRepository } from "../../memory/repositories/memory.js";
 import { ActionRepository } from "../../memory/repositories/action.js";
 import { LLMCallRepository } from "../../memory/repositories/llm-call.js";
+import { withLLMCallRecording } from "../llm/record-calls.js";
+import { ToolBlurbStore } from "../../core/tool-blurb-store.js";
+import { ToolCatalogService } from "../../core/tool-catalog-service.js";
 import { getDataDir } from "../../config/paths.js";
 import { loadSkills } from "../../skills/loader.js";
 import { findBuiltinSkillsDir } from "../skills/index.js";
@@ -54,6 +57,8 @@ export const inject = [
   "compute",
   "config",
   "sidecar",
+  // v3 blurb 管理面：regenerate 走 agent provider 链（ctx.llm.createProvider）
+  "llm",
   // F1：/plugins 路由读 ctx.external——cordis 对未 inject 的服务访问即抛
   // （"cannot get property without inject"，已 provide 也一样）。inject 后
   // http 纤维在 bootstrap 挂载位（external 之前）停 PENDING，external 上架
@@ -108,6 +113,23 @@ export function apply(ctx: Context): void {
     compute: ctx.compute,
     // F1：inject 已声明 external（见 inject 列表注），装配执行时面必就位
     external: ctx.external,
+    // v3 blurb 管理面（tool-catalog 三端点）：store 与 agents 插件同路径实例——
+    // DocumentStore 写队列/读缓存按文件路径模块级串行，双实例等价单写者；
+    // regenerate 的 provider 经 record 包装落 llm_calls 账（spec 决策 5）
+    toolCatalog: new ToolCatalogService({
+      store: new ToolBlurbStore(),
+      toolsForAgent: (agentConfig) => ctx.tools.forAgent(agentConfig),
+      listSkills: (agentId) => ctx.skills.list(agentId),
+      listAgents: () => ctx.memory.agentRepository.list(),
+      createProvider: async (agentId, agentConfig) => {
+        const providerConfig = await ctx.llm.findProviderConfig(agentConfig.providerId);
+        return withLLMCallRecording(await ctx.llm.createProvider(agentConfig), new LLMCallRepository(agentId), agentId, {
+          providerId: providerConfig?.id,
+          providerName: providerConfig?.displayName ?? providerConfig?.id,
+        });
+      },
+      modelOf: (agentConfig) => agentConfig.modelId || agentConfig.model || "gpt-4o",
+    }),
     retireAgentWorker: (agentId) => ctx.agents.retire(agentId),
     // P4-d：topics restore 的重索引钩子——压缩归档时 M14 已 tombstone 向量，
     // 恢复后经 worker 的索引器重新 embed upsert（无索引器/语义检索关闭时
