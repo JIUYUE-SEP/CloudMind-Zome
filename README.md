@@ -97,7 +97,7 @@ pnpm --filter @mindcloud/engine --filter @mindcloud/web dev
 ```
 
 - 前端：`http://localhost:3000`
-- 后端 API：`http://127.0.0.1:8848`（Swagger UI：`http://127.0.0.1:8848/docs`）
+- 后端 API：`http://127.0.0.1:8848`（Swagger UI：`http://127.0.0.1:8848/docs`——同属 REST 全局 Bearer 鉴权，浏览器直开会 401；带 token 访问：`curl -H "Authorization: Bearer $(cat ~/.cloudmind-zome/auth-token)" http://127.0.0.1:8848/docs`）
 
 ### 4. 可选：启动 sidecar（向量记忆）
 
