@@ -59,6 +59,14 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
   - content-type 按扩展名白名单映射：`.png → image/png`、`.jpg/.jpeg → image/jpeg`、`.webp → image/webp`、`.gif → image/gif`；响应带 content-length，读流回包。
   - 浏览器侧经 nuxt 代理 `GET /api/agent-file?agentId=..&path=..` 访问（img 标签无法带 Authorization header；token 只留服务端）。
 
+### Tool Blurbs（blurb 管理 v3）
+
+动态工具与 Skill 的目录简介（blurb）管理面；全局 Bearer 鉴权同口径。status 四态：`llm`（策展命中）/ `user`（用户编辑，**全链路永不被自动覆盖**，含描述哈希变）/ `missing`（无条目=待生成）/ `stale`（llm 条目但描述哈希已变，运行时仍可用）。
+
+- `GET /agents/:id/tool-catalog` — 三清单：`dynamic`（name/blurb/source/status）、`skills`（name/authorLine/overrideBlurb?/source/status，`skill:<name>` 命名空间）、`builtin`（name/blurb，恒 `status:"core"` 只读无管理面）。非法 id **400**；agent 不存在 **404**。
+- `POST /agents/:id/tool-blurbs/regenerate` — 手动重生成。body `{ names?: string[] }`（限定名或 `skill:<name>`，≤64；缺省 = 本 agent 全部 missing/stale 件；user 条目跳过）。返回 `{ generated, failed, skipped }`——`skipped` = user 跳过件；非本 agent 名录的指定 name 进 `failed`；概括缺件进 `failed` 不落盘。走 agent 自己的 provider 链，落 llm_calls 账。错误码同 GET。
+- `PUT /tool-blurbs/:name` — 用户编辑（name 为限定名或 `skill:<name>`，URL 编码）。body `{ blurb: string(1..200) }`；落盘 `source:"user"`。zod 边界 **400**；name 不在全局动态工具或某 agent skill 名录内（含内置工具名）**404**（fail-closed，防乱写键名空间）。
+
 ### Chat
 
 - `GET /chat/:agentId/messages?sessionId=xxx&limit=xxx&before=xxx` — 获取用户可见完整历史（`sessionId` 必填）：热存储与话题压缩归档合并、按时间序返回；`before` 为消息 id 游标，支持跨归档/热存储边界翻页。话题压缩只收她的上下文，聊天记录不因压缩消失

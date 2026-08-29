@@ -47,6 +47,7 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
   - `read_private_messages` — 读取与对端的完整来往私信（免审批，需白名单授权）
   - `recall` — 浏览压缩档话题、取回归档原文（免审批）
   - `load_tool` — 按限定名取回动态工具完整 schema（免审批；动态工具目录化按需取回——MCP/外部插件工具默认只占 L1 一行目录，取回后注入后续步骤，session 粘性 LRU 16）
+- **blurb 管理** — 动态工具与 Skill 的目录简介可见可管：`/settings/tools` 子页面四态徽标（待生成/LLM/已编辑/已过期）、行内编辑（用户编辑永不被自动覆盖）、按件/全部重生成；引擎端点 `GET /agents/:id/tool-catalog`、`POST /agents/:id/tool-blurbs/regenerate`、`PUT /tool-blurbs/:name`
 - **MCP 接入** — 经 `DATA_DIR/mcp-servers.json` 配置接入 stdio MCP server，工具以 `mcp__<server>__<tool>` 命名（64 字符封顶哈希后缀）注入 Agent 工具管线；审批 fail-closed（仅 `readOnlyHint===true` 免审批），`toolOverrides` 可按限定名本地覆盖（免审批/强制审批/`allowRemember` 放行「本会话免问」，默认禁）；调用失败自愈封顶一次（ping 探活分流 + single-flight 重连后重试），server 崩溃工具不消失（断线保注册）；单 server 失败降级（记 warn，不阻塞整体）
 - **上下文管线** — ContextPipeline L1–L6 分层组装，tiktoken 真实计数，超预算按 L5 → L4 → L6-ext → L3 自动降级；话题压缩归档（L5 摘要注入）与 L4 语义检索已接入管线（Phase 1–3）
 - **上下文水位与换班** — 上下文用量主裁 = 估算 + 实测双轨（协议感知估算，步后 usage 实测取大）：≥70% 注入提醒、≥90% 撞顶自动产出 `[交接书]` 并换班续跑（回合绝不静默）；交接书四件套 = 三分法内容 / 足迹机械附 / 瘦身写作间 / 开工指引，`handoffMaxShifts` 保险丝（缺省 5，clamp 1-10）封顶棒数；跨连接 cancel 统一走 registry 仲裁面 + chainId 代际防旧链复活；机制细节见 [`docs/架构文档.md`](docs/架构文档.md)
