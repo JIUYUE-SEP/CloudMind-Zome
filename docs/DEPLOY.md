@@ -32,6 +32,18 @@ REST 需 Bearer token——见 `docs/API.md` 鉴权章节；开发模式下前�
 > `cargo build --release --manifest-path crates/zome-sidecar/Cargo.toml` 并运行
 > `zome-sidecar`（gRPC `127.0.0.1:50051`），engine 会自动连接；不运行则静默降级。
 
+### sidecar 准备（可选，自启唤醒）
+
+生产部署可让 engine 自启 sidecar（`settings.sidecarAutoStart`，默认关）——系统设置面板勾选，或直接写
+`config.json` 的 `settings.sidecarAutoStart: true`。二进制准备二选一：
+
+1. **仓内产物**（推荐）：`cargo build --release --manifest-path crates/zome-sidecar/Cargo.toml`
+   ——发现序自动命中 `crates/zome-sidecar/target/release/zome-sidecar`；
+2. **显式指认**：环境变量 `ZOME_SIDECAR_BIN=/path/to/zome-sidecar`（最优先档）。
+
+其余发现档：仓内 debug 产物 → PATH `zome-sidecar` → `cargo run` 兜底；全灭只 warn 降级不影响
+engine 启动。已在跑的健康实例（手动起的）会被纳用不重复拉起。
+
 ## 安装后更新
 
 一条命令（推荐）：
