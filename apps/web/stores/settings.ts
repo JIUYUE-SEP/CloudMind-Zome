@@ -21,6 +21,7 @@ export const useSettingsStore = defineStore("settings", () => {
       settings.value = {
         memory: data.memory,
         tavilyApiKey: data.tavilyApiKey || "",
+        sidecarAutoStart: data.sidecarAutoStart ?? false,
       };
     } catch (err) {
       loadError.value = err instanceof Error ? err.message : "加载失败";
@@ -42,6 +43,8 @@ export const useSettingsStore = defineStore("settings", () => {
       await client.updateConfig({
         memory,
         ...(tavilyApiKey !== undefined && tavilyApiKey !== "***" ? { tavilyApiKey } : {}),
+        // 布尔开关恒下发（undefined 语义是"不修改"，会吃掉用户在面板上的显式关闭）
+        sidecarAutoStart: settings.value.sidecarAutoStart === true,
       });
       saveState.value = "saved";
     } catch (err) {

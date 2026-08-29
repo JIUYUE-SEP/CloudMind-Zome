@@ -24,6 +24,7 @@ import * as httpPlugin from "./plugins/http/index.js";
 import * as externalPlugin from "./plugins/external/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { registerShutdownHandlers } from "./shutdown.js";
+import { startSidecarIfEnabled, stopSidecar } from "./sidecar/autostart.js";
 import { flushStdout } from "./flush-stdout.js";
 
 // P9 终态：bootstrap 退役为薄组合根——cordis 树挂载（含三个 config 回调
@@ -124,6 +125,14 @@ async function main() {
   // banner）收在 http 插件 listen() 面内，逐字保留
   await root.http.listen();
 
+  // sidecar 自启唤醒（spec 决策 4：异步拉起不阻塞主启动——fire-and-forget +
+  // .catch 浮空 promise 禁令；开关缺省 false 时函数内直返零副作用）。
+  // 锚点申报：启动尾部 listen 之后（sidecar 不服务启动路径，listen 优先）；
+  // 探活/client 复用 root.sidecar 同实例（健康缓存共享，语义一致）
+  void startSidecarIfEnabled({ configRepository: root.config, sidecarClient: root.sidecar }).catch(
+    (err: unknown) => logger.warn({ err: err }, "[sidecar-autostart] 自启异常，按 sidecar 缺席降级（引擎照常）"),
+  );
+
   // 优雅关停（P1-2）：SIGTERM/SIGINT 时先走 stop 钩子停收新任务（scheduler.stop
   // 不再触发新压缩段），再 drain 全部 worker 的压缩队列，存量清零后退出
   // （超时 10s 兜底，不卡死关停）。Windows 上 taskkill /F 强杀不会触发
@@ -140,6 +149,9 @@ async function main() {
       // MCP close 挂 tools 插件 disposer；app.close() 挂 http 插件 disposer
       await toolsFiber.dispose();
       await httpFiber.dispose();
+      // sidecar 两段式关停（spec 决策 5；drain 已完成，向量写路径已静默）。
+      // 锚点申报：close 段末尾（fiber 处置之后、exit 之前）；自身全 catch 不抛
+      await stopSidecar();
     },
     timeoutMs: 10_000,
   });

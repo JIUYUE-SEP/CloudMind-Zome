@@ -33,6 +33,8 @@ export interface MemorySettings {
 
 export interface AppSettings {
   tavilyApiKey?: string;
+  /** sidecar 自启唤醒（缺省 false） */
+  sidecarAutoStart?: boolean;
   memory: MemorySettings;
 }
 

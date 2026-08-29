@@ -45,6 +45,14 @@
         Tavily API Key
         <input v-model="store.settings.tavilyApiKey" type="password" />
       </label>
+      <label class="toggle">
+        <input v-model="store.settings.sidecarAutoStart" type="checkbox" class="sidecar-toggle" />
+        自动启动向量侧车（sidecar）
+      </label>
+      <p class="hint">
+        开启后 engine 启动时自动拉起本地 sidecar（已在跑的健康实例直接纳用不重复拉起）；需本地已有
+        sidecar 二进制（crates 构建产物或 ZOME_SIDECAR_BIN 指定）或 cargo 环境；默认关闭
+      </p>
 
       <div class="actions">
         <button class="save" :disabled="store.saveState === 'saving'" @click="store.save">

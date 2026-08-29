@@ -147,11 +147,15 @@ export class SidecarClient {
     });
   }
 
-  async isAvailable(): Promise<boolean> {
+  /**
+   * 可用性探活（10s 缓存）。deadlineMs 可选（缺省 1000 恒等）——自启唤醒的
+   * 纳用探活传短超时（200ms），主启动不被慢探活拖住。
+   */
+  async isAvailable(deadlineMs = 1000): Promise<boolean> {
     const now = Date.now();
     if (now - this.availability.at < AVAILABILITY_CACHE_MS) return this.availability.ok;
     // 探活语义：即使 sidecar 明确报错（进程在线但 Health 失败）也按不可用记
-    const res = await this.call("Health", {}, 1000, true).catch(() => undefined);
+    const res = await this.call("Health", {}, deadlineMs, true).catch(() => undefined);
     const ok = res !== undefined;
     // 只在可用性翻转时记日志（首次探测不记：纯 pnpm dev 下 sidecar 本就不存在）
     if (this.availability.at !== 0 && ok !== this.availability.ok) {
