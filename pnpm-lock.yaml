@@ -60,7 +60,7 @@ importers:
 
   apps/web:
     dependencies:
-      '@mindcloud/shared':
+      '@cloudmind/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@pinia/nuxt':
@@ -109,6 +109,9 @@ importers:
 
   services/engine:
     dependencies:
+      '@cloudmind/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@dqbd/tiktoken':
         specifier: ^1.0.22
         version: 1.0.22
@@ -130,9 +133,6 @@ importers:
       '@grpc/proto-loader':
         specifier: ^0.8.0
         version: 0.8.1
-      '@mindcloud/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@3.25.76)

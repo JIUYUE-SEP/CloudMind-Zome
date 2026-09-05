@@ -17,11 +17,11 @@
 pnpm install
 
 # 2. 构建 engine 和 web
-pnpm --filter @mindcloud/engine --filter @mindcloud/web build
+pnpm --filter @cloudmind/engine --filter @cloudmind/web build
 
 # 3. 运行
-pnpm --filter @mindcloud/engine start    # node dist/src/bootstrap.js
-pnpm --filter @mindcloud/web preview     # 预览构建产物（web 无 start 脚本）
+pnpm --filter @cloudmind/engine start    # node dist/src/bootstrap.js
+pnpm --filter @cloudmind/web preview     # 预览构建产物（web 无 start 脚本）
 ```
 
 访问 `http://localhost:3000`（engine API 在 `http://127.0.0.1:8848`，Swagger UI 在 `/docs`，
@@ -53,7 +53,7 @@ scripts/update.sh              # git pull → pnpm install → build → pnpm ve
 scripts/update.sh --skip-verify  # 跳过验证快速更新
 ```
 
-脚本**不是**自动更新器：不在后台跑、不检查新版本、不重启进程——更新完成后请自行重启 engine 与 web 生效。等价的手工四步：`git pull` → `pnpm install` → `pnpm --filter @mindcloud/shared --filter @mindcloud/engine --filter @mindcloud/web build` → 重启。若在用 sidecar，记得一并 `cargo build --release`。
+脚本**不是**自动更新器：不在后台跑、不检查新版本、不重启进程——更新完成后请自行重启 engine 与 web 生效。等价的手工四步：`git pull` → `pnpm install` → `pnpm --filter @cloudmind/shared --filter @cloudmind/engine --filter @cloudmind/web build` → 重启。若在用 sidecar，记得一并 `cargo build --release`。
 
 **数据兼容性**：
 

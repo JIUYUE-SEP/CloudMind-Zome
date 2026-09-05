@@ -76,8 +76,8 @@ Subagent: 前台/后台借用其他 Agent 执行子任务
 ### 1. 克隆
 
 ```bash
-git clone https://github.com/yourname/MindCloud-Zome.git
-cd MindCloud-Zome
+git clone https://github.com/JIUYUE-SEP/CloudMind-Zome.git
+cd CloudMind-Zome
 ```
 
 ### 2. 安装依赖
@@ -93,7 +93,7 @@ pnpm install
 pnpm dev
 
 # 或只起 engine + web
-pnpm --filter @mindcloud/engine --filter @mindcloud/web dev
+pnpm --filter @cloudmind/engine --filter @cloudmind/web dev
 ```
 
 - 前端：`http://localhost:3000`
@@ -163,8 +163,8 @@ pnpm lint             # 代码检查
 pnpm test:e2e         # Playwright 端到端测试（自动启动 engine + web）
 
 # 单独操作
-pnpm --filter @mindcloud/engine test
-pnpm --filter @mindcloud/web test
+pnpm --filter @cloudmind/engine test
+pnpm --filter @cloudmind/web test
 ```
 
 ---
@@ -185,7 +185,7 @@ pnpm --filter @mindcloud/web test
 ## 项目结构
 
 ```
-MindCloud-Zome/
+CloudMind-Zome/
 ├── apps/
 │   └── web/           # Nuxt 3 前端
 ├── services/
