@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 /**
  * react 循环子模块共享纯函数（叶模块：不 import 任何 engine 模块，

@@ -13,7 +13,7 @@ import { LLMCallRepository } from "../../memory/repositories/llm-call.js";
 import { ResilientLLMProvider } from "../../provider/resilient.js";
 import type { LLMProvider } from "../../provider/types.js";
 import { getAgentDir } from "../../config/paths.js";
-import type { ChatMessage, ProviderConfig } from "@mindcloud/shared";
+import type { ChatMessage, ProviderConfig } from "@cloudmind/shared";
 
 /**
  * subagents 插件（P7d 收尾）：subagent 调度链路 + 傀儡执行路径收编上架

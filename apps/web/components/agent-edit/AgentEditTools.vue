@@ -31,7 +31,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { useEngineClient, type ToolInfo } from "@/composables/useEngineClient";
 
 const props = defineProps<{

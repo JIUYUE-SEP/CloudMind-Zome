@@ -11,7 +11,7 @@ import { ActionRepository } from "../../src/memory/repositories/action.js";
 import { getAgentDir } from "../../src/config/paths.js";
 import type { IActionRepository, IMessageRepository } from "../../src/memory/repositories/types.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMEvent } from "../../src/provider/types.js";
 import { restoreDataDir } from "../helpers/env.js";
 

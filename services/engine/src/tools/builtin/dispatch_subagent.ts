@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
-import { MAX_FOREGROUND_TIMEOUT_MS } from "@mindcloud/shared";
+import { MAX_FOREGROUND_TIMEOUT_MS } from "@cloudmind/shared";
 
 const parameters = z.object({
   agentId: z

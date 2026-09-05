@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Context } from "cordis";
 import { logger } from "../../src/logger.js";
-import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
+import type { AgentConfig, ChatMessage } from "@cloudmind/shared";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
 import type { AgentsFace } from "../../src/plugins/agents/index.js";
 import type { MemoryFace } from "../../src/plugins/memory/index.js";

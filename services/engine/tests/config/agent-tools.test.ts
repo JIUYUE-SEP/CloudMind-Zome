@@ -1,6 +1,6 @@
 import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { resolveConfiguredTools } from "../../src/config/agent-tools.js";
 
 function makeConfig(tools: unknown): AgentConfig {

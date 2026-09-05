@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import grpc from "@grpc/grpc-js";
 import protoLoader from "@grpc/proto-loader";
-import { DEFAULT_SIDECAR_ADDR } from "@mindcloud/shared";
+import { DEFAULT_SIDECAR_ADDR } from "@cloudmind/shared";
 
 /**
  * Rust sidecar（zome-sidecar）的 gRPC 客户端。

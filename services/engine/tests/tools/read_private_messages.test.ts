@@ -3,7 +3,7 @@ import { readPrivateMessagesTool } from "../../src/tools/builtin/read_private_me
 import { getBuiltinTools } from "../../src/tools/builtin/index.js";
 import type { ToolContext, ToolResult } from "../../src/tools/types.js";
 import type { IntermindService } from "../../src/intermind/service.js";
-import type { ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessageRecord } from "@cloudmind/shared";
 
 function record(over: Partial<ChatMessageRecord>): ChatMessageRecord {
   return {

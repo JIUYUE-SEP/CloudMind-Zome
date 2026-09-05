@@ -3,7 +3,7 @@ import { resolveContextWindow } from "../../src/compute/context-window.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../src/context/pipeline.js";
 import { logger } from "../../src/logger.js";
 import type { ConfigRepository, GlobalConfig } from "../../src/config/repository.js";
-import type { ProviderConfig } from "@mindcloud/shared";
+import type { ProviderConfig } from "@cloudmind/shared";
 
 function fakeRepo(providers: ProviderConfig[]): Pick<ConfigRepository, "load"> {
   const config: GlobalConfig = {

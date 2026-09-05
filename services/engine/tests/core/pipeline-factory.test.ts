@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { createContextPipelineForAgent } from "../../src/core/pipeline-factory.js";
 import { resolveContextWindow } from "../../src/compute/context-window.js";
 import type { ConfigRepository, GlobalConfig } from "../../src/config/repository.js";
-import type { ProviderConfig } from "@mindcloud/shared";
+import type { ProviderConfig } from "@cloudmind/shared";
 
 function agentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {

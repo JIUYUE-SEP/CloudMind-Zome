@@ -1,6 +1,6 @@
 import { logger } from "../../logger.js";
 import type { FastifyRequest } from "fastify";
-import { isValidAgentId, isApprovalRememberable } from "@mindcloud/shared";
+import { isValidAgentId, isApprovalRememberable } from "@cloudmind/shared";
 
 export { isApprovalRememberable };
 

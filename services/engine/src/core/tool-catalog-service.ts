@@ -1,4 +1,4 @@
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import type { LLMProvider } from "../provider/types.js";
 import type { Tool } from "../tools/types.js";
 import { isExtToolName } from "../context/tool-classify.js";

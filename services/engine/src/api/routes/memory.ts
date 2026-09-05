@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
-import { isValidAgentId } from "@mindcloud/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 import { clampPageLimit, clampPageOffset } from "./pagination.js";
 
 export async function registerMemoryRoutes(app: FastifyInstance, context: ApiContext) {

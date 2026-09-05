@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import type { BackgroundManager } from "./background.js";
 import type { SubagentResult, SubagentTask } from "./types.js";
 import {

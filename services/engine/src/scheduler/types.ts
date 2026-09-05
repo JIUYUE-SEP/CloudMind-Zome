@@ -1,4 +1,4 @@
-import type { ChatMessage, ScheduledTask } from "@mindcloud/shared";
+import type { ChatMessage, ScheduledTask } from "@cloudmind/shared";
 import type { LLMEvent } from "../provider/types.js";
 
 export type { ScheduledTask };

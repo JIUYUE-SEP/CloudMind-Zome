@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
-import type { ModelInfo, ProviderConfig } from "@mindcloud/shared";
+import type { ModelInfo, ProviderConfig } from "@cloudmind/shared";
 import OpenAI from "openai";
 import { isApiMode } from "../../provider/protocols/index.js";
 import {

@@ -1,12 +1,12 @@
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import type {
   ChatMessageRecord,
   HandoffUpdateFrame,
   ModelInfo,
   ProviderConfig,
   ScheduledTask,
-} from "@mindcloud/shared";
-import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
+} from "@cloudmind/shared";
+import { DEFAULT_ENGINE_URL } from "@cloudmind/shared";
 import { ref } from "vue";
 import { fetchWithTimeout } from "@/utils/fetch";
 import { resolveEngineToken, fetchEngineTokenFromServer } from "@/utils/engine-token";

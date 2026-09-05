@@ -1,6 +1,6 @@
 import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { ContextPipeline, type AssembleInput, type AssembleResult } from "../../src/context/pipeline.js";
 import { createLayers, type SemanticMemory, type TopicSummary } from "../../src/context/layers.js";
 import { assembleMessages } from "../../src/context/assembler.js";

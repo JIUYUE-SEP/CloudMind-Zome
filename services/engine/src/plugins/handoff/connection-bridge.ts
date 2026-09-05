@@ -5,7 +5,7 @@ import type { HandoffLoopRegistry } from "../../handoff/registry.js";
 import type { HandoffBookInfo } from "../../handoff/types.js";
 import type { AgentWorker } from "../../core/agent-worker.js";
 import type { LLMEvent } from "../../provider/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 /**
  * 连接桥 deps（P7b 层间纪律）：连接特有物全部经回调注入——往 socket 发帧、

@@ -2,7 +2,7 @@ import { logger } from "../../logger.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import type { ApiContext } from "../context.js";
-import type { ChatMessage, ApprovalRequestFrame } from "@mindcloud/shared";
+import type { ChatMessage, ApprovalRequestFrame } from "@cloudmind/shared";
 import type { ApprovalRequest } from "../../core/agent-worker.js";
 import type { LLMEvent } from "../../provider/types.js";
 import { randomUUID } from "node:crypto";

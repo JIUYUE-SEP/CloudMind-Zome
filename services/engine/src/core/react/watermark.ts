@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { randomUUID } from "node:crypto";
 import type { StepResult } from "./step.js";
 import { getTokenCounter } from "../../context/token-counter.js";

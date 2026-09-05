@@ -28,7 +28,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { DEFAULT_ACCENT_COLOR } from "@/utils/theme";
 
 const props = defineProps<{

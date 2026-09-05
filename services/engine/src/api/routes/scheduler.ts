@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
 import { SchedulerRepository } from "../../scheduler/repository.js";
 import { computeNextRun } from "../../scheduler/engine.js";
-import { isValidAgentId } from "@mindcloud/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 
 export async function registerSchedulerRoutes(app: FastifyInstance, context: ApiContext) {
   app.get("/scheduler/:agentId", {

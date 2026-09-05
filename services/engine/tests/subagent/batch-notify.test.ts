@@ -23,7 +23,7 @@ import type { SubagentTask } from "../../src/subagent/types.js";
 import type { PerceptionInject } from "../../src/plugins/perception/index.js";
 import { waitForTerminalTail } from "../helpers/background-tail.js";
 import { restoreDataDir } from "../helpers/env.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const config: AgentConfig = { id: "a2", name: "A2", persona: "", model: "mock", skills: [], tools: [] };
 const ownerConfig: AgentConfig = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };

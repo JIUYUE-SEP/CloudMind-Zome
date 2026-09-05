@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { isValidAgentId } from "@mindcloud/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 import type { ApiContext } from "../context.js";
 import type { ExternalFace } from "../../plugins/external/index.js";
 import {

@@ -16,7 +16,7 @@ import { ContextPipeline, WATERMARK_REMINDER_PREFIX } from "../../src/context/pi
 import { getTokenCounter } from "../../src/context/token-counter.js";
 import { logger } from "../../src/logger.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type {
   LLMProvider,
   LLMProviderProtocol,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { isValidAgentId } from "@mindcloud/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 import type { ApiContext } from "../context.js";
 
 const regenerateBody = z.object({

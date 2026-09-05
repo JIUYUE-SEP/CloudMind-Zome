@@ -17,7 +17,7 @@ import { PlanManager } from "../../src/plan/manager.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { restoreDataDir } from "../helpers/env.js";
 
 function extractText(messages: ChatMessage[]): string {

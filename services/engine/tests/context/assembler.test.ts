@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { createLayers } from "../../src/context/layers.js";
 import type { SemanticMemory, TopicSummary } from "../../src/context/layers.js";
 import { assembleMessages } from "../../src/context/assembler.js";

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Context } from "cordis";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import * as pipelinePlugin from "../../src/plugins/pipeline/index.js";
 
 // P5 pipeline 插件挂载测试：ctx.pipeline 工厂面上架 + 工厂预算语义

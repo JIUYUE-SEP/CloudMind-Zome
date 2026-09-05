@@ -15,7 +15,7 @@ import { SessionRepository } from "../../src/conductor/repository.js";
 import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { SidecarClient } from "../../src/sidecar/client.js";
-import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
+import { DEFAULT_ENGINE_PORT } from "@cloudmind/shared";
 import { restoreDataDir } from "../helpers/env.js";
 
 // 与 src/api/routes/system.ts 向上查找同一口径读真实版本（测试文件起自 tests/api/）

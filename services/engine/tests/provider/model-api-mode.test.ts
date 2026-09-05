@@ -13,7 +13,7 @@ import type {
 import { ResilientLLMProvider } from "../../src/provider/resilient.js";
 import { ConfigRepository } from "../../src/config/repository.js";
 import { restoreDataDir } from "../helpers/env.js";
-import type { ProviderConfig } from "@mindcloud/shared";
+import type { ProviderConfig } from "@cloudmind/shared";
 import {
   ModelApiModeRouter,
   hasModelApiModeOverride,

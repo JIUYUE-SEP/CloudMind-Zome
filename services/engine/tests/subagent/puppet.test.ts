@@ -28,7 +28,7 @@ import { getAgentDir } from "../../src/config/paths.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { LLMChatParams, LLMEvent, LLMProvider } from "../../src/provider/types.js";
 import type { Tool, ToolResult } from "../../src/tools/types.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const ownerConfig: AgentConfig = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
 const borrowedConfig: AgentConfig = { id: "a2", name: "A2", persona: "", model: "mock", skills: [], tools: [] };

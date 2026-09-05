@@ -71,7 +71,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { useAgentsStore } from "@/stores/agents";
 import BackButton from "@/components/BackButton.vue";
 

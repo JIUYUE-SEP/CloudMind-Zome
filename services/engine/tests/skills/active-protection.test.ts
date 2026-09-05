@@ -20,7 +20,7 @@ import { restoreDataDir } from "../helpers/env.js";
 import type { LLMChatParams, LLMEvent, LLMProvider } from "../../src/provider/types.js";
 import type { Tool, ToolResult } from "../../src/tools/types.js";
 import type { SkillService } from "../../src/skills/service.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 const COMPRESS_REPLY = "话题主题：测试话题\n关键结论：\n- 结论一";
 

@@ -21,7 +21,7 @@ import { ToolCatalogService } from "../../src/core/tool-catalog-service.js";
 import { ToolBlurbStore } from "../../src/core/tool-blurb-store.js";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import type { Tool } from "../../src/tools/types.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 let tmpDir: string;
 let context: ApiContext;

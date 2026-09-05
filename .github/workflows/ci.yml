@@ -42,9 +42,9 @@ jobs:
 
       - name: Build engine and web
         run: |
-          pnpm --filter @mindcloud/shared build
-          pnpm --filter @mindcloud/engine build
-          pnpm --filter @mindcloud/web build
+          pnpm --filter @cloudmind/shared build
+          pnpm --filter @cloudmind/engine build
+          pnpm --filter @cloudmind/web build
 
       - name: Rust checks
         run: |

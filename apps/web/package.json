@@ -1,5 +1,5 @@
 {
-  "name": "@mindcloud/web",
+  "name": "@cloudmind/web",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
     "test:dev": "vitest"
   },
   "dependencies": {
-    "@mindcloud/shared": "workspace:*",
+    "@cloudmind/shared": "workspace:*",
     "@pinia/nuxt": "^0.11.0",
     "pinia": "^3.0.2"
   },

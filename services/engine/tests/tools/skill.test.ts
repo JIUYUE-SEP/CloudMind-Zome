@@ -11,7 +11,7 @@ import { skillTool } from "../../src/tools/builtin/skill.js";
 import { createSkillService } from "../../src/skills/service.js";
 import { restoreDataDir } from "../helpers/env.js";
 import type { ToolContext } from "../../src/tools/types.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const SKILL_BODY = [
   "Name: code-review",

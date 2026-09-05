@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { MindChunk } from "../mind/mind-files.js";
 
 /** L6 工具 schema（Phase 1 不依赖内部结构，token 计数按 JSON 序列化） */

@@ -1,5 +1,5 @@
 import { logger } from "../../logger.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 /** 一个已关闭、待压缩的话题片段 */
 export interface TopicSegment {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { detectTopicBoundary } from "../../src/memory/topic/detector.js";
 
 function msg(role: "user" | "assistant", text: string, createdAt: string): ChatMessage {

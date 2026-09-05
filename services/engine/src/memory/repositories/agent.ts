@@ -2,7 +2,7 @@ import { logger } from "../../logger.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { DocumentStore } from "../../plugins/memory/document-store.js";
 import { UnsupportedSchemaVersionError } from "../../versioning.js";
 import { getAgentDir, getDataDir, sanitizeAgentId } from "../../config/paths.js";

@@ -1,5 +1,5 @@
 import type { Context } from "cordis";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { getBuiltinTools } from "../../tools/builtin/index.js";
 import { McpClientManager, mcpInputSchemaToZod } from "../../tools/mcp/index.js";
 import { qualifyExternalToolName } from "../../tools/external/naming.js";

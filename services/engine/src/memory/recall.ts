@@ -1,4 +1,4 @@
-import type { ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessageRecord } from "@cloudmind/shared";
 import type { IMessageRepository } from "./repositories/types.js";
 import {
   listCompressedTopicMeta,

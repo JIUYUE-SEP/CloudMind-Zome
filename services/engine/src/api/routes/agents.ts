@@ -1,8 +1,8 @@
 import { logger } from "../../logger.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
-import type { AgentConfig } from "@mindcloud/shared";
-import { isValidAgentId } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 import { HANDOFF_MAX_SHIFTS_MIN, HANDOFF_MAX_SHIFTS_MAX } from "../../handoff/types.js";
 
 // AgentConfig 已知字段（功能 Minor-1）：POST/PUT 对未知字段显式 400，

@@ -9,7 +9,7 @@ import { extractBearerToken, getAuthToken, isTokenValid } from "../config/auth-t
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerToolBlurbRoutes } from "./routes/tool-blurbs.js";
-import { DEFAULT_ENGINE_URL } from "@mindcloud/shared";
+import { DEFAULT_ENGINE_URL } from "@cloudmind/shared";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
 import { registerTopicRoutes } from "./routes/topics.js";

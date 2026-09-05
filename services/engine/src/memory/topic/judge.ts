@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider } from "../../provider/types.js";
 import { logger } from "../../logger.js";
 import { collectChatText } from "./compressor.js";

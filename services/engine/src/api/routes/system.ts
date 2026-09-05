@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
-import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
+import { DEFAULT_ENGINE_PORT } from "@cloudmind/shared";
 import type { ApiContext } from "../context.js";
 import { getDataDir } from "../../config/paths.js";
 import { getGitShortHash } from "../../git-commit.js";
@@ -33,7 +33,7 @@ async function readEngineVersion(startDir: string): Promise<string | undefined> 
         name?: unknown;
         version?: unknown;
       };
-      if (pkg.name === "@mindcloud/engine" && typeof pkg.version === "string") {
+      if (pkg.name === "@cloudmind/engine" && typeof pkg.version === "string") {
         return pkg.version;
       }
     } catch {

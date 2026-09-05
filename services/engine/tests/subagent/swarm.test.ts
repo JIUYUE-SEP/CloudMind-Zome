@@ -11,7 +11,7 @@ import { SubagentSwarm } from "../../src/subagent/batch.js";
 import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
 import { restoreDataDir } from "../helpers/env.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const ownerConfig: AgentConfig = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
 

@@ -1,5 +1,5 @@
 {
-  "name": "@mindcloud/engine",
+  "name": "@cloudmind/engine",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -21,7 +21,7 @@
     "@fastify/websocket": "^11.0.0",
     "@grpc/grpc-js": "^1.13.0",
     "@grpc/proto-loader": "^0.8.0",
-    "@mindcloud/shared": "workspace:*",
+    "@cloudmind/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cordis": "4.0.0-rc.8",
     "cron-parser": "^5.0.0",

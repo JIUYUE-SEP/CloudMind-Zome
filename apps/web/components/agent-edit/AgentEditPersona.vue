@@ -13,7 +13,7 @@
 </template>
 
 <script setup lang="ts">
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 defineProps<{
   agent: AgentConfig;

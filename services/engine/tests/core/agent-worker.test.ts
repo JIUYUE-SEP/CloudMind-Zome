@@ -23,7 +23,7 @@ import type { McpToolCaller } from "../../src/tools/mcp/wrapper.js";
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMEvent, LLMProvider, LLMChatParams } from "../../src/provider/types.js";
 import type { ChatMessageRecord, IMessageRepository } from "../../src/memory/repositories/types.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";

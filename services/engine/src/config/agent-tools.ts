@@ -1,5 +1,5 @@
 import { logger } from "../logger.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 /**
  * agentConfig.tools 判空归一（P3-4，功能 review M5）：

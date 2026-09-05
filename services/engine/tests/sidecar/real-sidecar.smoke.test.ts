@@ -18,7 +18,7 @@ import { SidecarClient } from "../../src/sidecar/client.js";
  *
  * 运行成本与入口：需要 sidecar 二进制（cargo build，首次数分钟、增量秒级），
  * 因此不进默认套件（vitest.config.ts 已排除 *.smoke.test.ts），统一经
- * `pnpm --filter @mindcloud/engine test:sidecar` 运行（先 cargo build 再跑本文件）。
+ * `pnpm --filter @cloudmind/engine test:sidecar` 运行（先 cargo build 再跑本文件）。
  * sidecar 数据目录指向临时目录，不碰真实用户数据。
  *
  * Health 为什么走裸 gRPC 而不走 SidecarClient.isAvailable：Health 的 Rust 实现
@@ -86,7 +86,7 @@ describe("TS↔Rust sidecar 真实链路冒烟（P5-3）", () => {
   beforeAll(async () => {
     const binary = findSidecarBinary();
     if (!binary) {
-      skipReason = "未找到 sidecar 二进制——先经 pnpm --filter @mindcloud/engine test:sidecar 运行（会自动 cargo build）";
+      skipReason = "未找到 sidecar 二进制——先经 pnpm --filter @cloudmind/engine test:sidecar 运行（会自动 cargo build）";
       return;
     }
     tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "zome-sidecar-smoke-"));

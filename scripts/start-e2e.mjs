@@ -25,7 +25,7 @@ const engine = spawn("npx", ["tsx", "src/bootstrap.ts"], {
   env: { ...process.env, CLOUDMIND_DATA_DIR: tmpDir, NODE_ENV: "e2e" },
 });
 
-const web = spawn("pnpm", ["--filter", "@mindcloud/web", "dev"], {
+const web = spawn("pnpm", ["--filter", "@cloudmind/web", "dev"], {
   cwd: root,
   stdio: "pipe",
   shell: true,

@@ -18,7 +18,7 @@ import { getAuthToken, getAuthTokenFilePath } from "../../config/auth-token.js";
 import { classifyListenError } from "../../api/listen-error.js";
 import { getGitShortHash } from "../../git-commit.js";
 import { flushStdout } from "../../flush-stdout.js";
-import { DEFAULT_ENGINE_PORT } from "@mindcloud/shared";
+import { DEFAULT_ENGINE_PORT } from "@cloudmind/shared";
 
 /**
  * http 插件（P9 收口主力）：HTTP 服务面上架 ctx.http，bootstrap 退役为薄组合根。

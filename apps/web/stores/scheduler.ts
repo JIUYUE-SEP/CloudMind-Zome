@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { useEngineClient } from "@/composables/useEngineClient";
 import { createListLoader } from "@/utils/list-loader";
-import type { ScheduledTask } from "@mindcloud/shared";
+import type { ScheduledTask } from "@cloudmind/shared";
 
 export type { ScheduledTask };
 

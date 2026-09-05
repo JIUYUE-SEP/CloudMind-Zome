@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { executeLoopStep, StepStreamError } from "../../../src/core/react/step.js";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../../src/provider/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { Tool, ToolContext, ToolResult } from "../../../src/tools/types.js";
 
 function userMessage(text: string): ChatMessage {

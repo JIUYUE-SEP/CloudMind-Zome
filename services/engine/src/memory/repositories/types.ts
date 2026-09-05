@@ -1,4 +1,4 @@
-import type { AgentConfig, ChatMessageRecord } from "@mindcloud/shared";
+import type { AgentConfig, ChatMessageRecord } from "@cloudmind/shared";
 
 export type { ChatMessageRecord };
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { get_encoding } from "@dqbd/tiktoken";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import {
   ContextPipeline,
   type AssembleInput,

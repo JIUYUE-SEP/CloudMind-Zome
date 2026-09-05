@@ -24,7 +24,7 @@ import type { MindService } from "../plugins/mind/index.js";
 import type { ComputeFace } from "../plugins/compute/index.js";
 import type { ExternalFace } from "../plugins/external/index.js";
 import type { ToolCatalogService } from "../core/tool-catalog-service.js";
-import type { ChatMessage, ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessage, ChatMessageRecord } from "@cloudmind/shared";
 
 export interface ApiContext {
   agentRepository: IAgentRepository;

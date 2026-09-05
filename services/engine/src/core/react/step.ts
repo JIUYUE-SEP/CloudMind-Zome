@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../provider/types.js";
 import { randomUUID } from "node:crypto";
 import { runToolCallBatch, type ToolExecutionContext, type ToolCallRequest } from "./tool-call.js";

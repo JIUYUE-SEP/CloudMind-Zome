@@ -15,7 +15,7 @@ import { BlueprintRepository } from "../../src/blueprint/repository.js";
 import { compressedDir, writeCompressedTopic } from "../../src/memory/topic/store.js";
 import type { CompressedTopic } from "../../src/memory/topic/types.js";
 import type { ApiContext } from "../../src/api/context.js";
-import type { ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessageRecord } from "@cloudmind/shared";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
 

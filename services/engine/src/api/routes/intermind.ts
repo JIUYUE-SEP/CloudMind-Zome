@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
-import { isValidAgentId } from "@mindcloud/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;

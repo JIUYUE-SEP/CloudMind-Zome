@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { HandoffUpdateFrame } from "@mindcloud/shared";
+import type { HandoffUpdateFrame } from "@cloudmind/shared";
 import { useEngineClient } from "@/composables/useEngineClient";
 import { useChatRecords, setToolCallStatus, setToolCallOutput, type DisplayMessage } from "@/composables/useChatRecords";
 import {

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { messageText } from "./types.js";
 
 export interface TopicBoundaryInput {

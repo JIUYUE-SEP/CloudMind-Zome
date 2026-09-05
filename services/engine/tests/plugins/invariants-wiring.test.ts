@@ -17,7 +17,7 @@ import { computeService } from "../../src/plugins/compute/index.js";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { runCompressionTask } from "../../src/memory/topic/compression-task.js";
 import type { TopicSegment } from "../../src/memory/topic/types.js";
-import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
+import type { AgentConfig, ChatMessage } from "@cloudmind/shared";
 import type { ChatMessageRecord } from "../../src/memory/repositories/types.js";
 import type { LLMEvent, LLMChatParams, LLMProvider } from "../../src/provider/types.js";
 import type { Tool, ToolResult } from "../../src/tools/types.js";

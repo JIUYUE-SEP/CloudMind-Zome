@@ -2,7 +2,7 @@ import { logger } from "../../logger.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import { routeMessage } from "../../conductor/conductor.js";
-import type { ChatMessage, ApprovalRequestFrame } from "@mindcloud/shared";
+import type { ChatMessage, ApprovalRequestFrame } from "@cloudmind/shared";
 import type { ApiContext } from "../context.js";
 import { randomUUID } from "node:crypto";
 import { getAuthToken, isTokenValid } from "../../config/auth-token.js";

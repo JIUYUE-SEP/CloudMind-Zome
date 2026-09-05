@@ -5,7 +5,7 @@ import path from "node:path";
 import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { RecallService } from "../../src/memory/recall.js";
 import { writeCompressedTopic } from "../../src/memory/topic/store.js";
-import type { ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessageRecord } from "@cloudmind/shared";
 import type { CompressedTopic } from "../../src/memory/topic/types.js";
 import { restoreDataDir } from "../helpers/env.js";
 

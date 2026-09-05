@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiContext } from "../context.js";
-import { isValidAgentId } from "@mindcloud/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 
 /** skill-history 查询上限（默认 50） */
 const HISTORY_DEFAULT_LIMIT = 50;

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 /** 子 agent 分型：delegate=借用人形（现状语义）；puppet=傀儡（无 SOUL/无记忆，2b 才分化执行路径，本包仅埋 schema） */
 export type SubagentTaskKind = "puppet" | "delegate";

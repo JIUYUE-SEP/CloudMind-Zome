@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { ContextPipeline, type AssembleInput } from "../../src/context/pipeline.js";
 import type { TokenCounter } from "../../src/context/token-counter.js";
 import type { MindChunk } from "../../src/mind/mind-files.js";

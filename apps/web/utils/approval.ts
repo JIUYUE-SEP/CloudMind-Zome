@@ -3,9 +3,9 @@
 // 公共逻辑收敛在这里，三处各自的消息处理只需调用这些函数。
 
 // 引擎发来的审批请求帧（群聊帧外层会额外携带 agentId）——权威定义在 shared 协议层
-import type { ApprovalRequestFrame, ApprovalResponseFrame } from "@mindcloud/shared";
+import type { ApprovalRequestFrame, ApprovalResponseFrame } from "@cloudmind/shared";
 
-export { isApprovalRememberable } from "@mindcloud/shared";
+export { isApprovalRememberable } from "@cloudmind/shared";
 
 export type ApprovalRequestPayload = Omit<ApprovalRequestFrame, "type">;
 

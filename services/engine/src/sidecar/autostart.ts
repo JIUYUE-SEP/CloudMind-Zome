@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_SIDECAR_ADDR } from "@mindcloud/shared";
+import { DEFAULT_SIDECAR_ADDR } from "@cloudmind/shared";
 import { logger } from "../logger.js";
 import { getDataDir } from "../config/paths.js";
 import type { ConfigRepository } from "../config/repository.js";

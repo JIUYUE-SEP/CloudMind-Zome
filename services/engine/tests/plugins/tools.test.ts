@@ -3,7 +3,7 @@ import { Context } from "cordis";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { restoreDataDir } from "../helpers/env.js";
 import * as toolsPlugin from "../../src/plugins/tools/index.js";
 

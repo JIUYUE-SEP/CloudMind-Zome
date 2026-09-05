@@ -17,7 +17,7 @@ import { BackgroundManager } from "../../src/subagent/background.js";
 import { SubagentTaskRepository } from "../../src/subagent/task-repository.js";
 import type { ApiContext } from "../../src/api/context.js";
 import type { FastifyInstance } from "fastify";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { restoreDataDir } from "../helpers/env.js";
 import { logger } from "../../src/logger.js";
 

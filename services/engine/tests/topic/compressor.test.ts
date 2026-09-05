@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import { logger } from "../../src/logger.js";
 import { compressTopic, compressTopicTwoPass } from "../../src/memory/topic/compressor.js";

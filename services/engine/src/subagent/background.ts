@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { logger } from "../logger.js";
-import type { AgentConfig, ChatMessage } from "@mindcloud/shared";
+import type { AgentConfig, ChatMessage } from "@cloudmind/shared";
 import type { SubagentTask } from "./types.js";
 import type { SubagentTaskKind, SubagentTaskStatus } from "./types.js";
 import {

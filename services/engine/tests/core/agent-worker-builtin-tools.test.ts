@@ -8,7 +8,7 @@ import { computeService } from "../../src/plugins/compute/index.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import { listFilesTool } from "../../src/tools/builtin/list_files.js";
 import type { LLMEvent } from "../../src/provider/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 import { restoreDataDir } from "../helpers/env.js";
 

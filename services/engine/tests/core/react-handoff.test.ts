@@ -18,7 +18,7 @@ import {
 } from "../../src/core/react/turn.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "../../src/provider/types.js";
 
 const dummyTool: Tool = {

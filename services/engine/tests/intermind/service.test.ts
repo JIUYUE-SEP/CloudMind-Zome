@@ -13,7 +13,7 @@ import { mindService } from "../../src/plugins/mind/index.js";
 import { computeService } from "../../src/plugins/compute/index.js";
 import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
-import { intermindSessionId, type ChatMessageRecord } from "@mindcloud/shared";
+import { intermindSessionId, type ChatMessageRecord } from "@cloudmind/shared";
 import type { AgentWorker } from "../../src/core/agent-worker.js";
 import { AgentWorker as RealAgentWorker } from "../../src/core/agent-worker.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";

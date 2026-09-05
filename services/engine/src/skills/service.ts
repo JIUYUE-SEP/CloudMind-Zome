@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { DocumentStore } from "../plugins/memory/document-store.js";
 import { getAgentDir, sanitizeAgentId } from "../config/paths.js";
 import { loadSkills } from "./loader.js";

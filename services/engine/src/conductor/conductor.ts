@@ -1,5 +1,5 @@
 import type { Session } from "./types.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 export interface RoutingResult {
   targetAgentIds: string[];

@@ -52,7 +52,7 @@ import MessageInput from "./MessageInput.vue";
 import type { Session } from "@/composables/useEngineClient";
 import type { DisplayMessage } from "@/composables/useChatRecords";
 import type { ApprovalResponsePayload } from "@/utils/approval";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const props = defineProps<{
   session: Session | undefined;

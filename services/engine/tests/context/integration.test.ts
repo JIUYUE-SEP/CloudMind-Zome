@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { AgentWorker } from "../../src/core/agent-worker.js";
 import { mindService } from "../../src/plugins/mind/index.js";
 import { computeService } from "../../src/plugins/compute/index.js";

@@ -18,7 +18,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const props = defineProps<{
   agent: AgentConfig;

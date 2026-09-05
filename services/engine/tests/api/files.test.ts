@@ -17,7 +17,7 @@ import { mindService } from "../../src/plugins/mind/index.js";
 import type { FastifyInstance } from "fastify";
 import { restoreDataDir } from "../helpers/env.js";
 import { getAgentDir } from "../../src/config/paths.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 

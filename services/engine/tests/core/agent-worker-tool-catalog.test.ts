@@ -14,7 +14,7 @@ import { SECURITY_GUIDELINE } from "../../src/context/security-guideline.js";
 import type { TokenCounter } from "../../src/context/token-counter.js";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../../src/provider/types.js";
 import type { Tool } from "../../src/tools/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 import { restoreDataDir } from "../helpers/env.js";
 

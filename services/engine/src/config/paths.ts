@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import { AGENT_ID_CHARSET_PATTERN, AGENT_ID_MAX_LENGTH } from "@mindcloud/shared";
+import { AGENT_ID_CHARSET_PATTERN, AGENT_ID_MAX_LENGTH } from "@cloudmind/shared";
 
 export function getDataDir(): string {
   return process.env.CLOUDMIND_DATA_DIR || path.join(os.homedir(), ".cloudmind-zome");

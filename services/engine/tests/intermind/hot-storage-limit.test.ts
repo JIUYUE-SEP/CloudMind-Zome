@@ -7,7 +7,7 @@ import { MessageRepository } from "../../src/memory/repositories/message.js";
 import { IntermindService, INTERMIND_HOT_LIMIT } from "../../src/intermind/service.js";
 import { logger } from "../../src/logger.js";
 import { restoreDataDir } from "../helpers/env.js";
-import type { ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessageRecord } from "@cloudmind/shared";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 
 function textOf(record: ChatMessageRecord): string {

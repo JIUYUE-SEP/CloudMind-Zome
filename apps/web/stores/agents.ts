@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { useEngineClient } from "@/composables/useEngineClient";
 import { createListLoader } from "@/utils/list-loader";
 

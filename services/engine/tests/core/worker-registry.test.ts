@@ -5,7 +5,7 @@ import { computeService } from "../../src/plugins/compute/index.js";
 import { WorkerRegistry } from "../../src/core/worker-registry.js";
 import { MockLLMProvider } from "../../src/provider/llm.js";
 import type { LLMProvider, LLMEvent } from "../../src/provider/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 
 function userMessage(text: string): ChatMessage {

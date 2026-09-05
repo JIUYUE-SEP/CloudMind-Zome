@@ -28,7 +28,7 @@ echo "==> 2/4 pnpm install"
 pnpm install
 
 echo "==> 3/4 pnpm build（shared + engine + web）"
-pnpm --filter @mindcloud/shared --filter @mindcloud/engine --filter @mindcloud/web build
+pnpm --filter @cloudmind/shared --filter @cloudmind/engine --filter @cloudmind/web build
 
 if [ "$SKIP_VERIFY" = true ]; then
   echo "==> 4/4 已按 --skip-verify 跳过 pnpm verify"

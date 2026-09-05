@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMChatParams, LLMEvent, LLMProvider } from "../../src/provider/types.js";
 import { judgeTopicBoundary, reviewTopicSegments } from "../../src/memory/topic/judge.js";
 import type { TopicSegment } from "../../src/memory/topic/types.js";

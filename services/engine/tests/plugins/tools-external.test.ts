@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { restoreDataDir } from "../helpers/env.js";
 import { logger } from "../../src/logger.js";
 import * as toolsPlugin from "../../src/plugins/tools/index.js";

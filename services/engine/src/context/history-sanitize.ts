@@ -1,5 +1,5 @@
 import { logger } from "../logger.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 /**
  * LLM 历史清洗（P1-6）：修平"半个 turn"与窗口截断造成的协议残缺。

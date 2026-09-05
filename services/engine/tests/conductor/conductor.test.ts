@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { routeMessage } from "../../src/conductor/conductor.js";
 import type { Session } from "../../src/conductor/types.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 
 describe("routeMessage", () => {
   const session: Session = {

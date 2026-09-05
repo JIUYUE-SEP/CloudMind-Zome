@@ -1,4 +1,4 @@
-import type { HandoffUpdateFrame } from "@mindcloud/shared";
+import type { HandoffUpdateFrame } from "@cloudmind/shared";
 import type { ApprovalRequestPayload } from "@/utils/approval";
 
 // engine WS 连接管理器（D2 收敛：私聊 connect 与会话 connectSession 的连接生命周期单点——

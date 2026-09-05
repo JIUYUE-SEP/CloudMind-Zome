@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { TiktokenCounter, getTokenCounter } from "../../src/context/token-counter.js";
 
 function msg(text: string, role: ChatMessage["role"] = "user"): ChatMessage {

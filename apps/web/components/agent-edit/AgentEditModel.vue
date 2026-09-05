@@ -95,7 +95,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { useComputeStore } from "@/stores/compute";
 import ModelSelector from "../ModelSelector.vue";
 

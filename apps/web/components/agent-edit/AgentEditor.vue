@@ -45,7 +45,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { useAgentsStore } from "@/stores/agents";
 import BackButton from "@/components/BackButton.vue";
 import AgentEditBasic from "@/components/agent-edit/AgentEditBasic.vue";
@@ -60,7 +60,7 @@ const props = defineProps<{
 }>();
 
 // Agent ID 规则的唯一来源在 packages/shared（engine 各路由同一口径）
-import { AGENT_ID_PATTERN } from "@mindcloud/shared";
+import { AGENT_ID_PATTERN } from "@cloudmind/shared";
 
 const agents = useAgentsStore();
 

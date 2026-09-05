@@ -1,4 +1,4 @@
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { logger } from "../logger.js";
 import type { PerceptionInject } from "../plugins/perception/index.js";
 import type { BackgroundSubagent } from "./background.js";

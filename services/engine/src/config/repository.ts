@@ -10,7 +10,7 @@ import {
 } from "../versioning.js";
 import { decrypt, encrypt } from "./crypto.js";
 import { getDataDir } from "./paths.js";
-import type { ModelInfo, ProviderConfig } from "@mindcloud/shared";
+import type { ModelInfo, ProviderConfig } from "@cloudmind/shared";
 
 export type { ModelInfo, ProviderConfig };
 

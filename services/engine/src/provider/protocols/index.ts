@@ -1,6 +1,6 @@
 import { logger } from "../../logger.js";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "../types.js";
-import type { ModelInfo, ProtocolApiMode, ProviderConfig } from "@mindcloud/shared";
+import type { ModelInfo, ProtocolApiMode, ProviderConfig } from "@cloudmind/shared";
 import { OpenAICompatibleChatProvider } from "./openai-compatible-chat.js";
 import { OpenAIResponsesProvider } from "./openai-responses.js";
 import { AnthropicMessagesProvider } from "./anthropic-messages.js";

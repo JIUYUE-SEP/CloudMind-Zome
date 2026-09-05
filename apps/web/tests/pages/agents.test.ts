@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { mockNuxtImport } from "@nuxt/test-utils/runtime";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import AgentsIndex from "../../pages/agents/index.vue";
 import AgentsNew from "../../pages/agents/new.vue";
 import AgentEdit from "../../pages/agents/[id]/edit.vue";

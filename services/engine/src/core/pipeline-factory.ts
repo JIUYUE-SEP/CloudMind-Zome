@@ -1,4 +1,4 @@
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { ContextPipeline, type ContextPipelineConfig } from "../context/pipeline.js";
 
 /**

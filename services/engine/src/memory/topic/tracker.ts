@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { detectTopicBoundary } from "./detector.js";
 import {
   JUDGE_ROUND_INTERVAL,

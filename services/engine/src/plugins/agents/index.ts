@@ -20,7 +20,7 @@ import { getAgentDir } from "../../config/paths.js";
 import { DynamicToolLoader } from "../../core/dynamic-tool-loader.js";
 import { ToolBlurbStore } from "../../core/tool-blurb-store.js";
 import { applySkillBlurbOverrides } from "../../core/tool-catalog-service.js";
-import type { AgentConfig, ProviderConfig } from "@mindcloud/shared";
+import type { AgentConfig, ProviderConfig } from "@cloudmind/shared";
 import type { AgentRepository } from "../../memory/repositories/agent.js";
 import type { SubagentDispatcher } from "../../subagent/dispatcher.js";
 import type { SubagentSwarm } from "../../subagent/batch.js";

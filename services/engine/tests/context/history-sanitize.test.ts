@@ -1,6 +1,6 @@
 import { logger } from "../../src/logger.js";
 import { describe, it, expect, vi } from "vitest";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { stripUnansweredToolCalls } from "../../src/context/history-sanitize.js";
 
 function assistant(id: string, text: string, toolCallIds?: string[]): ChatMessage {

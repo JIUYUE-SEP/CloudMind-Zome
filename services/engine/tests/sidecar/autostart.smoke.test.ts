@@ -14,7 +14,7 @@ import type { ConfigRepository } from "../../src/config/repository.js";
 /**
  * sidecar 自启链路冒烟（spec 决策 7）：真二进制 + 真 spawn——发现序找到
  * 二进制 → 拉起 → 进程存活 → 两段式关停退出。默认套件排除（*.smoke.test.ts），
- * 经 `pnpm --filter @mindcloud/engine test:sidecar` 运行；环境无二进制/cargo
+ * 经 `pnpm --filter @cloudmind/engine test:sidecar` 运行；环境无二进制/cargo
  * 时全档 skip 并注明。
  *
  * 不断言 Health 探活：sidecar 的 Health RPC 内部要回查 engine /health

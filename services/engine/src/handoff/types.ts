@@ -1,4 +1,4 @@
-import type { HandoffStatus } from "@mindcloud/shared";
+import type { HandoffStatus } from "@cloudmind/shared";
 
 export type { HandoffStatus };
 

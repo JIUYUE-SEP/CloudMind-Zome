@@ -1,5 +1,5 @@
 import { get_encoding, type Tiktoken } from "@dqbd/tiktoken";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 export interface TokenCounter {
   countText(text: string): number;

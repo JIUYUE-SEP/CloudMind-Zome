@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { SemanticMemory, TopicSummary } from "./layers.js";
 import type { MindChunk } from "../mind/mind-files.js";
 

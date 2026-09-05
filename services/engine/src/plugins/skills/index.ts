@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { Context } from "cordis";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { logger } from "../../logger.js";
 import { getAgentDir, getDataDir } from "../../config/paths.js";
 import { createSkillService, type SkillService } from "../../skills/service.js";

@@ -1,5 +1,5 @@
 import { logger } from "../logger.js";
-import type { ChatMessage, ChatMessageRecord } from "@mindcloud/shared";
+import type { ChatMessage, ChatMessageRecord } from "@cloudmind/shared";
 import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../provider/types.js";

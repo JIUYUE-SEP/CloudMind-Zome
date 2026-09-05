@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { ContextPipeline } from "../../src/context/pipeline.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 
 const PINNED = "[交接书] 上下文水位撞顶，本轮任务未完成，换班移交（第 1/3 棒）。\n- 进展X；下一步Y";
 

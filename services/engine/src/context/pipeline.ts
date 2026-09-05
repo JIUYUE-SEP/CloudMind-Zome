@@ -1,5 +1,5 @@
 import { logger } from "../logger.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import { createLayers } from "./layers.js";
 import { isExtTool } from "./tool-classify.js";
 import type { ToolSchema, SemanticMemory, TopicSummary, ContextLayers } from "./layers.js";

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { INTERMIND_SESSION_PREFIX, intermindSessionId, type AgentConfig, type ChatMessageRecord } from "@mindcloud/shared";
+import { INTERMIND_SESSION_PREFIX, intermindSessionId, type AgentConfig, type ChatMessageRecord } from "@cloudmind/shared";
 import { logger } from "../logger.js";
 import type { PerceptionInject } from "../plugins/perception/index.js";
 import type { IMessageRepository } from "../memory/repositories/types.js";
@@ -24,7 +24,7 @@ import {
 
 /** 私信通知注入的主会话：与前端私聊 WS/REST 的缺省会话同 id */
 export const INTERMIND_NOTICE_SESSION_ID = "default";
-// INTERMIND_SESSION_PREFIX 与 intermindSessionId 已迁至 @mindcloud/shared
+// INTERMIND_SESSION_PREFIX 与 intermindSessionId 已迁至 @cloudmind/shared
 // （P3 切 tools→intermind 值边；会话 id 约定跨模块共享契约）
 
 /**

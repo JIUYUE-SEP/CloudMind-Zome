@@ -25,7 +25,7 @@ import {
   CONTEXT_WATERMARK_SUMMARY_HINT,
 } from "../../src/core/react/turn.js";
 import type { Tool, ToolContext, ToolResult } from "../../src/tools/types.js";
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "../../src/provider/types.js";
 import type { IMessageRepository } from "../../src/memory/repositories/types.js";
 import { restoreDataDir } from "../helpers/env.js";

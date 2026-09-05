@@ -6,7 +6,7 @@ import { AgentRepository } from "../../../src/memory/repositories/agent.js";
 import { ErrorThrottle } from "../../../src/plugins/log/error-throttle.js";
 import { logger } from "../../../src/logger.js";
 import { getAgentDir } from "../../../src/config/paths.js";
-import type { AgentConfig } from "@mindcloud/shared";
+import type { AgentConfig } from "@cloudmind/shared";
 import { restoreDataDir } from "../../helpers/env.js";
 
 describe("AgentRepository", () => {

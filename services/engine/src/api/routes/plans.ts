@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
-import type { ChatMessage } from "@mindcloud/shared";
-import { isValidAgentId } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
+import { isValidAgentId } from "@cloudmind/shared";
 import type { ApiContext } from "../context.js";
 import type { PlanManager } from "../../plan/manager.js";
 

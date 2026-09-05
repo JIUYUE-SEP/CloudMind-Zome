@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@mindcloud/shared";
+import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../provider/types.js";
 import { executeLoopStep, StepStreamError, type StepInput, type StepResult } from "./step.js";
 import type { ToolExecutionContext } from "./tool-call.js";

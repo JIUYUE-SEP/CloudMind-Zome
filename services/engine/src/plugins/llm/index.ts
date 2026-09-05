@@ -9,7 +9,7 @@ import {
 import type { EmbedderProvider, ImageGenProvider, LLMProvider } from "../../provider/types.js";
 import { OpenAIEmbedderProvider, MockEmbedderProvider } from "../../provider/embedder.js";
 import { OpenAIImageGenProvider, MockImageGenProvider } from "../../provider/image-gen.js";
-import type { AgentConfig, ProviderConfig } from "@mindcloud/shared";
+import type { AgentConfig, ProviderConfig } from "@cloudmind/shared";
 
 /**
  * llm 插件（P2）：provider 工厂面上架 ctx.llm。
