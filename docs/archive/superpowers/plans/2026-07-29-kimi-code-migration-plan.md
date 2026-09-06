@@ -1,6 +1,6 @@
 # kimi-code 四大功能迁移 CMZ 实施计划
 
-> 依据：`docs/reviews/2026-07-29-kimi-code-migration-assessment.md`（迁移形式/耦合度/落点均出自该报告，行号证据在其中）。
+> 依据：`docs/archive/reviews/2026-07-29-kimi-code-migration-assessment.md`（迁移形式/耦合度/落点均出自该报告，行号证据在其中）。
 > 执行方式：每阶段一个 Kimi 任务包，走五道工序（实现 → vivi 亲验 → 独立 review → 修复 → 复验）+ 验收三件套（lint/typecheck/test）。
 
 **Goal:** 把 kimi-code 的 MCP 自愈机制、子 Agent 纪律与韧性、Swarm 批量调度、Skill 工具化分阶段迁入 CMZ，prompt 资产零成本先行。

@@ -150,7 +150,7 @@ Rust 侧仅 3 处启动期 `expect`（`crates/zome-sidecar/src/main.rs:30,31,41`
 
 ## 7. 技术债清单（量化）
 
-- **TODO/FIXME/HACK/XXX 注释：全仓源码 0 条**（apps/web、apps/desktop、services/engine、crates、packages 均为 0；仅 `docs/superpowers/plans/` 3 份历史计划文档各含 1 处字样，非源码债务）。
+- **TODO/FIXME/HACK/XXX 注释：全仓源码 0 条**（apps/web、apps/desktop、services/engine、crates、packages 均为 0；仅 `docs/archive/superpowers/plans/` 3 份历史计划文档各含 1 处字样，非源码债务）。
 - **TypeScript `any`：全仓 2 处**，均有正当理由——`services/engine/src/sidecar/client.ts:67`（gRPC 动态加载 `as any`）、`apps/web/composables/useEngineClient.ts:180`（`(window as any).__TAURI__` 探测）。eslint：engine 侧 `no-explicit-any` 为 error（`services/engine/eslint.config.mjs:4`），web 与 shared 为 warn（`apps/web/eslint.config.js:27`、`packages/shared/eslint.config.js:14`）。
 - **循环依赖：5 个模块级名义环，全部由 `import type` 切断，0 个运行时环**（api↔scheduler、api↔blueprint、core→scheduler→api→core、memory↔context、memory→context→mind→memory）。唯一值得记账：`context/semantic.ts:4`（运行时）与 `memory/topic/store.ts:6`（type）构成 context/memory 跨层双向引用，后续加运行时依赖时易退化为真环。
 - **God-file（>500 行，全仓无 >800 行）**：

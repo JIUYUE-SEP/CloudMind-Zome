@@ -2,7 +2,7 @@
 
 - 日期：2026-08-26
 - 范围：`services/engine`（store/loader/agents/routes + 测试）、`apps/web`（settings/tools.vue + 入口 + 测试）、`docs`
-- 依据：`docs/superpowers/specs/2026-08-26-blurb-management-v3-design.md`——决策 1-6 不翻案
+- 依据：`docs/archive/superpowers/specs/2026-08-26-blurb-management-v3-design.md`——决策 1-6 不翻案
 - 方法：阶段 1 引擎 → review → 阶段 2 web → review → 销记总闸提交
 
 ## 阶段 1（引擎端点 + skill 覆盖层）——1 个实现子代理

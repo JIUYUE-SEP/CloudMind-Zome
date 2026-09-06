@@ -39,7 +39,7 @@ CloudMind-Zome 项目已完成架构迁移：
 | `docs/架构文档.md` | 修正为 Node.js + TypeScript 架构，移除 Python 相关描述 |
 | `docs/DEPLOY.md` | 移除旧版桌面打包、嵌入式 Python、旧 Web 模式部署说明 |
 | `.gitignore` | 清理仅与 Python/backend 相关的忽略项（如 `__pycache__`、`.venv`、`backend/*.log` 等），保留通用项 |
-| `docs/superpowers/specs/2026-06-24-cloudmind-docs-rewrite-design.md` | 由于外部文档已生成，源项目文档修正后无需回改 |
+| `docs/archive/superpowers/specs/2026-06-24-cloudmind-docs-rewrite-design.md` | 由于外部文档已生成，源项目文档修正后无需回改 |
 
 ### 2.3 保留项
 

@@ -2,7 +2,7 @@
 
 - 日期：2026-08-26
 - 范围：`services/engine`（sidecar/autostart + config + plugins + 测试）、`apps/web`（设置开关）、`docs`
-- 依据：`docs/superpowers/specs/2026-08-26-sidecar-autostart-design.md`——决策 1-7 不翻案
+- 依据：`docs/archive/superpowers/specs/2026-08-26-sidecar-autostart-design.md`——决策 1-7 不翻案
 - 方法：实现子代理 → 独立 review → 主控终审 → `pnpm verify` + `test:e2e` + smoke → 提交
 
 ## 阶段 1（引擎 + web 开关）——1 个实现子代理

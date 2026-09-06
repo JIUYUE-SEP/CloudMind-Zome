@@ -45,7 +45,7 @@
 - 创建：`apps/desktop/package.json`、`apps/desktop/src-tauri/Cargo.toml`
 - 创建：`crates/zome-sidecar/Cargo.toml`
 - 创建：`.github/workflows/ci.yml`
-- 修改：`docs/superpowers/specs/2026-06-24-js-rewrite-design.md`（如有必要，同步更新）
+- 修改：`docs/archive/superpowers/specs/2026-06-24-js-rewrite-design.md`（如有必要，同步更新）
 
 **任务步骤：**
 
@@ -1066,7 +1066,7 @@
 - 创建：`services/engine/tests/benchmark/llm-latency.test.ts`、`services/engine/tests/benchmark/jsonl-io.test.ts`
 - 创建：`crates/zome-sidecar/benches/vector_search.rs`
 - 修改：`.github/workflows/ci.yml`
-- 创建：`docs/superpowers/plans/2026-06-24-js-rewrite-plan.md`（本文件已存在）
+- 创建：`docs/archive/superpowers/plans/2026-06-24-js-rewrite-plan.md`（本文件已存在）
 - 修改：`README.md`（新分支版本）
 
 **任务步骤：**
@@ -1167,7 +1167,7 @@
 
 ## 执行交接
 
-**计划已完成并保存到 `docs/superpowers/plans/2026-06-24-js-rewrite-plan.md`。**
+**计划已完成并保存到 `docs/archive/superpowers/plans/2026-06-24-js-rewrite-plan.md`。**
 
 两种执行方式：
 

@@ -2,7 +2,7 @@
 
 > 版本：1.0 | 日期：2026-08-26
 > 状态：设计定案（指挥官三项拍板：skill 也可编辑/独立子页面/页面内徽标）
-> 前置：`docs/superpowers/specs/2026-08-26-tool-blurb-llm-design.md`（v2 策展）
+> 前置：`docs/archive/superpowers/specs/2026-08-26-tool-blurb-llm-design.md`（v2 策展）
 
 ## 1. 目标
 

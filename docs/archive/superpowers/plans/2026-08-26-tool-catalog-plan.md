@@ -2,7 +2,7 @@
 
 - 日期：2026-08-26
 - 范围：`services/engine`（context/core/tools + 测试）、`docs`
-- 依据：`docs/superpowers/specs/2026-08-26-tool-catalog-design.md`——决策 1-7 不翻案；机制锚点（L1 注入点 agent-worker.ts:662-678、turn 固定点 turn.ts:172/184/289、水位 :351/423/491）已在 spec §2 标定
+- 依据：`docs/archive/superpowers/specs/2026-08-26-tool-catalog-design.md`——决策 1-7 不翻案；机制锚点（L1 注入点 agent-worker.ts:662-678、turn 固定点 turn.ts:172/184/289、水位 :351/423/491）已在 spec §2 标定
 - 方法：实现子代理分阶段；独立 review + 主控终审；`pnpm verify` + `pnpm test:e2e` 绿才销记
 
 ---

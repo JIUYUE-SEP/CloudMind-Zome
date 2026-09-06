@@ -97,4 +97,4 @@ L1 新段「# 按需工具」，每行一条：`- <限定名> — <首句描述>
 
 ---
 
-> 实施 plan 另立：`docs/superpowers/plans/2026-08-26-tool-catalog-plan.md`。
+> 实施 plan 另立：`docs/archive/superpowers/plans/2026-08-26-tool-catalog-plan.md`。

@@ -74,7 +74,7 @@
 
 ### Major — M5：设计承诺的每周审计机制完全未实现
 
-- 设计决策 4 原文："每周校验归档消息都有对应压缩档，缺失则告警"（`docs/design/context-pipeline-v2.md:324`）。代码中不存在任何周期审计；`docs/reviews/2026-07-21-phase2-review.md:25` 已记为 Major-3，本次复核仍未补。
+- 设计决策 4 原文："每周校验归档消息都有对应压缩档，缺失则告警"（`docs/design/context-pipeline-v2.md:324`）。代码中不存在任何周期审计；`docs/archive/reviews/2026-07-21-phase2-review.md:25` 已记为 Major-3，本次复核仍未补。
 - 且设计口径与现状有内在矛盾：`archiveOnly` 短话题归档时**本来就没有压缩档**（`topic/types.ts:13-17`、`tracker.ts:67-82`），按设计字面执行会把所有短话题归档误报为异常。审计机制落地前需要先重定义口径（如：归档行需能被"压缩档 msgIds ∪ archiveOnly 标记"覆盖）。
 
 ### Minor — 归档 ↔ 压缩档双向对账均缺位
@@ -157,7 +157,7 @@ agent.json、messages*.jsonl、_compressed/、MIND/SOUL、scheduler.jsonl、mind
 
 ### Minor — 无备份/恢复文档，无机制
 
-grep `docs/` 的"备份/backup/restore"无任何操作文档（唯一提及是历史 spec 的"提示用户备份后清空"，`docs/superpowers/specs/2026-06-24-js-rewrite-design.md:41`）。对"记忆连续性是命根子"的产品，用户目前只能靠口口相传自己猜要拷什么。
+grep `docs/` 的"备份/backup/restore"无任何操作文档（唯一提及是历史 spec 的"提示用户备份后清空"，`docs/archive/superpowers/specs/2026-06-24-js-rewrite-design.md:41`）。对"记忆连续性是命根子"的产品，用户目前只能靠口口相传自己猜要拷什么。
 
 备份最小集（据代码推定）：`config.json` + **`.master-key`**（缺它则 config.json 中 `enc:` apiKey 永久不可解，`config/crypto.ts:35-47`）+ `sessions.jsonl` + `blueprints.jsonl` + `agents/{id}/` 整目录；desktop 下另需 sidecar 数据树（见 M2）。恢复在纯文件格式下可行（拷回即可，agent.json 缺 id 会被纠正），但没有任何验证过的流程。
 

@@ -2,7 +2,7 @@
 
 > 版本：v2 | 日期：2026-07-17（2026-07-22 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
-> 状态：**Phase 1–7 全部已实现**（Phase 1 见 `docs/reviews/2026-07-17-context-pipeline-phase1-review.md`；Phase 4 于 2026-08-19 完成，实施报告 `docs/design/context-pipeline-phase4.md`）
+> 状态：**Phase 1–7 全部已实现**（Phase 1 见 `docs/archive/reviews/2026-07-17-context-pipeline-phase1-review.md`；Phase 4 于 2026-08-19 完成，实施报告 `docs/design/context-pipeline-phase4.md`）
 > 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
 
 ---

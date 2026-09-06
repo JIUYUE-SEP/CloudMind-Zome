@@ -32,7 +32,7 @@ import { flushStdout } from "./flush-stdout.js";
 // memory.onTopicArchived）→ assertServices fail-fast → engine/ready
 // （启动对账 + scheduler start，serial 按注册序）→ http.listen() → 关停钩。
 // ApiContext 装配与 listen 段收进 plugins/http；启动对账收进 plugins/memory
-// （docs/superpowers/plans/2026-08-14-cordis-plugin-migration.md）
+// （docs/archive/superpowers/plans/2026-08-14-cordis-plugin-migration.md）
 // 迁移第二阶段 E1+E2：external 插件挂全部内部插件之后、assertServices 之前
 // （DATA_DIR 外部插件清单驱动进场，见 plugins/external 头注）。
 

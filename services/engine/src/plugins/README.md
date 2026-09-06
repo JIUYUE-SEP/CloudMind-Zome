@@ -1,6 +1,6 @@
 # services/engine/src/plugins —— CMZ 内部插件居住地
 
-本目录是 Cordis 插件化迁移（方案：`docs/superpowers/plans/2026-08-14-cordis-plugin-migration.md`）中**内部插件的清单地**。P0 期只立地：目录约定 + 模板 + 测试基线，**骨架不接进 bootstrap.ts，一根线都不接**。
+本目录是 Cordis 插件化迁移（方案：`docs/archive/superpowers/plans/2026-08-14-cordis-plugin-migration.md`）中**内部插件的清单地**。P0 期只立地：目录约定 + 模板 + 测试基线，**骨架不接进 bootstrap.ts，一根线都不接**。
 
 ## 目录定位
 

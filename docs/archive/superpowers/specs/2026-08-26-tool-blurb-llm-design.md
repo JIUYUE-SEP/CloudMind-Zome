@@ -2,7 +2,7 @@
 
 > 版本：1.0 | 日期：2026-08-26
 > 状态：设计定案（指挥官逐条审过）
-> 前置：`docs/superpowers/specs/2026-08-26-tool-catalog-design.md`（目录化 v1）
+> 前置：`docs/archive/superpowers/specs/2026-08-26-tool-catalog-design.md`（目录化 v1）
 
 ## 1. 目标
 
