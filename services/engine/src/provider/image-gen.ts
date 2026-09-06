@@ -40,10 +40,14 @@ export class MockImageGenProvider implements ImageGenProvider {
     void model;
     return true;
   }
-  // 签名同步接受 prompt/options（决策 6：测试断言型号透传用），返回行为不变
+  // 签名同步接受 prompt/options（决策 6：测试断言型号透传用），返回行为不变。
+  // data-url 内容 = 真实 1x1 透明 PNG（e2e 生图工具卡的 <img> 要能真解码——
+  // 原 "mock" 字节不是合法图片，浏览器 error 事件必触发兜底，假绿风险）
   async generate(_prompt?: string, _options?: { size?: string; model?: string }) {
     void _prompt;
     void _options;
-    return { url: "data:image/png;base64,mock" };
+    return {
+      url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    };
   }
 }

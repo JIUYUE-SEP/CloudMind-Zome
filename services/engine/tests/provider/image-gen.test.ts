@@ -50,12 +50,16 @@ describe("OpenAIImageGenProvider（决策 1：型号从配置来）", () => {
 });
 
 describe("MockImageGenProvider（决策 6：行为不变）", () => {
-  it("generate 签名接受 prompt/options，返回行为不变", async () => {
+  it("generate 签名接受 prompt/options，返回合法 1x1 PNG data-url（e2e <img> 可解码）", async () => {
     const provider = new MockImageGenProvider();
     expect(provider.supportsModel("any")).toBe(true);
     const withoutArgs = await provider.generate();
     const withArgs = await provider.generate("a cat", { size: "1024x1024", model: "m" });
-    expect(withoutArgs).toEqual({ url: "data:image/png;base64,mock" });
-    expect(withArgs).toEqual({ url: "data:image/png;base64,mock" });
+    expect(withoutArgs).toEqual(withArgs);
+    expect(withoutArgs.url?.startsWith("data:image/png;base64,")).toBe(true);
+    // 字节必须是合法 PNG（magic header 0x89 0x50 0x4E 0x47）——原 "mock" 字节非
+    // 合法图片，e2e 工具卡 <img> 必触发 error 兜底（假绿修复，2026-09-06）
+    const bytes = Buffer.from(withoutArgs.url!.slice("data:image/png;base64,".length), "base64");
+    expect(bytes.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   });
 });

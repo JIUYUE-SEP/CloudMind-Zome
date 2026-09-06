@@ -111,6 +111,11 @@ import { useAgentsStore } from "@/stores/agents";
 import { useToolCatalogStore } from "@/stores/toolCatalog";
 import type { ToolBlurbStatus } from "@/composables/useEngineClient";
 
+// 路由纠偏（e2e 实证）：文件名 settings.tools.vue 在 Nuxt 3 里映射到字面路径
+// /settings.tools（点不是路径分隔符），契约 URL 是 /settings/tools——
+// 用 definePageMeta 显式钉死，不改文件布局不引入嵌套
+definePageMeta({ path: "/settings/tools" });
+
 const agents = useAgentsStore();
 const catalog = useToolCatalogStore();
 

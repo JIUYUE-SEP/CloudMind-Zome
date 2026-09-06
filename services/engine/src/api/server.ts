@@ -9,6 +9,7 @@ import { extractBearerToken, getAuthToken, isTokenValid } from "../config/auth-t
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerToolBlurbRoutes } from "./routes/tool-blurbs.js";
+import { registerE2eMockRoutes } from "./routes/e2e-mock.js";
 import { DEFAULT_ENGINE_URL } from "@cloudmind/shared";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
@@ -87,6 +88,10 @@ export async function createServer(context: ApiContext) {
   await registerAgentRoutes(app, context);
   await registerFileRoutes(app, context);
   await registerToolBlurbRoutes(app, context);
+  // e2e 注入端点（决策 1 硬闸）：仅 e2e 环境注册——生产构建路径零存在（404）
+  if (process.env.NODE_ENV === "e2e") {
+    await registerE2eMockRoutes(app, context);
+  }
   await registerChatRoutes(app, context);
   await registerMemoryRoutes(app, context);
   await registerTopicRoutes(app, context);

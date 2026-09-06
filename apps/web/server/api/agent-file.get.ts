@@ -30,6 +30,14 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 400);
     return { error: "invalid path" };
   }
+  // 契约：query.path 是工作区相对路径（含 files/ 前缀，generate_image 输出形态
+  // files/images/...），engine 端点的通配段是 files/ 子树相对路径——剥掉一个
+  // files/ 前缀再转发，否则拼出 files/files/... 必然 404（生图 e2e 翻案单实证）
+  if (segments[0] === "files") segments.shift();
+  if (segments.length === 0) {
+    setResponseStatus(event, 400);
+    return { error: "invalid path" };
+  }
 
   const config = useRuntimeConfig(event);
   const engineUrl = String(config.public.engineUrl).replace(/\/+$/, "");

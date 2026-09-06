@@ -30,8 +30,11 @@ export function withLLMCallRecording(
   agentId: string,
   providerInfo?: LLMCallProviderInfo,
 ): LLMProvider {
-  const wrapped: LLMProvider = {
+  // inner 钻取口（additive 零行为变化）：e2e 注入端点经包装链找 Mock 实例用
+  // （resilient.current/primary → record.inner → MockLLMProvider）
+  const wrapped: LLMProvider & { readonly inner: LLMProvider } = {
     name: provider.name,
+    inner: provider,
     // 用 getter 而非值快照：Router 的 protocol 会随活配置热更新（R1），
     // resilient 降级切换当前 provider 时也要能取到对应协议（S2）
     get protocol() {

@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { getCurrentInstance, onMounted, ref } from "vue";
 
 const MODE_KEY = "cloudmind.agentMode";
 const AGENT_KEY = "cloudmind.singleAgentId";
@@ -19,11 +19,17 @@ export const useUiModeStore = defineStore("uiMode", () => {
   /** 页面内提示（回退等），展示方读后 clearNotice */
   const notice = ref("");
 
-  // 纯前端状态：仅客户端水合时读 localStorage（SSR/无 storage 环境保持缺省 multi 恒等）
-  if (import.meta.client) {
+  // 纯前端状态：仅客户端读 localStorage（SSR/无 storage 环境保持缺省 multi 恒等）。
+  // 创建期读一次不够——Nuxt SSR 会把服务端状态（multi）随水合 payload 覆盖进
+  // store（刷新时 single 被打回 multi 的实证现场）：客户端挂载后再读一次以对盘为准
+  const hydrateFromStorage = (): void => {
     const mode = localStorage.getItem(MODE_KEY);
     if (mode === "single" || mode === "multi") agentMode.value = mode;
     singleAgentId.value = localStorage.getItem(AGENT_KEY) ?? "";
+  };
+  if (import.meta.client) {
+    hydrateFromStorage();
+    if (getCurrentInstance()) onMounted(hydrateFromStorage);
   }
 
   function persist(): void {
