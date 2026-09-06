@@ -25,6 +25,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute } from "vue-router";
+import { useUiModeStore } from "@/stores/ui-mode";
 
 interface NavItem {
   label: string;
@@ -32,14 +33,21 @@ interface NavItem {
 }
 
 const route = useRoute();
+const uiMode = useUiModeStore();
 
-const navItems: NavItem[] = [
+const ALL_NAV_ITEMS: NavItem[] = [
   { label: "行动中心", to: "/scheduler" },
   { label: "心智整备", to: "/agents" },
   { label: "自动委托", to: "/blueprints" },
   { label: "通讯中枢", to: "/hub" },
   { label: "广播站", to: "/changelog" },
 ];
+
+// 单模式（web 呈现层决策 2）：藏广播站入口；心智整备（agents 管理页）保留——
+// 模式切使用面不切管理面
+const navItems = computed<NavItem[]>(() =>
+  ALL_NAV_ITEMS.filter((item) => !(uiMode.agentMode === "single" && item.to === "/changelog")),
+);
 
 // 导航仅首页常驻（/agents、/hub 等目的地页均不显示，维持既有口径）
 const topLevelPaths = new Set(["/"]);

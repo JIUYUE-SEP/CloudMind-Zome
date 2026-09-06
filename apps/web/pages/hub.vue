@@ -7,6 +7,33 @@
         <button class="new-agent-btn" title="新建 Agent" @click="navigateTo('/agents/new')">+</button>
       </div>
 
+      <!-- 单/多模式切换（web 纯呈现层；状态只进 localStorage）。顶栏锚点申报：
+           落在 hub 侧栏头部（模式真正影响的使用面在这）；layouts 的 right-nav
+           只在首页出现，仅承担广播站入口的收敛。模式相关分支挂 ClientOnly
+           （SSR 恒按缺省 multi 渲染，localStorage 的 single 态水合才出现——
+           不挂会报水合不匹配噪音；v-if/v-else 同块必须同域，故包到双列表尾） -->
+      <ClientOnly>
+      <div class="comm-mode-switch agent-mode-switch">
+        <button :class="['comm-mode-btn', { active: !isSingle }]" @click="uiMode.setMode('multi')">多</button>
+        <button :class="['comm-mode-btn', { active: isSingle }]" @click="uiMode.setMode('single')">单</button>
+      </div>
+      <p v-if="uiMode.notice" class="mode-notice">
+        {{ uiMode.notice }}
+        <button class="notice-dismiss" title="知道了" @click="uiMode.clearNotice()">×</button>
+      </p>
+
+      <!-- 单模式：顶栏 agent 选择器直达私聊，私聊/群聊 tabs 与双列表全收敛 -->
+      <template v-if="isSingle">
+        <div class="single-agent-row">
+          <div class="comm-avatar placeholder">{{ currentAgent?.name?.[0] || "?" }}</div>
+          <select class="single-agent-select" :value="uiMode.singleAgentId" @change="onSingleAgentChange">
+            <option value="" disabled>选择心智…</option>
+            <option v-for="a in agents.list" :key="a.id" :value="a.id">{{ a.name || a.id }}</option>
+          </select>
+        </div>
+      </template>
+
+      <template v-else>
       <div class="comm-mode-switch">
         <button :class="['comm-mode-btn', { active: tab === 'private' }]" @click="tab = 'private'">私聊</button>
         <button :class="['comm-mode-btn', { active: tab === 'group' }]" @click="tab = 'group'">群聊</button>
@@ -62,6 +89,8 @@
           <div v-else-if="!groupSessions.length && !sessions.error" class="comm-empty">暂无群聊</div>
         </template>
       </div>
+      </template>
+      </ClientOnly>
     </aside>
 
     <main class="comm-main">
@@ -89,6 +118,15 @@
           />
         </div>
       </div>
+      <!-- 单模式欢迎屏同属模式相关分支：v-if 挂在 ClientOnly 组件自身
+           （与 v-else 保持合法邻接），多模式欢迎屏照旧走 SSR（恒等） -->
+      <ClientOnly v-if="isSingle">
+        <div class="comm-welcome">
+          <div class="comm-welcome-icon">//</div>
+          <div class="comm-welcome-title">单模式</div>
+          <div class="comm-welcome-sub">在上方选择一位心智，直达私聊</div>
+        </div>
+      </ClientOnly>
       <div v-else class="comm-welcome">
         <div class="comm-welcome-icon">//</div>
         <div class="comm-welcome-title">选择一个会话开始交流</div>
@@ -99,9 +137,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useAgentsStore } from "@/stores/agents";
 import { useSessionsStore } from "@/stores/sessions";
+import { useUiModeStore } from "@/stores/ui-mode";
 import { useEngineClient, type Session, type ChatMessageRecord } from "@/composables/useEngineClient";
 import { useGroupChatStream, HISTORY_PAGE_LIMIT } from "@/composables/useGroupChatStream";
 import {
@@ -118,6 +157,34 @@ import GroupChatView from "@/components/GroupChatView.vue";
 const agents = useAgentsStore();
 const sessions = useSessionsStore();
 const client = useEngineClient();
+const uiMode = useUiModeStore();
+
+// 单/多模式（web 纯呈现层）：单模式收敛导航并直达 singleAgentId 私聊
+const isSingle = computed(() => uiMode.agentMode === "single");
+const currentAgent = computed(() => agents.list.find((a) => a.id === uiMode.singleAgentId));
+
+// 名录对账（决策 3：选中 agent 被删 → 回退 multi + 页面内提示）+ 单模式直达私聊
+watch(
+  () => [isSingle.value, uiMode.singleAgentId, agents.list.length, agents.loadedOnce],
+  () => {
+    // 名录就绪门槛（review High）：加载完成前的空列表 ≠ 已删除——
+    // 首跑（immediate）时 load 仍在途，不得在空名录上做回退判定（会把
+    // single 误判抹盘）；直达分支同门——确认 id 有效前不提前开聊
+    if (!agents.loadedOnce) return;
+    uiMode.reconcile(agents.list);
+    if (isSingle.value && uiMode.singleAgentId && selectedAgentId.value !== uiMode.singleAgentId) {
+      selectAgent({ id: uiMode.singleAgentId });
+    }
+  },
+  { immediate: true },
+);
+
+function onSingleAgentChange(event: Event) {
+  const id = (event.target as HTMLSelectElement).value;
+  if (!id) return;
+  uiMode.selectAgent(id);
+  selectAgent({ id });
+}
 
 const tab = ref<"private" | "group">("private");
 const selectedId = ref<string>("");
@@ -378,6 +445,52 @@ function onGroupApprovalExpired(approvalId: string) {
   background: rgba(0, 229, 201, 0.12);
   border-color: rgba(0, 229, 201, 0.3);
   color: var(--mc-accent);
+}
+
+/* 单/多模式切换行与回退提示 */
+.agent-mode-switch {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--mc-panel);
+}
+
+.mode-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--mc-warning);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.notice-dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--mc-text-tertiary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.single-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  flex-shrink: 0;
+}
+
+.single-agent-select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--mc-text);
+  font-size: 13px;
 }
 
 .comm-list {
