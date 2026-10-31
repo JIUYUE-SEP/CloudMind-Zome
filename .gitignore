@@ -46,6 +46,9 @@ nul
 # Tool discovery cache
 .tool_registry_cache.json
 
+# AI 助手本地工作目录（会话记忆等，非项目内容）
+.workbuddy/
+
 # Agent workspace (per-agent writable files, auto-generated)
 /workspace/
 

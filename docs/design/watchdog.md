@@ -1,0 +1,270 @@
+# 后台看护（Watchdog）：turn 级卡死检测与中断 实施前报告
+
+> 日期：2026-11-01 | 状态：**P1 已实施完成**（见 §4.1）；P2–P4 待批准后实施
+> 触发：`worker-registry.ts:18-21` 已登记「已知风险（设计取舍，登记不做）」，本文是对该条的风险复核与实施论证；方法参照 DeepSeek Harness《Super-agent 设计探索》§6（外部 Control Loop）。
+> 定位：**不是**新增产品功能，是补一条可靠性回路——现有系统一旦遇到 provider 流悬挂，没有任何内部机制能自愈，只能运维重启。
+
+---
+
+## 一、当前情况（事实基线）
+
+### 1.1 登记在案的风险（原文）
+
+`services/engine/src/core/worker-registry.ts:18-21`：
+
+> retire 对在途 turn 无超时、无 abort——waitForIdle 只等自然排空，若 provider 流永久挂起（HTTP 层无超时/流不结束），新 worker 永不创建，该 agent 全通道静默等待直到重启。不强杀的理由：热存储/话题不变量靠「只含完整 step」维持，半截 turn 的取消需要全链路 abort 语义（落盘、话题 tracker、终帧都要定义），代价大于收益；现状由运维重启兜底。若未来引入 turn 级 watchdog，需先定义 abort 的落盘与终帧语义再动这里。
+
+本次核对确认该风险**仍然成立**，且实际暴露面比登记时更宽——见 1.3。
+
+### 1.2 已有的三层保护（都在，但都不是看护）
+
+| 保护 | 位置 | 管什么 | 管不到什么 |
+|------|------|--------|-----------|
+| ReAct 步数保险丝 | `reactMaxSteps`，缺省 100，clamp 1-500（`turn.ts:305`） | 防无限空转 | 单步内挂死（步数不增长，保险丝永不触发） |
+| 工具执行超时 | bash 30s（`bash.ts:8`）、run_command 1–600s（`run_command.ts:7`） | 防命令跑飞 | LLM 调用本身 |
+| Provider 重试 | `provider/resilient.ts`：429/5xx/网络/超时分类重试 | 防偶发失败 | 永不返回的流（错误都没抛，重试无从谈起） |
+
+三者共同的前提是「**会有结果返回**」。挂死场景下这个前提不成立，三层全部静默失效。
+
+### 1.3 三个具体缺口（本次新核实）
+
+**缺口 A：`waitForIdle` 无超时，是形态上的死循环**
+
+`agent-worker.ts:516-520`：
+
+```
+async waitForIdle(): Promise<void> {
+  while (this.runningJob !== null || this.queue.length > 0) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+```
+
+10ms 轮询直到空闲。`worker-registry.ts:74` 的 `await retiring` 也在等这个 promise。turn 不结束 → 此循环永不退出 → `getOrCreate` 永久挂起 → 该 agent **全通道静默**（REST 写入、WS、scheduler、感知注入全部排在这一句后面）。
+
+**缺口 B：超时语义是总时长，且 responses/anthropic 未配置时根本没有超时**
+
+> 更正记录（2026-11-01 复核）：本报告初稿称「requestTimeout 未透传适配器」，**该结论有误**——初稿侦察时 grep 输出被截断，漏看了适配器侧。实际上 `requestTimeout` 是完整接线的：`plugins/llm/index.ts:78,119` → `protocols/index.ts:41,47,51,56,216` → 三个适配器 → `shared.ts:172`（全仓 39 处引用）。以下为复核后的准确结论。
+
+真正的问题有两处：
+
+1. **语义是总时长，对流式不友好。** 三条链路都按「整个请求的总耗时」计：
+   - chat：`openai-compatible-chat.ts:36` 透传 OpenAI SDK 的 `timeout`；
+   - responses / anthropic：`shared.ts:173` 的 `AbortSignal.timeout(...)`。
+   
+   流式场景下，长回答（长篇代码、长文）或 reasoning 模型的长思考阶段会整体超时被砍，而不是「卡住才砍」。
+
+2. **未配置时，两条链路无任何超时。** `requestTimeout` 缺省为 `undefined`：
+   - chat：回落 OpenAI SDK 缺省（10 分钟总超时）——**有兜底**；
+   - responses / anthropic：`options.requestTimeout !== undefined` 才挂 signal，**不配置就完全裸奔**。
+   
+   而 DeepSeek flash 走 responses（DSML 根治方案），命中面不小。这是「挂死即永久阻塞」最直接的入口。
+
+> **2026-11-01 已修复（P1）**：两处均已在 L0 层解决，见 §4.1。
+
+**缺口 C：abort 只在步与步之间生效**
+
+`turn.ts:306-308` 的 abort 检查在 `for` 循环顶部：
+
+```
+for (; step < maxSteps && !watermarkStop; step++) {
+  if (input.signal?.aborted) throw new Error("aborted");
+```
+
+且 `input.signal` **没有传进 fetch**（fetch 只挂了 `AbortSignal.timeout`）。因此中断只能等到「当前步自然结束」，正在进行的 LLM 调用或工具执行不会被打断。
+
+### 1.4 已有可复用的取消基础设施
+
+不是从零开始——取消语义的骨架已存在：
+
+- `HandoffResumeLoop` + `HandoffLoopRegistry` 的**仲裁面**：已实现「取消该 agent+session 维度全部连接的续跑 loop」（`DELETE /handoff/:id` 走这条路）；
+- `chainId` 代际标记：跨连接防旧链复活；
+- `AbortSignal` 已贯穿 `runTurn` 入参（只是没接到 fetch）。
+
+---
+
+## 二、关键前置：abort 语义必须先定义
+
+代码注释说得很准：**代价不在检测，在于中断一个半截 turn**。以下四条必须在动手前定死，否则做出来就是数据污染源。
+
+### 2.1 落盘：半截 step 直接丢弃，不变量不动
+
+现有不变量：热存储只含**完整 step**（`turn.ts:386` `onStepAppended` 在每步末尾落盘）。
+
+**决策：abort 时正在进行的 step 不落盘，已落盘的完整 step 原样保留。**
+
+- 不引入「半截消息」这种新形态，`_compressed` / 归档 / reconcile 三条链路零改动；
+- 代价：用户在界面上看到过流式输出的部分文字，历史里没有。这是**可接受的不对称**——流式气泡是瞬时视图，历史是既成事实。
+- 前端契约：`turn.end` 帧需带中断标记，前端据此把气泡标为「已中断」而非「已完成」（见 2.3）。
+
+### 2.2 话题 tracker：abort 回合不参与话题生命周期
+
+被中断的 turn **不做**：话题边界判定、话题关闭、压缩入队、`usedSkills` 收集。
+
+理由：这些动作都以「一次完整交互」为前提；半截回合拿去判话题，会污染 `topic-state.json` 的开放话题快照，而该快照正是 worker 重建时的还原源（`restoreTopicOpen`）。
+
+### 2.3 终帧：`turn.end` 扩展中断原因
+
+现帧 `turn.end` 语义是「ReAct 循环退出」。需区分正常退出与中断退出：
+
+| 字段 | 取值 | 前端行为 |
+|------|------|---------|
+| `turn.end` | 现有（无中断字段） | 复位「生成中」，气泡转正常态 |
+| `turn.end.aborted` | `{ reason: "watchdog" \| "timeout" \| "shutdown" \| "user" }` | 复位「生成中」，气泡标「已中断」并保留已显示文本 |
+
+`reason` 分档是必要的——watchdog 中断与用户主动取消在排查时是完全不同的事故。
+
+### 2.4 与换班（handoff）的关系：**不写交接书**
+
+水位撞顶的换班会产出 `[交接书]` 并自动续跑。**watchdog 中断不接管换班**：
+
+- 撞顶是「上下文放不下」，任务本身健康，交接书有意义；
+- 挂死是「链路故障」，此刻模型未必有产出能力，写交接书可能得到一份垃圾，反而污染下一棒；
+- 且 handoff 控制面有自己的状态机（`pending→scheduled→running→…`），让 watchdog 掺进去会把两个故障域耦合起来。
+
+**决策：watchdog 中断后 worker 回 idle，队列中的后续 job 照常处理。任务本身不自动续跑，由用户或 scheduler 决定。**（二期可评估「中断后自动重试一次」，本期不做。）
+
+---
+
+## 三、方案
+
+### 3.1 目标与非目标
+
+**目标**
+
+1. provider 流挂死时，该 agent 能在有限时间内自行恢复，不需要重启进程；
+2. 恢复过程不破坏「热存储只含完整 step」与话题快照两条不变量；
+3. 故障可观测（日志 + 一个可查的接口）。
+
+**非目标**
+
+1. **不做**文章 §6 那种「用模型判断 Worker 是否有实质进展、方向是否偏离」的语义审查——那是第二期，且需要额外的模型调用预算；
+2. **不做**跨进程/跨设备的守护（本项目本地单机，无云端 counterpart）；
+3. **不做**自动续跑（见 2.4）。
+
+### 3.2 分层设计
+
+```
+L0 请求级：流空闲超时（最底层，先做）
+   ↑ 每收到一个 chunk 重置计时器；N 秒无 chunk → abort 该次请求
+L1 回合级：step 心跳（turn 每完成一步刷新 lastStepAt）
+   ↑ 超阈值 → 判定 stalled → 触发 abort
+L2 中断：按 §2 语义安全收尾
+L3 语义审查（二期，本期不做）
+```
+
+**L0 是本次最关键、也最容易做错的一层。**
+
+不能用「总时长」：长回答（生成长文、大篇代码）与 reasoning 模型的长思考阶段天然会超过任何固定的总时长阈值，直接砍会误杀正常任务。正确的语义是**空闲超时**——发出请求后开始计时（覆盖连接与首字节），每收到一个 chunk 重置计时器，连续 N 秒无任何数据才判定挂死。
+
+- 改造范围：`shared.ts` 的 `postJsonStream` 覆盖 responses + anthropic 两条链路（`AbortSignal.timeout` → `AbortController` + 可重置计时器）；chat 链路因走 OpenAI SDK，需单独处理（SDK 的 `timeout` 仍是总时长，空闲计时需在其外层做，并给 SDK 一个足够大的硬兜底）；
+- 缺省值建议：**空闲 180s**（可配）——取 3 分钟是因为 reasoning 模型首 token 前的静默期可能很长，90s 有误杀风险；首字节超时单独设，建议 90s；
+- 与 `resilient.ts` 的重试衔接：空闲超时归类为「不可重试」——已产出内容的流重试会造成重复输出，应直接上升为 turn 级中断。实现上需用一个独立的错误名（不复用 `TimeoutError`），避免被 `isNetworkError` 判成可重试；
+- 配置入口：`ProviderConfig.requestTimeout` 现被三处当总时长用（含连接测试），切到空闲语义会改变既有行为，需决策（见 §6 开放问题 1）。
+
+**L1 挂点**
+
+- `turn.ts` 每步结束刷新心跳（与 `onStepAppended` 同一位置，零额外成本）；
+- 扫描器：新增 `plugins/watchdog/`（第 23 个 Cordis 插件，符合现有 22 插件的组织方式，可整体摘除）；
+- 扫描周期建议 30s，只遍历 `WorkerRegistry.all()`，不额外维护注册表。
+
+**L2 挂点**
+
+- 中断入口复用现有 `AbortSignal`（`runTurn` 已收 `input.signal`），但**必须把它接到 fetch**（缺口 C），否则中断仍然要等当前步自然结束；
+- 收尾动作按 §2.1–2.4 执行。
+
+### 3.3 阈值与配置
+
+| 项 | 缺省 | 可配 | 说明 |
+|---|---|---|---|
+| `watchdog.streamIdleTimeoutMs` | 90_000 | 是 | 流空闲超时（L0） |
+| `watchdog.firstByteTimeoutMs` | 60_000 | 是 | 首字节超时（L0） |
+| `watchdog.stallThresholdMs` | 600_000 | 是 | 单 turn 无 step 进展多久判 stalled（L1） |
+| `watchdog.scanIntervalMs` | 30_000 | 是 | 扫描周期 |
+| `watchdog.enabled` | true | 是 | 总开关（缺省开——故障恢复不该要用户先发现） |
+
+> 阈值全部走 settings（与 `sidecarAutoStart` 同级），不走环境变量——这是运行期可调的运维参数，不是启动期常量。
+
+### 3.4 观测
+
+- 日志：`[watchdog] agent=<id> turn=<step> stalled <ms> → abort(reason)`，warn 级；
+- 接口：`GET /system/watchdog` 返回当前存活 turn 的心跳快照（agentId / step / lastStepAt / 已运行时长），便于排查「到底是挂了还是只是慢」；
+- 审计：中断事件落 actions/日志，与既有审批审计同风格（不含对话内容）。
+
+---
+
+## 四、分期
+
+| 期 | 内容 | 独立价值 | 前置 |
+|---|---|---|---|
+| **P1** ✅ | L0 流空闲超时：`postJsonStream` 改空闲语义 + 三协议缺省兜底 + chat 链路处理 | 单独就能堵住缺口 B（未配置即无超时 + 总时长误杀） | 无 |
+| **P2** | §2 abort 语义四条落地（落盘/话题/终帧/handoff 关系） | 为任何中断能力打地基 | P1 |
+| **P3** | L1 心跳扫描 + `plugins/watchdog` + `GET /system/watchdog` | 覆盖「有超时但每步都慢」的慢性卡死 | P2 |
+| **P4** | L3 语义审查（模型判断是否偏离目标） | —— | 本期不做 |
+
+**P1 可以单独先合。** 它不碰 abort 语义，只是把超时语义修正过来，风险最低、收益最直接。
+
+### 4.1 P1 实施记录（2026-11-01 完成）
+
+**改动**
+
+| 文件 | 内容 |
+|---|---|
+| `provider/protocols/shared.ts` | 新增 `DEFAULT_STREAM_IDLE_TIMEOUT_MS`（180s）、`StreamIdleTimeoutError`、`resolveIdleTimeoutMs()`、`createIdleTimeout()`；`postJsonStream` 由 `AbortSignal.timeout` 改为 `AbortController` + 可重置计时器；`readSseData` 接收看护句柄，每次 `reader.read()` 后重置、抛错时映射为 `StreamIdleTimeoutError` |
+| `provider/protocols/openai-compatible-chat.ts` | SDK `timeout` 固定为 `SDK_HARD_TIMEOUT_MS`（30 分钟硬兜底）；`chat()` 内建看护，`create(params, { signal })` + 每 chunk 重置；超时强制不可重试 |
+| `tests/provider/protocols.test.ts` | 新增「流空闲超时」describe（3 例）：长回答不被总时长砍断 / 超时错误名与不可重试 / `resolveIdleTimeoutMs` 取值矩阵；既有「requestTimeout 超时中断」断言由可重试改为不可重试 |
+| `tests/provider/resilient.test.ts` | SDK timeout 断言改为 `SDK_HARD_TIMEOUT_MS`（原断言 requestTimeout 值，语义已变） |
+
+**关键取舍**
+
+1. **错误名独立**：`StreamIdleTimeoutError` 不复用 `TimeoutError`，避免被 `isNetworkError` 判成可重试。
+2. **缺省启用**：未配置时用 180s 而非「无限」。理由见 §1.3——「未配置即无超时」是缺陷不是特性。
+3. **阈值取 180s 而非 90s**：reasoning 模型首 token 前静默期可能很长，90s 有误杀风险。
+4. **chat 保留 SDK 总时长**：仅作 30 分钟硬兜底，防「数据一直来但永不结束」的畸形流；常规挂死由空闲超时先接管。
+
+**验证**：`typecheck` 通过；`provider` 套件 84 例全绿（含新增 3 例）；`lint` 通过；engine 全量 1752 例中 1748 通过，4 例失败均在 `tests/sidecar/autostart.test.ts`——经 stash 对照确认为**既有失败**（原始代码同样 4 例失败），与本单无关。
+
+**遗留**：`embedder.ts` 与 `image-gen.ts` 的 OpenAI 客户端未接超时看护（均为非流式短请求，风险低），不在 P1 范围。
+
+---
+
+## 五、验收标准
+
+按项目「验收三件套 lint / typecheck / test 打底」+ 本单特有：
+
+1. **挂死自愈**：mock provider 返回响应头后永不出 chunk → 断言在 `streamIdleTimeoutMs` 后 abort、`turn.end` 带 `aborted.reason="timeout"`、worker 回 idle、队列中的后续 job 被处理；
+2. **retire 不再永久挂**：provider 挂死 + 触发 `retire()` → 断言 `getOrCreate` 在超时后返回新 worker（直接针对 `worker-registry.ts:18-21` 那条风险）；
+3. **不误杀长回答**：正常流式生成持续 5 分钟、每 10s 一个 chunk → 断言**不**被中断（验证是空闲超时而非总时长）；
+4. **不变量保持**：中断后热存储中不存在半截 step；`topic-state.json` 的开放话题与前一刻一致；
+5. **终帧契约**：前端收到 `aborted` 后气泡标「已中断」且已显示文本不丢；
+6. **总开关**：`watchdog.enabled=false` 时行为与现状**逐字节等价**（可回归验证）。
+
+---
+
+## 六、开放问题（需决策）
+
+1. **`ProviderConfig.requestTimeout` 语义切换的兼容策略**：该字段现被三处当「总时长」用（chat 的 SDK `timeout`、responses/anthropic 的 `AbortSignal.timeout`、连接测试）。方案 A：字段语义改为**空闲超时**，连接测试另用固定总超时；方案 B：保留原语义，新增 `streamIdleTimeout` 字段，两者并存。**建议 A**——「请求超时」在流式场景的自然含义本就是「多久没响应」，且能顺带解决「未配置即无超时」的缺省问题，不必新增字段；代价是已配置该值的用户会感知到行为变化（从总时长变空闲），需在设置页加说明。B 更保守，但会留下两个近义字段，长期维护成本更高。
+2. **空闲超时是否可重试**：建议不可重试（已产出的流重试会重复输出），但这意味着长文生成中途断流会整体失败。是否需要「从断点续写」能力？建议本期不做，登记待办。
+3. **工具执行是否也纳入看护**：当前 bash 30s / run_command ≤600s 已有超时，但工具执行期间 turn 心跳同样不刷新。是否把「工具执行中」视为合法停滞（不 abort）？建议视为合法（工具自己有时限），但需在实现时显式排除，否则长命令会误触 L1。
+4. **多连接场景**：同一 agent 可能同时有 WS 私聊 + 感知回合排队。中断时是否要区分「中断谁」？现有队列是 FIFO 单 in-flight，实际只有 runningJob 一个目标，但 `chainId` 代数校验需同步（沿用 handoff 仲裁面口径）。
+
+---
+
+## 七、待办（本期不做）
+
+- L3 语义审查（模型判断是否偏离目标）；
+- 中断后自动重试一次；
+- 断流续写；
+- 前端「后台任务状态」面板（与异步工具执行方案共用，见下）；
+- 跨进程守护（无云端形态，不适用）。
+
+---
+
+## 八、与异步工具执行方案的关系
+
+两份方案撞在同一片代码上，实施顺序有耦合：
+
+- 看护（本文）需要把 `AbortSignal` **真正接到 fetch**；
+- 异步工具执行（另一份）需要把长命令从 `await` 改成 `start()/stop()`，落点复用 `enqueueSystemNotice`。
+
+**建议先做本文（P1+P2），再做异步工具。** 理由：异步工具会把「一个 turn 里存在后台执行中的东西」变成常态，若此时还没有可靠的中断语义，挂死面会扩大而不是缩小。看护先行，是异步工具的前置。

@@ -2,6 +2,7 @@
 
 > 本目录分两区：**现行区**（与代码同寿命，随时销记）与 **archive/ 档案区**（当时的真相，只增不改）。
 > 找现状读现行区，找历史读档案区。别拿档案当现状，别把现状拖进档案。
+> 最后对账：2026-11-01（全量链接校验零死链；现行区单篇均已收录于下方明细）
 
 ---
 
@@ -19,6 +20,37 @@
 | [`examples/`](examples/) | 示例（外部插件 hello 等） | 可运行 |
 | [`issues/`](issues/) | 未决问题跟踪（已解决的留作先例） | 活着才留 |
 | [`references/`](references/) | 外部参考资料 | 只读 |
+
+### 现行区单篇明细
+
+> 上表按目录给入口，下表按文件给直达——目录里的每一篇都在这里登记，不留孤儿。
+
+**design/ — 进行中的设计**
+
+| 文件 | 内容 |
+|------|------|
+| [`context-pipeline-v2.md`](design/context-pipeline-v2.md) | ContextPipeline v2 设计（Phase 1–7 全部实现，现行上下文机制的权威参考） |
+| [`context-pipeline-phase4.md`](design/context-pipeline-phase4.md) | Phase 4 实施前报告（**已实施完成**，留作方案论证与现状核实的留痕） |
+| [`intermind.md`](design/intermind.md) | 人形间私信（Intermind）设计定案 |
+| [`watchdog.md`](design/watchdog.md) | 后台看护（turn 级卡死检测与中断）实施前报告（**P1 流空闲超时已实施**，P2–P4 待批准；对应 `worker-registry.ts:18-21` 登记风险） |
+
+**issues/ — 问题跟踪**
+
+| 文件 | 内容 |
+|------|------|
+| [`2026-07-17-scheduler-flaky.md`](issues/2026-07-17-scheduler-flaky.md) | scheduler 测试并行负载下 flaky（**已解决**，留作先例） |
+
+**references/ — 外部参考**
+
+| 文件 | 内容 |
+|------|------|
+| [`2026-08-07-opencode-acp-上下文压缩参考.md`](references/2026-08-07-opencode-acp-上下文压缩参考.md) | opencode ACP 上下文压缩的外部参考 |
+
+**examples/ — 可运行示例**
+
+| 文件 | 内容 |
+|------|------|
+| [`plugins/hello/index.mjs`](examples/plugins/hello/index.mjs) | 外部插件（器官）最小示例，开发指引见 `开发指南.md` §5.7 |
 
 ## archive/ 档案区
 

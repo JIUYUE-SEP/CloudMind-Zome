@@ -1,5 +1,7 @@
 # CloudMind Zome Engine API
 
+> 版本：2026-11-01 对账 | 覆盖全部 REST 端点 + WebSocket 帧 | 实现见 `services/engine/src/api/routes/`、`services/engine/src/api/ws/`
+
 Engine 默认监听 `http://127.0.0.1:8848`（可用 `PORT` 环境变量修改）。所有端点**无前缀**（直接挂在根路径下）。
 
 ## 鉴权
@@ -48,7 +50,11 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `semanticTopK` | number | 10 | L4 注入条数上限 |
 | `semanticMinScore` | number | 0 | L4 最低相关度（相似度 × 时间衰减，0-1） |
 | `trustAllTools` | boolean | false | 全部信任开关：开启后该 agent 有审批通道时所有工具自动批准（含不可免问五工具），每次自动放行写审计事件 `trusted-auto-approve`；无审批通道仍 fail-closed |
+| `handoffMaxShifts` | number | 5 | 换班棒数保险丝（水位撞顶自动续跑上限），越界 clamp 1-10 |
+| `twoPassCompression` | boolean | false | 双程压缩开关：开启后压缩先产草稿再修订（第二程失败回退草稿，永不更差）；缺省关（灰度） |
+| `subagentNotify` | boolean | true | subagent 任务终态（completed/failed）向 owner 注入 `[系统通知]` 感知回合；notified 幂等只发一次 |
 
+> 算力与生图相关字段（`providerId` / `modelId` / `fallbackProviderIds` / `embedderProviderId` / `embedderModelId` / `imageProviderId` / `imageModelId` / `temperature` / `topP`）见 §Compute 与架构文档 §6.2。
 > 非法取值由引擎归一并 warn：`topicMessageThreshold < 4` clamp 到 4；`semanticTopK < 1` 重置为默认值 10。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
 
 ### Files（agent 工作区文件，只读）
@@ -104,7 +110,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `baseUrl` | string | — | API 根地址（禁内网/文件协议） |
 | `apiKey` | string | — | 落盘 AES-256-GCM 加密，API 返回脱敏为 `"***"` |
 | `models` | ModelInfo[] | `[]` | 模型列表 |
-| `requestTimeout` | number | SDK/网络默认 | 单请求超时（ms），透传协议适配器 |
+| `requestTimeout` | number | 180000（空闲语义） | **流空闲超时**（ms）：发出请求即开始计时，每收到一个 SSE 数据块重置，连续静默超过阈值才中断；传 `0` 显式关闭，缺省值可用环境变量 `CLOUDMIND_STREAM_IDLE_TIMEOUT_MS` 覆盖。三协议统一（chat / responses / anthropic）；chat 的 OpenAI SDK `timeout` 固定 30 分钟硬兜底，仅防「数据一直来但永不结束」。超时错误判**不可重试**（流可能已产出内容，重试会重复输出）。2026-11-01 P1 前的语义为总时长且未配置时不设超时 |
 | `maxRetries` | number | 2 | 同一 Provider 失败重试次数（resilient 层） |
 | `apiMode` | `"responses" \| "anthropic" \| "chat_completions"` | `chat_completions` | 协议族选择（2026-08-08）：responses 与 anthropic 为主路，chat 为兼容层；POST/PUT 校验三值，非法值 400 |
 
@@ -225,6 +231,10 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /plugins/manifest/:name` — 单条写：body `{ enabled?: boolean, config?: object }`（至少一个；config 必须 JSON 对象非数组非标量）。未登记→登记；返回 `{ name, enabled, config, requiresRestart: true }`（**无热重载**：变更重启 engine 生效）。非法名/类型错 400、目录不存在 404、清单损坏 409
 - `GET /agents/:id/plugins/manifest` — 该 agent 的 plugins.yml 内容：`{ plugins: [{ name, enabled, config }] }`（文件缺失按空清单；agent 不存在 404）
 - `PUT /agents/:id/plugins/manifest/:name` — 同全局单条语义写回 plugins.yml（js-yaml dump 会重写排版并丢弃手写注释——语义保留）
+
+**e2e 专用（仅 `NODE_ENV=e2e` 注册，生产构建零存在 → 404）**：
+
+- `POST /e2e/mock/tool-calls` — 向 agent 的 Mock Provider 注入工具调用（body `{ agentId, toolCalls: [{ toolCallId, name, arguments }] }`），供 Playwright 审批流/工具卡用例驱动；注册即硬闸，非 e2e 环境下路由不存在
 
 ### Actions
 

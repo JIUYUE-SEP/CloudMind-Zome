@@ -173,12 +173,15 @@ pnpm --filter @cloudmind/web test
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/项目导览.md`](docs/项目导览.md) | 新人入口：产品定义、词汇解释、架构骨架、项目状态、迷路时的读法 |
+| [`docs/README.md`](docs/README.md) | **文档地图**：现行区 / archive 档案区的分区规则、维护纪律、全部文档索引（迷路先看这里） |
+| [`docs/项目导览.md`](docs/项目导览.md) | 新人入口：产品定义、词汇解释、架构骨架、子系统全景、迷路时的读法 |
 | [`docs/开发指南.md`](docs/开发指南.md) | 本地开发、调试技巧、常见任务、提交前检查清单 |
-| [`docs/API.md`](docs/API.md) | Engine REST 与 WebSocket API 说明 |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | 桌面与 Web 部署指南 |
+| [`docs/API.md`](docs/API.md) | Engine REST 与 WebSocket 端点契约、帧、错误码、鉴权 |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Web 部署指南（含 sidecar 准备） |
 | [`docs/架构文档.md`](docs/架构文档.md) | 分层架构、核心机制、数据流、配置系统、安全模型 |
 | [`docs/路线图.md`](docs/路线图.md) | 功能状态：已实现 / 部分实现 / 规划中 / 已废弃 |
+
+> 其余目录：`docs/design/`（进行中的设计）、`docs/issues/`（未决问题）、`docs/references/`（外部参考）、`docs/examples/`（可运行示例）、`docs/archive/`（只增不改的 specs / plans / reviews）。分区规则与单篇索引见 [`docs/README.md`](docs/README.md)。
 
 ---
 
