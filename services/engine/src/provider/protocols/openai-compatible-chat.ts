@@ -2,7 +2,16 @@ import { logger } from "../../logger.js";
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../types.js";
 import { ProviderError } from "../errors.js";
-import { isRetryableError, truncateLogText } from "./shared.js";
+import { createIdleTimeout, isRetryableError, truncateLogText } from "./shared.js";
+
+/**
+ * OpenAI SDK 总时长硬兜底（ms）。
+ *
+ * 常规挂死由空闲超时（createIdleTimeout，缺省 180s）在更短时间内接管；这里
+ * 只防「数据一直来但永不结束」的畸形长流。不设则回落 SDK 缺省 10 分钟——那
+ * 会与空闲语义冲突（长回答被总时长砍断），所以显式放宽。
+ */
+export const SDK_HARD_TIMEOUT_MS = 30 * 60_000;
 
 interface ToolCallDelta {
   index?: number;
@@ -29,11 +38,19 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
   readonly protocol = "chat_completions";
   private client: OpenAI;
 
-  constructor(apiKey?: string, baseURL?: string, options?: OpenAICompatibleChatProviderOptions) {
+  constructor(
+    apiKey?: string,
+    baseURL?: string,
+    private readonly options?: OpenAICompatibleChatProviderOptions,
+  ) {
     this.client = new OpenAI({
       apiKey,
       baseURL,
-      ...(options?.requestTimeout !== undefined ? { timeout: options.requestTimeout } : {}),
+      // 2026-11-01 P1：requestTimeout 语义由「总时长」改为「流空闲超时」
+      // （与 responses/anthropic 的 postJsonStream 统一）。SDK 侧只留硬兜底，
+      // 空闲判定由 chat() 里的 createIdleTimeout 负责——SDK 的 timeout 是总
+      // 时长，直接沿用它会在长回答上误杀。
+      timeout: SDK_HARD_TIMEOUT_MS,
       // 禁用 SDK 内置重试：重试由 resilient 层统一接管，防双层重试叠乘
       maxRetries: 0,
     });
@@ -44,6 +61,7 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
   }
 
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+    const idle = createIdleTimeout(this.options?.requestTimeout);
     try {
       const response = await this.client.chat.completions.create({
         model: params.model,
@@ -78,13 +96,14 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
         // P4-5：请求流式 usage（OpenAI 协议标准参数；不支持的网关会在
         // provider 层显式报错而非静默错），落档拿不到时 tokens 记 0
         stream_options: { include_usage: true },
-      });
+      }, idle.signal !== undefined ? { signal: idle.signal } : {});
 
       const toolCallBuffers = new Map<number, { id: string; name: string; args: string }>();
       let finalFinishReason: string | undefined;
       let usage: { promptTokens: number; completionTokens: number } | undefined;
 
       for await (const chunk of response) {
+        idle.reset();
         // P4-5：include_usage 的末块带 usage（choices 为空）
         // P1-3：usage 取值加 isFinite 守卫——网关缺字段/返回非有限值时保持
         // undefined，不产 NaN 污染水位计算与用量落档
@@ -153,7 +172,14 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
     } catch (err) {
       // 不再原地 yield 错误文本：错误展示职责上移给 resilient 层
       // （全链失败时统一告知），此处只抛出带分类信息的 ProviderError
-      throw new ProviderError("openai", err, { retryable: isRetryableError(err) });
+      // 空闲超时映射为 StreamIdleTimeoutError 并强制不可重试——流可能已产出
+      // 部分内容，重试会造成重复输出
+      const mapped = idle.mapError(err);
+      throw new ProviderError("openai", mapped, {
+        retryable: idle.timedOut ? false : isRetryableError(mapped),
+      });
+    } finally {
+      idle.dispose();
     }
   }
 }

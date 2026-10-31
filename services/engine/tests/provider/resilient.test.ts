@@ -4,6 +4,7 @@ import { ResilientLLMProvider } from "../../src/provider/resilient.js";
 import { isRetryableError } from "../../src/provider/protocols/shared.js";
 import { ProviderError } from "../../src/provider/errors.js";
 import { OpenAIProvider } from "../../src/provider/llm.js";
+import { SDK_HARD_TIMEOUT_MS } from "../../src/provider/protocols/openai-compatible-chat.js";
 import { withLLMCallRecording } from "../../src/plugins/llm/record-calls.js";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../src/provider/types.js";
 import type { LLMCallRecord } from "../../src/memory/repositories/types.js";
@@ -279,17 +280,20 @@ describe("ResilientLLMProvider", () => {
 });
 
 describe("OpenAIProvider 配置透传", () => {
-  it("requestTimeout 透传 SDK timeout；SDK 内置重试禁用（maxRetries=0）", () => {
+  it("requestTimeout 不再作为 SDK 总超时；SDK 只留硬兜底，maxRetries=0", () => {
     const provider = new OpenAIProvider("k", "http://localhost", { requestTimeout: 1234 });
     const client = (provider as unknown as { client: { timeout: number; maxRetries: number } }).client;
-    expect(client.timeout).toBe(1234);
+    // 2026-11-01 P1：requestTimeout 语义改为**流空闲超时**，由 chat() 内的
+    // createIdleTimeout 承担。SDK 的 timeout 是总时长，继续沿用它会在长回答上
+    // 误杀，故固定为硬兜底，不再随 requestTimeout 变化。
+    expect(client.timeout).toBe(SDK_HARD_TIMEOUT_MS);
     expect(client.maxRetries).toBe(0);
   });
 
-  it("未传 requestTimeout 时不覆盖 SDK 默认 timeout，maxRetries 仍为 0", () => {
+  it("未传 requestTimeout 时同样使用硬兜底，maxRetries 仍为 0", () => {
     const provider = new OpenAIProvider("k", "http://localhost");
     const client = (provider as unknown as { client: { timeout: number; maxRetries: number } }).client;
     expect(client.maxRetries).toBe(0);
-    expect(client.timeout).toBeGreaterThan(0);
+    expect(client.timeout).toBe(SDK_HARD_TIMEOUT_MS);
   });
 });

@@ -144,9 +144,130 @@ export interface PostJsonOptions {
 }
 
 /**
+ * 流空闲超时缺省值（ms）：未配置 `requestTimeout` 时生效。
+ *
+ * 取 180s 而非更短：reasoning 模型首 token 前常有长时间静默（思考阶段），
+ * 阈值太短会误杀正常推理。180s 无任何数据已远超正常生成间隔，只可能是
+ * 链路挂死。
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 180_000;
+
+/**
+ * 空闲超时错误：**独立 name**，不得复用 `TimeoutError`。
+ *
+ * `isNetworkError` 把 `AbortError` / `TimeoutError` 归为可重试网络错误；
+ * 而流空闲超时发生时可能已产出部分内容，重试会导致重复输出，必须判不可重试。
+ * 用独立 name 让它走「无法归类 → 不可重试」分支（见 isRetryableError 注释）。
+ */
+export class StreamIdleTimeoutError extends Error {
+  constructor(readonly idleTimeoutMs: number) {
+    super(`流空闲超时：${idleTimeoutMs}ms 内未收到任何数据`);
+    this.name = "StreamIdleTimeoutError";
+  }
+}
+
+/**
+ * 空闲超时取值：
+ * - 显式配置的 `requestTimeout` 优先（≤0 或非有限值视为关闭）；
+ * - 未配置时读环境变量 `CLOUDMIND_STREAM_IDLE_TIMEOUT_MS`（"0" 关闭）；
+ * - 都没有则用 {@link DEFAULT_STREAM_IDLE_TIMEOUT_MS}。
+ *
+ * 未配置即完全无超时是缺陷而非特性（responses/anthropic 原实现只在
+ * `requestTimeout !== undefined` 时挂 signal），故缺省必须有值。
+ */
+export function resolveIdleTimeoutMs(configured?: number): number | undefined {
+  if (configured !== undefined) {
+    return Number.isFinite(configured) && configured > 0 ? configured : undefined;
+  }
+  const raw = process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    if (parsed === 0) return undefined; // 显式关闭
+    logger.warn(
+      { raw },
+      "[provider] CLOUDMIND_STREAM_IDLE_TIMEOUT_MS 取值非法，回落缺省空闲超时",
+    );
+  }
+  return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+}
+
+/** 空闲超时看护句柄（三个协议适配器共用；未启用时 signal 为 undefined，其余方法空转） */
+export interface IdleTimeout {
+  readonly signal: AbortSignal | undefined;
+  /** 每收到一个数据块调用一次，重置计时 */
+  reset: () => void;
+  /** 停止计时并清理定时器（流结束/出错后必须调用，防定时器泄漏） */
+  dispose: () => void;
+  /** 是否已因空闲超时触发 abort */
+  readonly timedOut: boolean;
+  /** 把底层错误映射为对外错误：超时 → StreamIdleTimeoutError，其余原样透传 */
+  mapError: (err: unknown) => unknown;
+}
+
+/**
+ * 创建空闲超时看护。
+ *
+ * **语义是「多久没数据」，不是「总共花了多久」**——流式长回答与 reasoning
+ * 长思考天然会超过任何固定总时长，用总时长会在正常任务上误杀。计时器在每次
+ * `reset()` 时重置，只有连续静默才触发。
+ *
+ * 定时器一律 `unref()`：看护不应阻止进程正常退出。
+ */
+export function createIdleTimeout(configuredMs?: number): IdleTimeout {
+  const ms = resolveIdleTimeoutMs(configuredMs);
+  if (ms === undefined) {
+    return {
+      signal: undefined,
+      reset: () => {},
+      dispose: () => {},
+      timedOut: false,
+      mapError: (err) => err,
+    };
+  }
+
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  let timedOut = false;
+
+  const arm = (): void => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new StreamIdleTimeoutError(ms));
+    }, ms);
+    // 别让看护定时器吊住进程退出
+    if (typeof timer.unref === "function") timer.unref();
+  };
+
+  arm();
+
+  return {
+    signal: controller.signal,
+    reset: arm,
+    dispose: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    },
+    get timedOut() {
+      return timedOut;
+    },
+    mapError: (err) => (timedOut ? new StreamIdleTimeoutError(ms) : err),
+  };
+}
+
+/**
  * JSON POST + SSE 响应读取。返回 (status, headers, sseData)：
  * - 非 2xx 抛 ProviderError（retryable 按状态分类）；
  * - 2xx 且 body 为 null / 非流式响应抛 ProviderError（不可重试，协议违约）。
+ *
+ * 超时语义（2026-11-01 P1）：`requestTimeout` 表示**流空闲超时**——发出请求后
+ * 开始计时、每收到一个 SSE 数据块重置，连续静默超过阈值才中断。此前用
+ * `AbortSignal.timeout` 作总时长，会在长回答上误杀；且未配置时根本不挂 signal
+ * （responses/anthropic 挂死即永久阻塞）。现统一为：有配置用配置值，无配置用
+ * 缺省 180s，`0` 显式关闭。
  */
 export async function postJsonStream(
   provider: string,
@@ -163,21 +284,27 @@ export async function postJsonStream(
     else headers.authorization = `Bearer ${options.apiKey}`;
   }
 
+  const idle = createIdleTimeout(options.requestTimeout);
+
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      ...(options.requestTimeout !== undefined
-        ? { signal: AbortSignal.timeout(options.requestTimeout) }
-        : {}),
+      ...(idle.signal !== undefined ? { signal: idle.signal } : {}),
     });
   } catch (err) {
-    throw toProviderError(provider, err);
+    idle.dispose();
+    throw toProviderError(
+      provider,
+      idle.mapError(err),
+      idle.timedOut ? { retryable: false } : undefined,
+    );
   }
 
   if (!response.ok) {
+    idle.dispose();
     // 尽量读错误正文辅助排障（读失败不覆盖原始错误）
     let detail = `HTTP ${response.status}`;
     try {
@@ -190,12 +317,13 @@ export async function postJsonStream(
   }
 
   if (!response.body) {
+    idle.dispose();
     throw toProviderError(provider, "SSE response has no body");
   }
   return {
     status: response.status,
     headers: response.headers,
-    data: readSseData(response.body),
+    data: readSseData(response.body, idle),
   };
 }
 
@@ -206,8 +334,15 @@ export async function postJsonStream(
  * - `:` 注释行、`event:`/`id:`/`retry:` 忽略（本协议族只消费 data）；
  * - `[DONE]`（chat completions 终结帧）不产出；
  * - 流结束仍有未 dispatch 的 data 行（无尾空行）也产出，容错各家网关。
+ *
+ * `idle` 为空闲超时看护：每次读到数据重置计时，读取抛错时把超时错误映射成
+ * {@link StreamIdleTimeoutError}（reader.read 在 abort 时抛的多是 AbortError，
+ * 不能直接上抛——那会被判成可重试网络错误）。
  */
-async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+async function* readSseData(
+  body: ReadableStream<Uint8Array>,
+  idle?: IdleTimeout,
+): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -230,7 +365,15 @@ async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<st
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      let read: ReadableStreamReadResult<Uint8Array>;
+      try {
+        read = await reader.read();
+      } catch (err) {
+        // abort 触发的拒绝可能是 AbortError（可重试类目），必须换成本意
+        throw idle ? idle.mapError(err) : err;
+      }
+      idle?.reset();
+      const { done, value } = read;
       if (done) {
         fullyConsumed = true;
         break;
@@ -257,6 +400,7 @@ async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<st
     dispatch();
     while (pending.length > 0) yield pending.shift() as string;
   } finally {
+    idle?.dispose();
     if (!fullyConsumed) {
       // 流可能已 error（网络断开/超时）：cancel 失败不覆盖原始错误
       try {

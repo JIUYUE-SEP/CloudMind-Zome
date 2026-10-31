@@ -12,8 +12,10 @@ import {
   createProtocolProvider,
 } from "../../src/provider/protocols/index.js";
 import {
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   isRetryableError,
   parseToolArgs,
+  resolveIdleTimeoutMs,
   toProviderError,
 } from "../../src/provider/protocols/shared.js";
 
@@ -1120,12 +1122,12 @@ describe("连接释放（review P2-1）", () => {
     expect(await waitClose(response!)).toBe(true);
   });
 
-  it("requestTimeout 超时中断：抛可重试 ProviderError，连接被释放", async () => {
+  it("requestTimeout 超时中断：抛不可重试 ProviderError，连接被释放", async () => {
     let response: http.ServerResponse | undefined;
     const server = await startMockServer((_req, res) => {
       response = res;
       res.writeHead(200, { "content-type": "text/event-stream" });
-      // 发一个事件后挂起，让 AbortSignal.timeout 在读取中途触发
+      // 发一个事件后挂起，让空闲超时在读取中途触发
       res.write('data: {"type":"response.output_text.delta","delta":"hi"}\n\n');
     });
     servers.push(server);
@@ -1138,8 +1140,93 @@ describe("连接释放（review P2-1）", () => {
 
     expect(events.some((e) => e.type === "text.delta")).toBe(true);
     expect(error).toBeInstanceOf(ProviderError);
-    expect((error as ProviderError).retryable).toBe(true);
+    // 2026-11-01 P1：空闲超时改判**不可重试**。本例已产出 text.delta，重试会让
+    // 用户看到重复输出；总时长时代判可重试，是因为 AbortSignal.timeout 的
+    // TimeoutError 被统一归入网络超时（宽松），并未区分「是否已产出内容」。
+    expect((error as ProviderError).retryable).toBe(false);
     expect(response).toBeDefined();
     expect(await waitClose(response!)).toBe(true);
+  });
+});
+
+describe("流空闲超时（2026-11-01 P1）", () => {
+  it("持续有数据的长回答不被总时长砍断（空闲语义 ≠ 总时长语义）", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      let n = 0;
+      const timer = setInterval(() => {
+        n += 1;
+        res.write(`data: {"type":"response.output_text.delta","delta":"chunk${n}"}\n\n`);
+        if (n >= 6) {
+          clearInterval(timer);
+          res.write(
+            'data: {"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+          );
+          res.end();
+        }
+      }, 50);
+      res.on("close", () => clearInterval(timer));
+    });
+    servers.push(server);
+
+    // 总时长约 300ms（6×50ms）远超 120ms 阈值，但每次间隔 50ms < 120ms
+    const provider = new OpenAIResponsesProvider("k", server.url, { requestTimeout: 120 });
+    const { events, error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeUndefined();
+    expect(events.filter((e) => e.type === "text.delta")).toHaveLength(6);
+    expect(events.at(-1)).toMatchObject({ type: "step.end" });
+  });
+
+  it("空闲超时错误名为 StreamIdleTimeoutError，且不判可重试", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      // 只发响应头，一个数据块都不发
+      res.write(": keep-alive\n\n");
+    });
+    servers.push(server);
+
+    const provider = new OpenAIResponsesProvider("k", server.url, { requestTimeout: 80 });
+    const { error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+    });
+
+    expect(error).toBeInstanceOf(ProviderError);
+    const cause = (error as ProviderError).cause as Error;
+    expect(cause.name).toBe("StreamIdleTimeoutError");
+    expect((error as ProviderError).retryable).toBe(false);
+  });
+
+  it("resolveIdleTimeoutMs：显式配置优先 / ≤0 关闭 / 缺省兜底", () => {
+    expect(resolveIdleTimeoutMs(5_000)).toBe(5_000);
+    expect(resolveIdleTimeoutMs(0)).toBeUndefined();
+    expect(resolveIdleTimeoutMs(-1)).toBeUndefined();
+    expect(resolveIdleTimeoutMs(Number.NaN)).toBeUndefined();
+
+    const saved = process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS;
+    try {
+      delete process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS;
+      expect(resolveIdleTimeoutMs(undefined)).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS);
+
+      process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS = "4500";
+      expect(resolveIdleTimeoutMs(undefined)).toBe(4_500);
+
+      // 显式配置压过环境变量
+      expect(resolveIdleTimeoutMs(9_000)).toBe(9_000);
+
+      process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS = "0";
+      expect(resolveIdleTimeoutMs(undefined)).toBeUndefined();
+
+      // 非法值回落缺省（不静默关闭）
+      process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS = "abc";
+      expect(resolveIdleTimeoutMs(undefined)).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS);
+    } finally {
+      if (saved === undefined) delete process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS;
+      else process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS = saved;
+    }
   });
 });
