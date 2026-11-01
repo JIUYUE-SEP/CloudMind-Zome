@@ -162,10 +162,12 @@ export async function startSidecarIfEnabled(deps: AutostartDeps): Promise<void> 
 }
 
 /** POSIX 两段式（spec 决策 5）：SIGTERM → 超时 SIGKILL；Windows taskkill /T /F（MCP 同纪律） */
-async function terminateChild(child: ChildProcess, killAfterMs: number): Promise<void> {
+async function terminateChild(child: ChildProcess, killAfterMs: number, spawnFn: typeof spawn = spawn): Promise<void> {
   if (process.platform === "win32") {
     await new Promise<void>((resolve) => {
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      // spawnFn 可注入（2026-11-01 review H-1）：win32 分支不经过 child.kill，
+      // 此前测试按 POSIX 断言 killCalls 在 Windows 上必失败，等于 taskkill 路径零覆盖
+      const killer = spawnFn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
       killer.once("exit", () => resolve());
       killer.once("error", () => resolve());
     });
@@ -199,12 +201,12 @@ async function terminateChild(child: ChildProcess, killAfterMs: number): Promise
  * 关停（engine shutdown 链调用）：两段式终止本进程 spawn 的 sidecar；
  * 全程不抛（浮空 promise 禁令——内部异常一律 warn 吞掉，不阻断退出）。
  */
-export async function stopSidecar(opts?: { killAfterMs?: number }): Promise<void> {
+export async function stopSidecar(opts?: { killAfterMs?: number; spawnFn?: typeof spawn }): Promise<void> {
   const child = spawnedChild;
   spawnedChild = undefined;
   if (!child) return;
   try {
-    await terminateChild(child, opts?.killAfterMs ?? SIGKILL_AFTER_MS);
+    await terminateChild(child, opts?.killAfterMs ?? SIGKILL_AFTER_MS, opts?.spawnFn);
   } catch (err) {
     logger.warn({ err: err }, "[sidecar-autostart] 关停 sidecar 异常（不阻断退出）");
   }

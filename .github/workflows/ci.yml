@@ -71,3 +71,32 @@ jobs:
           flags: engine
           name: engine-coverage
           fail_ci_if_error: false
+
+  # 平台差异兜底（2026-11-01 review H-3）：Windows 才是实际运行环境，而路径
+  # 分隔符 / `.exe` 后缀 / SIGTERM 语义 / pnpm 的 `.cmd` shim 在 ubuntu 上永远绿。
+  # 2026-11-01 之前 sidecar 自启的 4 个用例在 Windows 长期红（测试硬编码 POSIX
+  # 路径 + 忽略 taskkill 分支），正是单平台 CI 看不见的盲区。
+  # 只跑两端测试（跳过 cargo / 构建链），把差异挡在合并前，时长可控。
+  windows-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # engine 测试直接 import @cloudmind/shared 的产物，未构建会解析失败
+      - name: Build shared
+        run: pnpm --filter @cloudmind/shared build
+
+      - name: Test engine and web
+        run: pnpm --filter @cloudmind/engine --filter @cloudmind/web test

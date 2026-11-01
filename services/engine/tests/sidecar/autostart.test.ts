@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { spawn as realSpawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,22 @@ import { ConfigRepository } from "../../src/config/repository.js";
 import { registerConfigRoutes } from "../../src/api/routes/config.js";
 import type { ApiContext } from "../../src/api/context.js";
 import { restoreDataDir } from "../helpers/env.js";
+
+/**
+ * 平台口径（2026-11-01 review H-1）：必须与 `src/sidecar/autostart.ts` 的
+ * `winExe()` / `findOnPath()` 严格同源——win32 上二进制补 `.exe`、PATH 分隔符
+ * 是 `;`、`path.join` 产出反斜杠。此前这里硬编码 POSIX 字面量
+ * （`/repo/.../zome-sidecar`），`Set.has()` 在 Windows 永不命中 → 发现序返回
+ * undefined → spawn/关停 3 例连锁失败，等于这三块逻辑在 Windows 零覆盖。
+ */
+const EXE = process.platform === "win32" ? ".exe" : "";
+const PATH_DELIM = process.platform === "win32" ? ";" : ":";
+const REPO_DIR = "/repo";
+/** 仓内路径基准：走 path.join，与实现同口径（win32 得 `\repo\...`） */
+const repoPath = (...segments: string[]) => path.join(REPO_DIR, ...segments);
+/** 某目录下的 sidecar 可执行文件（win32 带 .exe） */
+const sidecarIn = (dir: string) => path.join(dir, `zome-sidecar${EXE}`);
+
 
 /** 假子进程（生产真形状的 EventEmitter 面：stdout/stderr/error/exit/kill） */
 class FakeChild extends EventEmitter {
@@ -74,33 +91,39 @@ afterEach(() => {
 });
 
 describe("resolveSidecarBin 发现序（决策 3）", () => {
-  const base = { envBin: undefined as string | undefined, pathEnv: "", repoDir: "/repo" };
+  const base = { envBin: undefined as string | undefined, pathEnv: "", repoDir: REPO_DIR };
 
   it("逐档：envBin → release → debug → PATH → cargo 兜底 → 全灭 undefined", async () => {
     const exists = (set: Set<string>) => async (p: string) => set.has(p);
 
-    // 1. envBin 优先
+    // 1. envBin 优先（原样传递，不经 path.join——与实现一致）
     const r1 = await resolveSidecarBin({ ...base, envBin: "/opt/sidecar", existsFn: exists(new Set(["/opt/sidecar"])) });
     expect(r1).toMatchObject({ command: "/opt/sidecar", args: [] });
 
     // 2. 仓内 release
-    const release = "/repo/crates/zome-sidecar/target/release/zome-sidecar";
+    const release = repoPath("crates", "zome-sidecar", "target", "release", `zome-sidecar${EXE}`);
     const r2 = await resolveSidecarBin({ ...base, envBin: "/missing", existsFn: exists(new Set([release])) });
     expect(r2).toMatchObject({ command: release, args: [] });
 
     // 3. 仓内 debug
-    const debug = "/repo/crates/zome-sidecar/target/debug/zome-sidecar";
+    const debug = repoPath("crates", "zome-sidecar", "target", "debug", `zome-sidecar${EXE}`);
     const r3 = await resolveSidecarBin({ ...base, existsFn: exists(new Set([debug])) });
     expect(r3).toMatchObject({ command: debug, args: [] });
 
-    // 4. PATH
-    const r4 = await resolveSidecarBin({ ...base, pathEnv: "/binA:/binB", existsFn: exists(new Set(["/binB/zome-sidecar"])) });
-    expect(r4).toMatchObject({ command: "/binB/zome-sidecar", args: [] });
+    // 4. PATH（分隔符按平台：win32 是 `;`）
+    const onPath = sidecarIn("/binB");
+    const r4 = await resolveSidecarBin({
+      ...base,
+      pathEnv: ["/binA", "/binB"].join(PATH_DELIM),
+      existsFn: exists(new Set([onPath])),
+    });
+    expect(r4).toMatchObject({ command: onPath, args: [] });
 
-    // 5. cargo 兜底（无二进制但 PATH 有 cargo 且 manifest 在）
-    const manifest = "/repo/crates/zome-sidecar/Cargo.toml";
-    const r5 = await resolveSidecarBin({ ...base, pathEnv: "/usr/bin", existsFn: exists(new Set(["/usr/bin/cargo", manifest])) });
-    expect(r5).toMatchObject({ command: "/usr/bin/cargo", args: ["run", "--manifest-path", manifest] });
+    // 5. cargo 兜底（无二进制但 PATH 有 cargo 且 manifest 在；win32 候选首个是 cargo.exe）
+    const manifest = repoPath("crates", "zome-sidecar", "Cargo.toml");
+    const cargo = path.join("/usr/bin", `cargo${EXE}`);
+    const r5 = await resolveSidecarBin({ ...base, pathEnv: "/usr/bin", existsFn: exists(new Set([cargo, manifest])) });
+    expect(r5).toMatchObject({ command: cargo, args: ["run", "--manifest-path", manifest] });
 
     // 6. 全灭
     const r6 = await resolveSidecarBin({ ...base, existsFn: exists(new Set()) });
@@ -151,7 +174,7 @@ describe("startSidecarIfEnabled（决策 1/2/4）", () => {
   });
 
   it("spawn 成功：env 三键注入 + stdio pipe，不等就绪直接返回", async () => {
-    const binPath = "/repo/crates/zome-sidecar/target/release/zome-sidecar";
+    const binPath = repoPath("crates", "zome-sidecar", "target", "release", `zome-sidecar${EXE}`);
     const deps = makeDeps({ existsFn: async (p) => p === binPath });
     await startSidecarIfEnabled(deps);
     expect(deps.spawnCalls).toHaveLength(1);
@@ -177,17 +200,40 @@ describe("startSidecarIfEnabled（决策 1/2/4）", () => {
 });
 
 describe("stopSidecar 两段式关停（决策 5）", () => {
-  it("SIGTERM 后进程退出：不升级 SIGKILL", async () => {
+  const isWin = process.platform === "win32";
+
+  it("进程按时退出：POSIX 只发 SIGTERM 不升级；win32 走 taskkill /T /F", async () => {
     const deps = makeDeps({ existsFn: async () => true });
     await startSidecarIfEnabled(deps);
-    const stopping = stopSidecar({ killAfterMs: 200 });
+    const killerCalls: unknown[][] = [];
+    const fakeKiller = new EventEmitter();
+    // win32 分支不经过 child.kill（无 POSIX 信号语义，直接 taskkill 强杀），
+    // 只能经注入的 spawnFn 断言真实命令（2026-11-01 review H-1）
+    const stopping = stopSidecar({
+      killAfterMs: 200,
+      spawnFn: ((...args: unknown[]) => {
+        killerCalls.push(args);
+        // once("exit") 在 spawnFn 返回后才挂，必须异步 emit 否则 promise 永不 resolve
+        setTimeout(() => fakeKiller.emit("exit", 0, null), 0);
+        return fakeKiller;
+      }) as unknown as typeof realSpawn,
+    });
     await new Promise((r) => setTimeout(r, 30));
     deps.child.emit("exit", 0, null);
     await stopping;
-    expect(deps.child.killCalls).toEqual(["SIGTERM"]);
+    if (isWin) {
+      expect(killerCalls).toHaveLength(1);
+      expect(killerCalls[0][0]).toBe("taskkill");
+      expect(killerCalls[0][1]).toEqual(["/pid", "12345", "/T", "/F"]);
+      expect(deps.child.killCalls).toEqual([]);
+    } else {
+      expect(deps.child.killCalls).toEqual(["SIGTERM"]);
+      expect(killerCalls).toHaveLength(0);
+    }
   });
 
-  it("SIGTERM 超时未退出：升级 SIGKILL", async () => {
+  // win32 无「先礼后兵」两段式：taskkill /F 一步强杀，本用例语义仅存在于 POSIX
+  it.skipIf(isWin)("SIGTERM 超时未退出：升级 SIGKILL", async () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const deps = makeDeps({ existsFn: async () => true });
     await startSidecarIfEnabled(deps);

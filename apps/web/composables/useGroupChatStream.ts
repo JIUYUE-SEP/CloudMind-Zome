@@ -162,6 +162,7 @@ export function useGroupChatStream() {
     onTextDelta: (delta: string, agentId?: string) => {
       // 与私聊（stores/chat.ts）同口径的双重防御：非 string 的 delta 帧丢弃，不建槽
       if (typeof delta !== "string") {
+        // eslint-disable-next-line no-console -- 协议异常防御：非 string 帧丢弃须留痕
         console.warn("dropping non-string text.delta frame", delta);
         return;
       }
@@ -169,6 +170,7 @@ export function useGroupChatStream() {
     },
     onThinkingDelta: (delta: string, agentId?: string) => {
       if (typeof delta !== "string") {
+        // eslint-disable-next-line no-console -- 协议异常防御：非 string 帧丢弃须留痕
         console.warn("dropping non-string thinking.delta frame", delta);
         return;
       }

@@ -172,6 +172,7 @@ export const useChatStore = defineStore("chat", () => {
         if (stale()) return;
         // 防御：非 string 的 delta 帧直接丢弃（engine 侧已校验，这里双重防御）
         if (typeof delta !== "string") {
+          // eslint-disable-next-line no-console -- 协议异常防御：非 string 帧丢弃须留痕
           console.warn("dropping non-string text.delta frame", delta);
           return;
         }
@@ -192,6 +193,7 @@ export const useChatStore = defineStore("chat", () => {
       onThinkingDelta: (delta) => {
         if (stale()) return;
         if (typeof delta !== "string") {
+          // eslint-disable-next-line no-console -- 协议异常防御：非 string 帧丢弃须留痕
           console.warn("dropping non-string thinking.delta frame", delta);
           return;
         }
