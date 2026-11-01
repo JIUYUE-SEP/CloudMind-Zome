@@ -210,6 +210,8 @@ export class AnthropicMessagesProvider implements LLMProvider {
         apiKeyHeader: "x-api-key",
         headers: { "anthropic-version": ANTHROPIC_VERSION },
         requestTimeout: this.options.requestTimeout,
+        // 2026-11-01 P2：外部取消信号贯通到 fetch，中断不再等当前步自然结束
+        signal: params.signal,
       });
 
       // index → 进行中的 tool_use 累加器（opencode ToolStream<number> 的 CMZ 版）

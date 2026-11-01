@@ -37,8 +37,20 @@ export interface StepEndEvent {
  * 与 step.end 区分——后者每个 loop step 都会发，tool_use 时循环继续；
  * 前端应只在 turn.end / error / close 时复位"生成中"状态。
  */
+/**
+ * 回合中断原因（2026-11-01 P2）：终帧带它，前端才能把气泡标成「已中断」而不是
+ * 当成正常结束或故障。取值来自 signal.reason，认不出时回落 "user"（现有四个
+ * 创建方——plans / blueprint / handoff / 未来的 watchdog——都是主动取消）。
+ */
+export type TurnAbortReason = "user" | "watchdog" | "timeout" | "shutdown";
+
 export interface TurnEndEvent {
   type: "turn.end";
+  /**
+   * 仅在**被中断**时出现；正常结束不带该字段（保持既有帧形状不变，
+   * 老前端零改动）。语义是「本轮生成终止且非正常收尾」。
+   */
+  aborted?: { reason: TurnAbortReason };
 }
 
 /**
@@ -79,6 +91,16 @@ export interface LLMChatParams {
   temperature?: number;
   topP?: number;
   maxTokens?: number;
+  /**
+   * 外部取消信号（控制面，非数据面）：abort 时立即中断在途请求。
+   *
+   * 2026-11-01 P2：此前 signal 只到 runTurn 的循环顶部检查，正在进行的
+   * LLM 调用无法被打断——中断必须等当前步自然结束。把 signal 放进 params
+   * 而非加第二参数，是为了让 resilient / record-calls / ModelApiModeRouter
+   * 三层包装原样透传，零改动。与协议层的空闲超时互补：空闲超时管「多久
+   * 没数据」，本信号管「调用方要求立刻停」。
+   */
+  signal?: AbortSignal;
 }
 
 /**

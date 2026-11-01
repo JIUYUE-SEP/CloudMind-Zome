@@ -2,7 +2,7 @@ import { logger } from "../logger.js";
 import type { ChatMessage, ChatMessageRecord } from "@cloudmind/shared";
 import { randomUUID } from "node:crypto";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import type { LLMProvider, LLMEvent, LLMChatParams } from "../provider/types.js";
+import type { LLMProvider, LLMEvent, LLMChatParams, TurnAbortReason } from "../provider/types.js";
 import { runTurn, type TurnInput } from "./react/turn.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import type { ConfigRepository } from "../config/repository.js";
@@ -245,6 +245,30 @@ export interface ApprovalRequest {
  * 只带 id/计数等元信息，不带消息正文——断言/观察消费者自行 read-back，
  * 事件面不复制敏感内容。
  */
+/**
+ * 从取消信号解析中断原因（2026-11-01 P2）。
+ *
+ * 现有四个 AbortController 创建方（plans 步骤超时、blueprint 节点超时、
+ * handoff 续跑取消、subagent 停止）都调 `.abort()` 不传 reason；未来的
+ * watchdog 会显式传 `{ reason: "watchdog" }` 便于归因。认不出的一律按
+ * 主动取消（"user"）处理——宁可粗归类，也不给前端一个空的未知标记。
+ */
+function resolveAbortReason(signal: AbortSignal): TurnAbortReason {
+  const raw: unknown = signal.reason;
+  const candidate =
+    typeof raw === "string"
+      ? raw
+      : typeof raw === "object" && raw !== null && "reason" in raw
+        ? (raw as { reason?: unknown }).reason
+        : undefined;
+  return candidate === "watchdog" ||
+    candidate === "timeout" ||
+    candidate === "shutdown" ||
+    candidate === "user"
+    ? candidate
+    : "user";
+}
+
 /** llm/request：worker 回合内每次 provider.chat 发起前（waterfall） */
 export interface LLMRequestEvent {
   agentId: string;
@@ -1057,11 +1081,18 @@ export class AgentWorker {
       }
     } catch (err) {
       jobError = err;
+      // 2026-11-01 P2：中断与故障分流。中断（外部取消）不是事故——不刷错误
+      // 气泡、不跑话题边界语义裁判（它基于「一次完整交互」，半截回合送进去
+      // 只会误判且白烧一次 LLM 调用）、终帧带 aborted.reason 让前端标「已中断」。
+      const abortReason: TurnAbortReason | undefined =
+        job.signal?.aborted === true ? resolveAbortReason(job.signal) : undefined;
       // Minor-3：异常 turn 已按 step 落盘的消息必须并入话题体系——只进
       // stepPersisted 快照不进 tracker 会脱离话题（永不归档/压缩/索引，
       // 永久滞留热存储且每轮进上下文；P3-3 起每次 provider 抖动都产生一条）。
       // incomplete 半截消息同样入话题：它是用户上屏的真实内容，incomplete
-      // 标记仅供排查，不影响其作为正常 assistant 消息归档/压缩/索引
+      // 标记仅供排查，不影响其作为正常 assistant 消息归档/压缩/索引。
+      // P2 复核结论：中断路径**保留**本段——消息是完整 step，脱离话题才是
+      // 真问题；与 §2.2「不参与话题生命周期」的差异仅在跳过语义裁判。
       if (!turnAppended && stepPersisted.length > 0) {
         const closedOnError = this.topicTracker.onTurnAppended(stepPersisted, sessionId);
         if (closedOnError) {
@@ -1069,19 +1100,24 @@ export class AgentWorker {
           await this.enqueueCompression(closedOnError);
         }
         await this.persistTopicState();
-        this.maybeRunTopicJudge();
+        if (abortReason === undefined) this.maybeRunTopicJudge();
         this.indexTurnMessages([...(lastUser ? [lastUser] : []), ...stepPersisted]);
       }
       // abort 是用户主动中断（正常操作），不刷错误气泡；其余异常保留错误文本
-      if (!job.signal?.aborted) {
+      if (abortReason === undefined) {
         job.onEvent({ type: "text.delta", delta: `\nError: ${String(err)}` });
       }
       // P3-1（功能 M2）：异常路径补终帧。turn.end 唯一发出点在 runTurn 正常
       // 退出，provider/工具抛错、abort 都走不到，前端"生成中"永锁。
       // 语义：turn.end = 本轮生成终止（含异常终止）；能进 catch 说明 runTurn
       // 未发出，不存在双发；前端私聊（chat.ts onTurnEnd 复位 isStreaming）与
-      // 群聊（useGroupChatStream closeSlot）现有逻辑直接生效，协议不动。
-      job.onEvent({ type: "turn.end" });
+      // 群聊（useGroupChatStream closeSlot）现有逻辑直接生效。
+      // 2026-11-01 P2：中断时附 aborted.reason；正常结束帧形状保持不变。
+      job.onEvent(
+        abortReason !== undefined
+          ? { type: "turn.end", aborted: { reason: abortReason } }
+          : { type: "turn.end" },
+      );
     } finally {
       this.runningJob = null;
       // P8b 事件缝（turn/end）：成功与异常路径都发——与既有终帧语义一致

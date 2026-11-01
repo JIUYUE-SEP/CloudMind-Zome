@@ -14,6 +14,7 @@ import {
 import {
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   isRetryableError,
+  isTurnAbortedError,
   parseToolArgs,
   resolveIdleTimeoutMs,
   toProviderError,
@@ -1228,5 +1229,56 @@ describe("流空闲超时（2026-11-01 P1）", () => {
       if (saved === undefined) delete process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS;
       else process.env.CLOUDMIND_STREAM_IDLE_TIMEOUT_MS = saved;
     }
+  });
+});
+
+describe("外部取消（2026-11-01 P2）", () => {
+  it("signal abort 立即中断在途流，不等空闲超时", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"type":"response.output_text.delta","delta":"hi"}\n\n');
+      // 之后挂起：只有外部 signal 能把它掐断
+    });
+    servers.push(server);
+
+    const controller = new AbortController();
+    // 空闲超时设 60s——若中断依赖它，本用例会跑满一分钟
+    const provider = new OpenAIResponsesProvider("k", server.url, { requestTimeout: 60_000 });
+    setTimeout(() => controller.abort({ reason: "watchdog" }), 50);
+
+    const startedAt = Date.now();
+    const { error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+      signal: controller.signal,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(isTurnAbortedError(error)).toBe(true);
+    // 外部取消不可重试，也不能被 resilient 当成可降级故障
+    expect((error as ProviderError).retryable).toBe(false);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  it("signal 已 abort 时上游直接失败，不发请求", async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end();
+    });
+    servers.push(server);
+
+    const controller = new AbortController();
+    controller.abort();
+    const provider = new OpenAIResponsesProvider("k", server.url);
+
+    const { error } = await collect(provider, {
+      model: "deepseek-v4-flash",
+      messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: new Date().toISOString() }],
+      signal: controller.signal,
+    });
+
+    expect(isTurnAbortedError(error)).toBe(true);
+    expect((error as ProviderError).retryable).toBe(false);
   });
 });

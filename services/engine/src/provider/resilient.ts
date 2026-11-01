@@ -1,7 +1,7 @@
 import { logger } from "../logger.js";
 import type { LLMProvider, LLMChatParams, LLMEvent, LLMProviderProtocol } from "./types.js";
 import { ProviderError } from "./errors.js";
-import { isRetryableError } from "./protocols/shared.js";
+import { isRetryableError, isTurnAbortedError } from "./protocols/shared.js";
 
 export interface ResilientProviderOptions {
   /** 同一 provider 的失败重试次数（ProviderConfig.maxRetries，默认 2）；备用 provider 同样享受 */
@@ -97,6 +97,12 @@ export class ResilientLLMProvider implements LLMProvider {
             try {
               first = await iterator.next();
             } catch (err) {
+              // 2026-11-01 P2：外部取消既不是重试的对象，也不是降级的理由——
+              // 用户要求停就停，换个备用 provider 重跑语义荒谬。原样上抛，
+              // 由 turn 收尾路径按「已中断」处理（不是故障）。
+              if (isTurnAbortedError(err) || params.signal?.aborted) {
+                throw err;
+              }
               // 首事件前的失败才可重试/降级
               const retryable = isRetryableError(err);
               attempts.push(`${current.name}#${attempt + 1}: ${String(err)}`);

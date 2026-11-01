@@ -670,6 +670,76 @@ ${SECURITY_GUIDELINE}` },
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
   });
 
+  it("中断终帧：turn.end 带 aborted.reason，且不刷错误气泡（2026-11-01 P2）", async () => {
+    const controller = new AbortController();
+    const abortingTool: Tool = {
+      name: "aborter",
+      description: "aborts the job signal when executed",
+      parameters: z.object({}),
+      accesses: [],
+      async execute(): Promise<ToolResult> {
+        // 未来的 watchdog 就按这个形状传原因；此处验证归因链贯通
+        controller.abort({ reason: "watchdog" });
+        return { success: true, output: "aborting now" };
+      },
+    };
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc-1", name: "aborter", arguments: {} }]);
+    const worker = new AgentWorker(makeConfig(provider, {}, [abortingTool]));
+    const events: LLMEvent[] = [];
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-abort-reason",
+      messages: [userMessage("go")],
+      signal: controller.signal,
+      onEvent: (e) => events.push(e),
+      onDone,
+    });
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    const ends = events.filter((e) => e.type === "turn.end");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ type: "turn.end", aborted: { reason: "watchdog" } });
+    // 中断是正常操作，不该刷错误气泡（沿用既有语义，回归保护）
+    expect(
+      events.some((e) => e.type === "text.delta" && String(e.delta).includes("Error")),
+    ).toBe(false);
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("中断终帧：signal 无 reason 时归为 user（认不出就粗归类）", async () => {
+    const controller = new AbortController();
+    const abortingTool: Tool = {
+      name: "aborter",
+      description: "aborts without reason",
+      parameters: z.object({}),
+      accesses: [],
+      async execute(): Promise<ToolResult> {
+        controller.abort();
+        return { success: true, output: "aborting now" };
+      },
+    };
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc-1", name: "aborter", arguments: {} }]);
+    const worker = new AgentWorker(makeConfig(provider, {}, [abortingTool]));
+    const events: LLMEvent[] = [];
+    const onDone = vi.fn();
+
+    worker.enqueue({
+      id: "j-abort-default",
+      messages: [userMessage("go")],
+      signal: controller.signal,
+      onEvent: (e) => events.push(e),
+      onDone,
+    });
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    const ends = events.filter((e) => e.type === "turn.end");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ type: "turn.end", aborted: { reason: "user" } });
+  });
+
   it("provider 抛错：补发 turn.end 终帧（P3-1），错误文本在前、终帧恰好一次", async () => {    class ThrowProvider implements LLMProvider {
       name = "throw";
       supportsModel() {

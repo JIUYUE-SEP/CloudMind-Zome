@@ -210,6 +210,8 @@ export class OpenAIResponsesProvider implements LLMProvider {
       const { data } = await postJsonStream(this.name, url, body, {
         apiKey: this.apiKey,
         requestTimeout: this.options.requestTimeout,
+        // 2026-11-01 P2：外部取消信号贯通到 fetch，中断不再等当前步自然结束
+        signal: params.signal,
       });
 
       // item_id → 进行中的 function_call 累加器（opencode ToolStream 的 CMZ 版）

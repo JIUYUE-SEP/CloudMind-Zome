@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_TOOL_RESULT_TOKENS,
   truncateToolResultText,
 } from "../../context/truncate.js";
+import { TurnAbortedError } from "../../provider/protocols/shared.js";
 
 export interface StepInput {
   provider: LLMProvider;
@@ -75,7 +76,7 @@ function safeSerializeToolOutput(output: unknown): string {
 }
 
 export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) => void): Promise<StepResult> {
-  if (input.signal?.aborted) throw new Error("aborted");
+  if (input.signal?.aborted) throw new TurnAbortedError(input.signal.reason);
   const params: LLMChatParams = {
     model: input.model,
     messages: input.messages,
@@ -83,6 +84,9 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     topP: input.topP,
+    // 2026-11-01 P2：取消信号随请求下发，在途 LLM 调用可被打断（此前只能
+    // 等当前步自然结束，中断延迟最长等于一次完整生成）
+    signal: input.signal,
   };
 
   let textBuffer = "";
@@ -97,7 +101,7 @@ export async function executeLoopStep(input: StepInput, emit: (event: LLMEvent) 
 
   try {
     for await (const event of input.provider.chat(params)) {
-      if (input.signal?.aborted) throw new Error("aborted");
+      if (input.signal?.aborted) throw new TurnAbortedError(input.signal.reason);
       emit(event);
       if (event.type === "step.end") {
         finishReason = event.finishReason;

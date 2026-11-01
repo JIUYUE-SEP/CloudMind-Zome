@@ -18,6 +18,9 @@
         {{ displayedText }}<span v-if="showCursor" class="cursor" aria-hidden="true" />
       </p>
 
+      <!-- 中断尾注（2026-11-01 P2）：已显示文本保留，只标状态，不吞内容 -->
+      <p v-if="aborted" class="aborted-hint">已中断</p>
+
       <!-- 工具调用卡片 -->
       <details
         v-for="tool in toolCalls"
@@ -81,6 +84,8 @@ const props = withDefaults(
     thinking?: string;
     toolCalls?: DisplayToolCall[];
     isStreaming?: boolean;
+    /** 本轮被中断结束（2026-11-01 P2）：终帧带 aborted.reason 时置位 */
+    aborted?: boolean;
     /** 当前会话归属 agent（generate_image 出图经 /api/agent-file 代理取流时拼接用）；群聊按消息归属传 */
     agentId?: string;
   }>(),
@@ -270,6 +275,14 @@ function onImageError(toolCallId: string) {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+}
+/* 中断尾注（2026-11-01 P2）：弱化到辅助信息层，不与正文争注意力 */
+.aborted-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  font-style: italic;
+  opacity: 0.6;
+  color: inherit;
 }
 /* 工具结果消息弱化显示，避免与用户/助手气泡混淆 */
 .role-tool .message-content {

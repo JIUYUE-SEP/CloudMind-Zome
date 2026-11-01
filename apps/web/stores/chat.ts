@@ -100,11 +100,14 @@ export const useChatStore = defineStore("chat", () => {
     reconnectAttempts.value = 0;
 
     // 流式中断（turn 结束/出错/断连）时复位最后一条气泡的 streaming 态，
-    // 否则光标与打字机永不停止
-    const sealLastAssistant = () => {
+    // 否则光标与打字机永不停止。
+    // 2026-11-01 P2：aborted=true 时额外标记「已中断」——用户要能区分「正常说完」
+    // 与「被看门狗/取消掐断」，后者已显示的文本不丢，只是加个尾注
+    const sealLastAssistant = (aborted = false) => {
       const last = messages.value[messages.value.length - 1];
       if (last && last.role === "assistant") {
         last.isStreaming = false;
+        if (aborted) last.aborted = true;
       }
     };
 
@@ -243,11 +246,11 @@ export const useChatStore = defineStore("chat", () => {
         setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
         messages.value.push(createApprovalMessage(request));
       },
-      onTurnEnd: () => {
+      onTurnEnd: (_agentId, aborted) => {
         if (stale()) return;
         // 一轮生成结束才复位流式态；step.end 每个 ReAct step 都发，
         // 若在 step 边界复位，工具执行期间输入框会提前解锁
-        sealLastAssistant();
+        sealLastAssistant(aborted !== undefined);
         isStreaming.value = false;
       },
       onError: (error) => {

@@ -17,7 +17,7 @@ export interface WebSocketHandlers {
   onStepEnd?: (finishReason?: string, agentId?: string) => void;
   // 一轮生成结束（与 step.end 区分：后者每个 ReAct step 都发）；
   // 输入框锁定等"生成中"状态只应在 turn.end / error / close 时复位
-  onTurnEnd?: (agentId?: string) => void;
+  onTurnEnd?: (agentId?: string, aborted?: { reason?: string }) => void;
   onError?: (error: string) => void;
   onClose?: (code?: number, reason?: string) => void;
   // 异常断开后的自动重连（P0-3）：第 attempt 次重试将在 delayMs 后发起
@@ -148,10 +148,21 @@ export function createManagedWsConnection(
             if (isSession) handlers.onStepEnd?.(data.finishReason, data.agentId);
             else handlers.onStepEnd?.(data.finishReason);
             break;
-          case "turn.end":
-            if (isSession) handlers.onTurnEnd?.(data.agentId);
-            else handlers.onTurnEnd?.();
+          case "turn.end": {
+            // 2026-11-01 P2：中断结束的终帧带 aborted.reason（正常结束不带该字段，
+            // 帧形状不变）。只在有中断信息时才传第二参数——保持既有调用形状，
+            // 老调用方与测试无需改动。
+            const aborted = data.aborted as { reason?: string } | undefined;
+            if (isSession) {
+              if (aborted) handlers.onTurnEnd?.(data.agentId, aborted);
+              else handlers.onTurnEnd?.(data.agentId);
+            } else if (aborted) {
+              handlers.onTurnEnd?.(undefined, aborted);
+            } else {
+              handlers.onTurnEnd?.();
+            }
             break;
+          }
           case "handoff.update":
             handlers.onHandoffUpdate?.(data);
             break;

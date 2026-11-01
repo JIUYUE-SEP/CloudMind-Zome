@@ -20,6 +20,12 @@ export interface DisplayMessage {
   thinking: string;
   toolCalls: DisplayToolCall[];
   isStreaming: boolean;
+  /**
+   * 本轮是被中断结束的（2026-11-01 P2）：终帧带 aborted.reason 时置位。
+   * 仅内存态，不落库、不出现在历史重建里——历史消息是既成事实，
+   * 「当时被中断」属于瞬时视图信息。
+   */
+  aborted?: boolean;
   // 群聊中该消息归属的 Agent（历史来自 engine 标注，流式来自帧携带）；私聊/user 消息为空
   agentId?: string;
   approval?: ApprovalInfo;

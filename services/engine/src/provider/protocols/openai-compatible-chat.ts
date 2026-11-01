@@ -2,7 +2,13 @@ import { logger } from "../../logger.js";
 import OpenAI from "openai";
 import type { LLMProvider, LLMChatParams, LLMEvent } from "../types.js";
 import { ProviderError } from "../errors.js";
-import { createIdleTimeout, isRetryableError, truncateLogText } from "./shared.js";
+import {
+  createIdleTimeout,
+  isRetryableError,
+  mergeSignals,
+  truncateLogText,
+  TurnAbortedError,
+} from "./shared.js";
 
 /**
  * OpenAI SDK 总时长硬兜底（ms）。
@@ -62,6 +68,8 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
 
   async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
     const idle = createIdleTimeout(this.options?.requestTimeout);
+    // 2026-11-01 P2：外部取消信号与空闲超时合并，任一触发都中断
+    const requestSignal = mergeSignals(params.signal, idle.signal);
     try {
       const response = await this.client.chat.completions.create({
         model: params.model,
@@ -96,7 +104,7 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
         // P4-5：请求流式 usage（OpenAI 协议标准参数；不支持的网关会在
         // provider 层显式报错而非静默错），落档拿不到时 tokens 记 0
         stream_options: { include_usage: true },
-      }, idle.signal !== undefined ? { signal: idle.signal } : {});
+      }, requestSignal !== undefined ? { signal: requestSignal } : {});
 
       const toolCallBuffers = new Map<number, { id: string; name: string; args: string }>();
       let finalFinishReason: string | undefined;
@@ -172,11 +180,13 @@ export class OpenAICompatibleChatProvider implements LLMProvider {
     } catch (err) {
       // 不再原地 yield 错误文本：错误展示职责上移给 resilient 层
       // （全链失败时统一告知），此处只抛出带分类信息的 ProviderError
-      // 空闲超时映射为 StreamIdleTimeoutError 并强制不可重试——流可能已产出
-      // 部分内容，重试会造成重复输出
-      const mapped = idle.mapError(err);
+      // 2026-11-01 P2：外部取消优先判定——它是「调用方要求停」，既非故障也非
+      // 空闲超时；映射为 TurnAbortedError 并强制不可重试。空闲超时同样不可
+      // 重试（流可能已产出部分内容，重试会重复输出）。
+      const aborted = params.signal?.aborted === true;
+      const mapped = aborted ? new TurnAbortedError(params.signal?.reason) : idle.mapError(err);
       throw new ProviderError("openai", mapped, {
-        retryable: idle.timedOut ? false : isRetryableError(mapped),
+        retryable: aborted || idle.timedOut ? false : isRetryableError(mapped),
       });
     } finally {
       idle.dispose();

@@ -34,6 +34,7 @@
             :thinking="msg.thinking"
             :tool-calls="msg.toolCalls"
             :is-streaming="msg.isStreaming"
+            :aborted="msg.aborted"
             :agent-id="msg.agentId"
           />
         </div>

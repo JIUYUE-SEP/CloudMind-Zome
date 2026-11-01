@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@cloudmind/shared";
 import type { LLMProvider, LLMEvent, LLMChatParams } from "../../provider/types.js";
 import { executeLoopStep, StepStreamError, type StepInput, type StepResult } from "./step.js";
+import { TurnAbortedError } from "../../provider/protocols/shared.js";
 import type { ToolExecutionContext } from "./tool-call.js";
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -304,7 +305,7 @@ export async function runTurn(
 
   for (; step < maxSteps && !watermarkStop; step++) {
     if (input.signal?.aborted) {
-      throw new Error("aborted");
+      throw new TurnAbortedError(input.signal.reason);
     }
     // 按需工具目录：步前重读工具表（上一步 load_tool 的取回本步生效）；
     // 未接 refreshTools 时 tools 整轮固定，与现状恒等

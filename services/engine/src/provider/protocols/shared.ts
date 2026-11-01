@@ -141,6 +141,8 @@ export interface PostJsonOptions {
   headers?: Record<string, string>;
   /** 是否用 x-api-key 头（Anthropic 系）；缺省用 Authorization: Bearer */
   apiKeyHeader?: "bearer" | "x-api-key";
+  /** 外部取消信号（控制面）：abort 时立即中断在途请求，优先于空闲超时判定 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -164,6 +166,41 @@ export class StreamIdleTimeoutError extends Error {
     super(`流空闲超时：${idleTimeoutMs}ms 内未收到任何数据`);
     this.name = "StreamIdleTimeoutError";
   }
+}
+
+/**
+ * 外部取消（调用方要求立刻停）：与空闲超时、网络错误都是不同的事故类别。
+ *
+ * 三条差别必须守住：**不重试**（重试等于无视取消）、**不降级备用 provider**
+ * （用户取消了却换个模型重跑，语义荒谬）、**不当作故障上报**（前端应显示
+ * 「已中断」而非错误气泡）。name 独立，让 `isRetryableError` 走「无法归类
+ * → 不可重试」分支；resilient 层另有显式判断拦住降级。
+ */
+export class TurnAbortedError extends Error {
+  constructor(readonly abortReason: unknown) {
+    // message 保留 "aborted" 关键词：日志检索与既有测试断言（toThrow("aborted")、
+    // String(err).toContain("aborted")）都靠它定位中断，改成纯中文会静默失效
+    super("aborted by caller（调用方取消了本次请求）");
+    this.name = "TurnAbortedError";
+  }
+}
+
+/** 是否为外部取消错误（resilient / 上层收尾据此区分事故类别） */
+export function isTurnAbortedError(err: unknown): err is TurnAbortedError {
+  if (err instanceof TurnAbortedError) return true;
+  // 跨包装层可能已被 ProviderError 包裹，沿 cause 看一层
+  return err instanceof ProviderError && err.cause instanceof TurnAbortedError;
+}
+
+/**
+ * 合并外部取消信号与空闲超时信号：两者谁先触发都算中断，错误类别由
+ * `postJsonStream` 的映射函数按「外部优先」区分。
+ * 任一未提供时直接用另一个，避免无谓的 AbortSignal.any 开销。
+ */
+export function mergeSignals(external?: AbortSignal, idle?: AbortSignal): AbortSignal | undefined {
+  if (external === undefined) return idle;
+  if (idle === undefined) return external;
+  return AbortSignal.any([external, idle]);
 }
 
 /**
@@ -285,6 +322,17 @@ export async function postJsonStream(
   }
 
   const idle = createIdleTimeout(options.requestTimeout);
+  const external = options.signal;
+  const signal = mergeSignals(external, idle.signal);
+
+  /** 错误归类：外部取消 > 空闲超时 > 原样透传（顺序即优先级，不可颠倒） */
+  const mapError = (err: unknown): unknown => {
+    if (external?.aborted) return new TurnAbortedError(external.reason);
+    return idle.mapError(err);
+  };
+  /** 中断类错误一律不可重试；其余交给 toProviderError 按 cause 链分类 */
+  const abortOptions = (): { retryable: boolean } | undefined =>
+    external?.aborted === true || idle.timedOut ? { retryable: false } : undefined;
 
   let response: Response;
   try {
@@ -292,15 +340,11 @@ export async function postJsonStream(
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      ...(idle.signal !== undefined ? { signal: idle.signal } : {}),
+      ...(signal !== undefined ? { signal } : {}),
     });
   } catch (err) {
     idle.dispose();
-    throw toProviderError(
-      provider,
-      idle.mapError(err),
-      idle.timedOut ? { retryable: false } : undefined,
-    );
+    throw toProviderError(provider, mapError(err), abortOptions());
   }
 
   if (!response.ok) {
@@ -323,7 +367,7 @@ export async function postJsonStream(
   return {
     status: response.status,
     headers: response.headers,
-    data: readSseData(response.body, idle),
+    data: readSseData(response.body, idle, mapError),
   };
 }
 
@@ -342,6 +386,7 @@ export async function postJsonStream(
 async function* readSseData(
   body: ReadableStream<Uint8Array>,
   idle?: IdleTimeout,
+  mapError?: (err: unknown) => unknown,
 ): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -369,8 +414,9 @@ async function* readSseData(
       try {
         read = await reader.read();
       } catch (err) {
-        // abort 触发的拒绝可能是 AbortError（可重试类目），必须换成本意
-        throw idle ? idle.mapError(err) : err;
+        // abort 触发的拒绝可能是 AbortError（可重试类目），必须换成本意：
+        // 外部取消 → TurnAbortedError，空闲超时 → StreamIdleTimeoutError
+        throw mapError ? mapError(err) : err;
       }
       idle?.reset();
       const { done, value } = read;
