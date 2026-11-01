@@ -32,7 +32,7 @@
 | [`context-pipeline-v2.md`](design/context-pipeline-v2.md) | ContextPipeline v2 设计（Phase 1–7 全部实现，现行上下文机制的权威参考） |
 | [`context-pipeline-phase4.md`](design/context-pipeline-phase4.md) | Phase 4 实施前报告（**已实施完成**，留作方案论证与现状核实的留痕） |
 | [`intermind.md`](design/intermind.md) | 人形间私信（Intermind）设计定案 |
-| [`watchdog.md`](design/watchdog.md) | 后台看护（turn 级卡死检测与中断）实施前报告（**P1 流空闲超时、P2 中断语义与停止生成、P3 心跳扫描与可观测面均已实施**；P4 语义审查不在本期；对应 `worker-registry.ts:18-21` 登记风险） |
+| [`watchdog.md`](design/watchdog.md) | 后台看护（turn 级卡死检测与中断）实施前报告（**P1 流空闲超时、P2 中断语义与停止生成、P3 心跳扫描、P4 语义审查均已实施**；语义审查缺省关闭；对应 `worker-registry.ts:18-21` 登记风险） |
 
 **issues/ — 问题跟踪**
 

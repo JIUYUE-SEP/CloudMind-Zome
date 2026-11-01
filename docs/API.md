@@ -145,7 +145,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Config
 
 - `GET /config` — 获取系统设置（凭据脱敏为 `"***"`）
-- `PUT /config` — 更新系统设置。看护参数经 `settings.watchdog` 下发：`{ enabled?, stallThresholdMs?, scanIntervalMs? }`（全部可选，缺席按缺省——enabled 缺省为 true、停滞阈值 600s、扫描周期 30s；非法值回缺省而非关闭看护。语义见 [`design/watchdog.md`](design/watchdog.md) §4.4）
+- `PUT /config` — 更新系统设置。看护参数经 `settings.watchdog` 下发：`{ enabled?, stallThresholdMs?, scanIntervalMs?, semanticReview?: { enabled?, afterMs?, cooldownMs? } }`（全部可选，缺席按缺省——enabled 缺省为 true、停滞阈值 600s、扫描周期 30s；**`semanticReview.enabled` 缺省为 false**，它会调用模型、属于显式开启的增强。非法值回缺省而非关闭看护。语义见 [`design/watchdog.md`](design/watchdog.md) §4.4–§4.5）
 - `GET /config/tools` — 列出内置工具
 
 ### 内置工具（agent 白名单授权）
@@ -223,7 +223,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### System / Plugins（2026-08-19 前端完善轮）
 
 - `GET /system/info` — 引擎系统信息：`{ version, gitCommit?, dataDir, port, uptimeSec, sidecar: { configured } }`（gitCommit 无 git 时省略；configured 只表示引擎装配了 sidecar 客户端，不代表 sidecar 在跑）
-- `GET /system/watchdog` — 看护快照（P3）：`{ enabled, scanIntervalMs, stallThresholdMs, turns: [{ agentId, startedAt, lastActivityAt, idleMs, thresholdMs, stepCount, activeTool? }] }`。`idleMs` 对 `lastActivityAt` 实时求差、`thresholdMs` 是该回合**当前生效**阈值（工具在跑时会按工具自报上限放宽）——两者一比就知道离判定还有多久。watchdog 插件被摘除时返回 `{ enabled: false, ..., turns: [] }` 而非 404
+- `GET /system/watchdog` — 看护快照（P3/P4）：`{ enabled, scanIntervalMs, stallThresholdMs, semanticReview: { enabled, afterMs, cooldownMs }, turns: [{ agentId, startedAt, lastActivityAt, idleMs, thresholdMs, stepCount, activeTool? }] }`。`idleMs` 对 `lastActivityAt` 实时求差、`thresholdMs` 是该回合**当前生效**阈值（工具在跑时会按工具自报上限放宽）——两者一比就知道离判定还有多久。`semanticReview` 用来排查「这个明显在打转的回合为什么没被审」。watchdog 插件被摘除时返回 `enabled: false` 的全零结构而非 404
 - `GET /plugins` — 外部插件加载结果：`{ loaded: string[], skipped: { name, reason }[], perAgent: { agentId, name, status }[] }`（reason/status 取值见 `plugins/external/index.ts` 的 SkipReason 契约）
 
 **Plugins 管理面（2026-08-21 M1/M2）**：
@@ -271,7 +271,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `text.delta` / `thinking.delta` | 流式正文 / 推理内容（群聊帧带 `agentId`） |
 | `tool.call` / `tool.result` | 工具调用与执行结果（群聊帧带 `agentId`） |
 | `step.end` | ReAct 单步结束（每个 step 都发，tool_use 时循环继续） |
-| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态）。**仅中断结束时**附 `aborted: { reason }`，`reason` ∈ `user` / `watchdog` / `timeout` / `shutdown`；正常结束不带该字段（帧形状与老前端行为均不变）。前端据此把气泡标「已中断」，已显示的文本保留 |
+| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态）。**仅中断结束时**附 `aborted: { reason }`，`reason` ∈ `user`（用户停止）/ `watchdog`（心跳判定停滞）/ `stalled`（语义审查判定打转）/ `timeout` / `shutdown`；正常结束不带该字段（帧形状与老前端行为均不变）。前端据此把气泡标「已中断」，已显示的文本保留 |
 | `handoff.update` | 换班移交状态变化（`status` / `shift` / `maxShifts` / `bookMessageId?` / `reason?`，仅私聊连接推送，帧带 `agentId`） |
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
 | `error` | 错误 |
