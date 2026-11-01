@@ -49,6 +49,9 @@ export const dispatchSubagentTool: Tool = {
   // 目标 agent 与任务内容必须人工确认；子 agent 侧无审批通道 fail-closed，
   // 嵌套派生随之被拒（纵深一致）
   requiresApproval: true,
+  // P3 看护：前台派发有 MAX_FOREGROUND_TIMEOUT_MS 硬上限（后台派发立即返回，
+  // 这里的上限取的是最长可能阻塞时长）
+  timeoutMs: MAX_FOREGROUND_TIMEOUT_MS,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const dispatcher = ctx.services?.subagentDispatcher;
     if (!dispatcher) {

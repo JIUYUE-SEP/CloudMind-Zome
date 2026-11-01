@@ -62,5 +62,14 @@ export interface Tool {
   accesses: ToolAccess[];
   /** 为 true 时，执行前需要人工审批（无审批通道的调用一律拒绝） */
   requiresApproval?: boolean;
+  /**
+   * 单次执行的自报上限（ms，P3 看护）：看门狗用它区分「长跑」与「卡死」——
+   * 工具在执行且未超过该上限时，即使整轮长时间无 step 进展也不判 stalled。
+   *
+   * 缺省表示「本工具不承诺执行时长」：看门狗按缺省停滞阈值判，可能误杀。
+   * 因此凡是会长时间阻塞的工具（命令执行、子代理派发）都应当声明。
+   * 该值只影响看护判定，不产生实际中断——真正的超时由工具自己实现。
+   */
+  timeoutMs?: number;
   execute: (ctx: ToolContext, args: unknown) => Promise<ToolResult>;
 }

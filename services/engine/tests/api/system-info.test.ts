@@ -97,4 +97,48 @@ describe("System Info API", () => {
     expect(res.body.sidecar).toEqual({ configured: true });
     await app.close();
   });
+
+  it("GET /system/watchdog 未装配看护时如实报 enabled=false（不是 404）", async () => {
+    const built = await buildTestContext();
+    cleanup = built.cleanup;
+    const app = await createServer(built.context);
+    await app.ready();
+
+    // 插件可整体摘除：摘掉后端点仍应在，只是没有东西可报——
+    // 返回 404 会让调用方把「没装看护」误读成「接口不存在/版本不对」
+    const res = await authedRequest(app.server).get("/system/watchdog");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: false, scanIntervalMs: 0, stallThresholdMs: 0, turns: [] });
+    await app.close();
+  });
+
+  it("GET /system/watchdog 透传看护快照", async () => {
+    const built = await buildTestContext();
+    cleanup = built.cleanup;
+    const snapshot = {
+      enabled: true,
+      scanIntervalMs: 30_000,
+      stallThresholdMs: 600_000,
+      turns: [
+        {
+          agentId: "agent-1",
+          startedAt: "2026-11-01T00:00:00.000Z",
+          lastActivityAt: "2026-11-01T00:05:00.000Z",
+          idleMs: 12_345,
+          thresholdMs: 600_000,
+          stepCount: 4,
+          activeTool: { name: "run_command", timeoutMs: 600_000 },
+        },
+      ],
+    };
+    built.context.watchdog = { snapshot: async () => snapshot };
+
+    const app = await createServer(built.context);
+    await app.ready();
+
+    const res = await authedRequest(app.server).get("/system/watchdog");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(snapshot);
+    await app.close();
+  });
 });

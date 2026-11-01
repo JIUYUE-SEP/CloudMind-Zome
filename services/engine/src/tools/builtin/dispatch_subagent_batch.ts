@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_FOREGROUND_TIMEOUT_MS } from "@cloudmind/shared";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import type { SwarmItemResult } from "../../subagent/batch.js";
 
@@ -47,6 +48,8 @@ export const dispatchSubagentBatchTool: Tool = {
   accesses: [],
   // 与 dispatch_subagent 同级：批量派遣动作必须人工确认（内部傀儡无审批通道）
   requiresApproval: true,
+  // P3 看护：swarm 内各 item 并行，总时长接近单个上限而非累加，取同一硬上限
+  timeoutMs: MAX_FOREGROUND_TIMEOUT_MS,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const swarm = ctx.services?.subagentSwarm;
     if (!swarm) {

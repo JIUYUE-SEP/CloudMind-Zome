@@ -21,10 +21,24 @@ export interface MemorySettings {
   warmMemoryLimit: number;
 }
 
+/**
+ * 看门狗（P3）运行期参数。缺省值定义在 `plugins/watchdog`，此处只声明形状——
+ * 全部字段可选，缺席按缺省处理，老 config.json 无需迁移。
+ */
+export interface WatchdogSettings {
+  /** 总开关。缺省 true——故障恢复不该要用户先发现 */
+  enabled?: boolean;
+  /** 单 turn 无实质进展多久判 stalled（ms） */
+  stallThresholdMs?: number;
+  /** 扫描周期（ms） */
+  scanIntervalMs?: number;
+}
+
 export interface AppSettings {
   tavilyApiKey?: string;
   /** sidecar 自启唤醒（spec 决策 1）：缺省/缺席 = false（与现状恒等） */
   sidecarAutoStart?: boolean;
+  watchdog?: WatchdogSettings;
   memory: MemorySettings;
 }
 

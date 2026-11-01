@@ -22,6 +22,8 @@ import * as invariantsPlugin from "./plugins/invariants/index.js";
 import * as sidecarPlugin from "./plugins/sidecar/index.js";
 import * as httpPlugin from "./plugins/http/index.js";
 import * as externalPlugin from "./plugins/external/index.js";
+import * as watchdogPlugin from "./plugins/watchdog/index.js";
+import type { WatchdogFace } from "./plugins/watchdog/index.js";
 import { assertServices } from "./plugins/require-services.js";
 import { registerShutdownHandlers } from "./shutdown.js";
 import { startSidecarIfEnabled, stopSidecar } from "./sidecar/autostart.js";
@@ -97,11 +99,21 @@ async function main() {
   await root.plugin(intermindPlugin);
   await root.plugin(subagentsPlugin);
 
+  // watchdog（P3）：turn 级停滞检测与中断。inject agents/config，挂载位在
+  // agents 之后即可。上架面经 config 回调交给组合根，http 侧按可选字段消费——
+  // 刻意不让 http inject 它，否则摘掉本插件会让 http 永远 PENDING
+  let watchdogFace: WatchdogFace | undefined;
+  await root.plugin(watchdogPlugin, {
+    onProvide: (face) => {
+      watchdogFace = face;
+    },
+  });
+
   // http（P9 收口）：ApiContext 装配与 listen 段收进插件（inject 全消费面）；
   // fiber 引用留给关停钩——close 挂插件 disposer（tools 同款先例）。
   // F1 起 inject 含 external：本行挂载后纤维停 PENDING，待下方 external 上架
   // 才激活（cordis PENDING 语义：await 立即落定，assertServices 兜底时序回归）
-  const httpFiber = await root.plugin(httpPlugin);
+  const httpFiber = await root.plugin(httpPlugin, { getWatchdog: () => watchdogFace });
 
   // external（迁移第二阶段 E1+E2）：DATA_DIR 外部插件发现/加载——全局 plugins.json
   // + per-agent agents/<id>/plugins.yml 双清单驱动、fail-closed（单个失败 warn

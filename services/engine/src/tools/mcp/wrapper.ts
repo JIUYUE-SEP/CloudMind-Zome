@@ -199,6 +199,9 @@ export function mcpToolToEngine(
       },
     ],
     requiresApproval,
+    // P3 看护：把 server 配置的单次调用超时（或协议缺省）如实上报——
+    // 否则看门狗按缺省停滞阈值判，一个配了长超时的 MCP 调用会被误杀
+    timeoutMs,
     async execute(_ctx, args): Promise<ToolResult> {
       try {
         const result = await callWithSelfHeal(

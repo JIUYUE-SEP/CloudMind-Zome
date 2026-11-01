@@ -81,4 +81,21 @@ export async function registerSystemRoutes(app: FastifyInstance, context: ApiCon
       },
     };
   });
+
+  /**
+   * 看护快照（P3）：排查「到底是挂了还是只是慢」。
+   *
+   * `idleMs` 是对 lastActivityAt 的实时差值，`thresholdMs` 是该回合当前
+   * 生效的阈值（工具在跑时会按工具自报上限放宽）——两者一比就知道离判定
+   * 还有多久。插件被摘除时如实返回 enabled:false 而不是 404，避免调用方
+   * 把「没装看护」误读成「接口不存在」。
+   */
+  app.get("/system/watchdog", {
+    schema: { summary: "Get turn heartbeat snapshot (watchdog)", tags: ["system"] },
+  }, async () => {
+    if (context.watchdog === undefined) {
+      return { enabled: false, scanIntervalMs: 0, stallThresholdMs: 0, turns: [] };
+    }
+    return context.watchdog.snapshot();
+  });
 }

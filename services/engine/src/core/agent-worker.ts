@@ -303,10 +303,43 @@ export interface ToolApprovalEvent {
   approved: boolean;
 }
 
+/**
+ * 在途 turn 的运行快照（P3 看护）：看门狗据此判断「真卡住」还是「只是慢」。
+ *
+ * 只看 provider 有没有超时不够——每一步都刚好在 L0 空闲阈值内返回、
+ * 但 20 步下来卡两小时，L0 一次都不会触发。这一层看的是「整个 turn 有
+ * 没有实质进展」。
+ */
+export interface TurnHeartbeat {
+  /** turn 开始时间（epoch ms） */
+  startedAt: number;
+  /**
+   * 最近一次实质进展时间（epoch ms）：每完成一个 step、每次工具开始/结束
+   * 都刷新。看门狗用它算停滞时长——注意用「刷新点」而非「step 数」，
+   * 因为单步内部可能合法地跑很久（工具执行）。
+   */
+  lastActivityAt: number;
+  /** 已完成 step 数（观测用，不参与判定） */
+  stepCount: number;
+  /**
+   * 正在执行的工具（若有）。`timeoutMs` 是该工具自报的执行上限——
+   * 看门狗据此放宽阈值，否则 `run_command` 跑十分钟会被当成卡死杀掉。
+   * 未声明（第三方/MCP 未配置）时按缺省阈值判，宁可晚判也不误杀。
+   */
+  activeTool?: { name: string; timeoutMs?: number };
+}
+
 export class AgentWorker {
   status: AgentWorkerStatus = "idle";
   private queue: Job[] = [];
   private runningJob: Job | null = null;
+  /**
+   * 看门狗的中断句柄（P3）：与 `job.signal` 用 `AbortSignal.any` 合并后
+   * 交给 runTurn，两条取消来源互不覆盖——外部取消（用户停止 / 上层超时）
+   * 与内部看护（判定卡死）走同一个 signal，收尾语义完全一致。
+   */
+  private turnAbort: AbortController | null = null;
+  private heartbeat: TurnHeartbeat | null = null;
   private pipeline: ContextPipeline;
   private reactMaxSteps: number;
   private handoffMaxShifts: number;
@@ -326,6 +359,68 @@ export class AgentWorker {
     const skills = [...this.currentTopicSkills].sort();
     this.currentTopicSkills.clear();
     return skills;
+  }
+
+  /** 本 worker 归属的 agent（看门狗快照等只读观测面用，不暴露 config 本体） */
+  get agentId(): string {
+    return this.config.agentId;
+  }
+
+  /**
+   * 在途 turn 的心跳快照（P3 看护面）。无在途 turn 返回 undefined。
+   *
+   * 返回副本：看门狗只读，不允许它改到 worker 内部状态（否则一次误写
+   * 就能让 lastActivityAt 永远新鲜，看护静默失效）。
+   */
+  getHeartbeat(): TurnHeartbeat | undefined {
+    if (this.heartbeat === null) return undefined;
+    const { activeTool } = this.heartbeat;
+    return {
+      ...this.heartbeat,
+      ...(activeTool !== undefined ? { activeTool: { ...activeTool } } : {}),
+    };
+  }
+
+  /**
+   * 内部中断入口（P3 看门狗）。返回 false 表示当前没有在途 turn——调用方
+   * 不必区分「刚好结束」与「从未开始」，两者都是无事可做。
+   *
+   * 与外部取消走同一条收尾路径：reason 会经 `resolveAbortReason` 变成
+   * `turn.end` 的 `aborted.reason`，前端据此标注，语义与用户点停止一致。
+   */
+  abortCurrentTurn(reason: TurnAbortReason): boolean {
+    if (this.turnAbort === null || this.heartbeat === null) return false;
+    this.turnAbort.abort(reason);
+    return true;
+  }
+
+  /**
+   * 工具执行活动（P3）：按 callId 记账，因为一批工具调用是并发跑的
+   * （Promise.all）——单个槽位会被后启动的覆盖，导致「一个 600s 的
+   * run_command 正在跑」这个事实被一个 30s 的 bash 抹掉。
+   *
+   * 心跳对外只暴露一个 activeTool：取自报上限最长的那个。保守方向正确——
+   * 任一个可能长跑，就该按最长的放宽，宁可晚判也不误杀。
+   */
+  private activeToolCalls = new Map<string, { name: string; timeoutMs?: number }>();
+
+  private noteToolActivity(
+    callId: string,
+    tool: { name: string; timeoutMs?: number } | null,
+  ): void {
+    if (tool === null) this.activeToolCalls.delete(callId);
+    else this.activeToolCalls.set(callId, tool);
+    if (this.heartbeat === null) return;
+    // 工具开始/结束本身就是进展信号（一步之内可能只跑一个长工具）
+    this.heartbeat.lastActivityAt = Date.now();
+    let longest: { name: string; timeoutMs?: number } | undefined;
+    for (const active of this.activeToolCalls.values()) {
+      if (longest === undefined || (active.timeoutMs ?? 0) > (longest.timeoutMs ?? 0)) {
+        longest = active;
+      }
+    }
+    if (longest === undefined) delete this.heartbeat.activeTool;
+    else this.heartbeat.activeTool = { ...longest };
   }
 
   /** 动态工具加载器（按需工具目录；构造器初始化，随 worker 退役重建天然清空） */
@@ -676,6 +771,24 @@ export class AgentWorker {
     const job = this.queue.shift()!;
     this.runningJob = job;
 
+    // P3 看护：本 turn 的取消句柄与心跳。两者成对出现——看门狗只认
+    // 「有心跳 = 有在途 turn」，缺一个就会误判或漏判
+    const turnAbort = new AbortController();
+    this.turnAbort = turnAbort;
+    const now = Date.now();
+    this.heartbeat = { startedAt: now, lastActivityAt: now, stepCount: 0 };
+    /**
+     * 本 turn 的有效取消信号 = 外部取消 ∪ 看护中断。
+     *
+     * 必须提到 try 外面：catch 块要靠它判断「是不是被中断的」并决定终帧
+     * 带不带 aborted.reason。只判 `job.signal` 会漏掉看门狗的中断——
+     * job.signal 始终未 abort，看门狗动的是自己那只 controller。
+     */
+    const turnSignal =
+      job.signal !== undefined
+        ? AbortSignal.any([job.signal, turnAbort.signal])
+        : turnAbort.signal;
+
     let jobError: unknown;
     // catch 路径也要触达（P3 review Minor-3）：提升出 try 作用域
     let lastUser: ChatMessage | undefined;
@@ -687,8 +800,9 @@ export class AgentWorker {
     let turnAppended = false;
     const sessionId = job.sessionId || this.config.agentId;
     try {
-      // 排队期间已被外部取消（如 subagent 前台超时）的 job 直接跳过
-      if (job.signal?.aborted) {
+      // 排队期间已被外部取消（如 subagent 前台超时）的 job 直接跳过。
+      // 判 turnSignal 与下方 catch 同口径，两条取消来源都覆盖
+      if (turnSignal.aborted) {
         throw new Error("aborted");
       }
       logger.debug(`[agent-worker] processQueue start, messages: ${job.messages.length}`);
@@ -914,6 +1028,9 @@ export class AgentWorker {
           workspaceDir: this.config.workspaceDir,
           tools: toolsMap,
           intermindRide: job.intermindRide,
+          // P3 看护：工具执行期间把「正在跑什么、它自报能跑多久」告诉心跳，
+          // 否则 run_command 跑十分钟会被判成卡死杀掉
+          onToolActivity: (callId, tool) => this.noteToolActivity(callId, tool),
           approve: async (name, args, toolCallId) => {
             // P8b 事件缝（tool/approval）：决策本体收进 decide 一字不动，
             // 决策后补发事件；事件监听抛错（invariants enforce）经单 call
@@ -978,7 +1095,10 @@ export class AgentWorker {
         contextWindow,
         temperature: this.config.temperature,
         topP: this.config.topP,
-        signal: job.signal,
+        // P3：看护中断与外部取消合并成一条 signal——两条取消来源互不覆盖。
+        // AbortSignal.any 的 reason 取自先 abort 的那个，所以看门狗的中断
+        // 会正确带上 "watchdog"，用户停止带上 "user"
+        signal: turnSignal,
         // P8b 事件缝（llm/request）：sessionId 从 job 取；messages 即 step 层
         // provider.chat 请求本体引用（透传不复制）。钩子全链路可选，缺省不接
         onLLMRequest: this.config.onLLMRequest
@@ -996,6 +1116,12 @@ export class AgentWorker {
         // appended 顺序与 turn 内真实顺序一致（assistant 先于其 tool 结果），
         // 且天然不含 system prompt / pipeline 注入内容
         onStepAppended: async (msgs) => {
+          // P3 心跳：完成一步即视为实质进展。刻意放在 ephemeral 早退之前——
+          // 瞬态回合（蓝图等）卡死与私聊卡死是同一种故障，同样要能被发现
+          if (this.heartbeat !== null) {
+            this.heartbeat.stepCount += 1;
+            this.heartbeat.lastActivityAt = Date.now();
+          }
           // 瞬态回合（蓝图）：不走热存储与话题状态，调用方自行收集产出
           //（瞬态不发 turn/step——载荷语义是"已落盘"，瞬态设计不落盘）
           if (job.ephemeral) return;
@@ -1084,8 +1210,11 @@ export class AgentWorker {
       // 2026-11-01 P2：中断与故障分流。中断（外部取消）不是事故——不刷错误
       // 气泡、不跑话题边界语义裁判（它基于「一次完整交互」，半截回合送进去
       // 只会误判且白烧一次 LLM 调用）、终帧带 aborted.reason 让前端标「已中断」。
+      // 判 turnSignal 而非 job.signal：P3 起中断有两个来源（外部取消 +
+      // 看门狗），只看 job.signal 会漏掉后者，终帧就不带 aborted.reason，
+      // 前端把「被判卡死」显示成「正常说完」
       const abortReason: TurnAbortReason | undefined =
-        job.signal?.aborted === true ? resolveAbortReason(job.signal) : undefined;
+        turnSignal.aborted ? resolveAbortReason(turnSignal) : undefined;
       // Minor-3：异常 turn 已按 step 落盘的消息必须并入话题体系——只进
       // stepPersisted 快照不进 tracker 会脱离话题（永不归档/压缩/索引，
       // 永久滞留热存储且每轮进上下文；P3-3 起每次 provider 抖动都产生一条）。
@@ -1120,6 +1249,12 @@ export class AgentWorker {
       );
     } finally {
       this.runningJob = null;
+      // P3 看护：清空心跳与取消句柄。顺序上先清心跳再清句柄——看门狗以
+      // 「有心跳 = 有在途 turn」为准，反向清理会留下一个可被 abort 的
+      // 空壳窗口（abort 成功返回 true，实际没有任何 turn 在跑）
+      this.heartbeat = null;
+      this.turnAbort = null;
+      this.activeToolCalls.clear();
       // P8b 事件缝（turn/end）：成功与异常路径都发——与既有终帧语义一致
       // （turn.end = 本轮生成终止，含异常终止，见 catch 块 P3-1 注）。
       // 监听者抛错（invariants enforce）视同该回合失败：兑现为 onDone 错误，

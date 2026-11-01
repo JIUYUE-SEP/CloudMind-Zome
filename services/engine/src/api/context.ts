@@ -23,6 +23,7 @@ import type { IntermindService } from "../intermind/service.js";
 import type { MindService } from "../plugins/mind/index.js";
 import type { ComputeFace } from "../plugins/compute/index.js";
 import type { ExternalFace } from "../plugins/external/index.js";
+import type { WatchdogFace } from "../plugins/watchdog/index.js";
 import type { ToolCatalogService } from "../core/tool-catalog-service.js";
 import type { ChatMessage, ChatMessageRecord } from "@cloudmind/shared";
 
@@ -78,4 +79,10 @@ export interface ApiContext {
    * 实现侧 fire-and-forget，不阻断 restore 响应。
    */
   reindexMessages?(agentId: string, records: ChatMessageRecord[]): void | Promise<void>;
+  /**
+   * 看护面（P3）：`GET /system/watchdog` 经此取心跳快照。
+   * 可选——watchdog 插件按设计可整体摘除，摘掉后该端点如实报告「未启用」
+   * 而不是让 http 插件卡在 PENDING。
+   */
+  watchdog?: WatchdogFace;
 }

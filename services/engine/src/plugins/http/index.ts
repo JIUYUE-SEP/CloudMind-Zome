@@ -12,6 +12,7 @@ import { withLLMCallRecording } from "../llm/record-calls.js";
 import { ToolBlurbStore } from "../../core/tool-blurb-store.js";
 import { ToolCatalogService } from "../../core/tool-catalog-service.js";
 import { getDataDir } from "../../config/paths.js";
+import type { WatchdogFace } from "../watchdog/index.js";
 import { loadSkills } from "../../skills/loader.js";
 import { findBuiltinSkillsDir } from "../skills/index.js";
 import { getAuthToken, getAuthTokenFilePath } from "../../config/auth-token.js";
@@ -81,7 +82,19 @@ declare module "cordis" {
   }
 }
 
-export function apply(ctx: Context): void {
+export interface Config {
+  /**
+   * 看护面延迟取值（P3）：刻意不走 `inject`。
+   *
+   * cordis 对未 inject 的服务访问即抛，一旦把 watchdog 写进 inject，
+   * 摘掉那个插件就会让 http 永远 PENDING、整个 engine 起不来——与
+   * 「watchdog 可整体摘除」的设计承诺相悖。回调式取值让摘除后退化为
+   * `undefined`，`GET /system/watchdog` 如实报告 enabled:false。
+   */
+  getWatchdog?: () => WatchdogFace | undefined;
+}
+
+export function apply(ctx: Context, config?: Config): void {
   // ApiContext 装配（bootstrap.ts 逐字迁入，字段来源 root.* → ctx.*）
   const context: ApiContext = {
     agentRepository: ctx.memory.agentRepository,
@@ -113,6 +126,8 @@ export function apply(ctx: Context): void {
     compute: ctx.compute,
     // F1：inject 已声明 external（见 inject 列表注），装配执行时面必就位
     external: ctx.external,
+    // P3：看护面按可选消费（回调取值，未挂 watchdog 插件时为 undefined）
+    watchdog: config?.getWatchdog?.(),
     // v3 blurb 管理面（tool-catalog 三端点）：store 与 agents 插件同路径实例——
     // DocumentStore 写队列/读缓存按文件路径模块级串行，双实例等价单写者；
     // regenerate 的 provider 经 record 包装落 llm_calls 账（spec 决策 5）

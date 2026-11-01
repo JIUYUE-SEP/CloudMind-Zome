@@ -2660,3 +2660,179 @@ describe("normalizeReactMaxSteps", () => {
     expect(normalizeReactMaxSteps(NaN)).toBe(100);
   });
 });
+
+/**
+ * P3 看护心跳：worker 对外暴露的「在途 turn 是否真的在动」。
+ *
+ * 这层存在的理由：L0 流空闲超时只管单次请求多久没数据，一个 turn 每步都
+ * 刚好在阈值内返回、二十步下来卡一小时，L0 一次都不会触发。
+ */
+describe("AgentWorker 看护心跳（P3）", () => {
+  /** 吐一个 delta 后挂起，直到被 abort —— 模拟「卡在流里的回合」 */
+  class BlockingProvider implements LLMProvider {
+    name = "mock";
+    readonly started: Promise<void>;
+    private markStarted!: () => void;
+
+    constructor() {
+      this.started = new Promise<void>((resolve) => {
+        this.markStarted = resolve;
+      });
+    }
+
+    supportsModel(): boolean {
+      return true;
+    }
+
+    async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+      yield { type: "text.delta", delta: "working" };
+      this.markStarted();
+      await new Promise<void>((_resolve, reject) => {
+        const fail = () => reject(new Error("aborted"));
+        if (params.signal?.aborted) {
+          fail();
+          return;
+        }
+        params.signal?.addEventListener("abort", fail, { once: true });
+      });
+    }
+  }
+
+  it("空闲时没有心跳：看门狗据此判断「没有回合在跑」", () => {
+    const worker = new AgentWorker(makeConfig());
+    expect(worker.getHeartbeat()).toBeUndefined();
+    // 没有在途 turn 时中断是无操作——调用方不必区分「刚好结束」与「从未开始」
+    expect(worker.abortCurrentTurn("watchdog")).toBe(false);
+  });
+
+  it("turn 在跑时有心跳；结束（含中断）后心跳清空", async () => {
+    const provider = new BlockingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+    const events: LLMEvent[] = [];
+
+    worker.enqueue({ id: "j1", messages: [userMessage("go")], onEvent: (e) => events.push(e) });
+    await provider.started;
+
+    const heartbeat = worker.getHeartbeat();
+    expect(heartbeat).toBeDefined();
+    expect(heartbeat?.startedAt).toBeLessThanOrEqual(Date.now());
+    expect(heartbeat?.lastActivityAt).toBeGreaterThanOrEqual(heartbeat!.startedAt);
+
+    expect(worker.abortCurrentTurn("watchdog")).toBe(true);
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    // 清理不彻底会让看门狗对着一个已结束的回合反复 abort
+    expect(worker.getHeartbeat()).toBeUndefined();
+    // 中断可归因：前端靠这个字段标「已中断」，运维靠它区分故障与主动终止
+    expect(events.find((e) => e.type === "turn.end")).toMatchObject({
+      aborted: { reason: "watchdog" },
+    });
+  });
+
+  it("工具执行期间登记 activeTool 与自报上限：长跑工具不被误杀", async () => {
+    let releaseTool!: () => void;
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const SLOW_TOOL_TIMEOUT_MS = 600_000;
+    const slowTool: Tool = {
+      name: "slow_tool",
+      description: "slow",
+      parameters: z.object({}),
+      accesses: [],
+      timeoutMs: SLOW_TOOL_TIMEOUT_MS,
+      async execute(): Promise<ToolResult> {
+        await toolGate;
+        return { success: true, output: "done" };
+      },
+    };
+
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc1", name: "slow_tool", arguments: {} }]);
+    const worker = new AgentWorker(makeConfig(provider, {}, [slowTool]));
+
+    worker.enqueue({ id: "j1", messages: [userMessage("go")], onEvent: () => {} });
+
+    await vi.waitFor(() => {
+      expect(worker.getHeartbeat()?.activeTool?.name).toBe("slow_tool");
+    });
+    // 自报上限必须透出来——看门狗靠它把阈值从 10 分钟放宽到 11 分钟，
+    // 否则 run_command 这类合法长跑会被当成卡死
+    expect(worker.getHeartbeat()?.activeTool?.timeoutMs).toBe(SLOW_TOOL_TIMEOUT_MS);
+
+    releaseTool();
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    expect(worker.getHeartbeat()).toBeUndefined();
+  });
+
+  it("未声明 timeoutMs 的工具也照常登记：看门狗按缺省阈值判，不静默放行", async () => {
+    let releaseTool!: () => void;
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const plainTool: Tool = {
+      name: "plain_tool",
+      description: "no declared limit",
+      parameters: z.object({}),
+      accesses: [],
+      async execute(): Promise<ToolResult> {
+        await toolGate;
+        return { success: true };
+      },
+    };
+
+    const provider = new MockLLMProvider();
+    provider.setNextToolCalls([{ toolCallId: "tc1", name: "plain_tool", arguments: {} }]);
+    const worker = new AgentWorker(makeConfig(provider, {}, [plainTool]));
+
+    worker.enqueue({ id: "j1", messages: [userMessage("go")], onEvent: () => {} });
+
+    await vi.waitFor(() => {
+      const activeTool = worker.getHeartbeat()?.activeTool;
+      expect(activeTool?.name).toBe("plain_tool");
+      // 没声明就是没声明，不能凭空给一个上限（那会让看护失效）
+      expect(activeTool?.timeoutMs).toBeUndefined();
+    });
+
+    releaseTool();
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("工具并发时取最长自报上限：短的不能覆盖长的", async () => {
+    let releaseAll!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseAll = resolve;
+    });
+    const makeSlowTool = (toolName: string, timeoutMs: number): Tool => ({
+      name: toolName,
+      description: toolName,
+      parameters: z.object({}),
+      accesses: [],
+      timeoutMs,
+      async execute(): Promise<ToolResult> {
+        await gate;
+        return { success: true };
+      },
+    });
+
+    const provider = new MockLLMProvider();
+    // 两个调用同一批并发执行：若按「最后写赢」记账，600s 的会被 30s 的覆盖，
+    // 看门狗随即按 30s 判死——所以必须按 callId 分别记账再取最大
+    provider.setNextToolCalls([
+      { toolCallId: "tc_long", name: "long_tool", arguments: {} },
+      { toolCallId: "tc_short", name: "short_tool", arguments: {} },
+    ]);
+    const worker = new AgentWorker(
+      makeConfig(provider, {}, [makeSlowTool("long_tool", 600_000), makeSlowTool("short_tool", 30_000)]),
+    );
+
+    worker.enqueue({ id: "j1", messages: [userMessage("go")], onEvent: () => {} });
+
+    await vi.waitFor(() => {
+      expect(worker.getHeartbeat()?.activeTool?.timeoutMs).toBe(600_000);
+    });
+
+    releaseAll();
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+});

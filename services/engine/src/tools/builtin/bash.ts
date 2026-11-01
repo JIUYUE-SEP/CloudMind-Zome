@@ -43,6 +43,8 @@ export const bashTool: Tool = {
   parameters: z.object({ command: z.string().max(4096) }),
   accesses: [{ resource: "process", action: "execute" }],
   requiresApproval: true,
+  // P3 看护：自报执行上限，避免长跑命令被看门狗当成卡死
+  timeoutMs: TIMEOUT_MS,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     const { command } = args as { command: string };
     const check = isDangerousCommand(command);

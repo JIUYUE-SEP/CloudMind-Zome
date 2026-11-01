@@ -139,6 +139,8 @@ export const webSearchTool: Tool = {
   parameters,
   accesses: [{ resource: "network", action: "read" }],
   requiresApproval: true,
+  // P3 看护：单次请求有 TIMEOUT_MS 硬上限
+  timeoutMs: TIMEOUT_MS,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     let parsed: z.infer<typeof parameters>;
     try {

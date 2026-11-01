@@ -33,6 +33,15 @@ export interface ToolExecutionContext {
    */
   recordAction?: (record: ActionRecord) => void;
   services?: ToolContext["services"];
+  /**
+   * 工具执行活动通知（P3 看护）：开始传工具的 name + 自报 timeoutMs，
+   * 结束（成功/失败/抛错）传 null。看门狗据此在长跑工具期间放宽停滞阈值——
+   * 没有这个信号，`run_command` 跑十分钟与真卡死无法区分。
+   *
+   * 带 callId 是因为一批工具调用是并发执行的（Promise.all）：按调用维度
+   * 记账才能正确算出「还剩哪个工具在跑」，单个槽位会被后一个覆盖。
+   */
+  onToolActivity?: (callId: string, tool: { name: string; timeoutMs?: number } | null) => void;
 }
 
 /** 落档状态判定（H1）：execute 抛错/审批拒绝（内部 { error } 形状）或工具自报失败均计 failed */
@@ -136,11 +145,22 @@ export async function runToolCallBatch(
             approve: ctx.approve,
             services: ctx.services,
           };
-          const output = await call.tool.execute(toolCtx, call.args);
-          const result = { toolCallId: call.toolCallId, output };
-          ctx.emit({ type: "tool.result", ...result });
-          recordActionSafe(ctx, call, result);
-          return result;
+          // P3：把「正在跑哪个工具、它自报能跑多久」告诉心跳。审批等待不在
+          // 这里登记——那是人还没点，不是工具在执行，且审批本身有 60s 超时兜底
+          ctx.onToolActivity?.(call.toolCallId, {
+            name: call.tool.name,
+            ...(call.tool.timeoutMs !== undefined ? { timeoutMs: call.tool.timeoutMs } : {}),
+          });
+          try {
+            const output = await call.tool.execute(toolCtx, call.args);
+            const result = { toolCallId: call.toolCallId, output };
+            ctx.emit({ type: "tool.result", ...result });
+            recordActionSafe(ctx, call, result);
+            return result;
+          } finally {
+            // 成功/失败/抛错都要销账，否则看门狗会一直按已结束工具的上限放宽阈值
+            ctx.onToolActivity?.(call.toolCallId, null);
+          }
         } catch (err) {
           const result = { toolCallId: call.toolCallId, output: { error: String(err) } };
           ctx.emit({ type: "tool.result", ...result });

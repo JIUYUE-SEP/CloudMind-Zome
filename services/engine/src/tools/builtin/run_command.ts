@@ -96,6 +96,10 @@ export const runCommandTool: Tool = {
   parameters,
   accesses: [{ resource: "process", action: "execute" }],
   requiresApproval: true,
+  // P3 看护：命令自身有 MAX_TIMEOUT_SECONDS 硬上限（缺省 60s，可传参至上限），
+  // 这里按最大可能值声明——按缺省 60s 声明会让用户传 timeout:600 的那次
+  // 在跑到 60s 后被看门狗误杀
+  timeoutMs: MAX_TIMEOUT_SECONDS * 1000,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     // 生产装配点不注入 projectRoot，缺省回落 workspaceDir（同 read_file）
     const projectRoot = ctx.projectRoot ?? ctx.workspaceDir;
