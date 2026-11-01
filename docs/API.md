@@ -145,7 +145,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Config
 
 - `GET /config` — 获取系统设置（凭据脱敏为 `"***"`）
-- `PUT /config` — 更新系统设置
+- `PUT /config` — 更新系统设置。看护参数经 `settings.watchdog` 下发：`{ enabled?, stallThresholdMs?, scanIntervalMs? }`（全部可选，缺席按缺省——enabled 缺省为 true、停滞阈值 600s、扫描周期 30s；非法值回缺省而非关闭看护。语义见 [`design/watchdog.md`](design/watchdog.md) §4.4）
 - `GET /config/tools` — 列出内置工具
 
 ### 内置工具（agent 白名单授权）
@@ -223,6 +223,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### System / Plugins（2026-08-19 前端完善轮）
 
 - `GET /system/info` — 引擎系统信息：`{ version, gitCommit?, dataDir, port, uptimeSec, sidecar: { configured } }`（gitCommit 无 git 时省略；configured 只表示引擎装配了 sidecar 客户端，不代表 sidecar 在跑）
+- `GET /system/watchdog` — 看护快照（P3）：`{ enabled, scanIntervalMs, stallThresholdMs, turns: [{ agentId, startedAt, lastActivityAt, idleMs, thresholdMs, stepCount, activeTool? }] }`。`idleMs` 对 `lastActivityAt` 实时求差、`thresholdMs` 是该回合**当前生效**阈值（工具在跑时会按工具自报上限放宽）——两者一比就知道离判定还有多久。watchdog 插件被摘除时返回 `{ enabled: false, ..., turns: [] }` 而非 404
 - `GET /plugins` — 外部插件加载结果：`{ loaded: string[], skipped: { name, reason }[], perAgent: { agentId, name, status }[] }`（reason/status 取值见 `plugins/external/index.ts` 的 SkipReason 契约）
 
 **Plugins 管理面（2026-08-21 M1/M2）**：

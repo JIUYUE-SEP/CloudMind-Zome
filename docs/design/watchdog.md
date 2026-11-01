@@ -1,6 +1,6 @@
 # 后台看护（Watchdog）：turn 级卡死检测与中断 实施前报告
 
-> 日期：2026-11-01 | 状态：**P1、P2 已实施完成**（见 §4.1 / §4.2）；P3–P4 待批准后实施
+> 日期：2026-11-01 | 状态：**P1、P2、P3 已实施完成**（见 §4.1–§4.4）；P4 不在本期范围
 > 触发：`worker-registry.ts:18-21` 已登记「已知风险（设计取舍，登记不做）」，本文是对该条的风险复核与实施论证；方法参照 DeepSeek Harness《Super-agent 设计探索》§6（外部 Control Loop）。
 > 定位：**不是**新增产品功能，是补一条可靠性回路——现有系统一旦遇到 provider 流悬挂，没有任何内部机制能自愈，只能运维重启。
 
@@ -201,7 +201,7 @@ L3 语义审查（二期，本期不做）
 |---|---|---|---|
 | **P1** ✅ | L0 流空闲超时：`postJsonStream` 改空闲语义 + 三协议缺省兜底 + chat 链路处理 | 单独就能堵住缺口 B（未配置即无超时 + 总时长误杀） | 无 |
 | **P2** ✅ | §2 abort 语义四条落地（落盘/话题/终帧/handoff 关系）+ 外部 signal 贯通到 provider | 为任何中断能力打地基 | P1 |
-| **P3** | L1 心跳扫描 + `plugins/watchdog` + `GET /system/watchdog` | 覆盖「有超时但每步都慢」的慢性卡死 | P2 |
+| **P3** ✅ | L1 心跳扫描 + `plugins/watchdog` + `GET /system/watchdog` | 覆盖「有超时但每步都慢」的慢性卡死 | P2 |
 | **P4** | L3 语义审查（模型判断是否偏离目标） | —— | 本期不做 |
 
 **P1 可以单独先合。** 它不碰 abort 语义，只是把超时语义修正过来，风险最低、收益最直接。
@@ -306,6 +306,66 @@ job.signal  ✅ agent-worker.ts:981 传给 runTurn
 **作用域决策**：取消按**连接**而非 agent。同一 agent 可能开多个标签页，A 页停止不该波及 B 页。排队 job 一并取消——只掐最新那条会误伤（排队的被跳过，真正在跑的反倒继续烧 token）。
 
 **验证**：engine `api/ws.test.ts` 13 例全绿（新增 2 例：中断终帧 `reason="user"` 且不刷错误、空转 cancel 无副作用）；web `MessageInput` 6 例全绿（停止态可点、回车不误发、合成态不发）。
+
+### 4.4 P3 实施记录（2026-11-01 完成）：心跳扫描 + 可观测面
+
+这一层解决的是 L0 管不到的那类卡死：**每一步都刚好在空闲阈值内返回，二十步下来卡一小时**。L0 一次都不会触发，因为它的判据是「单次请求多久没数据」。L1 的判据换成「整个 turn 有没有实质进展」。
+
+#### 一、心跳：什么才算「有进展」
+
+`AgentWorker.getHeartbeat()` 暴露 `{ startedAt, lastActivityAt, stepCount, activeTool? }`，`lastActivityAt` 由三个点刷新：
+
+| 刷新点 | 为什么算进展 |
+|---|---|
+| 完成一个 step（`onStepAppended`） | 一轮真实交互走完，包括工具结果回灌后的续写 |
+| 工具开始 | 一步之内可能只跑一个长工具，期间没有 step 边界 |
+| 工具结束 | 同上，且标志阻塞解除 |
+
+瞬态回合（蓝图等）也刷新——刻意放在 `job.ephemeral` 早退之前：瞬态回合卡死与私聊卡死是同一种故障，不该因为不落盘就失去看护。
+
+#### 二、工具的合法长跑必须被排除，否则看护会误杀
+
+这是 P3 最容易做错的地方。缺省停滞阈值 600s，而 `run_command` 的合法上限正好是 600s——**任何一次跑满的命令都会被判死**。所以：
+
+- `Tool` 接口新增可选 `timeoutMs`：工具自报「我最多阻塞多久」；
+- `ToolExecutionContext.onToolActivity(callId, tool | null)`：执行前后上报，worker 按 callId 记账；
+- 判定阈值 = `max(stallThresholdMs, activeTool.timeoutMs + TOOL_GRACE_MS)`，宽限 60s 留给超时后的收尾（杀进程组、拼结果、落盘）。
+
+**按 callId 记账而非单槽位**：一批工具调用是 `Promise.all` 并发跑的，单槽位会被后启动的覆盖——「一个 600s 的 run_command 在跑」这个事实会被同批一个 30s 的 bash 抹掉，然后按 30s 判死。取最大值而非最新值，保守方向才对。
+
+**未声明 `timeoutMs` 的工具不享受放宽**：它没承诺过执行时长，看护没有依据放宽。已声明的有 `bash`（30s）、`run_command`（600s）、`web_search`（10s）、`dispatch_subagent` / `_batch`（前台 300s）、MCP 包装（按 server 配置的 `callTimeoutMs`）。`generate_image` 刻意不声明——它的生成请求本身没有超时，正是看护该抓到的那类。
+
+#### 三、中断入口：与用户取消共用一条 signal
+
+`processQueue` 为每个 turn 建一只内部 `AbortController`，与 `job.signal` 经 `AbortSignal.any` 合并成 `turnSignal`。`abortCurrentTurn("watchdog")` 动的是内部那只，合并信号的 reason 取自先 abort 的一方，因此归因准确。
+
+**这里修掉一个 P3 自身引入的 bug**：catch 块原本判 `job.signal?.aborted` 决定终帧带不带 `aborted.reason`。看门狗动的是内部 controller，`job.signal` 始终未 abort——结果是**中断确实发生了，但终帧不带原因**：前端把「被判卡死」显示成「正常说完」，日志里也看不出是看护干的。改为统一判 `turnSignal`。这个 bug 由 `agent-worker.test.ts` 的「turn 在跑时有心跳」用例抓出，没有它就会静默上线。
+
+#### 四、插件与可观测面
+
+| 文件 | 内容 |
+|---|---|
+| `plugins/watchdog/index.ts` | 新增第 23 个内部插件。`inject: ["agents", "config"]`；`ctx.effect` 挂定时器（`unref` 不阻进程退出、摘插件即停扫）；首轮扫描在挂载时立即发起 |
+| `config/repository.ts` | `AppSettings.watchdog?`：`enabled` / `stallThresholdMs` / `scanIntervalMs`，全部可选，老配置无需迁移 |
+| `api/routes/system.ts` | `GET /system/watchdog`：返回 `{ enabled, scanIntervalMs, stallThresholdMs, turns[] }`，每条含 `idleMs` 与**当前生效阈值**，一读就知道离判定还有多久 |
+| `core/agent-worker.ts` | `getHeartbeat()`（返回副本，防外部改到 `lastActivityAt` 让看护静默失效）、`abortCurrentTurn()`、`agentId` 只读访问器、心跳生命周期 |
+| `bootstrap.ts` | 挂载位在 agents 之后、http 之前 |
+
+**为什么不让 http 插件 `inject: ["watchdog"]`**：cordis 对未 inject 的服务访问即抛，inject 后 http 会硬依赖本插件——摘掉 watchdog 会让 http 永远 PENDING、整个 engine 起不来，与「可整体摘除」的设计承诺相悖。改为 config 回调（`onProvide` / `getWatchdog`），摘除后 http 拿到 `undefined`，端点如实报告 `enabled: false` 而不是 404——404 会让调用方把「没装看护」误读成「接口不存在」。
+
+**配置归一**：`stallThresholdMs` 传 0 / 负数 / NaN 一律回缺省（600s），绝不让一个非法值把看护关成「永不触发」；`scanIntervalMs` 钳在 5s 以上。
+
+#### 五、验证
+
+- `tests/core/agent-worker.test.ts`「看护心跳」5 例：空闲无心跳、运行中有心跳且中断后清空（终帧 `reason="watchdog"`）、工具期间登记自报上限、未声明也登记、并发取最长上限
+- `tests/plugins/watchdog.test.ts` 8 例：超阈值中断、阈值内不动手、工具放宽生效、工具上限已过照常中断、`enabled=false` 不扫描、无在途 turn 不参与、快照字段与生效阈值、非法配置回缺省
+- `tests/api/system-info.test.ts` +2 例：未装配时 `enabled=false`（非 404）、装配时透传快照
+
+#### 六、边界与已知限制
+
+- **abort 打不断正在执行的工具**：`ToolContext` 没有 signal，工具无法感知取消。看护中断后，长跑工具仍会跑到自己返回为止，`turn.end` 要等到那时。真正的兜底是工具自己的 `timeoutMs`，看护的作用是「不再无限等」而非「立即掐断」。
+- **只判「有没有动」，不判「动得对不对」**：方向偏了但每步都在推进的 turn 不会被发现。这是 §3.1 明确的非目标（P4 语义审查）。
+- 阈值是全局的，不按 agent 分别配置。
 
 ---
 
