@@ -29,7 +29,11 @@
     </div>
     <div v-if="handoffText" class="handoff-banner">{{ handoffText }}</div>
     <div class="status">{{ statusText }}</div>
-    <MessageInput :is-loading="chat.isStreaming && !handoffActive" @send="onSend" />
+    <MessageInput
+      :is-loading="chat.isStreaming && !handoffActive"
+      @send="onSend"
+      @stop="chat.stop()"
+    />
   </div>
 </template>
 

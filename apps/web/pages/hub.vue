@@ -113,6 +113,7 @@
             :loading-older="groupLoadingOlder"
             :on-load-older="onGroupLoadOlder"
             @send="onGroupSend"
+            @stop="onGroupStop"
             @approval-respond="onGroupApprovalRespond"
             @approval-expired="onGroupApprovalExpired"
           />
@@ -331,6 +332,15 @@ function onGroupSend(text: string) {
     return;
   }
   pushGroupUserMessage(text);
+}
+
+// 停止生成：只发帧，不复位本地流式态——交给引擎回的 turn.end（带
+// aborted.reason）收尾。群聊一次会并行投给多个 agent，引擎侧整批中断
+function onGroupStop() {
+  if (!groupConnection) return;
+  if (!groupConnection.sendRaw({ type: "turn.cancel" })) {
+    pushGroupError("停止失败：连接未就绪");
+  }
 }
 
 // 「加载更早」：游标为当前最早一条记录，更旧一页前置合并

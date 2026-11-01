@@ -18,6 +18,7 @@
       :loading-older="loadingOlder"
       :on-load-older="onLoadOlder"
       @send="onSend"
+      @stop="onStop"
       @approval-respond="onApprovalRespond"
       @approval-expired="onApprovalExpired"
     />
@@ -150,6 +151,15 @@ function onSend(text: string) {
     return;
   }
   pushUserMessage(text);
+}
+
+// 停止生成：只发帧，不复位本地流式态——交给引擎回的 turn.end（带
+// aborted.reason）收尾，避免本地先封口后仍有 delta 追到已结束的气泡上
+function onStop() {
+  if (!connection) return;
+  if (!connection.sendRaw({ type: "turn.cancel" })) {
+    pushError("停止失败：连接未就绪");
+  }
 }
 
 // 「加载更早」：游标为当前最早一条记录，更旧一页前置合并（并发/切会话由 composable 闸住）

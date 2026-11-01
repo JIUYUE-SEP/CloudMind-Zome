@@ -41,7 +41,7 @@
       </template>
     </div>
     <div class="status">{{ statusText }}</div>
-    <MessageInput :is-loading="isStreaming" @send="onSend" />
+    <MessageInput :is-loading="isStreaming" @send="onSend" @stop="emit('stop')" />
   </div>
 </template>
 
@@ -72,6 +72,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "send", text: string): void;
+  // 停止生成：群聊一条消息会并行投给多个 agent，引擎侧整批中断
+  (e: "stop"): void;
   (e: "approval-respond", payload: ApprovalResponsePayload): void;
   // 审批卡片 60s 倒计时到点（M44）：透传给页面把卡片标为 expired
   (e: "approval-expired", approvalId: string): void;

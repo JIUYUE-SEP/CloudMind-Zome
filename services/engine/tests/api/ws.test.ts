@@ -168,6 +168,96 @@ describe("WebSocket API", () => {
     await cleanup();
   });
 
+  it("停止生成：turn.cancel 中断在途回合，终帧带 aborted.reason=user 且不刷错误", async () => {
+    // 慢 provider：先吐一个 delta 让前端进入流式态，然后挂起，直到收到
+    // 取消信号才结束——模拟「用户看着字一个个出来，中途点停止」。
+    // signal 若没从 handler 贯通下来，这里会永久挂起，测试超时即失败。
+    class HangingProvider extends MockLLMProvider {
+      override async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        yield { type: "text.delta", delta: "生成中" };
+        await new Promise<void>((_resolve, reject) => {
+          const fail = () => reject(new Error("aborted"));
+          if (params.signal?.aborted) {
+            fail();
+            return;
+          }
+          params.signal?.addEventListener("abort", fail, { once: true });
+        });
+      }
+    }
+
+    const { context, cleanup } = await buildWsContext("agent-ws", [], new HangingProvider());
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    const messages: Array<{ type: string; aborted?: { reason?: string } }> = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => {
+        client.send(JSON.stringify({ text: "写一篇长文" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data)) as { type: string; aborted?: { reason?: string } };
+        messages.push(message);
+        // 收到首个 delta 说明回合已经开始跑，此刻才点「停止」
+        if (message.type === "text.delta") {
+          client.send(JSON.stringify({ type: "turn.cancel" }));
+        }
+        if (message.type === "turn.end") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    const turnEnd = messages.find((m) => m.type === "turn.end");
+    expect(turnEnd).toBeDefined();
+    // 中断必须可归因：前端靠这个字段把气泡标成「已中断」而不是「正常说完」
+    expect(turnEnd?.aborted?.reason).toBe("user");
+    // 用户主动停止是正常操作，不该冒错误气泡
+    expect(messages.some((m) => m.type === "error")).toBe(false);
+    await app.close();
+    await cleanup();
+  });
+
+  it("停止生成：无在途回合时 turn.cancel 静默无副作用，后续消息仍正常处理", async () => {
+    const { context, cleanup } = await buildWsContext("agent-ws");
+    const app = await createServer(context);
+    const address = await app.listen({ port: 0 });
+    const port = Number(new URL(address).port);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ws/agent-ws?sessionId=s1`, TEST_AUTH_TOKEN);
+
+    const messages: Array<{ type: string }> = [];
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", async () => {
+        // 空转的停止帧（前端连点、或上一轮刚好自然结束）
+        client.send(JSON.stringify({ type: "turn.cancel" }));
+        await new Promise((r) => setTimeout(r, 200));
+        client.send(JSON.stringify({ text: "hello" }));
+      });
+      client.on("message", (data) => {
+        const message = JSON.parse(String(data)) as { type: string };
+        messages.push(message);
+        if (message.type === "step.end") {
+          client.close();
+          resolve();
+        }
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+
+    expect(messages.some((m) => m.type === "error")).toBe(false);
+    expect(messages.some((m) => m.type === "text.delta")).toBe(true);
+    await app.close();
+    await cleanup();
+  });
+
   it("写类工具 remember:true 被引擎拒绝（P2-3）：write_file 每次都批，bash 仍免问", async () => {
     const executions: string[] = [];
     const makeDangerous = (name: string): Tool => ({

@@ -171,6 +171,19 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
       >();
       const autoApprovedTools = new Set<string>();
 
+      /**
+       * 停止生成：本连接的在途 job 取消句柄。
+       *
+       * 一个连接可连发多条消息，worker 是 FIFO 串行——同一时刻只有一条在跑、
+       * 其余排队。用户点「停止」的语义是「这些输出我都不要了」，因此 cancel
+       * 帧把本连接**所有**在途 job 一并 abort：只掐最新那条会误伤（排队 job
+       * 被跳过，真正在跑的反倒继续烧 token）。
+       *
+       * 作用域按连接而非按 agent：同一 agent 可能开着多个标签页，A 页停止
+       * 不该波及 B 页。
+       */
+      const inflight = new Set<AbortController>();
+
       function requestApproval(req: ApprovalRequest): Promise<boolean> {
         if (autoApprovedTools.has(req.toolName)) {
           auditAutoApproved({ agentId, sessionId, toolName: req.toolName });
@@ -260,6 +273,16 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
+          // 停止生成（2026-11-01）：前端在流式期间把发送按钮换成停止，点它发本帧。
+          // 中断收尾（半截 step 不落盘、话题不入语义裁判、turn.end 带
+          // aborted.reason="user"、不写交接书）由 P2 的 abort 语义统一负责，
+          // 这里只负责把信号打进在途 job。
+          if (data.type === "turn.cancel") {
+            for (const controller of inflight) controller.abort("user");
+            inflight.clear();
+            return;
+          }
+
           // 带 type 的未知控制帧静默忽略（聊天消息不带 type），
           // 避免前端协议超前时穿透到聊天错误路径
           if (typeof data.type === "string") return;
@@ -311,10 +334,19 @@ export async function registerWebSocketHandler(app: FastifyInstance, context: Ap
             return;
           }
 
+          // 停止生成：本条 job 的取消句柄。onDone 无论成功/异常/中断都会触发，
+          // 在那里释放句柄，避免常驻连接上的 Set 无限增长
+          const cancelHandle = new AbortController();
+          inflight.add(cancelHandle);
+
           worker.enqueue({
             id: randomUUID(),
             messages: history.length > 0 ? history : [userMessage],
             sessionId,
+            signal: cancelHandle.signal,
+            onDone: () => {
+              inflight.delete(cancelHandle);
+            },
             onEvent:
               chainId !== undefined && handoffBridge
                 ? (event) => handoffBridge.onEventWithChain(event, chainId)

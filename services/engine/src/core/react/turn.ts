@@ -338,6 +338,10 @@ export async function runTurn(
       topP: input.topP,
       maxToolResultTokens,
       onLLMRequest: input.onLLMRequest,
+      // 2026-11-01：取消信号必须进 step——否则 provider 请求拿不到 signal，
+      // 中断只能等当前步自然结束（P2 首次实施时此处漏传，导致「贯通到 fetch」
+      // 实际不成立：provider 层测试直接构造 params，绕过了这条路径）
+      signal: input.signal,
     };
 
     let result: StepResult;

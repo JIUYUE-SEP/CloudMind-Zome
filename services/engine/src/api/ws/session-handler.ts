@@ -83,6 +83,15 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
       >();
       const autoApprovedTools = new Set<string>();
 
+      /**
+       * 停止生成：本连接的在途 job 取消句柄。
+       *
+       * 群聊一条消息会同时投递给多个 target agent（各自 worker 并行），
+       * 因此「停止」必须把整批一起掐掉——只掐一个，其余人形会继续在群里
+       * 各说各话。作用域按连接：同 session 的另一个标签页不受影响。
+       */
+      const inflight = new Set<AbortController>();
+
       function requestApproval(agentId: string, req: ApprovalRequest): Promise<boolean> {
         const rememberKey = `${agentId}:${req.toolName}`;
         if (autoApprovedTools.has(rememberKey)) {
@@ -203,6 +212,17 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             return;
           }
 
+          // 停止生成（2026-11-01）：前端流式期间把发送按钮换成停止，点它发本帧。
+          // 中断收尾由 P2 的 abort 语义统一负责（半截 step 不落盘、话题不入语义
+          // 裁判、turn.end 带 aborted.reason="user"），这里只把信号打进在途 job。
+          // 群聊是多 agent 并行，整批一起掐——否则被取消的人形停下、其余继续
+          // 在群里发言，用户看到的是「点了停止但还在刷」。
+          if (data.type === "turn.cancel") {
+            for (const controller of inflight) controller.abort("user");
+            inflight.clear();
+            return;
+          }
+
           // 带 type 的未知控制帧静默忽略（聊天消息不带 type），
           // 避免前端协议超前时穿透到聊天错误路径
           if (typeof data.type === "string") return;
@@ -260,10 +280,19 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
             const repo = context.getMessageRepository(agentId);
             const history = await repo.listBySession(sessionId, { limit: 20 }).catch(() => []);
 
+            // 停止生成：本批 job 的取消句柄。onDone 无论成功/异常/中断都会触发，
+            // 在那里释放，避免常驻连接上的 Set 无限增长
+            const cancelHandle = new AbortController();
+            inflight.add(cancelHandle);
+
             worker.enqueue({
               id: randomUUID(),
               messages: history,
               sessionId,
+              signal: cancelHandle.signal,
+              onDone: () => {
+                inflight.delete(cancelHandle);
+              },
               onEvent: (event) => {
                 // handoff.book 帧吞掉不透传（与私聊连接桥拦截同口径）：群聊
                 // 不续跑——多 Agent 槽位语义在换班边界外，撞顶只落交接书进历史，

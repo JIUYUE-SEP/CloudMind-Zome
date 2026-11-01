@@ -59,11 +59,15 @@ export function useGroupChatStream() {
     return slot;
   }
 
-  function closeSlot(agentId: string | undefined) {
+  function closeSlot(agentId: string | undefined, aborted = false) {
     const key = agentId || "";
     const slot = streamSlots.get(key);
     if (slot) {
       slot.isStreaming = false;
+      // 2026-11-01 停止生成落地后补齐：群聊一次投递多个 agent，用户点「停止」
+      // 会整批中断，每个人形各自的气泡都要能标出「已中断」，否则界面上
+      // 就是几条话说到一半突然没了的消息，分不清是完成还是被掐断
+      if (aborted) slot.aborted = true;
       streamSlots.delete(key);
     }
     isStreaming.value = streamSlots.size > 0;
@@ -184,10 +188,10 @@ export function useGroupChatStream() {
       setToolCallStatus(messages.value, request.toolCallId, "awaiting-approval");
       messages.value.push(createApprovalMessage(request));
     },
-    onTurnEnd: (agentId?: string) => {
+    onTurnEnd: (agentId?: string, aborted?: { reason?: string }) => {
       // 一轮结束才关闭该 Agent 的气泡槽；step.end 每个 ReAct step 都发，
       // 同一 turn 的后续 step（工具执行后的文本）仍进同一气泡
-      closeSlot(agentId);
+      closeSlot(agentId, aborted !== undefined);
     },
     onError: (error: string) => {
       resetStreamState();

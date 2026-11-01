@@ -309,6 +309,19 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming.value = true;
   }
 
+  /**
+   * 停止生成：请引擎中断本回合。
+   *
+   * 不在这里复位 isStreaming——真正的复位交给引擎回的 turn.end 帧
+   * （带 aborted.reason）：本地抢先复位会让界面显示「已完成」，而引擎那边
+   * 可能还要几十毫秒才真的停，期间到达的 delta 会追加到已封口的气泡上。
+   * 发送失败才需要本地兜底提示。
+   */
+  function stop() {
+    const sent = connection?.sendRaw({ type: "turn.cancel" }) ?? false;
+    if (!sent) pushErrorMessage("停止失败：连接未就绪");
+  }
+
   function pushErrorMessage(text: string) {
     messages.value.push({
       id: nextMsgId("err"),
@@ -389,6 +402,7 @@ export const useChatStore = defineStore("chat", () => {
     disconnect,
     disconnectFor,
     send,
+    stop,
     respondApproval,
     expireApproval,
   };
