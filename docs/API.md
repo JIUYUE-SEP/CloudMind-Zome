@@ -145,7 +145,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 ### Config
 
 - `GET /config` — 获取系统设置（凭据脱敏为 `"***"`）
-- `PUT /config` — 更新系统设置。看护参数经 `settings.watchdog` 下发：`{ enabled?, stallThresholdMs?, scanIntervalMs?, semanticReview?: { enabled?, afterMs?, cooldownMs? } }`（全部可选，缺席按缺省——enabled 缺省为 true、停滞阈值 600s、扫描周期 30s；**`semanticReview.enabled` 缺省为 false**，它会调用模型、属于显式开启的增强。非法值回缺省而非关闭看护。语义见 [`design/watchdog.md`](design/watchdog.md) §4.4–§4.5）
+- `PUT /config` — 更新系统设置（`memory` / `tavilyApiKey` / `sidecarAutoStart` / `watchdog`，逐字段合并，缺席保持原值）。看护参数传**顶层** `watchdog`：`{ enabled?, stallThresholdMs?, scanIntervalMs?, semanticReview?: { enabled?, afterMs?, cooldownMs? } }`（全部可选，缺席按缺省——enabled 缺省为 true、停滞阈值 600s、扫描周期 30s；**`semanticReview.enabled` 缺省为 false**，它会调用模型、属于显式开启的增强）。`semanticReview` 单独一层**嵌套合并**：只传 `enabled` 不会把已配的 `cooldownMs` 打回缺省。接口只校验形状（对象/布尔/数字），取值范围由插件归一——非法值回缺省而非关闭看护，故 `PUT` 回显原始值、`GET /system/watchdog` 才是生效值。调参见 [`看门狗调参.md`](看门狗调参.md)，语义见 [`design/watchdog.md`](design/watchdog.md) §4.4–§4.5）
 - `GET /config/tools` — 列出内置工具
 
 ### 内置工具（agent 白名单授权）

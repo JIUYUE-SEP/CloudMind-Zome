@@ -15,6 +15,7 @@
 | [`架构文档.md`](架构文档.md) | 分层架构、核心机制、数据流、配置系统、安全模型 | 与实现同步销记 |
 | [`API.md`](API.md) | Engine REST 与 WebSocket 契约（端点/帧/错误码/鉴权） | 与路由同步 |
 | [`开发指南.md`](开发指南.md) | 本地开发、调试、常见任务、提交前检查清单、隐私红线 | 工程纪律本体 |
+| [`看门狗调参.md`](看门狗调参.md) | 看护三层阈值怎么调：参数总表、按症状查、写入方式、快照与日志读法 | 与 `plugins/watchdog` 同步 |
 | [`DEPLOY.md`](DEPLOY.md) | Web 部署指南（含 sidecar 准备） | 部署实况 |
 | [`design/`](design/) | 进行中的设计文档（context-pipeline、intermind 等） | 落地后归 superpowers |
 | [`examples/`](examples/) | 示例（外部插件 hello 等） | 可运行 |
