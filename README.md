@@ -160,12 +160,18 @@ pnpm build            # 构建所有包
 pnpm test             # 运行所有测试
 pnpm typecheck        # 类型检查
 pnpm lint             # 代码检查
+pnpm verify           # 本地总闸：lint + typecheck + vitest + cargo fmt/clippy/test（= CI 全部检查关，push 前跑这个）
+pnpm test:coverage    # 覆盖率报告
+pnpm bench            # Benchmark（document-store / repositories / react）
 pnpm test:e2e         # Playwright 端到端测试（自动启动 engine + web）
+pnpm test:e2e:ui      # 同上，UI 调试模式
 
 # 单独操作
 pnpm --filter @cloudmind/engine test
 pnpm --filter @cloudmind/web test
 ```
+
+Windows 亦可直接双击根目录 `start-dev.bat`（或跑 `start-dev.ps1`）：分两个终端窗口分别起 engine 与 web，等价于 `pnpm dev`。
 
 ---
 
