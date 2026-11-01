@@ -289,6 +289,18 @@ export function apply(ctx: Context, config?: Config): void {
       // 语义审查（P4）：还没到硬阈值，但已经不短了——先问一句「有用吗」
       if (!settings.semantic.enabled) continue;
       if (idleMs < settings.semantic.afterMs) continue;
+      /**
+       * 工具仍在自报时限内：这段「没进展」是工具**承诺过的**合法阻塞，
+       * 与硬阈值的放宽是同一个理由（见 effectiveThresholdMs）。
+       *
+       * 缺省参数下这条守卫是必需的：afterMs = 停滞阈值一半 = 300s，而
+       * `run_command` 的合法上限就是 600s——没有它，一次正常的五分钟构建
+       * 会被送去审判，判 STUCK 就直接杀掉（还白烧一次模型调用）。
+       */
+      const declaredToolMs = heartbeat.activeTool?.timeoutMs;
+      if (declaredToolMs !== undefined && declaredToolMs > 0 && idleMs < declaredToolMs + TOOL_GRACE_MS) {
+        continue;
+      }
       if (reviewing.has(worker.agentId)) continue;
       const reviewedAt = lastReviewAt.get(worker.agentId);
       if (reviewedAt !== undefined && now - reviewedAt < settings.semantic.cooldownMs) continue;

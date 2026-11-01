@@ -322,6 +322,43 @@ describe("plugins/watchdog（P3）", () => {
     await dispose();
   });
 
+  it("工具仍在自报时限内：不审也不杀（正常的长跑命令不该被判打转）", async () => {
+    // 缺省参数下的真实陷阱：afterMs = 停滞阈值一半 = 300s，而 run_command
+    // 的合法上限就是 600s。没有这条守卫，一次五分钟的构建会被送去审判
+    const worker = makeWorker(
+      "agent-1",
+      stalledHeartbeat(5 * 60_000, {
+        activeTool: { name: "run_command", timeoutMs: 600_000 },
+        trace: { goal: "跑测试", steps: ["助手调用 [run_command]：pnpm test"] },
+      }),
+    );
+    const { dispose, judgeCalls } = await mountWatchdog([worker], semanticOn, { reply: "STUCK" });
+
+    await new Promise((r) => setTimeout(r, 200));
+    // 既不花这次调用，也不中断——工具在它承诺的时限内，无进展是合法的
+    expect(judgeCalls()).toBe(0);
+    expect(worker.abortCurrentTurn).not.toHaveBeenCalled();
+    await dispose();
+  });
+
+  it("工具自报时限已过：语义审查照常进行（守卫不能宽到放过真卡死）", async () => {
+    // 自报 60s、已停滞 200s：早已越过「工具承诺的阻塞期」，此时就该问一句
+    const worker = makeWorker(
+      "agent-1",
+      stalledHeartbeat(200_000, {
+        activeTool: { name: "slow_tool", timeoutMs: 60_000 },
+        trace: { goal: "跑测试", steps: ["助手调用 [slow_tool]：开始"] },
+      }),
+    );
+    const { dispose, judgeCalls } = await mountWatchdog([worker], semanticOn, { reply: "STUCK" });
+
+    await vi.waitFor(() => {
+      expect(worker.abortCurrentTurn).toHaveBeenCalledWith("stalled");
+    });
+    expect(judgeCalls()).toBe(1);
+    await dispose();
+  });
+
   it("快照暴露语义审查配置：排查「为什么没审」先看这里", async () => {
     const worker = makeWorker("agent-1", tracedHeartbeat(500));
     const { face, dispose } = await mountWatchdog([worker], semanticOn);

@@ -170,4 +170,75 @@ describe("Config API", () => {
     expect(loaded.settings.tavilyApiKey).toBe("tvly-conc");
     await app.close();
   });
+
+  // ── 看护参数（P3/P4）：此前只能在 config.json 里手改，接口静默丢弃 ──
+
+  it("PUT /config 写入 watchdog 分段，GET 能读回", async () => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server)
+      .put("/config")
+      .send({ watchdog: { enabled: true, stallThresholdMs: 300_000 } });
+    expect(res.status).toBe(200);
+    expect(res.body.watchdog).toEqual({ enabled: true, stallThresholdMs: 300_000 });
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.watchdog).toEqual({ enabled: true, stallThresholdMs: 300_000 });
+    await app.close();
+  });
+
+  it("watchdog 逐字段合并：只改一个字段不抹掉其余", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server)
+      .put("/config")
+      .send({ watchdog: { stallThresholdMs: 300_000, scanIntervalMs: 10_000 } });
+    // 第二次只动 enabled：另外两个必须留着（整体替换会让调参者以为配置没生效）
+    await authedRequest(app.server).put("/config").send({ watchdog: { enabled: false } });
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.watchdog).toEqual({
+      stallThresholdMs: 300_000,
+      scanIntervalMs: 10_000,
+      enabled: false,
+    });
+    await app.close();
+  });
+
+  it("semanticReview 嵌套合并：单改 enabled 不打回已配的冷却", async () => {
+    const app = await makeApp();
+    await authedRequest(app.server)
+      .put("/config")
+      .send({ watchdog: { semanticReview: { cooldownMs: 0, afterMs: 120_000 } } });
+    await authedRequest(app.server)
+      .put("/config")
+      .send({ watchdog: { semanticReview: { enabled: true } } });
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.watchdog?.semanticReview).toEqual({
+      cooldownMs: 0,
+      afterMs: 120_000,
+      enabled: true,
+    });
+    await app.close();
+  });
+
+  it("watchdog 形状非法（null / 数组 / 字符串）静默忽略，不写坏配置", async () => {
+    const app = await makeApp();
+    for (const bad of [null, ["enabled"], "off", 42]) {
+      const res = await authedRequest(app.server).put("/config").send({ watchdog: bad });
+      expect(res.status).toBe(200);
+    }
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.watchdog).toBeUndefined();
+    await app.close();
+  });
+
+  it("范围非法的值原样存下：归一在插件侧，接口不制造第二种失败面", async () => {
+    const app = await makeApp();
+    // 0 存进去，读取方（readSettings）回缺省——GET /system/watchdog 显示生效值
+    await authedRequest(app.server).put("/config").send({ watchdog: { stallThresholdMs: 0 } });
+
+    const loaded = await context.configRepository.load();
+    expect(loaded.settings.watchdog?.stallThresholdMs).toBe(0);
+    await app.close();
+  });
 });
