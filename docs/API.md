@@ -267,7 +267,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `text.delta` / `thinking.delta` | 流式正文 / 推理内容（群聊帧带 `agentId`） |
 | `tool.call` / `tool.result` | 工具调用与执行结果（群聊帧带 `agentId`） |
 | `step.end` | ReAct 单步结束（每个 step 都发，tool_use 时循环继续） |
-| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态） |
+| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态）。**仅中断结束时**附 `aborted: { reason }`，`reason` ∈ `user` / `watchdog` / `timeout` / `shutdown`；正常结束不带该字段（帧形状与老前端行为均不变）。前端据此把气泡标「已中断」，已显示的文本保留 |
 | `handoff.update` | 换班移交状态变化（`status` / `shift` / `maxShifts` / `bookMessageId?` / `reason?`，仅私聊连接推送，帧带 `agentId`） |
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
 | `error` | 错误 |

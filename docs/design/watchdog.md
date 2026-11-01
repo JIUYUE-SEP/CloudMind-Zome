@@ -1,6 +1,6 @@
 # 后台看护（Watchdog）：turn 级卡死检测与中断 实施前报告
 
-> 日期：2026-11-01 | 状态：**P1 已实施完成**（见 §4.1）；P2–P4 待批准后实施
+> 日期：2026-11-01 | 状态：**P1、P2 已实施完成**（见 §4.1 / §4.2）；P3–P4 待批准后实施
 > 触发：`worker-registry.ts:18-21` 已登记「已知风险（设计取舍，登记不做）」，本文是对该条的风险复核与实施论证；方法参照 DeepSeek Harness《Super-agent 设计探索》§6（外部 Control Loop）。
 > 定位：**不是**新增产品功能，是补一条可靠性回路——现有系统一旦遇到 provider 流悬挂，没有任何内部机制能自愈，只能运维重启。
 
@@ -97,11 +97,13 @@ for (; step < maxSteps && !watermarkStop; step++) {
 - 代价：用户在界面上看到过流式输出的部分文字，历史里没有。这是**可接受的不对称**——流式气泡是瞬时视图，历史是既成事实。
 - 前端契约：`turn.end` 帧需带中断标记，前端据此把气泡标为「已中断」而非「已完成」（见 2.3）。
 
-### 2.2 话题 tracker：abort 回合不参与话题生命周期
+### 2.2 话题 tracker：只跳过语义裁判，**不**切断入话题
 
-被中断的 turn **不做**：话题边界判定、话题关闭、压缩入队、`usedSkills` 收集。
+> 实施修正（2026-11-01）：本条初稿写「abort 回合不参与话题生命周期（话题边界判定 / 话题关闭 / 压缩入队 / usedSkills 收集）」，**范围划错了**。复核发现 `agent-worker.ts` 的 catch 块已有一处 Minor-3 修复：异常 turn 已按 step 落盘的消息**必须**并入话题体系，否则会脱离话题——永不归档/压缩/索引，永久滞留热存储且每轮进上下文。中断路径同样落过完整 step，切断入话题等于把这个已修的坑重新挖开。
 
-理由：这些动作都以「一次完整交互」为前提；半截回合拿去判话题，会污染 `topic-state.json` 的开放话题快照，而该快照正是 worker 重建时的还原源（`restoreTopicOpen`）。
+**最终实施**：中断回合保留 `onTurnAppended` / 话题关闭 / 压缩入队 / `usedSkills` 收集（与故障路径一致），**只跳过 `maybeRunTopicJudge`**。
+
+理由：语义裁判（每攒 6 轮异步判一次话题边界）以「一次完整交互」为前提，把半截回合送进去只会得到误判，且白烧一次 LLM 调用。其余动作的对象都是**已落盘的完整消息**，与回合是否被中断无关。
 
 ### 2.3 终帧：`turn.end` 扩展中断原因
 
@@ -198,7 +200,7 @@ L3 语义审查（二期，本期不做）
 | 期 | 内容 | 独立价值 | 前置 |
 |---|---|---|---|
 | **P1** ✅ | L0 流空闲超时：`postJsonStream` 改空闲语义 + 三协议缺省兜底 + chat 链路处理 | 单独就能堵住缺口 B（未配置即无超时 + 总时长误杀） | 无 |
-| **P2** | §2 abort 语义四条落地（落盘/话题/终帧/handoff 关系） | 为任何中断能力打地基 | P1 |
+| **P2** ✅ | §2 abort 语义四条落地（落盘/话题/终帧/handoff 关系）+ 外部 signal 贯通到 provider | 为任何中断能力打地基 | P1 |
 | **P3** | L1 心跳扫描 + `plugins/watchdog` + `GET /system/watchdog` | 覆盖「有超时但每步都慢」的慢性卡死 | P2 |
 | **P4** | L3 语义审查（模型判断是否偏离目标） | —— | 本期不做 |
 
@@ -225,6 +227,47 @@ L3 语义审查（二期，本期不做）
 **验证**：`typecheck` 通过；`provider` 套件 84 例全绿（含新增 3 例）；`lint` 通过；engine 全量 1752 例中 1748 通过，4 例失败均在 `tests/sidecar/autostart.test.ts`——经 stash 对照确认为**既有失败**（原始代码同样 4 例失败），与本单无关。
 
 **遗留**：`embedder.ts` 与 `image-gen.ts` 的 OpenAI 客户端未接超时看护（均为非流式短请求，风险低），不在 P1 范围。
+
+### 4.2 P2 实施记录（2026-11-01 完成）
+
+**侦察结论（先于实施，改变了方案形状）**
+
+- `LLMProvider.chat(params)` 没有 signal 参数，`turn.ts` 的中断检查只在**步与步之间**（`step.ts:100` 是每个 event 后检查），而在途 fetch 完全不受控——中断延迟等于一次完整生成。
+- 全仓 12 处 `new AbortController` 分布在 plans / blueprint / handoff / subagent / 工具内部，**WS 私聊路径一处都没有**。即：用户在界面上没有「停止生成」能力，`aborted.reason` 的 `"user"` 目前只能来自 plans/blueprint 的超时取消。
+- `resilient.ts` 对「不可重试错误」的处理是**降级到备用 provider**。若照搬 P1 的「超时判不可重试」，用户取消会触发换模型重跑——语义荒谬，必须单独拦。
+
+**改动**
+
+| 文件 | 内容 |
+|---|---|
+| `provider/types.ts` | `LLMChatParams` 增 `signal?`（控制面通道）；`TurnEndEvent` 增可选 `aborted.reason`；新增 `TurnAbortReason` |
+| `provider/protocols/shared.ts` | 新增 `TurnAbortedError`（name 独立、message 保留 "aborted" 关键词）、`isTurnAbortedError()`、`mergeSignals()`；`postJsonStream` 合并外部 signal 与空闲超时，错误映射按「外部取消 > 空闲超时 > 原样」排序 |
+| `provider/protocols/openai-compatible-chat.ts` | 三个协议统一：合并 signal 传 SDK，catch 里优先判外部取消 |
+| `provider/protocols/{openai-responses,anthropic-messages}.ts` | 透传 `params.signal` 到 `postJsonStream` |
+| `provider/resilient.ts` | 首事件失败时若为取消错误**直接上抛**：不重试、不降级 |
+| `core/react/step.ts` | `params` 带 signal；两处 `throw new Error("aborted")` → `TurnAbortedError` |
+| `core/react/turn.ts` | 步边界 abort 抛 `TurnAbortedError` |
+| `core/agent-worker.ts` | 新增 `resolveAbortReason()`（signal.reason 认不出时回落 `"user"`）；catch 块按中断/故障分流；终帧带 `aborted` |
+| `apps/web/utils/managed-ws.ts` | `onTurnEnd` 增第二参数；仅在带 `aborted` 时才传，保持既有调用形状 |
+| `apps/web/stores/chat.ts` + `composables/useChatRecords.ts` + `components/MessageBubble.vue` | 中断标记 `aborted` 透到气泡，显示「已中断」尾注（已显示文本不丢） |
+
+**关键决策**
+
+1. **signal 放进 `LLMChatParams` 而非加第二参数**：resilient / record-calls / ModelApiModeRouter 三层包装都原样透传 params，零改动；加第二参数要改 8 个实现。
+2. **错误分三类而非两类**：`TurnAbortedError`（取消）≠ `StreamIdleTimeoutError`（空闲超时）≠ 网络错误。三者都不可重试，但只有取消**不可降级**。
+3. **§2.2 范围修正**（见上）：保留入话题，只跳过语义裁判。
+4. **前端只在有 `aborted` 时传第二参数**：正常结束帧形状与调用形状全部不变，老测试零改动。
+
+**验证**
+
+- engine：`provider` 86 例、`core` 280 例全绿（新增 4 例：外部取消立即中断、已 abort 不发请求、中断终帧 reason、无 reason 归 user）
+- web：typecheck 通过，303 例全绿
+- 全量：见 §4.3 汇总
+
+**遗留**
+
+- **用户侧取消入口缺失**：前端没有停止按钮，WS 路径不创建 AbortController。`aborted.reason="user"` 目前只在 plans/blueprint 超时路径产生。要让用户能停，需要前端按钮 + WS 取消帧或 REST 端点——建议单开一单，不在 P2 范围。
+- 群聊气泡的中断标记只做了数据透传（`useGroupChatStream` 未消费第二参数），群聊里暂不显示「已中断」尾注。
 
 ---
 
