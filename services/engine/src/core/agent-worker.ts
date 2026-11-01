@@ -262,6 +262,7 @@ function resolveAbortReason(signal: AbortSignal): TurnAbortReason {
         ? (raw as { reason?: unknown }).reason
         : undefined;
   return candidate === "watchdog" ||
+    candidate === "stalled" ||
     candidate === "timeout" ||
     candidate === "shutdown" ||
     candidate === "user"
@@ -303,6 +304,52 @@ export interface ToolApprovalEvent {
   approved: boolean;
 }
 
+/** P4 语义审查的输入轨迹：判断「在不在推进」必须有目标与最近动作 */
+export interface TurnTrace {
+  /** 本 turn 要做什么（触发它的那条用户消息，已截断） */
+  goal: string;
+  /** 最近若干步的动作摘要，按时间先后 */
+  steps: string[];
+}
+
+/** 轨迹只留最近几步：审查看的是「最近在干什么」，堆得越长信号越稀释 */
+const TRACE_MAX_STEPS = 6;
+const TRACE_STEP_TEXT_LIMIT = 240;
+const TRACE_GOAL_LIMIT = 600;
+
+function clipText(text: string, limit: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit)}…`;
+}
+
+/** 消息的纯文本（跳过 think 块：推理内容不该被当成对外动作） */
+function messageTextOf(message: ChatMessage): string {
+  return message.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+}
+
+/**
+ * 一步的动作摘要（P4）：喂给语义审查的是「做了什么」，不是全文。
+ *
+ * 工具结果留长一点（那是判断有没有新信息的依据），
+ * 助手文本留短（审查只需要知道它在说什么方向）。
+ */
+function summarizeStep(messages: ChatMessage[]): string {
+  const parts: string[] = [];
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const called = message.toolCalls?.map((call) => call.name).join(", ");
+      const said = clipText(messageTextOf(message), 120);
+      parts.push(called !== undefined ? `助手调用 [${called}]${said ? `：${said}` : ""}` : `助手：${said}`);
+    } else if (message.role === "tool") {
+      parts.push(`工具结果：${clipText(messageTextOf(message), 180)}`);
+    }
+  }
+  return clipText(parts.join(" | "), TRACE_STEP_TEXT_LIMIT);
+}
+
 /**
  * 在途 turn 的运行快照（P3 看护）：看门狗据此判断「真卡住」还是「只是慢」。
  *
@@ -327,6 +374,8 @@ export interface TurnHeartbeat {
    * 未声明（第三方/MCP 未配置）时按缺省阈值判，宁可晚判也不误杀。
    */
   activeTool?: { name: string; timeoutMs?: number };
+  /** P4 语义审查输入；语义审查关闭时不消费（仍照常维护，开销可忽略） */
+  trace?: TurnTrace;
 }
 
 export class AgentWorker {
@@ -374,10 +423,12 @@ export class AgentWorker {
    */
   getHeartbeat(): TurnHeartbeat | undefined {
     if (this.heartbeat === null) return undefined;
-    const { activeTool } = this.heartbeat;
+    const { activeTool, trace } = this.heartbeat;
     return {
       ...this.heartbeat,
       ...(activeTool !== undefined ? { activeTool: { ...activeTool } } : {}),
+      // trace 也要复制：数组是引用，浅拷贝会让调用方 push 到 worker 内部状态里
+      ...(trace !== undefined ? { trace: { goal: trace.goal, steps: [...trace.steps] } } : {}),
     };
   }
 
@@ -776,7 +827,18 @@ export class AgentWorker {
     const turnAbort = new AbortController();
     this.turnAbort = turnAbort;
     const now = Date.now();
-    this.heartbeat = { startedAt: now, lastActivityAt: now, stepCount: 0 };
+    // P4：目标取触发本 turn 的那条用户消息。取末尾而非首条——重发/补充
+    // 要求时，最后一条才是当前意图（首条可能是早已被替换的旧目标）
+    const goalMessage = [...job.messages].reverse().find((m) => m.role === "user");
+    this.heartbeat = {
+      startedAt: now,
+      lastActivityAt: now,
+      stepCount: 0,
+      trace: {
+        goal: goalMessage !== undefined ? clipText(messageTextOf(goalMessage), TRACE_GOAL_LIMIT) : "",
+        steps: [],
+      },
+    };
     /**
      * 本 turn 的有效取消信号 = 外部取消 ∪ 看护中断。
      *
@@ -1121,6 +1183,17 @@ export class AgentWorker {
           if (this.heartbeat !== null) {
             this.heartbeat.stepCount += 1;
             this.heartbeat.lastActivityAt = Date.now();
+            // P4：留一步的动作摘要给语义审查看
+            const summary = summarizeStep(msgs);
+            if (summary.length > 0 && this.heartbeat.trace !== undefined) {
+              this.heartbeat.trace.steps.push(summary);
+              if (this.heartbeat.trace.steps.length > TRACE_MAX_STEPS) {
+                this.heartbeat.trace.steps.splice(
+                  0,
+                  this.heartbeat.trace.steps.length - TRACE_MAX_STEPS,
+                );
+              }
+            }
           }
           // 瞬态回合（蓝图）：不走热存储与话题状态，调用方自行收集产出
           //（瞬态不发 turn/step——载荷语义是"已落盘"，瞬态设计不落盘）

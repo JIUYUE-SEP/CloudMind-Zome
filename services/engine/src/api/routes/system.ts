@@ -94,7 +94,13 @@ export async function registerSystemRoutes(app: FastifyInstance, context: ApiCon
     schema: { summary: "Get turn heartbeat snapshot (watchdog)", tags: ["system"] },
   }, async () => {
     if (context.watchdog === undefined) {
-      return { enabled: false, scanIntervalMs: 0, stallThresholdMs: 0, turns: [] };
+      return {
+        enabled: false,
+        scanIntervalMs: 0,
+        stallThresholdMs: 0,
+        semanticReview: { enabled: false, afterMs: 0, cooldownMs: 0 },
+        turns: [],
+      };
     }
     return context.watchdog.snapshot();
   });

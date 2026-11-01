@@ -108,7 +108,13 @@ describe("System Info API", () => {
     // 返回 404 会让调用方把「没装看护」误读成「接口不存在/版本不对」
     const res = await authedRequest(app.server).get("/system/watchdog");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ enabled: false, scanIntervalMs: 0, stallThresholdMs: 0, turns: [] });
+    expect(res.body).toEqual({
+      enabled: false,
+      scanIntervalMs: 0,
+      stallThresholdMs: 0,
+      semanticReview: { enabled: false, afterMs: 0, cooldownMs: 0 },
+      turns: [],
+    });
     await app.close();
   });
 
@@ -119,6 +125,7 @@ describe("System Info API", () => {
       enabled: true,
       scanIntervalMs: 30_000,
       stallThresholdMs: 600_000,
+      semanticReview: { enabled: true, afterMs: 300_000, cooldownMs: 120_000 },
       turns: [
         {
           agentId: "agent-1",

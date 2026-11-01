@@ -1,7 +1,8 @@
 import type { Context } from "cordis";
 import { logger } from "../../logger.js";
-import type { TurnHeartbeat } from "../../core/agent-worker.js";
+import type { AgentWorker, TurnHeartbeat } from "../../core/agent-worker.js";
 import type { WatchdogSettings } from "../../config/repository.js";
+import { judgeTurnProgress } from "./judge.js";
 
 /**
  * 看门狗插件（P3）：turn 级停滞检测与中断。
@@ -23,12 +24,14 @@ import type { WatchdogSettings } from "../../config/repository.js";
 
 export const name = "watchdog";
 
-/** 依赖 agents（要遍历 worker 注册表）与 config（读运行期阈值） */
-export const inject = ["agents", "config"];
+/** 依赖 agents（遍历 worker 注册表）、config（读运行期阈值）、llm（语义审查造 provider） */
+export const inject = ["agents", "config", "llm"];
 
 /** 缺省：卡十分钟还没任何进展就该怀疑了 */
 export const DEFAULT_STALL_THRESHOLD_MS = 600_000;
 export const DEFAULT_SCAN_INTERVAL_MS = 30_000;
+/** 语义审查冷却：同一 agent 两次审查至少隔两分钟，否则等于每轮扫描烧一次模型 */
+export const DEFAULT_REVIEW_COOLDOWN_MS = 120_000;
 /** 扫描周期下限：再密就是纯烧 CPU，且故障恢复不差这十秒 */
 export const MIN_SCAN_INTERVAL_MS = 5_000;
 /**
@@ -56,6 +59,8 @@ export interface WatchdogSnapshot {
   enabled: boolean;
   scanIntervalMs: number;
   stallThresholdMs: number;
+  /** 语义审查配置（P4）：排查「为什么这个明显在打转的回合没被审」时先看这里 */
+  semanticReview: { enabled: boolean; afterMs: number; cooldownMs: number };
   /** 在途 turn 列表；空数组表示当前没有任何回合在跑 */
   turns: WatchdogTurnSnapshot[];
 }
@@ -100,6 +105,17 @@ function normalizeInterval(raw: unknown): number {
 }
 
 /**
+ * 时长归一（语义审查的两个参数）：非法值用缺省，不因配置笔误关掉功能。
+ *
+ * 允许 0——`cooldownMs: 0` 是「不冷却」的显式表达（配合扫描周期即每轮一审），
+ * 用户写 0 就是想要这个行为；只有负数/非数字才视为没配。
+ */
+function normalizePositive(raw: unknown, fallback: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return fallback;
+  return Math.round(raw);
+}
+
+/**
  * 本次判定该用的阈值。
  *
  * 关键在工具在跑时要放宽——否则 `run_command` 跑十分钟（它自己的合法上限
@@ -118,19 +134,34 @@ function effectiveThresholdMs(heartbeat: TurnHeartbeat, base: number): number {
 export function apply(ctx: Context, config?: Config): void {
   let timer: NodeJS.Timeout | null = null;
   let running = false;
+  /** 正在做语义审查的 agent（异步进行，防同一轮重复发起） */
+  const reviewing = new Set<string>();
+  /** 各 agent 上次审查时间（冷却用：反复审查等于反复烧 token） */
+  const lastReviewAt = new Map<string, number>();
 
   async function readSettings(): Promise<{
     enabled: boolean;
     stallThresholdMs: number;
     scanIntervalMs: number;
+    semantic: { enabled: boolean; afterMs: number; cooldownMs: number };
   }> {
     const config = await ctx.config.load();
     const settings: WatchdogSettings | undefined = config.settings?.watchdog;
+    const stallThresholdMs = normalizeThreshold(settings?.stallThresholdMs);
+    const semantic = settings?.semanticReview;
     return {
       // 缺省开：故障恢复不该要用户先去发现并手动打开
       enabled: settings?.enabled !== false,
-      stallThresholdMs: normalizeThreshold(settings?.stallThresholdMs),
+      stallThresholdMs,
       scanIntervalMs: normalizeInterval(settings?.scanIntervalMs),
+      semantic: {
+        // 缺省关：会产生模型调用，不能在升级后自动开始烧用户的钱
+        enabled: semantic?.enabled === true,
+        // 缺省取硬阈值的一半：既给审查留出「早发现」的余地，又不至于
+        // 稍微慢一点就调一次模型
+        afterMs: normalizePositive(semantic?.afterMs, Math.floor(stallThresholdMs / 2)),
+        cooldownMs: normalizePositive(semantic?.cooldownMs, DEFAULT_REVIEW_COOLDOWN_MS),
+      },
     };
   }
 
@@ -152,6 +183,75 @@ export function apply(ctx: Context, config?: Config): void {
     return turns;
   }
 
+  /**
+   * 语义审查（P4）：判定「动着但没在推进」。
+   *
+   * 与心跳扫描是两把尺子：心跳看「多久没动」，语义看「动了有没有用」。
+   * 因此它的触发阈值低于硬阈值——目的就是在硬杀之前先把「在打转」的回合
+   * 捞出来，而不是等到彻底静默。
+   *
+   * 全程 best-effort：任何一步失败都放行，绝不因为审查自己出问题而杀回合。
+   */
+  async function runSemanticReview(
+    worker: AgentWorker,
+    heartbeat: TurnHeartbeat,
+    idleMs: number,
+  ): Promise<void> {
+    const agentId = worker.agentId;
+    reviewing.add(agentId);
+    lastReviewAt.set(agentId, Date.now());
+    // 审查开始时的进展水位：结果回来时要拿它比对，见下方二次确认
+    const baselineActivity = heartbeat.lastActivityAt;
+    try {
+      // 没有动作轨迹就没有判断依据，不必花一次模型调用
+      if (heartbeat.trace === undefined || heartbeat.trace.steps.length === 0) return;
+
+      const agentConfig = await ctx.agents.agentRepository.get(agentId);
+      if (!agentConfig) return;
+      const provider = await ctx.llm.createProvider(agentConfig);
+      // 与 worker 的边界裁判同一条降级链：专门配了便宜模型就用它
+      const model =
+        agentConfig.topicBoundaryModel ?? agentConfig.compressionModel ?? agentConfig.model;
+      // 没有可用模型就不审了——审查是增强，不该为此阻断任何东西
+      if (model === undefined || model.length === 0) return;
+
+      const verdict = await judgeTurnProgress(provider, model, heartbeat, idleMs);
+      if (verdict !== "stuck") return;
+
+      /**
+       * 二次确认（关键）：审查期间回合可能已经恢复了。
+       * 拿判定的输入快照与当前状态比——`lastActivityAt` 前进了就说明它
+       * 在审查的这几十秒里又干了活，此时中断等于杀掉一个刚恢复的回合。
+       */
+      const latest = worker.getHeartbeat();
+      if (latest === undefined) return;
+      if (latest.lastActivityAt > baselineActivity) {
+        logger.info(
+          { agentId, stepCount: latest.stepCount },
+          "[watchdog] 语义审查判 STUCK，但审查期间已有新进展，放行",
+        );
+        return;
+      }
+
+      if (!worker.abortCurrentTurn("stalled")) return;
+      logger.warn(
+        {
+          agentId,
+          stepCount: latest.stepCount,
+          idleMs,
+          turnElapsedMs: Date.now() - latest.startedAt,
+          model,
+          ...(latest.activeTool !== undefined ? { activeTool: latest.activeTool } : {}),
+        },
+        "[watchdog] 语义审查判定原地打转，已中断",
+      );
+    } catch (err) {
+      logger.warn({ err, agentId }, "[watchdog] 语义审查异常（放行）");
+    } finally {
+      reviewing.delete(agentId);
+    }
+  }
+
   async function scanOnce(): Promise<void> {
     const settings = await readSettings();
     if (!settings.enabled) return;
@@ -165,24 +265,36 @@ export function apply(ctx: Context, config?: Config): void {
 
       const idleMs = now - heartbeat.lastActivityAt;
       const thresholdMs = effectiveThresholdMs(heartbeat, settings.stallThresholdMs);
-      if (idleMs < thresholdMs) continue;
 
-      // 先摘心跳再 abort 没必要——abort 后 job 的 finally 会清空，而这之间
-      // 的时间窗里重复扫描也只是再 abort 一次（对已 abort 的 signal 是 no-op）
-      if (!worker.abortCurrentTurn("watchdog")) continue;
+      if (idleMs >= thresholdMs) {
+        // 先摘心跳再 abort 没必要——abort 后 job 的 finally 会清空，而这之间
+        // 的时间窗里重复扫描也只是再 abort 一次（对已 abort 的 signal 是 no-op）
+        if (!worker.abortCurrentTurn("watchdog")) continue;
 
-      // 不含对话内容（与审批审计同口径）：只留定位用的结构字段
-      logger.warn(
-        {
-          agentId: worker.agentId,
-          stepCount: heartbeat.stepCount,
-          idleMs,
-          thresholdMs,
-          turnElapsedMs: now - heartbeat.startedAt,
-          ...(heartbeat.activeTool !== undefined ? { activeTool: heartbeat.activeTool } : {}),
-        },
-        "[watchdog] turn 停滞超阈值，已中断",
-      );
+        // 不含对话内容（与审批审计同口径）：只留定位用的结构字段
+        logger.warn(
+          {
+            agentId: worker.agentId,
+            stepCount: heartbeat.stepCount,
+            idleMs,
+            thresholdMs,
+            turnElapsedMs: now - heartbeat.startedAt,
+            ...(heartbeat.activeTool !== undefined ? { activeTool: heartbeat.activeTool } : {}),
+          },
+          "[watchdog] turn 停滞超阈值，已中断",
+        );
+        continue;
+      }
+
+      // 语义审查（P4）：还没到硬阈值，但已经不短了——先问一句「有用吗」
+      if (!settings.semantic.enabled) continue;
+      if (idleMs < settings.semantic.afterMs) continue;
+      if (reviewing.has(worker.agentId)) continue;
+      const reviewedAt = lastReviewAt.get(worker.agentId);
+      if (reviewedAt !== undefined && now - reviewedAt < settings.semantic.cooldownMs) continue;
+
+      // 异步发起，不阻塞本轮扫描（审查要调模型，几十秒起步）
+      void runSemanticReview(worker, heartbeat, idleMs);
     }
   }
 
@@ -209,6 +321,7 @@ export function apply(ctx: Context, config?: Config): void {
         enabled: settings.enabled,
         scanIntervalMs: settings.scanIntervalMs,
         stallThresholdMs: settings.stallThresholdMs,
+        semanticReview: { ...settings.semantic },
         turns: await collectTurns(settings.stallThresholdMs),
       };
     },

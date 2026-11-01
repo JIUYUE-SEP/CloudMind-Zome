@@ -13,6 +13,7 @@ import {
 } from "../../src/plugins/watchdog/index.js";
 import type { TurnHeartbeat } from "../../src/core/agent-worker.js";
 import type { WatchdogSettings } from "../../src/config/repository.js";
+import type { LLMEvent, LLMProvider } from "../../src/provider/types.js";
 
 /**
  * 看门狗插件（P3）：扫描判定与可观测面。
@@ -51,20 +52,46 @@ describe("plugins/watchdog（P3）", () => {
     };
   }
 
-  /** 挂载 config + 假 agents + watchdog，返回上架面与中断记录 */
+  /** 挂载 config + 假 agents/llm + watchdog，返回上架面与中断记录 */
   async function mountWatchdog(
     workers: FakeWorker[],
     settings?: WatchdogSettings,
-  ): Promise<{ face: WatchdogFace | undefined; dispose: () => Promise<void> }> {
+    judge?: { reply?: string; onCall?: () => void },
+  ): Promise<{
+    face: WatchdogFace | undefined;
+    judgeCalls: () => number;
+    dispose: () => Promise<void>;
+  }> {
     const ctx = new Context();
     await ctx.plugin(configPlugin);
     const cfg = await ctx.config.load();
     if (settings !== undefined) {
       await ctx.config.save({ ...cfg, settings: { ...cfg.settings, watchdog: settings } });
     }
-    // agents 只被消费 workspaceRegistry.all()：给一个最小满足面即可，
-    // 不引真 WorkerRegistry（那会拉起整条 worker 创建链）
-    ctx.provide("agents", { workerRegistry: { all: () => workers } } as never);
+    // agents 只被消费 workerRegistry.all() 与 agentRepository.get()：
+    // 给一个最小满足面即可，不引真 WorkerRegistry（那会拉起整条 worker 创建链）
+    ctx.provide("agents", {
+      workerRegistry: { all: () => workers },
+      agentRepository: {
+        get: async (id: string) => ({ id, model: "mock", tools: [], skills: [] }),
+      },
+    } as never);
+
+    // 假 LLM：语义审查经 ctx.llm.createProvider 拿到它
+    let calls = 0;
+    const judgeProvider: LLMProvider = {
+      name: "mock",
+      supportsModel: () => true,
+      async *chat(): AsyncIterable<LLMEvent> {
+        calls += 1;
+        judge?.onCall?.();
+        yield { type: "text.delta", delta: judge?.reply ?? "PROGRESSING" };
+        yield { type: "step.end" };
+      },
+    };
+    ctx.provide("llm", {
+      createProvider: async () => judgeProvider,
+    } as never);
 
     let face: WatchdogFace | undefined;
     const fiber = await ctx.plugin(watchdogPlugin, {
@@ -74,6 +101,7 @@ describe("plugins/watchdog（P3）", () => {
     });
     return {
       face,
+      judgeCalls: () => calls,
       dispose: async () => {
         await fiber.dispose();
       },
@@ -206,6 +234,100 @@ describe("plugins/watchdog（P3）", () => {
     await vi.waitFor(() => {
       expect(worker.abortCurrentTurn).toHaveBeenCalled();
     });
+    await dispose();
+  });
+
+  // ── P4 语义审查：默认不开启，开启后能判「动着但没在推进」 ──
+
+  /** 语义审查生效的最小配置：早审 + 无冷却（测试不等两分钟） */
+  const semanticOn: WatchdogSettings = {
+    stallThresholdMs: 600_000,
+    semanticReview: { enabled: true, afterMs: 1_000, cooldownMs: 0 },
+  };
+
+  function tracedHeartbeat(idleMs: number): TurnHeartbeat {
+    return stalledHeartbeat(idleMs, {
+      trace: {
+        goal: "修好日期解析",
+        steps: ["助手调用 [edit_file]：替换正则", "工具结果：oldString not found"],
+      },
+    });
+  }
+
+  it("语义审查缺省关闭：不为「可能打转」额外烧模型调用", async () => {
+    const worker = makeWorker("agent-1", tracedHeartbeat(30_000));
+    const { dispose, judgeCalls } = await mountWatchdog([worker]);
+
+    await new Promise((r) => setTimeout(r, 150));
+    // 缺省关闭是刻意的：这一层会产生费用，升级后不能自动开始花钱
+    expect(judgeCalls()).toBe(0);
+    expect(worker.abortCurrentTurn).not.toHaveBeenCalled();
+    await dispose();
+  });
+
+  it("开启后判定 STUCK：中断并带 reason=stalled（与心跳判定的 watchdog 区分）", async () => {
+    const worker = makeWorker("agent-1", tracedHeartbeat(30_000));
+    const { dispose, judgeCalls } = await mountWatchdog([worker], semanticOn, { reply: "STUCK" });
+
+    await vi.waitFor(() => {
+      expect(worker.abortCurrentTurn).toHaveBeenCalledWith("stalled");
+    });
+    expect(judgeCalls()).toBe(1);
+    await dispose();
+  });
+
+  it("开启后判定 PROGRESSING：放行，让慢任务继续跑", async () => {
+    const worker = makeWorker("agent-1", tracedHeartbeat(30_000));
+    const { dispose, judgeCalls } = await mountWatchdog([worker], semanticOn, { reply: "PROGRESSING" });
+
+    await vi.waitFor(() => {
+      expect(judgeCalls()).toBe(1);
+    });
+    expect(worker.abortCurrentTurn).not.toHaveBeenCalled();
+    await dispose();
+  });
+
+  it("审查期间已有新进展：判 STUCK 也放行，不杀刚恢复的回合", async () => {
+    const heartbeat = tracedHeartbeat(30_000);
+    const worker = makeWorker("agent-1", heartbeat);
+    const { dispose } = await mountWatchdog([worker], semanticOn, {
+      reply: "STUCK",
+      // 模型思考的这几十秒里回合又干了一步——真实场景下很常见
+      onCall: () => {
+        heartbeat.lastActivityAt = Date.now();
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(worker.abortCurrentTurn).not.toHaveBeenCalled();
+    await dispose();
+  });
+
+  it("未到审查阈值：不调模型（省下的每一次调用都是钱）", async () => {
+    const worker = makeWorker("agent-1", tracedHeartbeat(500));
+    const { dispose, judgeCalls } = await mountWatchdog([worker], semanticOn, { reply: "STUCK" });
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(judgeCalls()).toBe(0);
+    await dispose();
+  });
+
+  it("没有动作轨迹：不调模型（没有判断依据就別花钱）", async () => {
+    // trace 存在但 steps 为空——回合刚开始，还看不出在干什么
+    const worker = makeWorker("agent-1", stalledHeartbeat(30_000, { trace: { goal: "x", steps: [] } }));
+    const { dispose, judgeCalls } = await mountWatchdog([worker], semanticOn, { reply: "STUCK" });
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(judgeCalls()).toBe(0);
+    await dispose();
+  });
+
+  it("快照暴露语义审查配置：排查「为什么没审」先看这里", async () => {
+    const worker = makeWorker("agent-1", tracedHeartbeat(500));
+    const { face, dispose } = await mountWatchdog([worker], semanticOn);
+
+    const snapshot = await face!.snapshot();
+    expect(snapshot.semanticReview).toEqual({ enabled: true, afterMs: 1_000, cooldownMs: 0 });
     await dispose();
   });
 });

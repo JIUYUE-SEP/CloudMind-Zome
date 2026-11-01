@@ -2835,4 +2835,91 @@ describe("AgentWorker 看护心跳（P3）", () => {
     releaseAll();
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
   });
+
+  // ── P4：心跳里的执行轨迹，语义审查的唯一判据来源 ──
+
+  it("心跳带任务目标：取触发回合的那条用户消息", async () => {
+    const provider = new BlockingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+
+    worker.enqueue({
+      id: "j1",
+      messages: [userMessage("把 logs/ 下超过 7 天的日志清掉")],
+      onEvent: () => {},
+    });
+    await provider.started;
+
+    // 没有目标就无从判断「偏没偏题」——语义审查全靠它
+    expect(worker.getHeartbeat()?.trace?.goal).toBe("把 logs/ 下超过 7 天的日志清掉");
+    expect(worker.getHeartbeat()?.trace?.steps).toEqual([]);
+
+    worker.abortCurrentTurn("watchdog");
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("多轮对话取最后一条用户消息作目标：补充要求才是当前意图", async () => {
+    const provider = new BlockingProvider();
+    const worker = new AgentWorker(makeConfig(provider));
+
+    worker.enqueue({
+      id: "j1",
+      messages: [
+        userMessage("重构 parseDate"),
+        { ...userMessage("算了，只加个时区参数就行"), id: "2" },
+      ],
+      onEvent: () => {},
+    });
+    await provider.started;
+
+    expect(worker.getHeartbeat()?.trace?.goal).toBe("算了，只加个时区参数就行");
+
+    worker.abortCurrentTurn("watchdog");
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
+
+  it("step 完成后轨迹追加动作摘要：审查看的是「做了什么」", async () => {
+    // 两步 provider：第一步发起一次工具调用（让 ReAct 继续），工具很快返回、
+    // 该步落盘；第二步挂起，好在回合还在跑的时候观察轨迹
+    let markSecondStep!: () => void;
+    const secondStep = new Promise<void>((resolve) => {
+      markSecondStep = resolve;
+    });
+    let calls = 0;
+    const twoStepProvider: LLMProvider = {
+      name: "mock",
+      supportsModel: () => true,
+      async *chat(params: LLMChatParams): AsyncIterable<LLMEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool.call", toolCallId: "tc1", name: "dummy", arguments: { value: "x" } };
+          yield { type: "step.end" };
+          return;
+        }
+        markSecondStep();
+        await new Promise<void>((_resolve, reject) => {
+          const fail = () => reject(new Error("aborted"));
+          if (params.signal?.aborted) {
+            fail();
+            return;
+          }
+          params.signal?.addEventListener("abort", fail, { once: true });
+        });
+      },
+    };
+    const worker = new AgentWorker(makeConfig(twoStepProvider));
+
+    worker.enqueue({ id: "j1", messages: [userMessage("看看这个文件")], onEvent: () => {} });
+    await secondStep;
+
+    // 第一步已落盘（assistant 调用 + 工具结果），第二步在等模型
+    await vi.waitFor(() => {
+      expect(worker.getHeartbeat()?.trace?.steps.length).toBe(1);
+    });
+    const stepSummary = worker.getHeartbeat()!.trace!.steps[0];
+    expect(stepSummary).toContain("dummy");
+    expect(stepSummary).toContain("工具结果");
+
+    worker.abortCurrentTurn("watchdog");
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+  });
 });

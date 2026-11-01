@@ -22,8 +22,8 @@ export interface MemorySettings {
 }
 
 /**
- * 看门狗（P3）运行期参数。缺省值定义在 `plugins/watchdog`，此处只声明形状——
- * 全部字段可选，缺席按缺省处理，老 config.json 无需迁移。
+ * 看门狗（P3/P4）运行期参数。缺省值定义在 `plugins/watchdog`，此处只声明
+ * 形状——全部字段可选，缺席按缺省处理，老 config.json 无需迁移。
  */
 export interface WatchdogSettings {
   /** 总开关。缺省 true——故障恢复不该要用户先发现 */
@@ -32,6 +32,22 @@ export interface WatchdogSettings {
   stallThresholdMs?: number;
   /** 扫描周期（ms） */
   scanIntervalMs?: number;
+  /**
+   * 语义审查（P4）：用模型判断「动着但没在推进」。
+   *
+   * **缺省关闭**，与心跳扫描的缺省开启相反——它会产生额外的模型调用，
+   * 属于用户该显式买单的增强，不能在升级后自动开始烧钱。
+   */
+  semanticReview?: SemanticReviewSettings;
+}
+
+export interface SemanticReviewSettings {
+  /** 是否启用。缺省 false */
+  enabled?: boolean;
+  /** 停滞多久后开始审查（ms）。缺省取停滞阈值的一半 */
+  afterMs?: number;
+  /** 同一 agent 两次审查的最小间隔（ms），防反复烧 token。缺省 120s */
+  cooldownMs?: number;
 }
 
 export interface AppSettings {

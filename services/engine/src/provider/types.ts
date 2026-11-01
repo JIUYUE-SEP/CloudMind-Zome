@@ -39,10 +39,14 @@ export interface StepEndEvent {
  */
 /**
  * 回合中断原因（2026-11-01 P2）：终帧带它，前端才能把气泡标成「已中断」而不是
- * 当成正常结束或故障。取值来自 signal.reason，认不出时回落 "user"（现有四个
- * 创建方——plans / blueprint / handoff / 未来的 watchdog——都是主动取消）。
+ * 当成正常结束或故障。取值来自 signal.reason，认不出时回落 "user"（现有创建方
+ * ——plans / blueprint / handoff / watchdog——都是主动取消）。
+ *
+ * `stalled` 与 `watchdog` 分开：前者是 P4 语义审查判定「在打转/偏题」，
+ * 后者是 P3 心跳超阈值（长时间没有任何进展）。两者都归看护，但一个说的是
+ * 「动着但没用」，一个说的是「根本不动」——排查时这个区分值钱。
  */
-export type TurnAbortReason = "user" | "watchdog" | "timeout" | "shutdown";
+export type TurnAbortReason = "user" | "watchdog" | "stalled" | "timeout" | "shutdown";
 
 export interface TurnEndEvent {
   type: "turn.end";
