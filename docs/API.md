@@ -257,8 +257,11 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | 帧 | 说明 |
 |---|---|
 | `{ "text": "..." }` | 聊天消息（无 type 字段，最长 10000 字符） |
+| `turn.cancel` | 停止生成：中断本连接的**全部**在途回合（私聊含排队 job；群聊含本次投递的多个 Agent）。无 `id`，即发即生效；无在途回合时静默无副作用。中断收尾走 `turn.end` + `aborted.reason="user"` |
 | `tool.approval` | 审批回执（`approvalId` / `approved` / `remember`；`run_command` / `write_file` / `edit_file` / `dispatch_subagent` / `dispatch_subagent_batch` 不可 remember） |
 未知 type 帧静默忽略。
+
+> `turn.cancel` 的作用域是**连接**而非 agent：同一 agent 开多个标签页时，A 页停止不波及 B 页。排队中的 job 也会被一并取消——只掐最新那条会误伤（排队的被跳过，真正在跑的反倒继续烧 token）。
 
 **Server → Client**：
 

@@ -246,7 +246,7 @@ L3 语义审查（二期，本期不做）
 | `provider/protocols/{openai-responses,anthropic-messages}.ts` | 透传 `params.signal` 到 `postJsonStream` |
 | `provider/resilient.ts` | 首事件失败时若为取消错误**直接上抛**：不重试、不降级 |
 | `core/react/step.ts` | `params` 带 signal；两处 `throw new Error("aborted")` → `TurnAbortedError` |
-| `core/react/turn.ts` | 步边界 abort 抛 `TurnAbortedError` |
+| `core/react/turn.ts` | 步边界 abort 抛 `TurnAbortedError`；`stepInput` 透传 `signal`（首版漏传，见 §4.3 断链修复） |
 | `core/agent-worker.ts` | 新增 `resolveAbortReason()`（signal.reason 认不出时回落 `"user"`）；catch 块按中断/故障分流；终帧带 `aborted` |
 | `apps/web/utils/managed-ws.ts` | `onTurnEnd` 增第二参数；仅在带 `aborted` 时才传，保持既有调用形状 |
 | `apps/web/stores/chat.ts` + `composables/useChatRecords.ts` + `components/MessageBubble.vue` | 中断标记 `aborted` 透到气泡，显示「已中断」尾注（已显示文本不丢） |
@@ -264,10 +264,48 @@ L3 语义审查（二期，本期不做）
 - web：typecheck 通过，303 例全绿
 - 全量：见 §4.3 汇总
 
-**遗留**
+**遗留**（两条均已在 §4.3 收尾）
 
-- **用户侧取消入口缺失**：前端没有停止按钮，WS 路径不创建 AbortController。`aborted.reason="user"` 目前只在 plans/blueprint 超时路径产生。要让用户能停，需要前端按钮 + WS 取消帧或 REST 端点——建议单开一单，不在 P2 范围。
-- 群聊气泡的中断标记只做了数据透传（`useGroupChatStream` 未消费第二参数），群聊里暂不显示「已中断」尾注。
+- 用户侧取消入口缺失 → §4.3 已补
+- 群聊气泡中断标记未消费 → §4.3 已补
+
+### 4.3 P2 收尾（2026-11-01 完成）：停止生成入口 + 信号断链修复
+
+#### 一、首版实施存在断链，P2 的「贯通到 fetch」当时并不成立
+
+补「停止生成」时写的集成测试（`ws.test.ts` 的 `turn.cancel` 用例）超时，顺藤查出根因：
+
+```
+job.signal  ✅ agent-worker.ts:981 传给 runTurn
+  → turn.input.signal  ✅
+  → stepInput  ❌ 构造时漏了 signal 字段
+  → step.input.signal  undefined
+  → params.signal  undefined
+  → provider 拿不到取消信号
+```
+
+`turn.ts` 只在**步与步之间**检查 `input.signal`，step 内部的 provider 请求全程裸奔。即用户在流式输出中途取消，仍会等当前步完整生成完才停。
+
+**为什么 P2 的测试没抓到**：provider 层测试直接构造 `params` 调 `provider.chat()`，core 层测试覆盖的是步边界 abort——**没有一条测试穿过 turn → step → provider 的完整链路**。这也是本次补集成用例的直接理由。
+
+修复：`stepInput` 增 `signal: input.signal`。修复后该用例从「超时」变为通过。
+
+> 教训与 §1.3 的 `requestTimeout` 误判同源：**验证要覆盖真实调用链**，仅测单层会把「字段存在」误当成「链路贯通」。
+
+#### 二、停止生成（用户侧入口）
+
+| 层 | 改动 |
+|---|---|
+| `api/ws/handler.ts`（私聊） | 连接作用域 `inflight: Set<AbortController>`；`enqueue` 时建句柄、传 `signal`、`onDone` 释放；新增 `turn.cancel` 分支 abort 全部在途 job（`reason="user"`） |
+| `api/ws/session-handler.ts`（群聊） | 同上。群聊一条消息并行投给多个 agent，**整批一起掐**——只掐一个，其余人形会继续在群里各说各话 |
+| `components/MessageInput.vue` | 流式期间发送按钮换成「停止」（危险色，**不 disabled**——禁用的停止按钮等于没有停止）；新增 `stop` emit |
+| `stores/chat.ts` | 新增 `stop()`：发 `turn.cancel`。**不本地复位 `isStreaming`**——交给引擎回的 `turn.end` 收尾，本地抢先复位会让界面显示「已完成」而 delta 还在到 |
+| `pages/sessions/[id].vue`、`pages/hub.vue` | 各自 `onStop` / `onGroupStop`，透传到群聊连接 |
+| `composables/useGroupChatStream.ts` | `closeSlot` 接受 `aborted`，补上 P2 遗留的群聊「已中断」标记（原先数据透传了但没人消费） |
+
+**作用域决策**：取消按**连接**而非 agent。同一 agent 可能开多个标签页，A 页停止不该波及 B 页。排队 job 一并取消——只掐最新那条会误伤（排队的被跳过，真正在跑的反倒继续烧 token）。
+
+**验证**：engine `api/ws.test.ts` 13 例全绿（新增 2 例：中断终帧 `reason="user"` 且不刷错误、空转 cancel 无副作用）；web `MessageInput` 6 例全绿（停止态可点、回车不误发、合成态不发）。
 
 ---
 
