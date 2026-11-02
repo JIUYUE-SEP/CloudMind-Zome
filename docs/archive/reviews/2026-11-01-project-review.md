@@ -125,3 +125,98 @@ H-1 和 H-2 都是同一根因的表现：路径分隔符、`.exe`、`SIGTERM` �
 4. **M-1 / L-1 / L-2** —— 有空再说，不影响正确性。
 
 > 本报告只读检查，未修改任何代码。
+
+---
+
+# 续查（2026-11-02）：CI 与依赖安全
+
+第一轮只看了本地验证链，漏了远端。一轮 CI 日志查询翻出两个更大的问题。
+
+## 五、CI 已连续 5 次失败，没人看
+
+`gh run list` 显示最近 5 次 push（含本轮的文档与修复提交）**全部 failure**，最早可追溯到 2026-10-20 之后。失败点单一：
+
+| commit | 耗时 | 失败步骤 |
+|---|---|---|
+| 41276259955（docs 检查报告） | 7m57s | `Cargo audit (zome-sidecar)` |
+| 41269726728 / 41265520519 / 41262643341 / 41260882745 | 5-7m | 同上 |
+
+其余步骤（Lint / Typecheck / 1801 例测试 / Build / cargo fmt+clippy+test+release）**全绿**——所以这不是代码坏了，是依赖库在 10 月公布了新公告，而 `cargo audit` 的失败被当成了"反正一直红"。
+
+这与第一轮 H-1 是同一个病：**红点长期存在 → 信号价值归零 → 真回归也会被一起忽略**。
+
+### 修复
+
+| 项 | 修复前 | 修复后 | 依据 |
+|---|---|---|---|
+| rustls | 0.23.41 | **0.23.46** | RUSTSEC-2026-0285 / 0346 / 0348 / 0349 共同修复线 |
+| rustls-webpki | 0.103.13 | **0.103.16** | RUSTSEC-2026-0382（证书校验接受不可信中间证书） |
+| tokio | 1.52.3 | **1.53.3** | RUSTSEC-2026-0386（AsyncFd I/O safety，unsound） |
+
+本机无 Rust 工具链与 MSVC，无法 `cargo update`，改为直接改 `Cargo.lock`。升级前逐项核对 crates.io 元数据：三个新版本的依赖集合与版本约束同现有 lock 完全一致（rustls 仍需 once_cell/rustls-pki-types/rustls-webpki/subtle/zeroize；tokio 仍需 bytes/libc/mio/parking_lot/pin-project-lite/signal-hook-registry/socket2 0.6/tokio-macros ~2.7/windows-sys 0.61），故只需替换 version + checksum，不增删 package 条目。
+
+`bincode 1.3.3` 的 RUSTSEC-2025-0141 是 unmaintained 声明（无 CVE、无修复版本），来自 `hnsw_rs` 传递依赖，新增 `crates/zome-sidecar/.cargo/audit.toml` 显式 ignore 并写明来源/影响面/复查条件。
+
+**验证**：CI run 41410587220 的 `build-and-test` **全绿**（cargo fmt / clippy -D warnings / test / release build / audit 全过）。全量依赖树经 OSV batch 复扫 270 个 registry 包：vulnerability 归零。
+
+### 顺带发现：Rust 编译缓存从未生效
+
+`setup-rust-toolchain@v1` 的输入名写成了 `workspaces`，而有效名是 `cache-workspaces`——日志里一直有 `Unexpected input(s) 'workspaces'` 警告，但没人看。意味着 F15 声称的"显式登记缓存工作区"**从未生效**，CI 每次都冷编 sidecar（这也是 build-and-test 要 7-8 分钟的原因之一）。已改。
+
+## 六、npm 依赖：62 个公告待处理（本轮未修，受限于环境）
+
+用 OSV batch 扫 `pnpm-lock.yaml` 的 687 个唯一包：
+
+| 严重度 | 数量 |
+|---|---|
+| CRITICAL | 4 |
+| HIGH | 36 |
+| MODERATE | 38 |
+| LOW | 5 |
+
+**关键 4 个 CRITICAL**：
+
+| 包 | 当前 | 修复线 | 来源 |
+|---|---|---|---|
+| `proxy-addr` | 2.0.7 | **2.0.8** | fastify 传递依赖 |
+| `simple-git` | 3.36.0 | 4.0.1 | devDependency 链 |
+| `@simple-git/argv-parser` | 1.1.1 | 2.0.1 | 同上 |
+| `@nuxt/devtools` | 3.2.4 | 3.3.1 | 仅 dev 环境 |
+
+**HIGH 里影响运行时的主干**：`fastify` 5.8.5 → 5.12.2（4 条）、`nuxt` 3.21.8 → 3.21.10（4 条）、`@modelcontextprotocol/sdk` 1.30.0 → 1.32.0（6 条，MCP 客户端）、`js-yaml` 4.3.0 → 4.3.2、`@grpc/grpc-js` 1.14.4 → 1.14.5、`vite` 6.4.3/7.3.5 → 6.4.4/7.3.7、`body-parser` 2.3.0 → 2.4.0。
+
+**根 package.json 的 `pnpm.overrides` 本身就是漏洞源**——它钉的下限已经低于新修复线：
+
+```
+brace-expansion  ^5.0.9  → 需 ^5.0.11（另有 @^1 需 ^1.1.20、@^2 需 ^2.1.6）
+js-yaml          ^4.3.0  → 需 ^4.3.2
+svgo             ^4.0.2  → 需 ^4.1.0
+```
+
+**为什么本轮没修**：本机 `registry.npmjs.org` 不可达（`curl` 无响应，`pnpm audit` / `pnpm view` 全部 ECONNRESET），无法下载新版本、无法重算 lock。只改 `package.json` 会让 CI 的 `pnpm install`（CI 环境下默认 frozen-lockfile）直接失败。
+
+**待办（需在能访问 registry 的环境执行）**：
+
+```bash
+# 1. 抬高 overrides 下限（上述三组）
+# 2. 直接依赖升级到修复线
+pnpm --filter @cloudmind/engine add fastify@^5.12.2
+pnpm --filter @cloudmind/web    add nuxt@^3.21.10
+# 3. 重算 lock 并复验
+pnpm install && pnpm test && pnpm verify
+pnpm audit --audit-level=high        # 应清零
+```
+
+> 顺带：CI 目前没有任何 npm 依赖审计步骤（只有 cargo audit）。补一条 `pnpm audit --audit-level=high` 才能让这类问题像 cargo 的一样在合并前暴露。
+
+## 七、windows-test 首次运行即发现 2 例超时
+
+第一轮新增的 `windows-test` job 首次跑是 success，第二次红了——`tests/core/react.test.ts` 两例 5 秒超时：
+
+- `G3 估算含工具定义`：真实 tiktoken 反复计数 20000 字符工具定义 + 15000 字符工具输出
+- `保险丝：缺省 100 步撞顶`：刻意跑满 100 步，每步一次真实计数 + 上下文组装
+
+两例本地 1.5-2s，windows-latest runner 慢 2-3 倍即踩线。修法：两例签名自标 30s（语义不可缩——100 步正是被验证的缺省值），`vitest.config.ts` 全局 `testTimeout` 5s → 10s 给其余用例留缓冲。
+
+这恰好证明 windows-test 的价值：**它第二次运行就抓到了 Linux CI 永远看不到的问题**。
+
