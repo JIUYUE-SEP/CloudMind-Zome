@@ -6,6 +6,11 @@ export default defineConfig({
     setupFiles: ["tests/helpers/setup.ts"],
     // *.smoke.test.ts 起真实 sidecar 二进制（P5-3），成本高，不进默认套件，
     // 经 test:sidecar（vitest.smoke.config.ts）显式运行
+    // 5s 缺省对 GitHub windows-latest runner 偏紧（实测比本机慢 2-3 倍）：
+    // 2026-11-02 CI 上 core/react 的「G3 估算含工具定义」与「100 步保险丝」两例
+    // 稳定 5s 超时（本地 1.5-2s 完成）。提到 10s 给其余用例留缓冲；
+    // 真实重活用例在用例签名上自标 30s，不靠这条兜底。
+    testTimeout: 10_000,
     exclude: [...configDefaults.exclude, "tests/**/*.smoke.test.ts"],
     // 测试文件串行执行，保持最严格的隔离。背景（Windows 实测）：
     // 1) 并行跑文件时 CLOUDMIND_DATA_DIR 等进程级状态互相踩踏，且未覆盖 env 的

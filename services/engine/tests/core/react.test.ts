@@ -1067,7 +1067,10 @@ describe("上下文水位主裁（改动一）", () => {
     expect(hasReminder(provider.calls[0]!)).toBe(false);
     expect(hasReminder(provider.calls[1]!)).toBe(true);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
-  });
+    // 30s：真实 tiktoken 要反复计数 20000 字符工具定义 + 15000 字符工具输出，
+    // GitHub windows-latest runner 比本地慢 2-3 倍，5s 缺省会稳定超时
+    // （2026-11-02 CI 实测 5s 超时；本地 1.5s 内完成）
+  }, 30_000);
 
   it("水位撞顶兜底调用失败/空文本：产出可区分的水位兜底回复（不静默）", async () => {
     for (const behavior of ["throw", "empty"] as const) {
@@ -1102,7 +1105,9 @@ describe("上下文水位主裁（改动一）", () => {
     expect(hasWatermarkHint(summaryParams)).toBe(false);
     expect(assistantText(result.assistantMessage)).toBe("水位收尾");
     expect(reminderCount(provider.calls)).toBe(0);
-  });
+    // 30s：本用例刻意跑满缺省 100 步（保险丝语义即验证 100），每步都做一次
+    // tiktoken 真实计数 + 上下文组装；本地约 2s，windows-latest runner 超 5s 缺省
+  }, 30_000);
 
   it("傀儡路径（无 contextPipeline 的裸 runTurn）：水位判据自动生效", async () => {
     const provider = new WatermarkToolLoopProvider({ promptTokens: 800, completionTokens: 100 });
