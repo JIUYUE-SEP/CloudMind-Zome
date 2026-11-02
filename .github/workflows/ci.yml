@@ -61,7 +61,9 @@ jobs:
           tool: cargo-audit
 
       - name: Cargo audit (zome-sidecar)
-        run: cargo audit
+        # 配置在 crates/zome-sidecar/.cargo/audit.toml：只放「无修复版本且已评估」的项
+        # （当前仅 bincode 的 unmaintained 公告），有修复版本的一律升级依赖解决
+        run: cargo audit --config .cargo/audit.toml
         working-directory: crates/zome-sidecar
 
       - name: Upload coverage

@@ -1,0 +1,15 @@
+# cargo-audit 配置（CI 的 `Cargo audit (zome-sidecar)` 步骤经 --config 显式读取）
+#
+# 纪律：ignore 只用于「无修复版本且已评估」的项，每条必须写清来源、影响面与复查条件。
+# 有修复版本的漏洞一律升级依赖，不许进本清单。
+
+[advisories]
+ignore = [
+  # RUSTSEC-2025-0141 — bincode 1.3.3 unmaintained（2025-12-16 公告，无 CVE、无修复版本）
+  # 来源：hnsw_rs 0.3 的传递依赖，用于 HNSW 索引的序列化格式。
+  # 评估：本项目不反序列化外部不可信输入——索引文件由本进程写出并落在 DATA_DIR 下，
+  #       与 agent 数据同权限边界；且 bincode 1.x 无已知 RCE/内存安全漏洞，
+  #       该公告仅为「不再维护」声明。
+  # 复查条件：hnsw_rs 升级到改用 bincode 2.x，或出现针对 bincode 1.x 的真实安全公告时移除本条。
+  "RUSTSEC-2025-0141",
+]
