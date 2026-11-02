@@ -1,6 +1,26 @@
+import os from "node:os";
+import path from "node:path";
 import { defineConfig, configDefaults } from "vitest/config";
 
+// 工作区根（pnpm-workspace.yaml 所在处）；vite 默认的 allow 就是它。
+// 不从 "vite" import searchForWorkspaceRoot——engine 不是 vite 的直接依赖，
+// 配置里解析不到该包（ERR_MODULE_NOT_FOUND）。
+const workspaceRoot = path.resolve(import.meta.dirname, "../..");
+
 export default defineConfig({
+  // 外部插件夹具写在 os.tmpdir() 下，再由 loader 动态 import
+  // （DATA_DIR/plugins/<name>/index.mjs）——生产里这是普通 node 进程，
+  // 走原生 ESM 解析；但测试里 import 经 vite SSR 模块运行器，受
+  // server.fs.allow 约束。
+  // vite 6.4.4（GHSA server.fs 系列修复）起该约束对工作区外路径生效：
+  // 默认 allow 只有 workspace root，临时目录会被判 "Cannot find module"，
+  // 四个 external 系测试文件（20 例）因此整片失败。
+  // 放行 os.tmpdir() 是如实反映生产行为，不是绕开校验。
+  server: {
+    fs: {
+      allow: [workspaceRoot, os.tmpdir()],
+    },
+  },
   test: {
     pool: "forks",
     setupFiles: ["tests/helpers/setup.ts"],

@@ -17,7 +17,9 @@
 | typecheck | engine `tsc --noEmit` / web `nuxt typecheck` | ✅ 两侧通过 |
 | lint | engine `eslint src tests` / web | ⚠️ engine 0 问题；web **4 warning**（`no-console`） |
 | e2e | `npx playwright test` | ❌ **web 起不来，0/8 执行** |
-| 依赖审计 | `pnpm audit` | ⚠️ 网络 ECONNRESET，未完成（环境限制） |
+| 依赖审计 | `pnpm audit` | ⚠️ 网络 ECONNRESET，未完成（**2026-11-02 换镜像源后用 OSV 完成，见 §六**） |
+
+> 本表是 2026-11-01 的快照。engine 4 例失败、e2e 起不来、依赖审计三项均已于当日/次日修复，末尾「修复台账」章节逐项销记；§六 另有一段末尾补充。
 
 **4 个失败全部集中在 `tests/sidecar/autostart.test.ts`**，且与本次改动无关（既有问题，从 watchdog P1 起每轮都出现）。
 
@@ -163,7 +165,7 @@ H-1 和 H-2 都是同一根因的表现：路径分隔符、`.exe`、`SIGTERM` �
 
 `setup-rust-toolchain@v1` 的输入名写成了 `workspaces`，而有效名是 `cache-workspaces`——日志里一直有 `Unexpected input(s) 'workspaces'` 警告，但没人看。意味着 F15 声称的"显式登记缓存工作区"**从未生效**，CI 每次都冷编 sidecar（这也是 build-and-test 要 7-8 分钟的原因之一）。已改。
 
-## 六、npm 依赖：62 个公告待处理（本轮未修，受限于环境）
+## 六、npm 依赖：62 个公告（2026-11-02 已根治）
 
 用 OSV batch 扫 `pnpm-lock.yaml` 的 687 个唯一包：
 
@@ -193,21 +195,40 @@ js-yaml          ^4.3.0  → 需 ^4.3.2
 svgo             ^4.0.2  → 需 ^4.1.0
 ```
 
-**为什么本轮没修**：本机 `registry.npmjs.org` 不可达（`curl` 无响应，`pnpm audit` / `pnpm view` 全部 ECONNRESET），无法下载新版本、无法重算 lock。只改 `package.json` 会让 CI 的 `pnpm install`（CI 环境下默认 frozen-lockfile）直接失败。
+**当时为什么没修**：本机 `registry.npmjs.org` 不可达（`curl` 无响应，`pnpm audit` / `pnpm view` 全部 ECONNRESET），无法下载新版本、无法重算 lock。只改 `package.json` 会让 CI 的 `pnpm install`（CI 环境下默认 frozen-lockfile）直接失败。
 
-**待办（需在能访问 registry 的环境执行）**：
+### 修复结果（2026-11-02）
 
-```bash
-# 1. 抬高 overrides 下限（上述三组）
-# 2. 直接依赖升级到修复线
-pnpm --filter @cloudmind/engine add fastify@^5.12.2
-pnpm --filter @cloudmind/web    add nuxt@^3.21.10
-# 3. 重算 lock 并复验
-pnpm install && pnpm test && pnpm verify
-pnpm audit --audit-level=high        # 应清零
-```
+`registry.npmjs.org` 仍不通，改用 `registry.npmmirror.com`（lockfile v9 只存 `integrity` 不存 tarball URL，换源不影响完整性校验）。复扫口径用 OSV batch（`pnpm audit` 在镜像上没有 `/-/npm/v1/security/audits` 端点）。
 
-> 顺带：CI 目前没有任何 npm 依赖审计步骤（只有 cargo audit）。补一条 `pnpm audit --audit-level=high` 才能让这类问题像 cargo 的一样在合并前暴露。
+| | 修前 | 修后 |
+|---|---|---|
+| CRITICAL | 4 | **0** |
+| HIGH | 36 | **0** |
+| MODERATE | 38 | 12 |
+| LOW | 5 | 0 |
+| 命中包数 | 34 | 11 |
+
+两路并治：直接依赖抬到同分支修复线（fastify / js-yaml / @grpc/grpc-js / @modelcontextprotocol/sdk / nuxt / vue / happy-dom），传递依赖走根 `pnpm.overrides`（proxy-addr / body-parser / qs / browserslist / launch-editor / postcss-selector-parser / @hono/node-server / vite / simple-git / brace-expansion 三档 / js-yaml / svgo）。
+
+值得单说的两点：
+
+- **报告里写的「fastify → 5.12.2」不够**。按 OSV 的 range 逐条核对后，`GHSA-4mh8-r7rc-xpvc`（未处理错误导致 DoS）只在 **5.12.5** 修，5.12.2 仍在其影响区间内。同类偏差还有 `brace-expansion` 5.0.9 → 实际需 **5.0.12**（不是 5.0.11）、`qs` 6.15.2 → 需 **6.16.1**（6.16.0 不够）。原因是公告持续新增，且「最小修复版本」必须按**当前大版本分支**取，跨分支的 fixed 值会误导。
+- **`@nuxt/devtools` 的 CRITICAL 不用单独升**：`nuxt@3.21.10` 的依赖声明就是 `@nuxt/devtools: ^3.3.1`，升 nuxt 一并解决。而 `simple-git` 在 devtools 3.3.1 里仍钉 `^3.36.0`（CRITICAL 修复线是 4.0.1），只能靠 override 跨大版本——devtools 仅用它读 git 信息，风险可控。
+
+**剩余 12 条 MODERATE 均为跨大版本修复**，且全部落在构建/开发期依赖：`nuxt` 系 3 条需 4.6.x、`vitest` + `@vitest/mocker` 需 4.1.x、`glob` 需 14.0.2、`minimatch`（3/5/9/10 四个分支）需 11.0.1。框架迁移不在安全修复范围内，已记入路线图。
+
+**顺带补了闸门**：CI `build-and-test` 增 `pnpm audit --audit-level=high`（此前只有 Rust 侧有 `cargo audit`）。闸门定在 high 而非 moderate——后者当前修不掉，定 moderate 等于再造一个长期红灯。无修复版本的例外走 `pnpm.auditConfig.ignoreGhsas`，口径对齐 `crates/zome-sidecar/.cargo/audit.toml`。
+
+### 升级带出的一个真回归（已修）
+
+`vite` 6.4.3 → 6.4.5 后，`tests/plugins/` 下 4 个 external 系文件 20 例整片失败，报 `Cannot find module '...Temp/.../index.mjs'`。
+
+根因不是依赖坏了，而是 **vite 6.4.4 的 `server.fs` 安全修复收紧了 SSR 动态 import**：外部插件夹具写在 `os.tmpdir()` 下，测试里 loader 的 `import()` 经 vite 模块运行器解析，工作区外路径被默认 `allow` 拒掉。生产是原生 ESM 解析、不受影响，所以这是「测试环境口径」问题。
+
+定位方式：先怀疑依赖，用 `git stash` 把四个 package.json + lock 回退到改动前再跑同一文件——旧依赖全绿、新依赖全红，坐实是升级引入；再在 vitest 内探针确认「工作区内路径 OK / 同盘符但工作区外也失败」，排除盘符因素。修法是 `services/engine/vitest.config.ts` 显式 `server.fs.allow: [workspaceRoot, os.tmpdir()]`。
+
+> 结论：这类「安全补丁改了行为、测试恰好踩在旧行为上」的回归，只有全量跑测试才会露头——`pnpm audit` 与 `pnpm test` 必须一起跑。
 
 ## 七、windows-test 首次运行即发现 2 例超时
 

@@ -32,6 +32,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # npm 依赖漏洞审计（对应 cargo audit）。2026-11-02 前仓库只有 Rust 侧有闸，
+      # 导致一批准入的 CRITICAL/HIGH 公告长期无人看见（OSV 扫 687 个包命中
+      # 4 CRITICAL / 36 HIGH）。修复后仅剩 MODERATE 且集中在构建期依赖，
+      # 故闸门定在 high：新增 high/critical 一律阻断合并。
+      # 无修复版本的例外走 package.json 的 pnpm.auditConfig.ignoreGhsas，
+      # 须在 PR 里写明来源/影响面/复查条件（口径同 .cargo/audit.toml）。
+      - name: Audit npm dependencies
+        run: pnpm audit --audit-level=high
+
       - name: Lint
         run: pnpm lint
 
