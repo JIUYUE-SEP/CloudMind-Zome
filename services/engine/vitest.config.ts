@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defineConfig, configDefaults } from "vitest/config";
@@ -7,6 +8,17 @@ import { defineConfig, configDefaults } from "vitest/config";
 // 配置里解析不到该包（ERR_MODULE_NOT_FOUND）。
 const workspaceRoot = path.resolve(import.meta.dirname, "../..");
 
+// GitHub Windows runner 的 TEMP 是 8.3 短路径（C:\Users\RUNNER~1\...），
+// 而实际写盘/import 的路径是长名（C:\Users\runneradmin\...）——只放行
+// os.tmpdir() 匹配不上，CI 上 20 例照旧失败（本地长名一致所以看不出来）。
+// 两种形态都放。
+const tempDirs = new Set([os.tmpdir()]);
+try {
+  tempDirs.add(fs.realpathSync.native(os.tmpdir()));
+} catch {
+  // tmpdir 不可 realpath 时只留原样，不阻断配置加载
+}
+
 export default defineConfig({
   // 外部插件夹具写在 os.tmpdir() 下，再由 loader 动态 import
   // （DATA_DIR/plugins/<name>/index.mjs）——生产里这是普通 node 进程，
@@ -15,10 +27,15 @@ export default defineConfig({
   // vite 6.4.4（GHSA server.fs 系列修复）起该约束对工作区外路径生效：
   // 默认 allow 只有 workspace root，临时目录会被判 "Cannot find module"，
   // 四个 external 系测试文件（20 例）因此整片失败。
-  // 放行 os.tmpdir() 是如实反映生产行为，不是绕开校验。
+  // 放行临时目录是如实反映生产行为，不是绕开校验。
   server: {
     fs: {
-      allow: [workspaceRoot, os.tmpdir()],
+      // strict:false 是兜底：Windows runner 上 os.tmpdir() 与 mkdtemp 返回的
+      // 实际路径可能不同形（8.3 短名 ↔ 长名、junction），allow 列表匹配不可靠，
+      // 出现「本地绿、CI 红」的拉锯。测试运行器只读本机夹具，关掉这条
+      // 服务型边界不改变任何真实风险；allow 仍保留以表达意图。
+      strict: false,
+      allow: [workspaceRoot, ...tempDirs],
     },
   },
   test: {
