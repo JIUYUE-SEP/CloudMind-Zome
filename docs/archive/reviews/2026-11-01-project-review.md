@@ -220,6 +220,31 @@ svgo             ^4.0.2  → 需 ^4.1.0
 
 **顺带补了闸门**：CI `build-and-test` 增 `pnpm audit --audit-level=high`（此前只有 Rust 侧有 `cargo audit`）。闸门定在 high 而非 moderate——后者当前修不掉，定 moderate 等于再造一个长期红灯。无修复版本的例外走 `pnpm.auditConfig.ignoreGhsas`，口径对齐 `crates/zome-sidecar/.cargo/audit.toml`。
 
+### 第二轮：OSV 漏报，`pnpm audit` 才是准绳
+
+闸门加完首跑就红了：**`pnpm audit` 报 3 CRITICAL / 20 HIGH，而 OSV 扫描报 0**。
+
+差集正好是 6 个包，OSV 一条都没报：
+
+| 包 | 当时 | 修复线 | 来源 |
+|---|---|---|---|
+| `tinypool` | 1.1.1 | **2.1.2**（2 条 CRITICAL：原型污染 gadget → RCE） | vitest 工作线程池 |
+| `shell-quote` | 1.10.0 | **1.11.0**（CRITICAL：`quote()` 命令注入） | launch-editor |
+| `undici` | 7.28.0 | **7.30.1**（5 条 high：TLS 校验绕过 / 缓存投毒 / DoS） | jsdom |
+| `node-forge` | 1.4.0 | **1.4.1**（5 条 high：X.509 绕过 / PKCS#12 MAC 伪造 / ReDoS） | listhen（nuxt dev server） |
+| `fast-uri` | 3.1.5 | **3.1.7**（4 条 high：host confusion / SSRF / authority 注入） | ajv / fast-json-stringify（**运行时**） |
+| `source-map-js` | 1.2.1 | 1.2.2（high：事件循环 DoS） | vue 编译器 |
+
+**原因**：OSV.dev 对 GHSA 的同步有延迟，这批公告刚发布时 OSV 还没收录；`pnpm audit` 直连 registry 的 `/-/npm/v1/security/advisories/bulk`，同源 GitHub Advisory DB 但实时得多。
+
+**教训**：**OSV 扫描不能当唯一判据**。它在「本机连不上 registry」时是唯一可行手段（本轮一开始正是这种情况），但一旦能跑 `pnpm audit`，就以 audit 为准——两者不是等价信息源，而是「离线兜底」与「权威口径」的关系。这次恰好是「先按 OSV 修完 → 加闸门 → 闸门立刻证明 OSV 漏了 23 条」，链条完整地自证了这一点。
+
+顺带一个反直觉发现：`node-forge` 的 `GHSA-86w9-cpqp-85rv` 在 GitHub 上标 `first_patched_version: null`（看起来「无修复」），但它的影响区间是 `<= 1.4.0`——升到 1.4.1/1.4.2 就已不在区间内。**「无修复」字段可能是元数据缺口，最终判据仍是影响区间**，别看到 null 就直接加豁免。
+
+处置后只剩 1 条 high，走豁免：
+
+- `GHSA-mrhx-c7xc-m3w5`（zod）：影响区间 `zod < 4.6.6`，3.x 全线无修复线。升 zod 4 是破坏性变更——`zod-to-json-schema@3` 与 `openai@4` 的 peer 都钉在 zod 3，engine 全部工具 schema 都建在其上。影响面是「校验超大输入时内存耗尽」，本地单用户场景风险可控。已写入 `pnpm.auditConfig.ignoreGhsas` 并记入路线图待迁移。
+
 ### 升级带出的一个真回归（已修）
 
 `vite` 6.4.3 → 6.4.5 后，`tests/plugins/` 下 4 个 external 系文件 20 例整片失败，报 `Cannot find module '...Temp/.../index.mjs'`。
