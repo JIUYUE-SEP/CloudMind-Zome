@@ -48,7 +48,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `topicMessageThreshold` | number | 20 | 当前话题消息数达到该值即关闭并压缩 |
 | `semanticSearchEnabled` | boolean | true | 语义检索（L4）开关，同时门控检索与 embed 索引 |
 | `semanticTopK` | number | 10 | L4 注入条数上限 |
-| `semanticMinScore` | number | 0 | L4 最低相关度（相似度 × 时间衰减，0-1） |
+| `semanticMinScore` | number | 0 | L4 最低**语义相似度**（0-1）。判的是相似度不是「相似度 × 时间衰减」——旧记忆不因年龄被这层过滤 |
 | `trustAllTools` | boolean | false | 全部信任开关：开启后该 agent 有审批通道时所有工具自动批准（含不可免问五工具），每次自动放行写审计事件 `trusted-auto-approve`；无审批通道仍 fail-closed |
 | `handoffMaxShifts` | number | 5 | 换班棒数保险丝（水位撞顶自动续跑上限），越界 clamp 1-10 |
 | `twoPassCompression` | boolean | false | 双程压缩开关：开启后压缩先产草稿再修订（第二程失败回退草稿，永不更差）；缺省关（灰度） |
