@@ -1,5 +1,6 @@
 import type { Context } from "cordis";
 import {
+  composePersonaLayer,
   loadSoul,
   loadMindChunks,
   retrieveMindChunks,
@@ -25,6 +26,8 @@ export const inject: string[] = [];
 /** ctx.mind 上架面：灵魂层函数汇集（模块函数本无状态，面即模块） */
 export interface MindService {
   loadSoul: typeof loadSoul;
+  /** L1 人格层合成：SOUL.md 原文 + AgentConfig.persona（见 mind-files 注释） */
+  composePersonaLayer: typeof composePersonaLayer;
   loadMindChunks: typeof loadMindChunks;
   retrieveMindChunks: typeof retrieveMindChunks;
   ensureMindFiles: typeof ensureMindFiles;
@@ -42,6 +45,7 @@ declare module "cordis" {
 /** 服务面对象本体：导出供测试与直构造路径（worker 单测等）复用 */
 export const mindService: MindService = {
   loadSoul,
+  composePersonaLayer,
   loadMindChunks,
   retrieveMindChunks,
   ensureMindFiles,

@@ -20,7 +20,7 @@ import { SECURITY_GUIDELINE } from "../context/security-guideline.js";
 import { isExtToolName } from "../context/tool-classify.js";
 import { DynamicToolLoader } from "./dynamic-tool-loader.js";
 import { TopicTracker, type PendingTopicJudge } from "../memory/topic/tracker.js";
-import { CompressionQueue } from "../memory/topic/queue.js";
+import { CompressionQueue, type CompressionQueueOptions } from "../memory/topic/queue.js";
 import { runCompressionTask } from "../memory/topic/compression-task.js";
 import { judgeTopicBoundary } from "../memory/topic/judge.js";
 import { addPendingSegment, removePendingSegment, saveTopicState } from "../memory/topic/state.js";
@@ -178,10 +178,23 @@ export interface AgentWorkerConfig {
   contextPipelineHotSync?: boolean;
   /** 话题压缩配置（Phase 2）；缺省按 DEFAULT_TOPIC_COMPRESSION_CONFIG（开启） */
   topicCompression?: Partial<TopicCompressionConfig>;
+  /**
+   * 压缩队列参数（测试注入）：缺省用 CompressionQueue 的生产缺省（3 次退避重试
+   * 5s/15s/45s）。单测要断言"归档失败后压缩档被隔离"时注入 `retryDelaysMs: []`
+   * ——否则失败要等满 65s 重试链才收尾，断言只能靠轮询全局 warn（易被其他用例
+   * 的残留告警提前唤醒，全量并行下曾确定性抖动）
+   */
+  compressionQueueOptions?: CompressionQueueOptions;
   /** 语义检索配置（Phase 3）；缺省按 DEFAULT_SEMANTIC_SEARCH_CONFIG（开启） */
   semanticSearch?: Partial<SemanticSearchConfig>;
   /** 全部信任开关：有审批通道时 requiresApproval 工具自动批准（仍审计留痕）；缺省 false */
   trustAllTools?: boolean;
+  /**
+   * Agent 配置里的人设文本（AgentConfig.persona，编辑器「人设」页写的那份）。
+   * 由装配层传入 L1：与 SOUL.md 合成人格层（合成规则见 mind-files.composePersonaLayer）。
+   * 可选——缺省/空串时 L1 与只注入 SOUL.md 的旧行为逐字节一致。
+   */
+  persona?: string;
   /** 灵魂层服务面（P4 inject 化：消费改经 ctx.mind，bootstrap 装配层透传；原 mind/ 值级 import 已切） */
   mind: MindService;
   /** 算力解析面（P5 inject 化：W 查找链改经 ctx.compute，bootstrap 装配层透传） */
@@ -533,7 +546,7 @@ export class AgentWorker {
       });
       // M-b：任务成功完成才清 pending；失败由队列捕获告警，pending 保留待对账
       await removePendingSegment(this.config.agentId, segment.topicId);
-    });
+    }, config.compressionQueueOptions);
     this.semanticConfig = normalizeSemanticSearchConfig(config.semanticSearch);
     if (config.memoryIndexer) {
       this.semanticRetriever = new SemanticRetriever(
@@ -896,8 +909,15 @@ export class AgentWorker {
       logger.debug(`[agent-worker] tools: ${toolDescriptions.length}`);
 
       const promptParts: string[] = [];
-      // SOUL.md 人格核心：L1 第一部分（固定前缀，缓存命中；缺失时默认模板兜底）
-      promptParts.push(await this.config.mind.loadSoul(this.config.agentId));
+      // SOUL.md 人格核心：L1 第一部分（固定前缀，缓存命中；缺失时默认模板兜底）。
+      // persona（编辑器「人设」页）与 SOUL 合成同一人格层——不合成则用户写的人设
+      // 对行为零影响（历史缺口：字段被存下、UI 可编辑，但从没进过 prompt）
+      promptParts.push(
+        this.config.mind.composePersonaLayer(
+          await this.config.mind.loadSoul(this.config.agentId),
+          this.config.persona,
+        ),
+      );
       // Skills 段（阶段 5 一期）：只注目录（发现入口），正文经 Skill 工具按需取回
       if (this.config.skillCatalog && this.config.skillCatalog.length > 0) {
         promptParts.push(

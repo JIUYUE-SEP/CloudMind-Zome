@@ -799,6 +799,30 @@ describe("Compute API", () => {
     await app.close();
   });
 
+  // 回归：link-local 是 fe80::/10（fe80:: ~ febf::），不是只有 fe80: 前缀。
+  // 旧实现按 startsWith("fe80:") 判，fe90::/febf:: 等全段漏网（可直连链路上任意主机）
+  it.each([
+    "http://[fe80::1]/", // 段首
+    "http://[fe90::1]/", // /10 中段（旧实现漏网）
+    "http://[febf::1]/", // /10 段尾（旧实现漏网）
+    "http://[fec0::1]/", // site-local
+    "http://[fd12:3456::1]/", // ULA
+    "http://[ff02::1]/", // 组播
+    "http://[0:0:0:0:0:0:0:1]/", // 未压缩 loopback（旧实现漏网）
+  ])("rejects IPv6 private/reserved baseUrl: %s", async (baseUrl) => {
+    const app = await makeApp();
+    const res = await authedRequest(app.server).post("/compute/providers").send({
+      id: "v6private",
+      displayName: "V6Private",
+      providerType: "openai",
+      baseUrl,
+      models: [],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid baseUrl");
+    await app.close();
+  });
+
   it("allows a public IPv4-mapped IPv6 baseUrl (不误伤)", async () => {
     const app = await makeApp();
     const res = await authedRequest(app.server).post("/compute/providers").send({

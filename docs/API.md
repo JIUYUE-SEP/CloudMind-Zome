@@ -54,6 +54,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `twoPassCompression` | boolean | false | 双程压缩开关：开启后压缩先产草稿再修订（第二程失败回退草稿，永不更差）；缺省关（灰度） |
 | `subagentNotify` | boolean | true | subagent 任务终态（completed/failed）向 owner 注入 `[系统通知]` 感知回合；notified 幂等只发一次 |
 
+> `persona`（必填，string）是编辑器「人设」页写入的人格侧写，注入 L1：SOUL.md 仍是默认模板时 persona **取代**模板，SOUL.md 已自定义时作为「# 人设补充」段追加（合成规则见架构文档「L1 人格层合成」）。
 > 算力与生图相关字段（`providerId` / `modelId` / `fallbackProviderIds` / `embedderProviderId` / `embedderModelId` / `imageProviderId` / `imageModelId` / `temperature` / `topP`）见 §Compute 与架构文档 §6.2。
 > 非法取值由引擎归一并 warn：`topicMessageThreshold < 4` clamp 到 4；`semanticTopK < 1` 重置为默认值 10。ID 仅允许 `[a-zA-Z0-9_-]{1,64}`。
 

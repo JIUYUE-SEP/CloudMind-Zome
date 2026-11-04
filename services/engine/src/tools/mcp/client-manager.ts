@@ -53,6 +53,33 @@ function killProcessTree(pid: number): Promise<void> {
   });
 }
 
+/**
+ * onclose 组合器（导出供回归测试钉死语义）：先跑既有处理链，再跑本层记账。
+ *
+ * 为什么必须组合：`Client.connect()` 会给 transport.onclose 挂上 SDK 自己的
+ * 处理链（shared/protocol.js 采用「接住旧值再追加」的组合式接线），`_onclose`
+ * 负责把在途请求以 ConnectionClosed 立即拒掉、清空响应表与超时表、置空内部
+ * transport。直接赋值会把这层语义整块抹掉——断线后在途 callTool 只能等调用
+ * 超时（RequestTimeout 属 McpError），而 wrapper 把「服务器已应答」判为不可
+ * 恢复，自愈重连永不触发（工具卡到超时才报错，且不重连）。
+ *
+ * 既有处理链抛错不阻断本层：状态记账比错误传播重要（否则 server 崩了却仍
+ * 标 ok，后续调用全部打向死连接）。
+ */
+export function chainOnClose(
+  previous: (() => void) | undefined,
+  next: () => void,
+): () => void {
+  return () => {
+    try {
+      previous?.();
+    } catch (err) {
+      logger.warn({ err }, "[mcp] 传输既有 onclose 处理链抛错（继续执行本层状态记账）");
+    }
+    next();
+  };
+}
+
 /** tools/list 分页封顶：防恶意/故障 server 无限翻页耗尽内存（页数与总条数双封顶，M18） */
 export const MAX_TOOLS_LIST_PAGES = 100;
 export const MAX_TOOLS_PER_SERVER = 1000;
@@ -359,12 +386,18 @@ export class McpClientManager {
       }));
       entry.status = "ok";
       const connectedClient = client;
-      transport.onclose = () => {
+      // 组合而非覆盖 onclose：Client.connect() 已把自己的 onclose 挂上（SDK
+      // shared/protocol.js 采用「接住旧值再追加」的组合式接线），_onclose 负责
+      // 让所有在途请求以 ConnectionClosed 立即失败、清空 _responseHandlers 与
+      // 超时表、并把内部 _transport 置空。直接赋值会把这层语义整块抹掉——断线
+      // 后在途 callTool 只能等 60s 超时（McpError），而 wrapper 把「服务器已应答」
+      // 判为不可恢复，自愈重连永不触发。组合器语义见 chainOnClose
+      transport.onclose = chainOnClose(transport.onclose, () => {
         if (!this.isCurrent(entry, attemptId)) return;
         if (entry.client !== connectedClient) return;
         entry.status = "unavailable";
         logger.warn(`[mcp] server ${name} 连接已断开，工具调用将触发自愈重连（不阻塞 engine）`);
-      };
+      });
       logger.info(`[mcp] server ${name} 已连接，暴露 ${entry.tools.length} 个工具`);
     } catch (err) {
       // 失败路径回收已 spawn 的子进程：entry.transport 未赋值，close() 扫不到它，

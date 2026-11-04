@@ -33,7 +33,7 @@ import { archivedMessageIds, latestSummaries, writeCompressedTopic } from "../..
 import type { MemoryIndexer } from "../../src/memory/indexer.js";
 import { SidecarCallError } from "../../src/sidecar/client.js";
 import { restoreDataDir } from "../helpers/env.js";
-import { DEFAULT_SOUL_TEMPLATE } from "../../src/mind/mind-files.js";
+import { DEFAULT_SOUL_TEMPLATE, PERSONA_HEADER } from "../../src/mind/mind-files.js";
 import { SECURITY_GUIDELINE } from "../../src/context/security-guideline.js";
 
 const dummyTool: Tool = {
@@ -449,6 +449,27 @@ ${SECURITY_GUIDELINE}` },
 ${SECURITY_GUIDELINE}` },
     ]);
     expect(messages?.[1]).toEqual(userMessage("hi"));
+  });
+
+  // 回归：persona（编辑器「人设」页）此前只落配置、不进 prompt——用户写下的人设
+  // 对行为零影响。装配层传 persona 后应与 SOUL 合成 L1
+  it("AgentConfig.persona 进 L1：默认 SOUL 模板被人设取代", async () => {
+    const provider = new CapturingProvider();
+    const worker = new AgentWorker({ ...makeConfig(provider), persona: "你是冷静的战术参谋。" });
+
+    worker.enqueue({ id: "j-persona", messages: [userMessage("hi")], onEvent: () => {} });
+    await vi.waitFor(() => expect(worker.status).toBe("idle"));
+
+    const system = provider.capturedParams?.messages[0];
+    expect(system?.role).toBe("system");
+    expect(system?.content).toEqual([
+      {
+        type: "text",
+        text: `${PERSONA_HEADER}\n\n你是冷静的战术参谋。\n\n${SECURITY_GUIDELINE}`,
+      },
+    ]);
+    // 默认模板不再并列出现（两套自我描述会互相打架）
+    expect(JSON.stringify(system?.content)).not.toContain("一个新诞生的数字心智");
   });
 
   it("does not persist system prompt to message repository", async () => {
@@ -1914,14 +1935,22 @@ describe("AgentWorker 话题压缩集成（Phase 2）", () => {
       ...makeConfig(provider),
       messageRepository: failingRepo,
       topicCompression: { messageThreshold: 4 },
+      // 关掉队列重试：缺省重试链 5s/15s/45s，断言只能靠轮询全局 warn——
+      // 全量并行下会被其他用例的残留告警提前唤醒（曾确定性抖动）
+      compressionQueueOptions: { retryDelaysMs: [] },
     });
 
     worker.enqueue({ id: "j1", messages: [seqMessage("u1", "问题一", 0)], onEvent: () => {} });
     worker.enqueue({ id: "j2", messages: [seqMessage("u2", "问题二", 1)], onEvent: () => {} });
     await vi.waitFor(() => expect(worker.status).toBe("idle"));
+    // 队列收尾后再断言（含首轮失败；retryDelaysMs=[] 时无重试等待）
+    await worker.drainCompression();
 
-    // 队列捕获归档失败并告警
-    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    // 队列捕获归档失败并告警（重试耗尽口径 = 无重试时的首次失败）
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.anything() }),
+      expect.stringContaining("压缩任务重试耗尽"),
+    );
 
     // 压缩档被隔离删除，不会与热存储原文重复注入
     expect(

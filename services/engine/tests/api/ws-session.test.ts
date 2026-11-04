@@ -553,11 +553,13 @@ describe("Session WebSocket API", () => {
       return repo;
     };
     const enqueued: string[] = [];
+    let a1JobMessages: Job["messages"] = [];
     for (const id of ["a1", "a2"]) {
       const worker = (await context.getAgentWorker(id))!;
       const origEnqueue = worker.enqueue.bind(worker);
       worker.enqueue = (job: Job) => {
         enqueued.push(id);
+        if (id === "a1") a1JobMessages = job.messages;
         origEnqueue(job);
       };
     }
@@ -589,6 +591,10 @@ describe("Session WebSocket API", () => {
     // 读失败前会整帧报错且 a2 永不入队；修复后两 agent 均入队、无会话级错误帧
     expect(enqueued).toEqual(["a1", "a2"]);
     expect(frames.some((f) => f.type === "error")).toBe(false);
+    // 回归：读失败时不得把空历史塞进 job（模型会收到零用户消息）——
+    // 与私聊 handler 同口径，至少兜底带上本条用户消息
+    expect(a1JobMessages).toHaveLength(1);
+    expect(a1JobMessages[0]!.content[0]).toMatchObject({ type: "text", text: "hello everyone" });
 
     await app.close();
     await cleanup();

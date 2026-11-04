@@ -38,22 +38,17 @@
       </div>
 
       <div v-if="activeTab === 'memory'" class="ss-section">
-        <label class="ss-field">
-          <span>压缩阈值 (0-1)</span>
-          <input v-model.number="form.memory.compactThreshold" type="number" step="0.05" min="0" max="1" />
-        </label>
-        <label class="ss-field">
-          <span>保留最近消息数</span>
-          <input v-model.number="form.memory.keepRecent" type="number" min="1" max="20" />
-        </label>
-        <label class="ss-field">
-          <span>热记忆上限</span>
-          <input v-model.number="form.memory.hotMemoryLimit" type="number" min="1" max="50" />
-        </label>
-        <label class="ss-field">
-          <span>温记忆上限</span>
-          <input v-model.number="form.memory.warmMemoryLimit" type="number" min="1" max="50" />
-        </label>
+        <!-- 旧记忆管线（Phase 1 阈值压缩）已被话题压缩（ContextPipeline Phase 2）取代：
+             这四个参数在引擎侧没有任何消费方，留着输入框会让用户以为生效 -->
+        <div class="deprecated-notice">
+          <div class="notice-icon">⚠️</div>
+          <h3>记忆参数已废弃</h3>
+          <p>
+            这四项属于早期「阈值压缩」记忆管线，当前版本由话题压缩接管，已不再生效。
+            话题边界与压缩在 Agent 级配置（话题消息阈值 / 检测时间窗 / 压缩模型），
+            「保留最近条数」由上下文管线的降级序列自动决定。
+          </p>
+        </div>
       </div>
 
       <div v-if="activeTab === 'llm'" class="ss-section">

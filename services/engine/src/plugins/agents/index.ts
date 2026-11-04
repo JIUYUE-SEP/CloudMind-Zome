@@ -214,6 +214,9 @@ export function apply(ctx: Context, config: Config): void {
         providerId: agentConfig.providerId,
         configRepository: configRepo,
         trustAllTools: agentConfig.trustAllTools,
+        // L1 人格层：SOUL.md 与配置里的人设（编辑器「人设」页）合成——此前
+        // persona 只落配置不进 prompt，UI 编辑等于静默失效
+        persona: agentConfig.persona,
         // P4：灵魂层消费改经 ctx.mind（装配层透传；worker 内不再 import mind/ 模块）
         mind: ctx.mind,
         // P5：W 查找链消费改经 ctx.compute（装配层透传）

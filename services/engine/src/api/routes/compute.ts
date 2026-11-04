@@ -205,42 +205,119 @@ async function retireWorkersUsingProvider(context: ApiContext, providerId: strin
   }
 }
 
-function isPrivateV4(ip: string): boolean {
+/**
+ * IPv4 内网/保留段判定。
+ * 除 RFC1918 与 link-local/CGNAT 外，一并拦下 loopback、0/8、benchmark
+ * （198.18/15）、192.0.0/24 与组播/保留段（≥224）——这些地址同样不可能承载
+ * 合法的外部 LLM 端点，放行只会成为 SSRF 的边角入口。
+ */
+export function isPrivateV4(ip: string): boolean {
   const parts = ip.split(".").map(Number);
-  const [a, b] = parts;
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return true; // 形态非法按内网处理（fail-closed）
+  }
+  const [a, b] = parts as [number, number, number, number];
   if (a === 0 || a === 10 || a === 127) return true;
   if (a === 169 && b === 254) return true; // link-local 整段，不只是元数据 IP
   if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
+  if (a === 192 && b === 0 && parts[2] === 0) return true; // 192.0.0.0/24（含 192.0.0.170 等）
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 基准测试段
+  if (a >= 224) return true; // 组播 224/4 + 保留 240/4 + 广播
   return false;
 }
 
-// 两个 hex 段还原成点分 IPv4（如 ("7f00","1") → "127.0.0.1"）
-function hexPairToV4(hi: string, lo: string): string {
-  const h = parseInt(hi, 16);
-  const l = parseInt(lo, 16);
-  return `${(h >> 8) & 255}.${h & 255}.${(l >> 8) & 255}.${l & 255}`;
+/**
+ * 展开 IPv6 为 8 个 16 位分组（含 `::` 压缩、尾部内嵌 IPv4、zone id）。
+ * 解析失败返回 undefined——调用方按「判不了就按内网拒绝」处理。
+ */
+export function expandIpv6(address: string): number[] | undefined {
+  let text = address.trim().toLowerCase();
+  // zone id（fe80::1%eth0）不参与地址判定
+  const zone = text.indexOf("%");
+  if (zone >= 0) text = text.slice(0, zone);
+  if (text === "") return undefined;
+
+  // 尾部内嵌 IPv4（::ffff:127.0.0.1）→ 折成两个 hextet，统一按 hex 处理
+  const dottedTail = text.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dottedTail) {
+    const octets = dottedTail[2]!.split(".").map(Number);
+    if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return undefined;
+    const hi = ((octets[0]! << 8) | octets[1]!).toString(16);
+    const lo = ((octets[2]! << 8) | octets[3]!).toString(16);
+    text = `${dottedTail[1]}${hi}:${lo}`;
+  }
+
+  let groups: string[];
+  const compressedAt = text.indexOf("::");
+  if (compressedAt >= 0) {
+    if (text.indexOf("::", compressedAt + 1) >= 0) return undefined; // 多个 ::
+    const head = text.slice(0, compressedAt);
+    const tail = text.slice(compressedAt + 2);
+    const headParts = head === "" ? [] : head.split(":");
+    const tailParts = tail === "" ? [] : tail.split(":");
+    const missing = 8 - headParts.length - tailParts.length;
+    if (missing < 1) return undefined;
+    groups = [...headParts, ...Array<string>(missing).fill("0"), ...tailParts];
+  } else {
+    groups = text.split(":");
+  }
+  if (groups.length !== 8) return undefined;
+
+  const parsed: number[] = [];
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return undefined;
+    parsed.push(parseInt(group, 16));
+  }
+  return parsed;
 }
 
-function isPrivateIp(ip: string): boolean {
+/** 8 分组末两位还原成点分 IPv4（供内嵌 v4 复用同一份内网判定） */
+function groupsToV4(groups: number[], at: number): string {
+  const hi = groups[at]!;
+  const lo = groups[at + 1]!;
+  return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+/**
+ * IPv6 内网/保留段判定：未指定、loopback、link-local（fe80::/10）、site-local
+ * （fec0::/10）、ULA（fc00::/7）、组播（ff00::/8）、IPv4-mapped/compatible、
+ * NAT64（64:ff9b::/96）逐类判。
+ *
+ * 关键点：link-local 是 /10 不是 /8 —— fe80:: 到 febf:: 全段都不该放行。
+ * 旧实现按 `startsWith("fe80:")` 判定，fe81::/fe90::/febf:: 全部漏网（可直连
+ * 链路上任意主机）。
+ */
+export function isPrivateIpv6(groups: number[]): boolean {
+  if (groups.every((g) => g === 0)) return true; // :: 未指定
+  if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true; // ::1
+  const first = groups[0]!;
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((first & 0xffc0) === 0xfec0) return true; // fec0::/10 site-local（deprecated）
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+  if ((first & 0xff00) === 0xff00) return true; // ff00::/8 组播
+  // ::ffff:0:0/96 IPv4-mapped
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    return isPrivateV4(groupsToV4(groups, 6));
+  }
+  // ::/96 IPv4-compatible（deprecated；::1 已在上面处理）
+  if (groups.slice(0, 6).every((g) => g === 0)) return isPrivateV4(groupsToV4(groups, 6));
+  // 64:ff9b::/96 NAT64：内嵌 v4 若落内网同样拒绝
+  if (first === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+    return isPrivateV4(groupsToV4(groups, 6));
+  }
+  return false;
+}
+
+export function isPrivateIp(ip: string): boolean {
   const normalized = ip.replace(/^\[|\]$/g, "").toLowerCase();
   if (normalized.includes(":")) {
-    // IPv6：loopback、unspecified、link-local、ULA、IPv4-mapped/compatible
-    if (normalized === "::1") return true;
-    if (normalized === "::") return true; // unspecified（0.0.0.0 等价）
-    if (normalized.startsWith("fe80:")) return true;
-    if (/^f[cd]/.test(normalized)) return true;
-    // WHATWG URL 会把 IPv4-mapped 归一化为 hex 形式
-    // （[::ffff:127.0.0.1] → [::ffff:7f00:1]），点分正则命中不了，必须按 hex 段解析
-    const mappedHex = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (mappedHex) return isPrivateV4(hexPairToV4(mappedHex[1], mappedHex[2]));
-    // 兼容形式 ::a.b.c.d 同样被归一化为 ::xxxx:xxxx（前 96 位为 0）
-    const compatHex = normalized.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (compatHex) return isPrivateV4(hexPairToV4(compatHex[1], compatHex[2]));
-    // 直接传入（非 URL 归一化）时仍可能是点分形式
-    const mappedDotted = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return mappedDotted ? isPrivateV4(mappedDotted[1]) : false;
+    // IPv6：统一展开成 8 分组再按前缀判（旧实现的字符串前缀比对漏 fe80::/10 的其余段，
+    // 也挡不住 `0:0:0:0:0:0:0:1` 这类未压缩写法的 loopback）
+    const groups = expandIpv6(normalized);
+    if (groups === undefined) return true; // 判不了按内网拒绝（fail-closed）
+    return isPrivateIpv6(groups);
   }
   if (/^\d+\.\d+\.\d+\.\d+$/.test(normalized)) return isPrivateV4(normalized);
   return normalized === "localhost";

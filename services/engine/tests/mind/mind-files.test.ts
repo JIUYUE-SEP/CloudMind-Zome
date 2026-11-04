@@ -5,6 +5,9 @@ import path from "node:path";
 import {
   DEFAULT_SOUL_TEMPLATE,
   DEFAULT_MIND_CONTENT,
+  PERSONA_HEADER,
+  PERSONA_SUPPLEMENT_HEADER,
+  composePersonaLayer,
   ensureMindFiles,
   loadSoul,
   loadMindChunks,
@@ -45,6 +48,29 @@ describe("SOUL.md 加载", () => {
   it("文件存在时返回文件内容", async () => {
     await writeAgentFile("SOUL.md", "# 自定义人格\n\n我是独一无二的。");
     expect(await loadSoul(AGENT_ID)).toBe("# 自定义人格\n\n我是独一无二的。");
+  });
+});
+
+describe("L1 人格层合成（SOUL + AgentConfig.persona）", () => {
+  it("persona 缺省/空白：原样返回 SOUL（L1 字节不变，缓存前缀不破）", () => {
+    expect(composePersonaLayer("SOUL 正文", undefined)).toBe("SOUL 正文");
+    expect(composePersonaLayer("SOUL 正文", "")).toBe("SOUL 正文");
+    expect(composePersonaLayer("SOUL 正文", "   \n ")).toBe("SOUL 正文");
+  });
+
+  it("SOUL 仍是默认模板：persona 取代模板（不与「新诞生的数字心智」并列打架）", () => {
+    const composed = composePersonaLayer(DEFAULT_SOUL_TEMPLATE, "你是冷静的战术参谋，说话简短。");
+    expect(composed).toBe(`${PERSONA_HEADER}\n\n你是冷静的战术参谋，说话简短。`);
+    expect(composed).not.toContain("一个新诞生的数字心智");
+  });
+
+  it("SOUL 已自定义：persona 作为补充段追加在 SOUL 之后", () => {
+    const composed = composePersonaLayer("# 自定义人格\n\n我是独一无二的。", "补充：怕水。");
+    expect(composed).toBe(`# 自定义人格\n\n我是独一无二的。\n\n${PERSONA_SUPPLEMENT_HEADER}\n\n补充：怕水。`);
+  });
+
+  it("persona 两端空白被裁掉（不污染 L1 前缀）", () => {
+    expect(composePersonaLayer("", "  人设  \n")).toBe(`${PERSONA_HEADER}\n\n人设`);
   });
 });
 

@@ -287,7 +287,10 @@ export async function registerSessionWebSocket(app: FastifyInstance, context: Ap
 
             worker.enqueue({
               id: randomUUID(),
-              messages: history,
+              // 空历史兜底（与私聊 handler 同口径）：读失败 / 本 agent 落的 append
+              // 失败时 history 为空，直接入队会让本轮没有任何用户消息——模型答非
+              // 所问或直接报错。至少带上本条用户消息
+              messages: history.length > 0 ? history : [userMessage],
               sessionId,
               signal: cancelHandle.signal,
               onDone: () => {

@@ -148,7 +148,14 @@ export function apply(ctx: Context): void {
     if (!providerConfig) {
       return new MockEmbedderProvider();
     }
-    return new OpenAIEmbedderProvider(providerConfig.apiKey, providerConfig.baseUrl);
+    // 型号从配置来（AgentConfig.embedderModelId → 编辑器「嵌入型号」）；缺省由
+    // provider 自身回落 text-embedding-3-small。此前型号写死在 provider 里，
+    // 配置了也不生效
+    return new OpenAIEmbedderProvider(
+      providerConfig.apiKey,
+      providerConfig.baseUrl,
+      agentConfig.embedderModelId,
+    );
   }
 
   async function createImage(agentConfig: AgentConfig) {

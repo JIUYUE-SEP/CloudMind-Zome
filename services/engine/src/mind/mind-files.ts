@@ -221,6 +221,34 @@ export async function ensureMindFiles(agentId: string): Promise<void> {
   }
 }
 
+/** 人设段标题（L1 固定文案，跨轮字节稳定） */
+export const PERSONA_HEADER = "# 人设（指挥官设定）";
+/** SOUL 已自定义时的人设补充段标题 */
+export const PERSONA_SUPPLEMENT_HEADER = "# 人设补充（指挥官设定）";
+
+/**
+ * L1 人格层合成：SOUL.md 原文 + AgentConfig.persona（编辑器「人设」页写的那份）。
+ *
+ * 背景：`persona` 是 UI 上唯一的人格编辑面（agent-edit/AgentEditPersona），
+ * 但 L1 一直只注入 SOUL.md——用户写下的人设对行为零影响（静默失效）。
+ *
+ * 两条分支的取舍：
+ * - SOUL.md 仍是**默认模板**（从未被自定义过）→ 用 persona **取代**模板：
+ *   默认模板写的是「一个新诞生的数字心智」，与用户自定人设并列会互相打架；
+ * - SOUL.md 已被自定义 → persona 作为**补充段**追加在 SOUL 之后（两者都要）。
+ *
+ * persona 为空/纯空白时原样返回 SOUL（字节不变，L1 缓存前缀不破）。
+ */
+export function composePersonaLayer(soul: string, persona: string | undefined): string {
+  const trimmed = persona?.trim();
+  if (!trimmed) return soul;
+  const trimmedSoul = soul.trim();
+  if (trimmedSoul === "" || trimmedSoul === DEFAULT_SOUL_TEMPLATE.trim()) {
+    return `${PERSONA_HEADER}\n\n${trimmed}`;
+  }
+  return `${trimmedSoul}\n\n${PERSONA_SUPPLEMENT_HEADER}\n\n${trimmed}`;
+}
+
 /** 待沉淀的一条新经验（Phase 7：话题压缩落档时提取） */
 export interface NewMindExperience {
   title: string;

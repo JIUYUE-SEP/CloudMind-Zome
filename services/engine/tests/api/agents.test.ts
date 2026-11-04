@@ -206,6 +206,28 @@ describe("Agent API", () => {
     await app.close();
   });
 
+  // 回归：AgentConfig 有、KNOWN_AGENT_FIELDS 漏的两个话题压缩字段曾被判「未知字段」，
+  // 导致 PUT 400（前端编辑器整表回传时保存直接失败）且 REST 无从配置这两个开关
+  it("PUT 接受 topicBoundaryModel / twoPassCompression 并原样回显", async () => {
+    const app = await makeApp();
+    const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };
+    await authedRequest(app.server).post("/agents").send(agent);
+
+    const putRes = await authedRequest(app.server)
+      .put("/agents/a1")
+      .send({ ...agent, topicBoundaryModel: "boundary-m", twoPassCompression: true });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.topicBoundaryModel).toBe("boundary-m");
+    expect(putRes.body.twoPassCompression).toBe(true);
+
+    // GET 回传体再 PUT 一次（编辑器整表提交路径）：不判未知字段
+    const getRes = await authedRequest(app.server).get("/agents/a1");
+    const again = await authedRequest(app.server).put("/agents/a1").send(getRes.body);
+    expect(again.status).toBe(200);
+    expect(again.body.twoPassCompression).toBe(true);
+    await app.close();
+  });
+
   it("deletes an agent", async () => {
     const app = await makeApp();
     const agent = { id: "a1", name: "A1", persona: "", model: "mock", skills: [], tools: [] };

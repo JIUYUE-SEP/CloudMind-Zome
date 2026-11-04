@@ -23,22 +23,12 @@
       </ul>
 
       <h2>记忆参数</h2>
-      <label>
-        Compact Threshold
-        <input v-model.number="store.settings.memory.compactThreshold" type="number" step="0.1" />
-      </label>
-      <label>
-        Keep Recent
-        <input v-model.number="store.settings.memory.keepRecent" type="number" />
-      </label>
-      <label>
-        Hot Memory Limit
-        <input v-model.number="store.settings.memory.hotMemoryLimit" type="number" />
-      </label>
-      <label>
-        Warm Memory Limit
-        <input v-model.number="store.settings.memory.warmMemoryLimit" type="number" />
-      </label>
+      <!-- 旧「阈值压缩」管线参数，引擎侧已无消费方（话题压缩接管）：
+           保留只读说明，不再给出能改却不生效的输入框 -->
+      <p class="hint">
+        已废弃：这四项属于早期阈值压缩管线，当前版本由话题压缩接管，不再生效。
+        话题边界/压缩节奏在 Agent 编辑页配置（话题消息阈值、检测时间窗、压缩模型）。
+      </p>
 
       <h2>外部服务</h2>
       <label>
