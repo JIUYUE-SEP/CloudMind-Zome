@@ -24,7 +24,7 @@ import { CompressionQueue, type CompressionQueueOptions } from "../memory/topic/
 import { runCompressionTask } from "../memory/topic/compression-task.js";
 import { judgeTopicBoundary } from "../memory/topic/judge.js";
 import { addPendingSegment, removePendingSegment, saveTopicState } from "../memory/topic/state.js";
-import { latestSummaries, archivedMessageIds } from "../memory/topic/store.js";
+import { latestSummaries, archivedIdsByKeep } from "../memory/topic/store.js";
 import {
   normalizeTopicCompressionConfig,
   type TopicCompressionConfig,
@@ -553,8 +553,9 @@ export class AgentWorker {
         config.memoryIndexer,
         config.messageRepository,
         this.semanticConfig,
-        // P5：归档查询能力构造注入（semantic 值边已切；core→memory 边本就在）
-        archivedMessageIds,
+        // P5：归档查询能力构造注入（semantic 值边已切；core→memory 边本就在）。
+        // 用 archivedIdsByKeep 而非扁平全集：high 话题的原文要放行进 L4（决策 6）
+        archivedIdsByKeep,
         // P4-a：flush 事实仓库——索引命中 `mem:<recordId>` 时回读 memories.jsonl
         config.memoryRepository,
       );

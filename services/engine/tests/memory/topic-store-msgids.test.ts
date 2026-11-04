@@ -6,6 +6,7 @@ import {
   writeCompressedTopic,
   readCompressedTopicMsgIds,
   archivedMessageIds,
+  archivedIdsByKeep,
 } from "../../src/memory/topic/store.js";
 import type { CompressedTopic } from "../../src/memory/topic/types.js";
 import { restoreDataDir } from "../helpers/env.js";
@@ -97,5 +98,32 @@ describe("压缩档 msgIds 解析（M11）", () => {
   it("topicId 非法或档不存在返回 null", async () => {
     expect(await readCompressedTopicMsgIds("a1", "../etc/passwd")).toBeNull();
     expect(await readCompressedTopicMsgIds("a1", "tp_ghost")).toBeNull();
+  });
+
+  it("archivedIdsByKeep 按 importance 划分：high 进 highKept，normal/low 不进", async () => {
+    await writeCompressedTopic(
+      "a1",
+      makeTopic({ topicId: "tp_1000_high", msgIds: ["h1", "h2"], importance: "high" }),
+    );
+    await writeCompressedTopic(
+      "a1",
+      makeTopic({ topicId: "tp_2000_norm", msgIds: ["n1"], importance: "normal" }),
+    );
+    await writeCompressedTopic(
+      "a1",
+      makeTopic({ topicId: "tp_3000_low", msgIds: ["l1"], importance: "low" }),
+    );
+
+    const idx = await archivedIdsByKeep("a1");
+    expect(idx.all).toEqual(new Set(["h1", "h2", "n1", "l1"]));
+    expect(idx.highKept).toEqual(new Set(["h1", "h2"]));
+    // 扁平全集与划分的 all 同源（启动对账用前者），不额外读盘
+    expect(await archivedMessageIds("a1")).toEqual(idx.all);
+  });
+
+  it("archivedIdsByKeep：无压缩档时两个集合皆空", async () => {
+    const idx = await archivedIdsByKeep("ghost");
+    expect(idx.all.size).toBe(0);
+    expect(idx.highKept.size).toBe(0);
   });
 });

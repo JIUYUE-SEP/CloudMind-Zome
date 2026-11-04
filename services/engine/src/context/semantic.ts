@@ -2,6 +2,7 @@ import { logger } from "../logger.js";
 import type { MemoryIndexer } from "../memory/indexer.js";
 import type { IMemoryRepository, IMessageRepository } from "../memory/repositories/types.js";
 import type { ChatMessageRecord } from "../memory/repositories/types.js";
+import type { ArchivedIdIndex } from "../memory/topic/store.js";
 import type { SemanticMemory } from "./layers.js";
 
 export interface SemanticSearchConfig {
@@ -75,8 +76,11 @@ export class SemanticRetriever {
     private indexer: MemoryIndexer,
     private repo: IMessageRepository,
     private config: SemanticSearchConfig,
-    /** 已压缩话题原文 id 查询（构造注入，原值级 import memory/topic/store 已切） */
-    private archivedIds: (agentId: string) => Promise<Set<string>>,
+    /**
+     * 归档 id 划分查询（构造注入）：`all` 命中即排除（与 L5 摘要去重），
+     * `highKept` 是 importance=high 话题的原文——不排除，并从归档回读正文。
+     */
+    private archivedIds: (agentId: string) => Promise<ArchivedIdIndex>,
     /**
      * P4-a flush 事实仓库（可选）：索引命中 `mem:<recordId>` 时按 id 回读
      * memories.jsonl 解析注入内容。缺省时 mem: 命中静默跳过（不炸检索主链路）。
@@ -110,20 +114,32 @@ export class SemanticRetriever {
       .filter((id) => id.startsWith("mem:"))
       .map((id) => id.slice("mem:".length));
 
-    const [records, archivedIds, memRecords] = await Promise.all([
+    const [hotRecords, archived, memRecords] = await Promise.all([
       this.repo.getByIds(msgIds),
-      // 已压缩话题的原文 id（压缩档 frontmatter 索引，不读 messages_archived.jsonl 全文）
+      // 已压缩话题的原文 id 划分（压缩档索引，不读 messages_archived.jsonl 全文）
       this.archivedIds(agentId),
       this.memoryRepo
         ? Promise.all(memRecordIds.map((id) => this.memoryRepo!.get(id)))
         : Promise.resolve([]),
     ]);
 
+    // 归档回读（决策 6）：getByIds 只读热存储，而 high 话题的原文已随归档移出，
+    // 对「highKept 命中且热存储确实没有」的 id 再流式过滤读一次归档。
+    // 只在有缺口时触发，不每轮全扫 messages_archived.jsonl。
+    const hotIds = new Set(hotRecords.map((r) => r.id));
+    const archivedMissing = msgIds.filter((id) => archived.highKept.has(id) && !hotIds.has(id));
+    const records =
+      archivedMissing.length > 0
+        ? [...hotRecords, ...(await this.repo.getArchivedByIds(archivedMissing))]
+        : hotRecords;
+
     const now = Date.now();
     const memories: SemanticMemory[] = [];
     for (const record of records) {
-      // 已压缩话题的原始消息不进 L4：对应摘要在 L5，避免同一内容双重注入
-      if (archivedIds.has(record.id)) continue;
+      // 已压缩话题的原文不进 L4：对应摘要在 L5，避免同一内容双重注入。
+      // high 话题例外（决策 6）：摘要之外的细节只存在于原文，放行并由上面的
+      // 归档回读提供正文。
+      if (archived.all.has(record.id) && !archived.highKept.has(record.id)) continue;
       const content = recordText(record);
       if (!content) continue;
       // 准入看相似度、排序看混合分（设计决策 1-3）：把两件事拆开，否则

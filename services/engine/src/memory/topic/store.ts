@@ -342,27 +342,55 @@ export async function readCompressedTopicMsgIds(
 }
 
 /**
- * archivedMessageIds 的按档缓存：压缩档一经写入不再变化（topicId 唯一、单档原子写），
- * 以 (mtimeMs, size) 指纹兜底外部改动。L4 每轮都调 archivedMessageIds，
- * 命中时只付 readdir + stat，不再每轮全量读所有 .md 内容。
+ * 压缩档的 id 划分（L4 归档排除用）：`all` = 全部已归档消息；`highKept` = importance=high
+ * 话题的（L4 不排除、可跨档召回原文——设计决策 6「high 话题保留更多原文引用」）。
  */
-const archivedIdsCache = new Map<string, { mtimeMs: number; size: number; ids: string[] }>();
+export interface ArchivedIdIndex {
+  all: Set<string>;
+  highKept: Set<string>;
+}
 
 /**
- * 已压缩话题的原始消息 id 全集（L4 归档排除用）：
+ * archivedIdsByKeep 的按档缓存：压缩档一经写入不再变化（topicId 唯一、单档原子写），
+ * 以 (mtimeMs, size) 指纹兜底外部改动。L4 每轮都调，命中时只付 readdir + stat，
+ * 不再每轮全量读所有 .md 内容。
+ */
+const archivedIdsCache = new Map<
+  string,
+  { mtimeMs: number; size: number; ids: string[]; highIds: string[] }
+>();
+
+/**
+ * 从压缩档 frontmatter 读 importance（缺失/非法值按 normal，与 normalizeImportance 同口径）。
+ * 只解析 frontmatter 块——消息 id 在正文段，由 parseArchivedMsgIds 负责。
+ */
+function readCompressedImportance(raw: string): "high" | "normal" | "low" {
+  const block = raw.match(/^---\n([\s\S]*?)\n---/)?.[1];
+  if (!block) return "normal";
+  return normalizeImportance(parseFrontmatterBlock(block)["importance"]);
+}
+
+/**
+ * 已压缩话题的原始消息 id 划分（L4 归档排除用）：
  * 读全部压缩档的 "## Messages Archived" 段，避免每轮全量读 messages_archived.jsonl
  * （归档文件只增不减；压缩档 frontmatter 体积小得多）。
+ *
+ * highKept 的来由：importance=high 话题的原文向量在归档时被保留
+ * （`compression-task.ts#deleteArchivedVectorsUnlessHigh`），因此 L4 不排除它们，
+ * 并从归档回读正文——摘要之外的那部分细节由这条路径兜住。
+ *
  * 注意：archiveOnly 短话题没有压缩档，其消息不在此集合——它们没有 L5 摘要，
  * 被 L4 检索到是预期行为，不算重复。
  */
-export async function archivedMessageIds(agentId: string): Promise<Set<string>> {
-  const ids = new Set<string>();
+export async function archivedIdsByKeep(agentId: string): Promise<ArchivedIdIndex> {
+  const all = new Set<string>();
+  const highKept = new Set<string>();
   const dir = compressedDir(agentId);
   let files: string[];
   try {
     files = await fs.readdir(dir);
   } catch {
-    return ids;
+    return { all, highKept };
   }
   const present = new Set<string>();
   for (const file of files) {
@@ -373,15 +401,23 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
       const stat = await fs.stat(filePath);
       const cached = archivedIdsCache.get(filePath);
       if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-        for (const id of cached.ids) ids.add(id);
+        for (const id of cached.ids) all.add(id);
+        for (const id of cached.highIds) highKept.add(id);
         continue;
       }
       const raw = await fs.readFile(filePath, "utf-8");
       // 版本门禁（P1-1）：高版本档显式报错，而不是按旧格式正则静默抠字段
       assertCompressedVersion(raw, filePath);
       const fileIds = parseArchivedMsgIds(raw);
-      archivedIdsCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, ids: fileIds });
-      for (const id of fileIds) ids.add(id);
+      const highIds = readCompressedImportance(raw) === "high" ? fileIds : [];
+      archivedIdsCache.set(filePath, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        ids: fileIds,
+        highIds,
+      });
+      for (const id of fileIds) all.add(id);
+      for (const id of highIds) highKept.add(id);
     } catch (err) {
       // 版本过高（数据由更新版本的程序写入）显式上抛，不按坏档静默跳过
       if (err instanceof UnsupportedSchemaVersionError) throw err;
@@ -392,7 +428,15 @@ export async function archivedMessageIds(agentId: string): Promise<Set<string>> 
   for (const key of archivedIdsCache.keys()) {
     if (path.dirname(key) === dir && !present.has(key)) archivedIdsCache.delete(key);
   }
-  return ids;
+  return { all, highKept };
+}
+
+/**
+ * 已压缩话题的原始消息 id 全集（启动对账用：只关心"哪些消息已归档"，不区分
+ * importance）。与 `archivedIdsByKeep` 共用同一份缓存，不额外读盘。
+ */
+export async function archivedMessageIds(agentId: string): Promise<Set<string>> {
+  return (await archivedIdsByKeep(agentId)).all;
 }
 
 interface ParsedCompressedFile {
