@@ -255,6 +255,16 @@ svgo             ^4.0.2  → 需 ^4.1.0
 
 > 结论：这类「安全补丁改了行为、测试恰好踩在旧行为上」的回归，只有全量跑测试才会露头——`pnpm audit` 与 `pnpm test` 必须一起跑。
 
+**第二次翻车：本地绿、CI 红（8.3 短名）**
+
+修完本地 42 例全过，推上去 CI `windows-test` 照样 20 例红，报错一模一样。CI 日志里露了真线索——失败路径是 `C:/Users/runneradmin/...`，而 GitHub Windows runner 的 `os.tmpdir()` 返回 8.3 短名 `C:\Users\RUNNER~1\...`，`fs.mkdtemp` 返回的却是长名。allow 按短名登记，自然匹配不上。本机没启用 8.3 短名，两种形态一致，所以怎么也复现不出来。
+
+最终改法两处：allow 里补 `fs.realpathSync.native(os.tmpdir())` 覆盖长短两种形态；再加 `server.fs.strict: false` 兜底——Windows 路径形态本来就多变（8.3 / junction / 盘符大小写），allow 匹配天然脆弱，而测试运行器只读本机夹具，关掉这条服务型边界不增加真实风险。
+
+CI run `41775441768` 两个 job 全绿（`build-and-test` + `windows-test`）。
+
+> 教训：**"本地复现不了"不等于"环境问题"**。Windows 的 8.3 短名、junction、大小写不敏感这三件事，能让同一段路径字符串在两个 Windows 环境里表现不同。判断依据要从日志里的**实际路径**取，不要拿本机的 `os.tmpdir()` 想当然。
+
 ## 七、windows-test 首次运行即发现 2 例超时
 
 第一轮新增的 `windows-test` job 首次跑是 success，第二次红了——`tests/core/react.test.ts` 两例 5 秒超时：
