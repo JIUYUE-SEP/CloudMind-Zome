@@ -10,7 +10,14 @@ import type { MindChunk } from "../mind/mind-files.js";
  * 检索失败则相反——诚实透明，明确告知。
  */
 
-/** 置信度阈值（设计决策）：> 0.7 正常注入；(0.5, 0.7] 模糊化注入；≤ 0.5 丢弃 */
+/**
+ * 置信度阈值（设计决策）：> 0.7 正常注入；(0.5, 0.7] 模糊化注入；≤ 0.5 丢弃。
+ *
+ * 判的是**语义相似度**，不是 `similarity × 时间衰减` 的混合分：「模糊」表达的是
+ * 「不确定这条记忆是否对应你问的事」（相似度不足），不是「时隔久远」。旧记忆
+ * 的年代感由时间戳与措辞表达（`formatMemoryTime`），不该被降级成「记不清」——
+ * 旧 ≠ 不确定。
+ */
 export const CONFIDENCE_HIGH = 0.7;
 export const CONFIDENCE_DROP = 0.5;
 /** 单条注入内容长度上限，超过则摘要化（保留首尾、中段省略） */
@@ -18,9 +25,10 @@ export const MAX_MEMORY_CHARS = 500;
 
 export type Confidence = "high" | "fuzzy" | "drop";
 
-export function classifyScore(score: number): Confidence {
-  if (score > CONFIDENCE_HIGH) return "high";
-  if (score > CONFIDENCE_DROP) return "fuzzy";
+/** 按语义相似度分档（见上：不掺时间衰减） */
+export function classifySimilarity(similarity: number): Confidence {
+  if (similarity > CONFIDENCE_HIGH) return "high";
+  if (similarity > CONFIDENCE_DROP) return "fuzzy";
   return "drop";
 }
 
@@ -61,12 +69,12 @@ export function summarizeContent(text: string, maxChars: number = MAX_MEMORY_CHA
 /**
  * L4 语义记忆 → 伪装成 user 历史消息。
  * 第三人称叙述（"用户之前提到过"），避免"你/我/我们"的亲密错觉；
- * 低置信度模糊化（"好像"、"记忆有些模糊"）；≤ 0.5 返回 null（丢弃）。
- * createdAt 保留原始时间戳——心智拥有真实时间感。
+ * 相似度低时模糊化（"好像"、"记忆有些模糊"）；相似度 ≤ 0.5 返回 null（丢弃）。
+ * createdAt 保留原始时间戳——心智拥有真实时间感，久远由时间戳表达而非降低可信度。
  */
 export function memoryToMessage(mem: SemanticMemory, now: number = Date.now()): ChatMessage | null {
-  if (classifyScore(mem.score) === "drop") return null;
-  const fuzzy = classifyScore(mem.score) === "fuzzy";
+  if (classifySimilarity(mem.similarity) === "drop") return null;
+  const fuzzy = classifySimilarity(mem.similarity) === "fuzzy";
   const time = formatMemoryTime(mem.createdAt, now);
   const content = summarizeContent(mem.content);
   const where = mem.source ? "在另一个对话里" : "";

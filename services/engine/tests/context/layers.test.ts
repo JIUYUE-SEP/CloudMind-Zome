@@ -8,7 +8,7 @@ function msg(id: string): ChatMessage {
 }
 
 function mem(content: string): SemanticMemory {
-  return { id: content, content, score: 0.9, createdAt: "2026-07-17T00:00:00Z" };
+  return { id: content, content, similarity: 0.9, score: 0.9, createdAt: "2026-07-17T00:00:00Z" };
 }
 
 function topic(text: string): TopicSummary {

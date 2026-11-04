@@ -331,8 +331,8 @@ describe("M3：降级可观测日志", () => {
       makeInput({
         history: history(1),
         semanticMemories: [
-          { id: "m1", content: "本场景记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
-          { id: "m2", content: "跨场景记忆", score: 0.8, source: "session_x", createdAt: "2026-07-20T00:00:00Z" },
+          { id: "m1", content: "本场景记忆", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+          { id: "m2", content: "跨场景记忆", similarity: 0.8, score: 0.8, source: "session_x", createdAt: "2026-07-20T00:00:00Z" },
         ],
       }),
     );
@@ -354,6 +354,7 @@ describe("M3：降级可观测日志", () => {
         semanticMemories: Array.from({ length: 12 }, (_, i) => ({
           id: `m${i}`,
           content: `内容${i}${"x".repeat(6)}`,
+          similarity: 1 - i * 0.05,
           score: 1 - i * 0.05,
           createdAt: "2026-07-20T00:00:00Z",
         })),
@@ -372,8 +373,8 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
     const result = await pipeline.assemble(
       makeInput({
         semanticMemories: [
-          { id: "low", content: "低相关记忆", score: 0.5, createdAt: "2026-07-20T00:00:00Z" },
-          { id: "high", content: "高相关记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+          { id: "low", content: "低相关记忆", similarity: 0.5, score: 0.5, createdAt: "2026-07-20T00:00:00Z" },
+          { id: "high", content: "高相关记忆", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
         ],
       }),
     );
@@ -387,7 +388,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
     const input = makeInput({
       sourceId: "sess-1",
       semanticMemories: [
-        { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+        { id: "m1", content: "记忆一", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
       ],
       topicSummaries: [topicSummary("tp1", "摘要一")],
     });
@@ -403,7 +404,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
 
   it("S4：syncMaxContextTokens 不重建实例——sync 前后同条目不重复注入（去重状态保留）", async () => {
     const pipeline = makePipeline(10000);
-    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const memory = { id: "m1", content: "记忆一", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     const input = makeInput({ sourceId: "sess-1", semanticMemories: [memory] });
 
     const before = await pipeline.assemble(input);
@@ -419,7 +420,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
 
   it("去重按会话隔离：新会话可再次注入同一记忆", async () => {
     const pipeline = makePipeline(10000);
-    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const memory = { id: "m1", content: "记忆一", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [memory] }));
     const other = await pipeline.assemble(makeInput({ sourceId: "sess-2", semanticMemories: [memory] }));
     expect(other.messages.map(textOf).join("")).toContain("记忆一");
@@ -427,7 +428,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
 
   it("M10：一次性会话（subagent_/blueprint:）不登记去重状态——同条目再来仍注入", async () => {
     const pipeline = makePipeline(10000);
-    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const memory = { id: "m1", content: "记忆一", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     for (const sourceId of ["subagent_abc", "blueprint:exec-1"]) {
       const first = await pipeline.assemble(makeInput({ sourceId, semanticMemories: [memory] }));
       expect(first.messages.map(textOf).join("")).toContain("记忆一");
@@ -439,7 +440,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
 
   it("M10：一次性会话不挤占 64 槽 FIFO——真实会话的去重状态不被逐出", async () => {
     const pipeline = makePipeline(10000);
-    const memory = { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const memory = { id: "m1", content: "记忆一", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     // 真实会话先登记
     await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [memory] }));
     // 64 个一次性会话经过：若登记会撑满 MAX_DEDUP_SESSIONS(64) 并逐出 sess-1
@@ -453,7 +454,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
 
   it("M10：单会话去重条数上限——超栽最旧条目，极旧记忆可再次注入", async () => {
     const pipeline = makePipeline(10000);
-    const oldest = { id: "m0", content: "最旧记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const oldest = { id: "m0", content: "最旧记忆", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     // 首轮注入 m0（登记为第 1 条）
     await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [oldest] }));
     // 逐轮注入 256 条新记忆：达到 256 条上限时最旧的 m0 被逐出
@@ -462,7 +463,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
         makeInput({
           sourceId: "sess-1",
           semanticMemories: [
-            { id: `m${i}`, content: `记忆${i}`, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+            { id: `m${i}`, content: `记忆${i}`, similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
           ],
         }),
       );
@@ -471,14 +472,14 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
     const replay = await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [oldest] }));
     expect(replay.messages.map(textOf).join("")).toContain("最旧记忆");
     // 最近的 m256 仍在去重状态内：不重复注入
-    const latest = { id: "m256", content: "记忆256", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const latest = { id: "m256", content: "记忆256", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     const deduped = await pipeline.assemble(makeInput({ sourceId: "sess-1", semanticMemories: [latest] }));
     expect(deduped.messages.map(textOf).join("")).not.toContain("记忆256");
   });
 
   it("被降级丢弃的记忆不计入已注入，下一轮预算宽裕时仍可注入", async () => {
     const pipeline = makePipeline(150);
-    const memory = { id: "m1", content: "珍贵记忆", score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
+    const memory = { id: "m1", content: "珍贵记忆", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" };
     // 第一轮：25 条 history 挤爆预算，L4 走 l4:drop 被整体丢弃
     const squeezed = await pipeline.assemble(
       makeInput({ history: history(25), semanticMemories: [memory] }),
@@ -514,7 +515,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
         sourceId: "s1",
         history: history(2),
         semanticMemories: [
-          { id: "m1", content: "记忆一", score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
+          { id: "m1", content: "记忆一", similarity: 0.9, score: 0.9, createdAt: "2026-07-20T00:00:00Z" },
         ],
       }),
     );
@@ -524,7 +525,7 @@ describe("最终设计：置信度过滤 / 多轮去重 / 失败告知 / 缓存�
         sourceId: "s2",
         history: history(3),
         semanticMemories: [
-          { id: "m2", content: "完全不同的记忆", score: 0.95, createdAt: "2026-07-21T00:00:00Z" },
+          { id: "m2", content: "完全不同的记忆", similarity: 0.95, score: 0.95, createdAt: "2026-07-21T00:00:00Z" },
         ],
         topicSummaries: [topicSummary("tp9", "另一个摘要")],
       }),

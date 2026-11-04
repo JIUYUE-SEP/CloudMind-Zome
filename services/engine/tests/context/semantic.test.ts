@@ -206,18 +206,23 @@ describe("SemanticRetriever", () => {
     expect(out.find((m) => m.id === "cross")!.source).toBe("s2");
   });
 
-  it("minScore 过滤低相关结果", async () => {
+  it("minScore 按相似度过滤，不随时间衰减连坐", async () => {
     const indexer = makeIndexer([
       { id: "high", score: 0.9 },
       { id: "low", score: 0.4 },
     ]);
     const repo = makeRepo([
-      rec("high", "高相关", new Date(NOW - 100 * DAY).toISOString()), // 0.9×0.3=0.27
-      rec("low", "低相关", new Date(NOW).toISOString()), // 0.4×1.0=0.4
+      rec("high", "高相关但很久以前", new Date(NOW - 100 * DAY).toISOString()), // sim 0.9 → score 0.27
+      rec("low", "低相关但刚刚", new Date(NOW).toISOString()), // sim 0.4
     ]);
-    const r = new SemanticRetriever(indexer, repo, { ...config, minScore: 0.35 }, archivedMessageIds);
+    const r = new SemanticRetriever(indexer, repo, { ...config, minScore: 0.5 }, archivedMessageIds);
     const out = await r.retrieve("a1", "q", new Set(), "default");
-    expect(out.map((m) => m.id)).toEqual(["low"]);
+    // 100 天前的高相似度记忆仍过线（准入看 similarity，旧不再被衰减连坐）；
+    // 低相似度的被挡，哪怕它很新
+    expect(out.map((m) => m.id)).toEqual(["high"]);
+    // 两个字段分工钉死：similarity 原样来自检索，score 是衰减后的排序权重
+    expect(out[0].similarity).toBeCloseTo(0.9);
+    expect(out[0].score).toBeCloseTo(0.27);
   });
 
   it("topK 截断且候选放大一倍", async () => {

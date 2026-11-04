@@ -74,6 +74,7 @@ function memories(n: number, score = 0.9): SemanticMemory[] {
   return Array.from({ length: n }, (_, i) => ({
     id: `m${i}`,
     content: `记忆片段 ${i} `.repeat(20),
+    similarity: score,
     score,
     createdAt: "2026-07-10T00:00:00Z",
   }));

@@ -214,9 +214,11 @@ export class ContextPipeline {
       l1: input.mindContext,
       // S6+M6：历史中的旧水位提醒与旧交接书不随新回合重放（过期快照误导模型；文件保留不动）
       l3: input.history.filter((m) => !isWatermarkReminder(m) && !isHandoffBook(m)),
-      // 置信度控制（设计决策 4）：≤ 0.5 直接丢弃；多轮去重：已注入 id 跳过
+      // 置信度控制（设计决策 4）：按**语义相似度**判定，≤ 0.5 丢弃——与消息年龄
+      // 无关（旧不等于不确定；时间衰减只影响 score 排序，不参与准入）；
+      // 多轮去重：已注入 id 跳过
       l4: (input.semanticMemories ?? []).filter(
-        (m) => m.score > CONFIDENCE_DROP && !seen.has(`mem:${m.id}`),
+        (m) => m.similarity > CONFIDENCE_DROP && !seen.has(`mem:${m.id}`),
       ),
       l5: (input.topicSummaries ?? []).filter((t) => !seen.has(`topic:${t.id}`)),
       // MIND.md 经验块：已在上游按话题检索，直接进层（Phase 1 不去重、不降级）

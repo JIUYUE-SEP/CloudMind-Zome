@@ -18,7 +18,7 @@ function history(n: number): ChatMessage[] {
 }
 
 function mem(content: string, overrides: Partial<SemanticMemory> = {}): SemanticMemory {
-  return { id: content, content, score: 0.9, createdAt: "2026-07-10T00:00:00Z", ...overrides };
+  return { id: content, content, similarity: 0.9, score: 0.9, createdAt: "2026-07-10T00:00:00Z", ...overrides };
 }
 
 function topic(label: string, overrides: Partial<TopicSummary> = {}): TopicSummary {
@@ -100,10 +100,13 @@ describe("assembleMessages 最终设计：固定前缀 + 伪装历史", () => {
     expect(textOf(messages[0])).toContain("2026-07-10 15:30");
   });
 
-  it("score ≤ 0.5 的记忆被丢弃，0.5 < score ≤ 0.7 模糊化", () => {
+  it("相似度 ≤ 0.5 的记忆被丢弃，0.5 < similarity ≤ 0.7 模糊化", () => {
     const layers = createLayers({
       l3: [],
-      l4: [mem("丢弃的记忆", { score: 0.4 }), mem("模糊的记忆", { score: 0.6 })],
+      l4: [
+        mem("丢弃的记忆", { similarity: 0.4, score: 0.4 }),
+        mem("模糊的记忆", { similarity: 0.6, score: 0.6 }),
+      ],
     });
     const messages = assembleMessages(layers, { now: NOW });
     const all = messages.map(textOf).join("\n");

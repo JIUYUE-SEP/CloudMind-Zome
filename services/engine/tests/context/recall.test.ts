@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { SemanticMemory, TopicSummary } from "../../src/context/layers.js";
 import {
-  classifyScore,
+  classifySimilarity,
   relativeTime,
   formatMemoryTime,
   summarizeContent,
@@ -20,6 +20,7 @@ function mem(overrides: Partial<SemanticMemory> = {}): SemanticMemory {
   return {
     id: "m1",
     content: "Python 装饰器的用法",
+    similarity: 0.9,
     score: 0.9,
     createdAt: "2026-07-10T15:30:00.000Z",
     ...overrides,
@@ -36,22 +37,22 @@ function topic(overrides: Partial<TopicSummary> = {}): TopicSummary {
   };
 }
 
-describe("classifyScore 置信度分档", () => {
-  it("score > 0.7 正常注入", () => {
-    expect(classifyScore(0.9)).toBe("high");
-    expect(classifyScore(CONFIDENCE_HIGH + 0.01)).toBe("high");
+describe("classifySimilarity 相似度分档", () => {
+  it("similarity > 0.7 正常注入", () => {
+    expect(classifySimilarity(0.9)).toBe("high");
+    expect(classifySimilarity(CONFIDENCE_HIGH + 0.01)).toBe("high");
   });
 
-  it("0.5 < score ≤ 0.7 模糊化注入", () => {
-    expect(classifyScore(0.7)).toBe("fuzzy");
-    expect(classifyScore(CONFIDENCE_HIGH)).toBe("fuzzy");
-    expect(classifyScore(0.51)).toBe("fuzzy");
+  it("0.5 < similarity ≤ 0.7 模糊化注入", () => {
+    expect(classifySimilarity(0.7)).toBe("fuzzy");
+    expect(classifySimilarity(CONFIDENCE_HIGH)).toBe("fuzzy");
+    expect(classifySimilarity(0.51)).toBe("fuzzy");
   });
 
-  it("score ≤ 0.5 丢弃", () => {
-    expect(classifyScore(0.5)).toBe("drop");
-    expect(classifyScore(CONFIDENCE_DROP)).toBe("drop");
-    expect(classifyScore(0.1)).toBe("drop");
+  it("similarity ≤ 0.5 丢弃", () => {
+    expect(classifySimilarity(0.5)).toBe("drop");
+    expect(classifySimilarity(CONFIDENCE_DROP)).toBe("drop");
+    expect(classifySimilarity(0.1)).toBe("drop");
   });
 });
 
@@ -117,16 +118,37 @@ describe("memoryToMessage 语义记忆自然化", () => {
     expect(text).toContain("11天前");
   });
 
-  it("低置信度模糊化：好像 + 不保证准确", () => {
-    const msg = memoryToMessage(mem({ score: 0.6 }), NOW)!;
+  it("相似度不足才模糊化：好像 + 不保证准确", () => {
+    const msg = memoryToMessage(mem({ similarity: 0.6, score: 0.6 }), NOW)!;
     const text = (msg.content[0] as { type: "text"; text: string }).text;
     expect(text).toContain("好像");
     expect(text).toContain("模糊");
   });
 
-  it("score ≤ 0.5 直接丢弃（返回 null）", () => {
-    expect(memoryToMessage(mem({ score: 0.5 }), NOW)).toBeNull();
-    expect(memoryToMessage(mem({ score: 0.2 }), NOW)).toBeNull();
+  it("相似度 ≤ 0.5 直接丢弃（返回 null）", () => {
+    expect(memoryToMessage(mem({ similarity: 0.5, score: 0.5 }), NOW)).toBeNull();
+    expect(memoryToMessage(mem({ similarity: 0.2, score: 0.2 }), NOW)).toBeNull();
+  });
+
+  it("旧 ≠ 模糊：40 天前但相似度高的记忆照常注入，不降级成「记不清」", () => {
+    // 40 天 → 衰减 0.5，score 只剩 0.45（排序靠后），但 similarity 0.9 决定分档
+    const old = mem({
+      similarity: 0.9,
+      score: 0.45,
+      createdAt: new Date(NOW - 40 * DAY).toISOString(),
+    });
+    const msg = memoryToMessage(old, NOW)!;
+    const text = (msg.content[0] as { type: "text"; text: string }).text;
+    expect(text).not.toContain("好像");
+    expect(text).not.toContain("模糊");
+    expect(text).toContain("1个月前");
+  });
+
+  it("分档只看相似度：score 低不导致丢弃，similarity 低才丢弃", () => {
+    // 衰减把 score 压到 0.27（90 天以上档），similarity 0.9 → 仍正常注入
+    expect(memoryToMessage(mem({ similarity: 0.9, score: 0.27 }), NOW)).not.toBeNull();
+    // 反向：score 虚高（1.0）但 similarity 0.4 → 照样丢弃
+    expect(memoryToMessage(mem({ similarity: 0.4, score: 1.0 }), NOW)).toBeNull();
   });
 
   it("跨场景命中：自然化标注来源（另一个对话）", () => {

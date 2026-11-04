@@ -252,6 +252,7 @@ describe("降级顺序", () => {
       l4: Array.from({ length: 12 }, (_, i) => ({
         id: `r${i}`,
         content: `检索片段 ${i}`,
+        similarity: 0.9 - i * 0.01,
         score: 0.9 - i * 0.01,
         createdAt: "2026-07-17T00:00:00Z",
       })),

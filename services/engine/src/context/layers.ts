@@ -8,7 +8,16 @@ export type ToolSchema = unknown;
 export interface SemanticMemory {
   id: string;
   content: string;
-  /** 最终相关度 = 向量相似度 × 时间衰减；按降序排列，降级时优先保留前部 */
+  /**
+   * 语义相似度（sidecar 余弦相似度换算，域 [0,1]）：**准入与置信度分档的唯一依据**。
+   * 与消息年龄无关——旧不等于不确定（时间久远由 createdAt 的时间戳与措辞表达，
+   * 不靠压低这个值）。`semanticMinScore` / `CONFIDENCE_DROP` 判的都是它。
+   */
+  similarity: number;
+  /**
+   * 排序权重 = 向量相似度 × 时间衰减；**仅用于排序**，不作准入判定。
+   * 降级时优先保留前部（分数高的）。衰减分档见 `context/semantic.ts#timeDecay`。
+   */
   score: number;
   /** 跨场景来源标注（session id）；与当前场景相同时为空 */
   source?: string;

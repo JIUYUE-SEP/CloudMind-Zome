@@ -25,6 +25,7 @@ function mems(n: number, prefix = "s"): SemanticMemory[] {
   return Array.from({ length: n }, (_, i) => ({
     id: `${prefix}${i}`,
     content: `${prefix}${i}`,
+    similarity: 1 - i * 0.01,
     score: 1 - i * 0.01,
     createdAt: "2026-07-17T00:00:00Z",
   }));

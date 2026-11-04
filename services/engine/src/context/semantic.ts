@@ -126,12 +126,15 @@ export class SemanticRetriever {
       if (archivedIds.has(record.id)) continue;
       const content = recordText(record);
       if (!content) continue;
-      const score = (simById.get(record.id) ?? 0) * timeDecay(record.createdAt, now);
-      if (score < this.config.minScore) continue;
+      // 准入看相似度、排序看混合分（设计决策 1-3）：把两件事拆开，否则
+      // decay ≤ 0.5 时无论内容多相关都必然被 minScore 挡掉（30 天硬悬崖）
+      const similarity = simById.get(record.id) ?? 0;
+      if (similarity < this.config.minScore) continue;
       memories.push({
         id: record.id,
         content,
-        score,
+        similarity,
+        score: similarity * timeDecay(record.createdAt, now),
         source: record.sessionId && record.sessionId !== currentSourceId ? record.sessionId : undefined,
         createdAt: record.createdAt,
       });
@@ -147,9 +150,10 @@ export class SemanticRetriever {
       const content = record.content.trim().slice(0, MAX_INJECT_CHARS);
       if (!content) continue;
       const decay = record.importance === "high" ? 1.0 : timeDecay(record.createdAt, now);
-      const score = (simById.get(`mem:${record.id}`) ?? 0) * decay;
-      if (score < this.config.minScore) continue;
-      memories.push({ id: record.id, content, score, createdAt: record.createdAt });
+      // 与消息路径同口径：相似度判准入、混合分只排序（high 的衰减恒 1.0 语义不变）
+      const similarity = simById.get(`mem:${record.id}`) ?? 0;
+      if (similarity < this.config.minScore) continue;
+      memories.push({ id: record.id, content, similarity, score: similarity * decay, createdAt: record.createdAt });
     }
     return memories.sort((a, b) => b.score - a.score).slice(0, this.config.topK);
   }
