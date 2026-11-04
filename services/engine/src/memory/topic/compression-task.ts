@@ -71,6 +71,34 @@ async function deleteArchivedVectors(deps: CompressionTaskDeps, ids: string[]): 
 }
 
 /**
+ * 归档后删向量（M14 tombstone），**high 话题除外**。
+ *
+ * 设计决策 6 原文：「importance: high 的话题压缩时保留更多原文引用（不只是摘要）」——
+ * 摘要注定有损，high 话题的原文是这部分记忆唯一无损的留存。保留向量后，L4 归档排除
+ * 对 high 话题放行、并从归档回读正文，可跨压缩档召回原文。
+ *
+ * 只用于有 importance 来源的两条压缩路径（正常落档 / 注入检测降级）；
+ * archiveOnly 短话题不调 LLM、无 importance，仍走无条件删除。
+ *
+ * 代价（已知）：high 话题向量永久驻留，RSS 随访随涨，触发 `架构文档.md §9.1` 条件时
+ * 一并治理。保留条数记 info，便于观测占比。
+ */
+async function deleteArchivedVectorsUnlessHigh(
+  deps: CompressionTaskDeps,
+  importance: CompressedTopic["importance"],
+  ids: string[],
+): Promise<void> {
+  if (importance === "high") {
+    logger.info(
+      { agentId: deps.agentId, count: ids.length },
+      "[memory] high 话题归档保留向量（决策 6：保留更多原文引用）",
+    );
+    return;
+  }
+  await deleteArchivedVectors(deps, ids);
+}
+
+/**
  * P4-a memory flush：归档成功后才把长期记忆事实落 memories.jsonl + 向量索引
  * （M12 同型纪律——先 flush 再归档时归档失败会留孤儿事实；置于归档成功后即无孤儿）。
  * 置信度 ≤ 0.5 不落盘（与 MIND 经验同口径）；置信度随 MemoryRecord 落盘供审计。
@@ -176,8 +204,8 @@ async function compressAndArchiveSegment(
   if (deps.mind.isInjectionSuspect(summaryText)) {
     logger.warn(`[topic] 压缩摘要命中注入检测，降级为仅归档（不落档）：${enriched.topicId}`);
     await deps.messageRepository.archiveAndRemove(enriched.msgIds);
-    // M14：归档成功后删除对应向量（tombstone）
-    await deleteArchivedVectors(deps, enriched.msgIds);
+    // M14 + 决策 6：归档后删向量，high 话题保留（无摘要可依，原文是唯一留存）
+    await deleteArchivedVectorsUnlessHigh(deps, compressed.importance, enriched.msgIds);
     // P8b 事件缝（memory/archived）：仅归档降级同样是归档成功
     await deps.onArchived?.(enriched.msgIds);
     return;
@@ -192,9 +220,9 @@ async function compressAndArchiveSegment(
     await removeCompressedTopic(deps.agentId, compressed.topicId);
     throw err;
   }
-  // M14：归档成功后删除对应向量（tombstone）。置于沉淀/onArchived 之前：
-  // 删除失败仅 warn 降级（见 helper），不改变后续两者的既有成败语义
-  await deleteArchivedVectors(deps, compressed.msgIds);
+  // M14 + 决策 6：归档后删向量（high 话题保留，见 helper）。置于沉淀/onArchived
+  // 之前：删除失败仅 warn 降级，不改变后续两者的既有成败语义
+  await deleteArchivedVectorsUnlessHigh(deps, compressed.importance, compressed.msgIds);
   // Phase 7：归档成功后顺手沉淀经验到 MIND.md（append-only）。
   // M12：必须在归档成功之后——先沉淀再归档时，归档失败的回滚只隔离压缩档，
   // MIND.md 会留下孤儿经验，重启对账重压缩又沉淀一份（重复）。置于
