@@ -61,3 +61,6 @@ nul
 coverage/
 AGENTS.md
 AGENT.md
+
+# pnpm 本地 store（受限环境下 pnpm 写不了全局 store，会落到仓库根）
+.pnpm-store/
