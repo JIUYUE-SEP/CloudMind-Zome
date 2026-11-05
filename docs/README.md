@@ -2,7 +2,7 @@
 
 > 本目录分两区：**现行区**（与代码同寿命，随时销记）与 **archive/ 档案区**（当时的真相，只增不改）。
 > 找现状读现行区，找历史读档案区。别拿档案当现状，别把现状拖进档案。
-> 最后对账：2026-11-01（现行区相对链接零死链、单篇均已收录于下方明细；archive 区另有 2 处历史路径引用已失效——按「只增不改」保留，台账见 [`archive/reviews/2026-11-01-docs-completeness-audit.md`](archive/reviews/2026-11-01-docs-completeness-audit.md)）
+> 最后对账：2026-11-05（docs 65 篇 + 根 README 共 66 个文件、51 处相对链接**零死链**；现行区单篇均已收录于下方明细；archive 区另有 2 处历史路径引用已失效——按「只增不改」保留，台账见 [`archive/reviews/2026-11-01-docs-completeness-audit.md`](archive/reviews/2026-11-01-docs-completeness-audit.md)）
 
 ---
 
@@ -17,7 +17,7 @@
 | [`开发指南.md`](开发指南.md) | 本地开发、调试、常见任务、提交前检查清单、隐私红线 | 工程纪律本体 |
 | [`看门狗调参.md`](看门狗调参.md) | 看护三层阈值怎么调：参数总表、按症状查、写入方式、快照与日志读法 | 与 `plugins/watchdog` 同步 |
 | [`DEPLOY.md`](DEPLOY.md) | Web 部署指南（含 sidecar 准备） | 部署实况 |
-| [`design/`](design/) | 进行中的设计文档（context-pipeline、intermind 等） | 落地后归 superpowers |
+| [`design/`](design/) | 设计文档：已实施机制的设计定案与实施记录（现行参考与实施前留痕并存） | 落地后归 superpowers；已被现行文档引为权威参考的暂留此处 |
 | [`examples/`](examples/) | 示例（外部插件 hello 等） | 可运行 |
 | [`issues/`](issues/) | 未决问题跟踪（已解决的留作先例） | 活着才留 |
 | [`references/`](references/) | 外部参考资料 | 只读 |
@@ -26,14 +26,14 @@
 
 > 上表按目录给入口，下表按文件给直达——目录里的每一篇都在这里登记，不留孤儿。
 
-**design/ — 进行中的设计**
+**design/ — 设计文档**
 
 | 文件 | 内容 |
 |------|------|
 | [`context-pipeline-v2.md`](design/context-pipeline-v2.md) | ContextPipeline v2 设计（Phase 1–7 全部实现，现行上下文机制的权威参考） |
 | [`context-pipeline-phase4.md`](design/context-pipeline-phase4.md) | Phase 4 实施前报告（**已实施完成**，留作方案论证与现状核实的留痕） |
 | [`intermind.md`](design/intermind.md) | 人形间私信（Intermind）设计定案 |
-| [`watchdog.md`](design/watchdog.md) | 后台看护（turn 级卡死检测与中断）实施前报告（**P1 流空闲超时、P2 中断语义与停止生成、P3 心跳扫描、P4 语义审查均已实施**；语义审查缺省关闭；对应 `worker-registry.ts:18-21` 登记风险） |
+| [`watchdog.md`](design/watchdog.md) | 后台看护（turn 级卡死检测与中断）：实施前设计论证 + 实施记录 + 验收的**混合体**，文首有阅读口径；**P1–P4 均已实施**，语义审查缺省关闭；现行参数以 [`看门狗调参.md`](看门狗调参.md) 为准 |
 
 **issues/ — 问题跟踪**
 

@@ -3,8 +3,9 @@
 > 范围：`services/engine`（core / context / memory / api / tools / provider / subagent / handoff / scheduler / plugins）、`apps/web`、`packages/shared`、`crates/zome-sidecar`、`docs`。
 > 方法：**只查 logic conflict（逻辑冲突）**，不做安全/性能泛扫——同一语义多处实现不一致、状态机竞态、跨模块归属错位、文档声称与代码实际背离、测试覆盖的是被绕过的路径。
 > 分工：8 个并行审计代理（core / memory / api / tools / orchestration / web / crosscut / plugins），其中 4 份完整交付（core、memory、tools、orchestration），其余 4 个因上游 429 中断；中断模块由主控用脚本化扫描补做契约与装配面（见 §五）。
-> 复核：主控对 P0/P1 逐条回代码验证，并裁决了两份报告之间的分歧（§四）。**复核推翻 4 条代理结论**（含 1 条 P0 降级、3 条误报），故本报告只收录已验证条目。
-> 结论：基线全绿（189 文件 / 1829 用例，1 skipped）。发现 **1 P0 / 8 P1 / 若干 P2**，其中 1 条推翻上次审计结论，1 条是本轮记忆召回改动自身带出的新缺口。
+> 复核：主控对 P0/P1 逐条回代码验证，并裁决了两份报告之间的分歧（§四）。**复核推翻 5 条代理结论**（1 条 P0 降级 + 4 条误报，见 §四-1 至 §四-5），故本报告只收录已验证条目。
+> 结论：基线全绿（189 文件 / 1829 用例，1 skipped）。发现 **1 P0 / 9 P1 / 若干 P2**，其中 1 条推翻上次审计结论，1 条是本轮记忆召回改动自身带出的新缺口。
+> **本报告是下限，不是全貌**：8 个审计面只有 4 个完整交付（core / memory / tools / orchestration），其余 4 个因上游 429 中断，仅由 §五 的脚本化扫描补了契约与装配面。`apps/web` 流式状态、crosscut 横向重复、`plugins/invariants` 三块**未审**。不要拿「1 P0 / 9 P1」当全仓缺陷总数。
 >
 > **对后续审计的提醒**：代理报告必须复核后再落档。本轮 tools-auditor 4 条 P0/P1 中 3 条不成立（把已登记的设计取舍当缺陷、引用了不存在的代码、漏看了已有的截断实现），orchestration-auditor 亦有 1 条信号处理误报。误报的共性是**只读了调用点、没读被调方的完整实现**。
 
@@ -44,7 +45,12 @@ this.pending.unshift(state);
 
 **主控复核**：属实。`retryCount` 仅用于退避计算，无任何上限判断。
 
-**修法**：给批次加「总重试次数 / 总时长 / 连续 429 次数」任一上限，或区分永久性 429（`insufficient_quota` 不可恢复，应直接判 failed）与瞬时 429。
+**修法（已定案，不再留选项）**——两件事都要做，缺一不可：
+
+1. **per-task 重试次数硬上限**：`retryCount` 到顶（建议 5）直接判 `failed`，并把「限流重试耗尽」写进 `error`。**不要只加「总时长上限」**：`RATE_LIMIT_RETRY_MAX_MS` 已把单次退避封在 30s，总时长上限要么与次数上限等价、要么得另起一套计时器，不如直接数次数。
+2. **永久 429 分类**：`insufficient_quota` / `billing_hard_limit_reached` 这类不可恢复错误直接判 `failed`，不进重排队列——重试一万次也不会成功，只会烧光时间与 token。
+
+两者是互补的：分类解决「本来就不该重试」的，次数上限兜住「该重试但永远不成功」的。
 
 ---
 
@@ -120,11 +126,11 @@ await this.store().mutateLines(...)                     // 最后才删热存储
 
 **冲突**：`compression-task.ts` 是分步收尾的（MIND 沉淀 → 归档 → 删向量 → 压缩档落盘），每一步失败的处理都在「重试耗尽」的语义下才成立；而测试把重试链整个跳过，等于只测了「一次就成功」与「一次就失败」两个端点。本次 P1-3/P1-4 的并发与重复问题恰好都发生在重试窗口内。
 
-**待确认**（代理补答未返回）：生产启动路径是否有任何处注入空数组。初步 grep `bootstrap.ts` / `plugins/memory` 未见，倾向「生产恒为 3 段退避」。
+**已核实**（复核补做，原先挂的「待确认」至此关闭）：全 `services/engine/src` 搜 `retryDelaysMs` 仅两处命中——`memory/topic/queue.ts:23,37` 的选项定义（缺省回落 `RETRY_DELAYS_MS`）与 `core/agent-worker.ts:183` 的一行注释，**无任何生产注入点**。生产恒为 `[5_000, 15_000, 45_000]` 三段退避，空数组只存在于测试。故本条的定性确定：**问题在测试覆盖，不在生产配置**。
 
 ### P1-6 `generate_image` 无 `timeoutMs` 声明，且 provider 层无超时——唯一兜底缺失
 
-- `tools/builtin/` 16 个工具中仅 5 个声明 `timeoutMs`（bash、dispatch_subagent、dispatch_subagent_batch、run_command、web-search），`generate_image` 不在其中。
+- `tools/builtin/` 15 个工具中仅 5 个声明 `timeoutMs`（bash、dispatch_subagent、dispatch_subagent_batch、run_command、web-search），`generate_image` 不在其中。
 - `provider/image-gen.ts:24-31` 走 OpenAI SDK `images.generate`，**未传 timeout、未传 signal**（SDK 默认 10min × 内置重试）。
 - 工具自身只有「下载结果图」的 15s 超时（`generate_image.ts:108`），生成请求本身无兜底。
 
@@ -143,9 +149,21 @@ await this.store().mutateLines(...)                     // 最后才删热存储
 
 ### P1-8 scheduler 迟到的 `onDone` 用旧快照整条覆写任务
 
-`scheduler/scheduler.ts:148-156` 的回调闭包持有发起时的 `task` 快照，`repo.update(task)` 是整条覆盖写；后续 tick 已把 `nextRunAt` 推进并写盘，迟到回调把它改成 `now+60s` 并把 `lastRunAt` 回退。效果 = 一次计划外提前触发 + 审计时间线倒流。代理已用脚本实证（`lastRunAt` 回退 172ms）。
+`scheduler/scheduler.ts:148-156` 的回调闭包持有发起时的 `task` 对象，`repo.update(task)` 是整条覆盖写；后续 tick 已把 `nextRunAt` 推进并写盘，迟到回调把它改成 `now+60s` 并把 `lastRunAt` 回退。效果 = 一次计划外提前触发 + 审计时间线倒流。代理已用脚本实证（`lastRunAt` 回退 172ms）。
 
-同文件 `:105-106,162-164`：`runningTasks` 只覆盖入队窗口，`finally` 在执行尚未开始时就释放 → 长任务会被 cron 反复入队，与注释「advance schedule before execution so a long-running job does not pile up」相反。
+**机制**：`tick()` 每轮从 `repo.list()` 取**新对象**，`runTask(task)` 就地改的是本轮对象（`:112-113`）；`onDone` 闭包捕获的正是这个对象。补偿路径 `scheduleRetryOnce` 只改 `nextRunAt` 一个字段，但落盘走整条 `repo.update(task)`——陈旧字段被一起写回。
+
+**修法**：补偿只改该改的字段（`repo.patch(id, { nextRunAt })`），或落盘前重读再合并。**不要**改成「onDone 时重新取快照」——那会引入新的读-改-写竞态。
+
+### P1-9 scheduler `runningTasks` 只覆盖入队窗口，长任务被 cron 反复入队
+
+`scheduler/scheduler.ts:105-106,162-164`：`runningTasks` 在 `runTask` 入口 add、`finally` delete，而 `await worker.runScheduledTask(...)` 是**入队即返回**（`:141-142` 注释自述），执行期完全落在占槽窗口之外。
+
+**后果**：cron 周期短于任务实际耗时的任务，每个 tick 都会再入队一次。注意**不是并发执行**——`AgentWorker` 队列是串行 FIFO，重复入队表现为排队堆积与延迟执行，而非同时跑。这与同文件 `:110-111` 的注释「advance schedule before execution so a long-running job does not pile up」直接矛盾。
+
+**修法**：`runningTasks` 的释放点从 `runTask` 的 `finally` 移到 `onDone`（执行期结束），或直接以「该任务上一轮是否已结束」作为入队闸。
+
+**为什么与 P1-8 分开**：P1-8 是落盘竞态（陈旧字段写回），P1-9 是生命周期窗口（占槽过早释放）。两者机制、修法、触发条件都不同，混成一条会让修的人以为改一处就够了。
 
 ---
 
@@ -190,7 +208,7 @@ tools-auditor 判 P0；core-auditor 反驳。主控裁决：**降级为已知限
 
 | 扫描项 | 结果 |
 |--------|------|
-| **API 契约漂移**（73 个注册路由 × `docs/API.md`） | **零漂移**：路径全部有文档记录，HTTP 方法全部一致 |
+| **API 契约漂移**（73 个注册路由 × `docs/API.md`） | **路径/方法零漂移**：路径全部有文档记录，HTTP 方法全部一致。**边界**：只比对了路径与 HTTP 方法，**未比对响应体字段**——契约漂移若发生在响应体形状上，本次扫描看不见。不得把本行当作「API 文档与实现一致」的依据 |
 | **写端点校验**（17 个无 zod 的写端点逐个看） | 无缺陷：多为 run/pause/resume 等无 body 动作；有 body 的（config / blueprints / scheduler）均有手工校验 + `?? {}` 兜底 |
 | **插件装配**（23 插件 × bootstrap） | 无同名覆盖：cordis 显式 inject + `assertServices` fail-fast；`watchdog` 刻意不进 assert 列表有注释说明 |
 | **`AgentConfig` 29 字段消费面** | 全部有消费；`codename` / `tags` / `representColor` 为纯前端展示字段，引擎零消费属合理 |
@@ -205,7 +223,7 @@ tools-auditor 判 P0；core-auditor 反驳。主控裁决：**降级为已知限
 
 ## 六、建议修复顺序
 
-按「收益 / 改动量」排序，前四条都是小改动：
+按「收益 / 改动量」排序。前两条是 1~5 行级、改完即封顶的；第 3 条是唯一 P0，改动量中等但必须先定方案：
 
 | 序 | 项 | 改动量 | 理由 |
 |----|----|--------|------|
@@ -217,7 +235,10 @@ tools-auditor 判 P0；core-auditor 反驳。主控裁决：**降级为已知限
 | 6 | P1-5 重试链测试覆盖 | 测试 | 让 P1-3/P1-4 类问题可被回归捕获 |
 | 7 | P1-7 超时归因统一 | ~30 行 | 影响排障方向 |
 | 8 | P1-1 话题 per-source 分桶 | 大（含 schema 迁移） | 影响面最大，但改动量最大，需单独立项与 spec |
-| 9 | P1-8 scheduler 快照覆写 + 执行期占槽 | ~20 行 | 低频但会倒流审计时间线、长任务反复入队 |
+| 9 | P1-8 scheduler 补偿只 patch `nextRunAt` | ~10 行 | 低频，但迟到回调会倒流审计时间线 |
+| 10 | P1-9 `runningTasks` 占槽改到执行期结束 | ~10 行 | 低频，长任务反复入队 |
+
+> P1-8 与 P1-9 同处 `scheduler.ts`，但**不要合成一个补丁**：前者改落盘粒度，后者改生命周期释放点，混着改会让回归定位失去参照。
 
 > P1-1 建议单独立项：它牵动 `topic-state.json` 的 schema、`reconcile`、`skillRestore`、L5 归属标注，不适合混进「修 bug」波次。
 
@@ -228,3 +249,5 @@ tools-auditor 判 P0；core-auditor 反驳。主控裁决：**降级为已知限
 - 本轮未修改任何源码；审计过程仅读文件、跑测试、执行只读脚本。
 - 4 份代理报告原始结论已在文中标注来源；主控对 P0/P1 逐条回代码复核，未复核的 P2 级条目未写入本报告正文（避免把未验证的怀疑固化进档案）。
 - `docs/design/watchdog.md` 的「已知限制」章节质量很高——本轮两条看似缺陷的发现（abort 打不断工具）在那里已有明确登记，建议后续审计先读该节再下结论。
+- **2026-11-05 复核修订（针对本报告自身，未改源码）**：① 头部推翻计数 4→5（§四 实列 5 条，原摘要漏计 §四-5）；② P1-5 的「待确认」已核实关闭（生产无 `retryDelaysMs` 注入点）；③ P0-1 修法由选项菜单收敛为定案（次数上限 + 永久 429 分类）；④ 原 P1-8 拆为 P1-8（落盘竞态）与 P1-9（生命周期窗口），故 P1 总数 8→9；⑤ §五 契约漂移结论补「未比对响应体」边界；⑥ 头部补「本报告是下限非全貌」声明。
+- **2026-11-05 事实订正**：P1-6 原文「`tools/builtin/` 16 个工具」有误，实际 **15** 个（`tools/builtin/index.ts` 的 `getBuiltinTools()` 返回 15 项）。已改正文，不影响该条结论（「仅 5 个声明 `timeoutMs`」经复核仍准确）。

@@ -3,7 +3,7 @@
 > 版本：v2 | 日期：2026-07-17（2026-07-22 更新状态） | 作者：维克托（为 TS 重写整理）
 > 参考：Python 遗留实现（commit f390431^ 之前）、grok-build compaction 设计
 > 状态：**Phase 1–7 全部已实现**（Phase 1 见 `docs/archive/reviews/2026-07-17-context-pipeline-phase1-review.md`；Phase 4 于 2026-08-19 完成，实施报告 `docs/design/context-pipeline-phase4.md`）
-> 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`），当前层结构与本文一致
+> 注：实现期曾短暂引入 L1.5（平台能力层），已于 2026-07-21 移除（commit `ba7f726`）；L2 @提及层因无生产者于 2026-08-18 删除（M7）。当前层列为 L1/L3/L4/L5/L6-core/L6-ext，下文涉及 L2 的现行描述均已按删除后口径标注。
 
 ---
 
@@ -103,10 +103,10 @@ while True:
 ```
 services/engine/src/context/
 ├── pipeline.ts            # 主 ContextPipeline 类
-├── layers.ts              # L1-L6 类型定义与 DOWNGRADE_ORDER
+├── layers.ts              # L1/L3-L6 类型定义与 DOWNGRADE_ORDER（L2 已删）
 ├── downgrade.ts           # 降级步骤
 ├── token-counter.ts       # 准确 token 计数（@dqbd/tiktoken，cl100k_base）
-├── assembler.ts           # 组装 messages 为 LLM 输入（L1/L2 固定前缀 + L4/L5 伪装历史时间归并）
+├── assembler.ts           # 组装 messages 为 LLM 输入（L1 固定前缀 + L4/L5 伪装历史时间归并；L2 已删）
 ├── recall.ts              # 记忆自然化（Phase 5：第三人称/置信度分档/时间渲染/长度控制/失败告知）
 ├── semantic.ts            # L4 语义检索器（Phase 3）
 └── truncate.ts            # 工具结果按预算 20% 截断
@@ -116,7 +116,7 @@ services/engine/src/memory/topic/
 ├── tracker.ts             # TopicTracker（话题跟踪/边界判定）
 ├── compressor.ts          # 单程压缩器（LLM 摘要）
 ├── queue.ts               # 后台串行压缩队列（fire-and-forget）
-├── store.ts               # _compressed/ 读写、archivedMessageIds（按档缓存）
+├── store.ts               # _compressed/ 读写、archivedIdsByKeep（all/highKept）/archivedMessageIds（按档缓存）
 └── types.ts               # TopicCompressionConfig 与归一化
 
 services/engine/src/memory/
@@ -144,7 +144,7 @@ export interface AssembleInput {
   history: ChatMessage[];           // 当前会话完整历史
   mindContext: string;              // L1 人格文件内容
   tools: ToolSchema[];              // L6 工具定义
-  mentionDesc?: string;             // @提及提醒
+  // L2 @提及层已于 2026-08-18 删除，原 mentionDesc 字段随之移除
   sourceId: string;                 // 当前场景 ID（session/group）
   sourceName?: string;
 }
@@ -232,7 +232,9 @@ msg_id_1, msg_id_2, ...
 
 > **score 语义（2026-07-22 review 修订）**：sidecar 原始返回的是**距离**（`1 - cosine`，域 [0,2]，越小越近），
 > `MemoryIndexer.search` 出口统一换算为**相似度**（`max(0, 1 - distance)`，越大越相关）。
-> 排序、minScore、时间衰减全部建立在相似度之上；新增调用方不得直接消费 sidecar 原始 score。
+> 新增调用方不得直接消费 sidecar 原始 score。
+>
+> **实现修订（2026-11-04 记忆召回对齐）**：准入与排序已拆开——`SemanticMemory.similarity` 是准入与置信度分档的唯一依据（`CONFIDENCE_DROP`、`semanticMinScore` 都判它），`score = similarity × timeDecay` **仅用于排序**；时间衰减不再决定生死（`context/layers.ts:8-25`、`context/semantic.ts:145-153`）。`importance=high` 话题归档时保留原文向量，归档 id 集合拆为 `{ all, highKept }`，L4 排除条件为 `all.has(id) && !highKept.has(id)` 并从归档回读原文（`context/semantic.ts:126-142`、`memory/topic/store.ts:345-431`）。管线侧仍按硬编码 `similarity > 0.5` 再过滤一次（`context/pipeline.ts:220-221`），因此 `semanticMinScore` 配在 (0, 0.5] 区间不会扩大召回，实际门槛取两者较大值——已登记为待观察项（`docs/archive/reviews/2026-11-05-logic-conflict-audit.md` §四-7）。
 
 ### 触发时机
 
@@ -319,7 +321,7 @@ msg_count: 47
 
 **理由**：纯 markdown 可读性好，embedding_id 支持语义检索反查。
 
-> **实现修订（2026-07-28）**：`embedding_id` 至今仍只是预留——`CompressedTopic.embeddingId` 在全代码库从未被赋值，所有压缩档该字段**恒为空串**；L4 的"已压缩话题原文排除"走的是 `archivedMessageIds`（压缩档 msg_ids 汇总），不依赖 embedding_id。原"Phase 3 接入"承诺未兑现。
+> **实现修订（2026-07-28）**：`embedding_id` 至今仍只是预留——`CompressedTopic.embeddingId` 在全代码库从未被赋值，所有压缩档该字段**恒为空串**；L4 的"已压缩话题原文排除"走 `archivedIdsByKeep` 的 `{ all, highKept }`（high 话题例外，2026-11-04 起），不依赖 embedding_id。原"Phase 3 接入"承诺未兑现。
 > **最终处置（2026-08-19 Phase 4）**：**正式放弃**——msg_ids + tombstone 删除已覆盖其全部预期用途，该预留字段不会接入。
 
 ### 4. 热存储清理：归档保护
@@ -348,6 +350,8 @@ return 0.3;                              // 三个月以上保底 30%
 ```
 
 **重要记忆（importance: high）**：不衰减，永远 1.0。
+
+> **实现修订（2026-08-19 / 2026-11-04）**：消息向量没有 importance 来源，因此「不衰减」只对继承话题 importance 的 `mem:` flush 条目生效（`context/semantic.ts:164-173`）；high 话题的原文按 `highKept` 保留向量，但衰减仍只作用于排序、不影响准入（见「语义检索整合」的实现修订）。
 
 **理由**：CMZ 的 Agent 是生命，早期对话可能包含人格设定、偏好、共同经历，不应快速衰减。
 
@@ -392,12 +396,12 @@ return 0.3;                              // 三个月以上保底 30%
 ### Phase 3：语义检索（约 1 周）— ✅ 已完成（2026-07-22，压缩前 memory flush 除外，留待 Phase 4 评估）
 
 - [x] 整合 `memoryIndexer` 到 `pipeline.assemble`（L4 层：`SemanticMemory[]`，参与预算与降级）
-- [x] 时间衰减打分（分段衰减，见"设计决策 5"；importance 标记待 v2 话题检测启用后接入）
+- [x] 时间衰减打分（分段衰减，见"设计决策 5"；importance 已于 2026-08-19 Phase 4 由压缩调用真实赋值，high 的 `mem:` flush 条目豁免衰减）
 - [x] 跨场景标注（Phase 5 起为自然化"在另一个对话里"；原 `[来自: <sessionId>]` 标注已移除，同场景不标注）
-- [x] L4 检索排除已归档话题的原始消息（与 Phase 2 衔接）
+- [x] L4 检索排除已归档话题的原始消息（与 Phase 2 衔接；importance=high 话题例外，2026-11-04 起保留向量并从归档回读，见「语义检索整合」实现修订）
 - [x] 检索逻辑从 agent-worker 迁入 `context/semantic.ts`（embedder + sidecar HNSW 仍由 MemoryIndexer 承载）
 - [x] agent 级配置：`semanticSearchEnabled` / `semanticTopK` / `semanticMinScore`
-- [ ] 压缩前 memory flush（重要决策/事实写入 memory 文档）
+- [x] 压缩前 memory flush（2026-08-19 Phase 4 落地：压缩同次调用产出长期记忆事实，落 `memories.jsonl` + 向量索引可 L4 召回；Phase 3 时留待评估）
 
 **验收**：提到过去聊过的话题时，Agent 能"想起"被压缩的细节。
 
@@ -416,20 +420,20 @@ return 0.3;                              // 三个月以上保底 30%
 **整体结构**：
 
 ```
-System Prompt（固定，前缀缓存命中）：L1 人格 + L2 @提及提醒（相邻头部，L6-core 走 tools 通道）
+System Prompt（固定，前缀缓存命中）：L1 人格（L6-core 走 tools 通道；L2 @提及层已于 2026-08-18 删除）
 Messages（动态，自然对话流）：L4/L5 伪装成的 user 历史消息 与 L3 真实历史
   按 createdAt 归并穿插 → 当前 user 输入 → 当前 assistant 回复
 检索失败：尾随 system 消息 "[记忆检索暂时不可用] ..."（不伪装）
 ```
 
-- [x] L4/L5 从 system 元信息移到 messages（`context/recall.ts` 自然化 + `assembler.ts` 时间归并），不破坏 L1/L2 固定前缀
+- [x] L4/L5 从 system 元信息移到 messages（`context/recall.ts` 自然化 + `assembler.ts` 时间归并），不破坏 L1 固定前缀
 - [x] 第三人称改写（"用户之前提到过…"，避免"你/我/我们"亲密错觉）；跨场景命中自然化标注（"在另一个对话里"）
 - [x] 时间真实：伪装消息 `createdAt` 保留原始时间戳，正文渲染 `[YYYY-MM-DD HH:mm · N天前]`，心智可算时间差
-- [x] 置信度分档（`classifyScore`）：> 0.7 正常注入；(0.5, 0.7] 模糊化（"好像提到过…这段记忆有些模糊"）；≤ 0.5 丢弃
+- [x] 置信度分档（`classifySimilarity`，按 `similarity` 判定）：> 0.7 正常注入；(0.5, 0.7] 模糊化（"好像提到过…这段记忆有些模糊"）；≤ 0.5 丢弃
 - [x] 多轮去重：pipeline 按 sourceId 记录已注入 id（`mem:`/`topic:` 前缀，64 会话 FIFO），只标记降级后实际注入的条目；新会话隔离
 - [x] 检索失败明确告知：L4 检索/L5 压缩档读取失败 → `retrievalFailed` → 尾随 system 消息（agent-worker 接线）
 - [x] 长度控制：单条 > 500 字符摘要化（保留首尾、标注中段省略字数）
-- [x] 与话题压缩衔接：`latestSummaries` 返回结构化 `TopicSummary{id,label,text,createdAt}`；已归档原文仍被 L4 排除（不变）
+- [x] 与话题压缩衔接：`latestSummaries` 返回结构化 `TopicSummary{id,label,text,createdAt}`；已归档原文默认仍被 L4 排除（不变），importance=high 话题为例外——保留向量并从归档回读原文（2026-11-04）
 - [x] 降级策略不变：L5 → L4 → L6-ext → L3
 
 **验收**：`tests/context/recall.test.ts`（17 例）+ assembler/pipeline/agent-worker 集成用例——自然融入（无 system 元信息）、第三人称、时间戳保留、失败告知、多轮不重复、头部前缀跨轮一致（缓存命中）。
@@ -441,7 +445,7 @@ Messages（动态，自然对话流）：L4/L5 伪装成的 user 历史消息 �
 **注入结构**：
 
 ```
-System Prompt（固定，缓存命中）：L1 = SOUL.md + skill 内容（SOUL 在前，不含 MIND.md）→ L2 @提及提醒
+System Prompt（固定，缓存命中）：L1 = SOUL.md + skill 内容（SOUL 在前，不含 MIND.md；L2 @提及层已删除）
 Messages（动态）：L4/L5 伪装 user 历史与 L3 按时间归并 → MIND.md 命中块伪装 assistant 历史消息（热上下文之后）→ 当前 user
 ```
 
@@ -507,7 +511,7 @@ frontmatter 支持来源追溯（source）、时间衰减（created）、置信�
 1. **功能**：1000 轮长对话不报错、不丢失人格、能回忆早期设定
 2. **性能**：assemble 延迟 < 100ms（不含 LLM 压缩调用）
 3. **可审计**：指挥官能查看任意 Agent 的 `_compressed/` 目录，理解记忆被压成了什么样
-4. **可配置**：上下文预算（`maxContextTokens` / `reserveRatio`）、压缩模型（`compressionModel`）、话题检测窗/阈值、L4 topK/minScore 等 Agent 级字段可配；"触发比例"无对应实现（每轮无条件 assemble），"保留轮数"差异化保留未实现
+4. **可配置**：上下文预算（`maxContextTokens` / `reserveRatio`）、压缩模型（`compressionModel`）、话题检测窗/阈值、L4 topK/minScore 等 Agent 级字段可配；"触发比例"无对应实现（每轮无条件 assemble）；差异化保留已由 Phase 4 落地（L5 最近一个 `high` 档常驻 + L4 `mem:` 条目 high 不衰减）
 
 ---
 

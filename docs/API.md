@@ -8,8 +8,9 @@ Engine 默认监听 `http://127.0.0.1:8848`（可用 `PORT` 环境变量修改�
 
 除 `GET /health` 与 `/ws/*`（WebSocket 握手经 `Sec-WebSocket-Protocol` 携带 token）外，**所有 REST 端点（含 `/docs`）**都要求 `Authorization: Bearer <token>`：
 
-- token 为 32 字节随机值，自动生成并落盘 `DATA_DIR/auth-token`（权限 0600）；可用环境变量 `CLOUDMIND_AUTH_TOKEN` 覆盖。文件读取失败或内容损坏会显式报错，绝不静默重建覆盖
+- token 为 32 字节随机数的 hex 形态（64 位小写十六进制），自动生成并落盘 `DATA_DIR/auth-token`（`DATA_DIR` 指数据目录：`CLOUDMIND_DATA_DIR` 可覆盖、缺省 `~/.cloudmind-zome`；权限 0600）；可用环境变量 `CLOUDMIND_AUTH_TOKEN` 覆盖（原样作为期望值，不做 hex 格式校验）。文件读取失败或内容损坏会显式报错，绝不静默重建覆盖
 - 未携带或错误 token 返回 `401`；比较为常量时间
+- WS 握手失败不以 HTTP 状态码表达：token 缺失/错误以 close code `4401` 拒连、Origin 不合法以 `4403` 拒连
 - 浏览器直开 Swagger UI 会因缺 token 得到 401——前端 dev 模式下 Nuxt dev server 经 `/api/engine-token` 自动下发 token，无需手动配置
 
 ## OpenAPI / Swagger
@@ -96,7 +97,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `PUT /compute/providers/:id` — 更新 Provider（改 baseUrl/apiKey/apiMode/超时后，引用它的 worker 会被退役重建，下一次调用即生效）
 - `DELETE /compute/providers/:id` — 删除 Provider（引用它的 worker 一并退役；删除后相关 agent 报"Provider 不存在"明确错误，不会回落旧快照）
 - `POST /compute/providers/:id/test` — 测试 Provider 连接
-- `GET /compute/usage` — 获取用量统计。实时扫描 `DATA_DIR/agents/*/llm_calls.jsonl`（逐行流式读，无 100MB 上限；不缓存）。响应骨架 `{ dates, tokens, byAgent }`：`dates: [{ date, promptTokens, completionTokens, calls, errorCalls }]`（`date` 为本地时区 `YYYY-MM-DD`）、`tokens: [{ provider, model, promptTokens, completionTokens, calls }]`（provider+model 联合键，缺省 provider 记 `"unknown"`）、`byAgent: [{ agentId, promptTokens, completionTokens, calls }]`。仅统计 token 用量，不折算费用；token 为 0 的历史记录照常计入调用数
+- `GET /compute/usage` — 获取用量统计。实时扫描 `DATA_DIR/agents/*/llm_calls.jsonl`（逐行流式读，无 100MB 上限；不缓存）。响应骨架 `{ dates, tokens, byAgent }`：`dates: [{ date, promptTokens, completionTokens, calls, errorCalls }]`（`date` 为本地时区 `YYYY-MM-DD`）、`tokens: [{ provider, providerId?, model, promptTokens, completionTokens, calls }]`（聚合键为 `providerId ?? provider` + model；`providerId` 仅新记录携带，缺省 provider 记 `"unknown"`）、`byAgent: [{ agentId, promptTokens, completionTokens, calls }]`。仅统计 token 用量，不折算费用；token 为 0 的历史记录照常计入调用数
 - `POST /compute/providers/:id/models` — 为 Provider 添加模型（字段同 `buildModelFromBody` 白名单校验；型号 id 已存在返回 409）
 - `PUT /compute/providers/:id/models/:modelId` — 更新模型（`id` 不可改；`apiMode` 接受三族值，传 `null` 表示显式清除型号级覆盖、回退 provider 级）
 - `DELETE /compute/providers/:id/models/:modelId` — 删除模型
@@ -107,11 +108,13 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 | 字段 | 类型 | 缺省 | 说明 |
 |---|---|---|---|
+| `id` | string | 自动生成 UUID | Provider id（`POST` 可显式指定，重复返回 409） |
+| `providerType` | `"openai"` | `openai` | Provider 类型白名单，当前仅 `openai`（仅 `POST /compute/providers` 接受，非法值 400） |
 | `displayName` | string | — | Provider 显示名 |
 | `baseUrl` | string | — | API 根地址（禁内网/文件协议） |
 | `apiKey` | string | — | 落盘 AES-256-GCM 加密，API 返回脱敏为 `"***"` |
 | `models` | ModelInfo[] | `[]` | 模型列表 |
-| `requestTimeout` | number | 180000（空闲语义） | **流空闲超时**（ms）：发出请求即开始计时，每收到一个 SSE 数据块重置，连续静默超过阈值才中断；传 `0` 显式关闭，缺省值可用环境变量 `CLOUDMIND_STREAM_IDLE_TIMEOUT_MS` 覆盖。三协议统一（chat / responses / anthropic）；chat 的 OpenAI SDK `timeout` 固定 30 分钟硬兜底，仅防「数据一直来但永不结束」。超时错误判**不可重试**（流可能已产出内容，重试会重复输出）。2026-11-01 P1 前的语义为总时长且未配置时不设超时 |
+| `requestTimeout` | number | 180000（空闲语义） | **流空闲超时**（ms）：发出请求即开始计时，每收到一个 SSE 数据块重置，连续静默超过阈值才中断；REST 传入须为 `1–600000` 的整数（`0` 会被 400 拒绝）；要关闭空闲超时，需不配本字段并把环境变量 `CLOUDMIND_STREAM_IDLE_TIMEOUT_MS` 设为 `0`；不配本字段时缺省 180000（亦可由该环境变量覆盖）。三协议统一（chat / responses / anthropic）；chat 的 OpenAI SDK `timeout` 固定 30 分钟硬兜底，仅防「数据一直来但永不结束」。超时错误判**不可重试**（流可能已产出内容，重试会重复输出）。2026-11-01 P1 前的语义为总时长且未配置时不设超时 |
 | `maxRetries` | number | 2 | 同一 Provider 失败重试次数（resilient 层） |
 | `apiMode` | `"responses" \| "anthropic" \| "chat_completions"` | `chat_completions` | 协议族选择（2026-08-08）：responses 与 anthropic 为主路，chat 为兼容层；POST/PUT 校验三值，非法值 400 |
 
@@ -200,7 +203,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 - `POST /agents/:agentId/subagents/:taskId/resume` — 续跑终态任务（completed/failed/lost）：同简报重跑、复用原记录（taskId 不变、attempts+1）；running 拒绝 409，非 owner 404
 - `GET /puppet-models` — 列出 Puppet 型号（内置 + 自定义），每项 `{ name, description, personaSnippet, suggestedTools?, source }`，`source` 为 `builtin` / `custom`；自定义走 `DATA_DIR/puppet-models/*.json`（同名覆盖内置），第一版只读
 
-> 子代理通过 `dispatch_subagent` / `dispatch_subagent_batch` 工具创建，无 REST 创建端点。任务持久化于 `subagent-tasks.jsonl`（engine 重启时 running 标 `lost`，不自动续跑）；列表/详情中 `output` 为截尾 preview（超 ~4KB，`outputTruncated` 标记），全量走 output 端点；`kind` 区分 `delegate`（借用人形）/ `puppet`（傀儡分身）。
+> 子代理通过 `dispatch_subagent` / `dispatch_subagent_batch` 工具创建，无 REST 创建端点。任务持久化于 `subagent-tasks.jsonl`（engine 重启时 running 标 `lost`，不自动续跑）；列表/详情中 `output` 为 preview（超 ~4KB 时只保留末尾约 4KB，`outputTruncated` 标记），全量走 output 端点；`kind` 区分 `delegate`（借用人形）/ `puppet`（傀儡分身）。
 > `dispatch_subagent` 的 `kind=puppet` 可选 `puppetModel`（型号名）：persona 片段拼入傀儡基础设定，`suggestedTools` 对傀儡工具集做交集窄化（只窄化不扩权；交集为空或型号不存在返回明确错误）。
 
 ### Intermind（人形间私信）
@@ -250,7 +253,7 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 
 ### Logs
 
-- `GET /logs` — 查询 engine 内存环形缓冲中的日志
+- `GET /logs?limit=xxx` — 查询 engine 内存环形缓冲中的日志（limit 缺省 200、上限 1000，非法值回落缺省；返回最新 limit 条）
 
 ## WebSocket 协议
 
@@ -272,16 +275,16 @@ Swagger UI 包含所有 REST 端点的摘要、标签和参数说明，可用于
 | `text.delta` / `thinking.delta` | 流式正文 / 推理内容（群聊帧带 `agentId`） |
 | `tool.call` / `tool.result` | 工具调用与执行结果（群聊帧带 `agentId`） |
 | `step.end` | ReAct 单步结束（每个 step 都发，tool_use 时循环继续） |
-| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态）。**仅中断结束时**附 `aborted: { reason }`，`reason` ∈ `user`（用户停止）/ `watchdog`（心跳判定停滞）/ `stalled`（语义审查判定打转）/ `timeout` / `shutdown`；正常结束不带该字段（帧形状与老前端行为均不变）。前端据此把气泡标「已中断」，已显示的文本保留 |
+| `turn.end` | 一轮生成结束（ReAct 循环退出；前端在此复位"生成中"状态）。**仅中断结束时**附 `aborted: { reason }`，`reason` 当前实际产出 `user`（用户停止）/ `watchdog`（心跳判定停滞）/ `stalled`（语义审查判定打转）；`timeout` / `shutdown` 仅在 `TurnAbortReason` 类型中登记、全仓无产出路径（见 `services/engine/src/provider/types.ts`）；正常结束不带该字段（帧形状与老前端行为均不变）。前端据此把气泡标「已中断」，已显示的文本保留 |
 | `handoff.update` | 换班移交状态变化（`status` / `shift` / `maxShifts` / `bookMessageId?` / `reason?`，仅私聊连接推送，帧带 `agentId`） |
 | `tool.approval_request` | 审批请求（60s 未回复视为拒绝） |
 | `error` | 错误 |
 
-握手时校验 Origin（无 Origin 的非浏览器客户端放行；`NODE_ENV=e2e` 全放行）。
+握手时校验 Origin（无 Origin 的非浏览器客户端放行；`NODE_ENV=e2e` 全放行）。握手阶段的资源校验失败同样以 close code 拒绝：`4001` agent 不存在、`4002` 群聊 session 不存在、`4003` agent id 非法、`4004` session id 非法。
 
 ## 通用约定
 
-- 所有 REST 响应均为 JSON。
+- REST 响应体均为 JSON（例外：`GET /agents/:id/files/*` 返回图片二进制流、`/docs` 返回 Swagger UI 页面）。
 - 删除操作成功返回 `204 No Content`（例外：`DELETE /handoff/:id` 返回 `200` + 记录摘要——它需要把打断后的状态回传给调用方）。
 - 资源不存在返回 `404 Not Found`。
 - 资源冲突（重复 id 等）返回 `409 Conflict`。
