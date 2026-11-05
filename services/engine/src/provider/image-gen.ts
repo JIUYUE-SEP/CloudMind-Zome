@@ -2,6 +2,19 @@ import OpenAI from "openai";
 import type { ImageGenProvider } from "./types.js";
 import { ProviderError } from "./errors.js";
 
+/**
+ * 生图请求硬上限（P1-6）。
+ *
+ * OpenAI SDK 缺省 `timeout=600000`（10 分钟）+ `maxRetries=2`，最坏 30 分钟
+ * 才返回——用户点停止后引擎仍挂着等，期间还在写盘。这里显式封顶。
+ *
+ * 不传 `signal`：`ToolContext` 没有 signal（已登记的已知限制，见
+ * docs/design/watchdog.md §六），工具层感知不到取消，能封的只有时间上限。
+ * `maxRetries` 归零：生图按次计费，响应丢失后的静默重试可能双倍计费；
+ * 失败信息会原样返回给用户，由他决定要不要重试。
+ */
+export const IMAGE_GENERATE_TIMEOUT_MS = 120_000;
+
 export class OpenAIImageGenProvider implements ImageGenProvider {
   name = "openai";
   private client: OpenAI;
@@ -22,11 +35,15 @@ export class OpenAIImageGenProvider implements ImageGenProvider {
 
   async generate(prompt: string, options?: { size?: string; model?: string }) {
     try {
-      const response = await this.client.images.generate({
-        model: options?.model ?? this.defaultModel,
-        prompt,
-        size: options?.size as OpenAI.Images.ImageGenerateParams["size"] | undefined,
-      });
+      const response = await this.client.images.generate(
+        {
+          model: options?.model ?? this.defaultModel,
+          prompt,
+          size: options?.size as OpenAI.Images.ImageGenerateParams["size"] | undefined,
+        },
+        // P1-6：per-request 覆盖 SDK 缺省，把最坏耗时从 30 分钟压到 2 分钟
+        { timeout: IMAGE_GENERATE_TIMEOUT_MS, maxRetries: 0 },
+      );
       return { url: response.data?.[0]?.url };
     } catch (err) {
       throw new ProviderError("openai", err);

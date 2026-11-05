@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import { logger } from "../../logger.js";
 import { renameWithRetry } from "../../plugins/memory/document-store.js";
+import { IMAGE_GENERATE_TIMEOUT_MS } from "../../provider/image-gen.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
 const DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -167,6 +168,10 @@ export const generateImageTool: Tool = {
     { resource: "file", action: "write", path: "files/images/" },
   ],
   requiresApproval: true,
+  // P1-6：自报执行上限。看门狗据此为本工具放宽停滞阈值（effectiveThresholdMs），
+  // 否则生图会被 600s 硬阈值当停滞杀掉。数值与 provider 层 timeout 同源，
+  // 改一处即两处同步（IMAGE_GENERATE_TIMEOUT_MS）
+  timeoutMs: IMAGE_GENERATE_TIMEOUT_MS,
   async execute(ctx: ToolContext, args: unknown): Promise<ToolResult> {
     let parsed: ParsedArgs;
     try {

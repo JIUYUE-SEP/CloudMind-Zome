@@ -127,17 +127,26 @@ export async function registerPlanRoutes(app: FastifyInstance, context: ApiConte
         if (step.status !== "pending" && step.status !== "aborted") continue;
         if (controller.signal.aborted) break;
         if (manager.get(planId)?.status === "paused") break;
-        // 每步硬超时：与断连中止合并为单一信号，贯入执行与 executeStep 状态判定
-        const stepSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(stepTimeoutMs)]);
-        const updated = await manager.executeStep(
-          planId,
-          step.id,
-          async (s) => runAgent(agentId, [userMessage(s.description)], { signal: stepSignal }),
-          { signal: stepSignal },
-        );
-        if (updated.status === "failed") break;
-        // 断连/超时中止：停止后续步骤（本步已标 aborted，待下次 /run 重跑）
-        if (stepSignal.aborted) break;
+        // 每步硬超时：与断连中止合并为单一信号，贯入执行与 executeStep 状态判定。
+        // P1-7：不用 AbortSignal.timeout——它的 reason 是 TimeoutError DOMException，
+        // resolveAbortReason 认不出会退成 "user"，前端把「计划步骤超时」显示成
+        // 「用户已中断」，排障方向直接跑偏。显式 abort("timeout") 才落对归因。
+        const stepTimeout = new AbortController();
+        const stepTimer = setTimeout(() => stepTimeout.abort("timeout"), stepTimeoutMs);
+        const stepSignal = AbortSignal.any([controller.signal, stepTimeout.signal]);
+        try {
+          const updated = await manager.executeStep(
+            planId,
+            step.id,
+            async (s) => runAgent(agentId, [userMessage(s.description)], { signal: stepSignal }),
+            { signal: stepSignal },
+          );
+          if (updated.status === "failed") break;
+          // 断连/超时中止：停止后续步骤（本步已标 aborted，待下次 /run 重跑）
+          if (stepSignal.aborted) break;
+        } finally {
+          clearTimeout(stepTimer);
+        }
       }
       return manager.get(planId);
     } finally {

@@ -120,7 +120,7 @@ for (; step < maxSteps && !watermarkStop; step++) {
 
 `reason` 分档是必要的——watchdog 中断与用户主动取消在排查时是完全不同的事故。
 
-> **实现现状（2026-11-05 复核）**：`TurnAbortReason` 声明了五个值，但当前只有 `user`（WS 停止生成）、`watchdog`（心跳判停滞）、`stalled`（语义审查判打转）有生产者；`timeout` 与 `shutdown` 全仓无任何 `abort(reason)` 产出——流空闲超时以 `StreamIdleTimeoutError` 抛出（不 abort 回合 signal），关停只 drain 压缩队列、不中断在途 turn（`provider/types.ts:49`、`agent-worker.ts:269-284`、`provider/protocols/shared.ts:294`）。登记见 `docs/archive/reviews/2026-11-05-logic-conflict-audit.md` P1-7。
+> **实现现状（2026-11-05 复核 + P1-7 修复）**：`TurnAbortReason` 五个值现**均可产出**——`user`（WS 停止生成）、`watchdog`（心跳判停滞）、`stalled`（语义审查判打转）、`timeout`（`api/routes/plans.ts` 计划步骤硬超时，显式 `abort("timeout")`）、`shutdown`（`bootstrap.ts` 关停时中断在途 turn）。**流空闲超时仍走异常路径**：以 `StreamIdleTimeoutError` 抛出、不 abort 回合 signal，终帧不带 `aborted`——那是故障而非中断，归因语义本就不同（`provider/types.ts:49`、`agent-worker.ts:269-284`、`provider/protocols/shared.ts:294`）。审计记录见 `docs/archive/reviews/2026-11-05-logic-conflict-audit.md` P1-7。
 
 ### 2.4 与换班（handoff）的关系：**不写交接书**
 
@@ -343,7 +343,7 @@ job.signal  ✅ agent-worker.ts:981 传给 runTurn
 
 **按 callId 记账而非单槽位**：一批工具调用是 `Promise.all` 并发跑的，单槽位会被后启动的覆盖——「一个 600s 的 run_command 在跑」这个事实会被同批一个 30s 的 bash 抹掉，然后按 30s 判死。取最大值而非最新值，保守方向才对。
 
-**未声明 `timeoutMs` 的工具不享受放宽**：它没承诺过执行时长，看护没有依据放宽。已声明的有 `bash`（30s）、`run_command`（600s）、`web_search`（10s）、`dispatch_subagent` / `_batch`（前台 300s）、MCP 包装（按 server 配置的 `callTimeoutMs`，缺省 60s）。`generate_image` 刻意不声明——它的生成请求本身没有超时，正是看护该抓到的那类。（2026-11-05 复核：这正是兜底缺口，见本节末「边界与已知限制」与 `docs/archive/reviews/2026-11-05-logic-conflict-audit.md` P1-6。）
+**未声明 `timeoutMs` 的工具不享受放宽**：它没承诺过执行时长，看护没有依据放宽。已声明的有 `bash`（30s）、`run_command`（600s）、`web_search`（10s）、`dispatch_subagent` / `_batch`（前台 300s）、`generate_image`（120s，2026-11-05 P1-6 补：工具 `timeoutMs` 与 provider 层 `timeout` 共用 `IMAGE_GENERATE_TIMEOUT_MS`，`maxRetries` 归零）、MCP 包装（按 server 配置的 `callTimeoutMs`，缺省 60s）。其余 9 个内置工具是本地快操作，无需时限。
 
 #### 三、中断入口：与用户取消共用一条 signal
 
@@ -373,7 +373,7 @@ job.signal  ✅ agent-worker.ts:981 传给 runTurn
 
 #### 六、边界与已知限制
 
-- **abort 打不断正在执行的工具**：`ToolContext` 没有 signal，工具无法感知取消。看护中断后，长跑工具仍会跑到自己返回为止，`turn.end` 要等到那时。真正的兜底是工具自己的 `timeoutMs`——**机制成立，但当前并非所有工具都登记了它**：内置 15 个工具中只有 `bash`、`run_command`、`web_search`、`dispatch_subagent`、`dispatch_subagent_batch` 声明了 `timeoutMs`（MCP 包装按 server 的 `callTimeoutMs` 代报，缺省 60s）；`generate_image` 是已知缺口——它未声明 `timeoutMs`，`provider/image-gen.ts:24-31` 调 OpenAI SDK `images.generate` 时也未传 `timeout` / `signal`，SDK 缺省（10 分钟）叠加内置重试最坏约 30 分钟无兜底（`provider/image-gen.ts:11` 构造客户端时同样没配）。看护的作用仍是「不再无限等」而非「立即掐断」；缺口登记见 `docs/archive/reviews/2026-11-05-logic-conflict-audit.md` P1-6。
+- **abort 打不断正在执行的工具**：`ToolContext` 没有 signal，工具无法感知取消。看护中断后，长跑工具仍会跑到自己返回为止，`turn.end` 要等到那时。真正的兜底是工具自己的 `timeoutMs`——**有长跑可能的 6 个工具都已声明**：`bash`、`run_command`、`web_search`、`dispatch_subagent`、`dispatch_subagent_batch`、`generate_image`（120s；2026-11-05 P1-6 补齐：工具声明 `timeoutMs`，`provider/image-gen.ts` 同时给 `images.generate` 传 `timeout` 与 `maxRetries: 0`，两者共用 `IMAGE_GENERATE_TIMEOUT_MS`，最坏从 SDK 缺省的约 30 分钟压到 2 分钟）；MCP 包装按 server 的 `callTimeoutMs` 代报（缺省 60s）。其余 9 个内置工具是本地快操作，无需时限。看护的作用仍是「不再无限等」而非「立即掐断」；原始缺口记录见 `docs/archive/reviews/2026-11-05-logic-conflict-audit.md` P1-6。
 - 阈值是全局的，不按 agent 分别配置。
 
 ### 4.5 P4 实施记录（2026-11-01 完成）：语义审查

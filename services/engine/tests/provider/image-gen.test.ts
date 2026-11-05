@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { OpenAIImageGenProvider, MockImageGenProvider } from "../../src/provider/image-gen.js";
+import {
+  OpenAIImageGenProvider,
+  MockImageGenProvider,
+  IMAGE_GENERATE_TIMEOUT_MS,
+} from "../../src/provider/image-gen.js";
+
+/**
+ * P1-6 回归闸：provider 必须显式封顶，不能吃 SDK 缺省的
+ * timeout=600000 + maxRetries=2（最坏 30 分钟无兜底）。
+ */
+const BOUNDED_OPTS = { timeout: IMAGE_GENERATE_TIMEOUT_MS, maxRetries: 0 };
 
 /** 替换 OpenAI 客户端的 images.generate，断言请求体并返回固定结果 */
 function stubImagesGenerate(provider: OpenAIImageGenProvider) {
@@ -21,6 +31,7 @@ describe("OpenAIImageGenProvider（决策 1：型号从配置来）", () => {
     const result = await provider.generate("a cat");
     expect(generateMock).toHaveBeenCalledWith(
       expect.objectContaining({ model: "gpt-image-1", prompt: "a cat", size: undefined }),
+      BOUNDED_OPTS,
     );
     expect(result.url).toBe("https://img.example.com/r.png");
   });
@@ -31,6 +42,7 @@ describe("OpenAIImageGenProvider（决策 1：型号从配置来）", () => {
     await provider.generate("a cat", { model: "dall-e-2", size: "1024x1024" });
     expect(generateMock).toHaveBeenCalledWith(
       expect.objectContaining({ model: "dall-e-2", size: "1024x1024" }),
+      BOUNDED_OPTS,
     );
   });
 
@@ -38,7 +50,10 @@ describe("OpenAIImageGenProvider（决策 1：型号从配置来）", () => {
     const provider = new OpenAIImageGenProvider("sk-test");
     const generateMock = stubImagesGenerate(provider);
     await provider.generate("a cat");
-    expect(generateMock).toHaveBeenCalledWith(expect.objectContaining({ model: "dall-e-3" }));
+    expect(generateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "dall-e-3" }),
+      BOUNDED_OPTS,
+    );
   });
 
   it("supportsModel 放宽为恒 true（配置即信任，不做名字白名单）", () => {

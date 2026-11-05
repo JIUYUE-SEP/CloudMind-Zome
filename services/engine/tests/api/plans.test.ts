@@ -299,12 +299,18 @@ describe("Plans API", () => {
     process.env.ZOME_PLAN_STEP_TIMEOUT_MS = "50";
     try {
       let calls = 0;
+      let capturedReason: unknown;
       const local = await buildContext("a1", (_id, _messages, opts) => {
         calls += 1;
         if (calls === 1) {
           // 首轮挂起直到信号中止（模拟 provider 流挂起），触发 50ms 硬超时
           return new Promise<string>((_, reject) => {
-            opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+            const signal = opts?.signal;
+            signal?.addEventListener("abort", () => {
+              // P1-7：记下中止归因，供下方断言
+              capturedReason = signal.reason;
+              reject(new Error("aborted"));
+            });
           });
         }
         return Promise.resolve("done:second-run");
@@ -318,6 +324,10 @@ describe("Plans API", () => {
         const first = await authedRequest(localApp.server).post(`/agents/a1/plans/${planId}/run`);
         expect(first.status).toBe(200);
         expect(first.body.steps[0].status).toBe("aborted");
+        // P1-7：硬超时必须归因成 "timeout"，不能退化成 "user"——AbortSignal.timeout
+        // 的 reason 是 TimeoutError DOMException，resolveAbortReason 认不出会落 user，
+        // 前端把「计划步骤超时」显示成「用户已中断」
+        expect(capturedReason).toBe("timeout");
         expect(first.body.status).toBe("pending");
 
         // 锁已释放（不再 409）；aborted 步骤随 /run 重新执行

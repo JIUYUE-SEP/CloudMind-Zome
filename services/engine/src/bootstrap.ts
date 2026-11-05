@@ -152,7 +152,15 @@ async function main() {
   // engine/ready 驱动）。
   registerShutdownHandlers({
     // 先停止接收新任务（scheduler 触发的压缩段），再 drain 存量队列
-    stop: () => root.scheduler.stop(),
+    stop: () => {
+      root.scheduler.stop();
+      // P1-7：关停时中断在途 turn 并显式标 "shutdown"——否则终帧 reason 会经
+      // resolveAbortReason 退成 "user"，前端把「引擎重启」显示成「用户点了停止」。
+      // 放在 stop 段而非 drain 段：先让回合开始收尾，drain 才有稳定的队列可等。
+      for (const worker of root.agents.workerRegistry.all()) {
+        worker.abortCurrentTurn("shutdown");
+      }
+    },
     drain: async () => {
       await Promise.allSettled([...root.agents.workerRegistry.all()].map((w) => w.drainCompression()));
     },
