@@ -38,16 +38,20 @@ const engine = spawn("npx", ["tsx", "src/bootstrap.ts"], {
 function resolvePnpm() {
   const execPath = process.env.npm_execpath;
   if (execPath && /pnpm/i.test(execPath)) {
-    return { cmd: process.execPath, args: [execPath] };
+    // 2026-11-06：shell 必须关——cmd 是 process.execPath，Windows 上常带空格
+    // （C:\Program Files\nodejs\node.exe），shell:true 会让 cmd.exe 在空格处截断，
+    // 报 "'C:\Program' 不是内部或外部命令"，web 子进程秒退、`pnpm test:e2e` 永远
+    // 起不来（手跑 node scripts/start-e2e.mjs 走 corepack 分支所以不触发）。
+    return { cmd: process.execPath, args: [execPath], shell: false };
   }
-  return { cmd: "corepack", args: ["pnpm"] };
+  return { cmd: "corepack", args: ["pnpm"], shell: true };
 }
 
 const pm = resolvePnpm();
 const web = spawn(pm.cmd, [...pm.args, "--filter", "@cloudmind/web", "dev"], {
   cwd: root,
   stdio: "pipe",
-  shell: true,
+  shell: pm.shell,
   env: {
     ...process.env,
     CLOUDMIND_DATA_DIR: tmpDir,
